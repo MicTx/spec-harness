@@ -1,0 +1,14 @@
+---
+title: 从零构建 Agent Harness 智能体应用开发实践
+subtitle: 用控制平面约束智能体，而不是再写一本提示词手册
+lang: zh-CN
+language: zh-CN
+author: Spec Harness 实践笔记
+date: 2026-09-07
+rights: |
+  本书源稿与教学示例随本仓库分发。引用资料的权利归各自权利人。
+  虚构教学场景不代表调研或实测；本书不作销量、平台背书或生产可用性保证。
+description: >
+  写给独立开发者的 Agent Harness 实践书：从失控因果链出发，
+  讲清控制平面、四原则、任务包、单线闭环、机器门禁、Git 收尾与最小接入。
+---

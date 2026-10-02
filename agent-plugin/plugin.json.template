@@ -1,0 +1,10 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "{{NAME}}",
+  "version": "{{VERSION}}",
+  "description": "{{DESCRIPTION}}",
+  "homepage": "{{HOMEPAGE}}",
+  "repository": "{{REPOSITORY}}",
+  "license": "{{LICENSE}}",
+  "keywords": {{KEYWORDS}}
+}

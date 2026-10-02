@@ -1,0 +1,64 @@
+#!/bin/sh
+set -eu
+
+# The source hook resolves its runtime; install_git_hooks.py replaces this
+# placeholder with an absolute path in installed copies.
+repo=$(git rev-parse --show-toplevel)
+hook_dir=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+checker="__SPEC_CHECK_ALL_SCRIPT_PLACEHOLDER__"
+checker_placeholder_prefix=__SPEC_CHECK_ALL_
+checker_placeholder="${checker_placeholder_prefix}SCRIPT_PLACEHOLDER__"
+# Checker resolution order:
+#   1. SPEC_CHECK_ALL_SCRIPT environment override (highest priority).
+#   2. The in-project copy at "$repo/scripts/check_all_spec_packages.py"
+#      when it exists and is readable (keeps the spec source repository
+#      self-contained).
+#   3. The absolute path rendered by install_git_hooks.py, already held in
+#      $checker when the placeholder above was replaced.
+#   4. The bootstrap path relative to this hook (unrendered source template).
+if [ -n "${SPEC_CHECK_ALL_SCRIPT:-}" ]; then
+  checker="$SPEC_CHECK_ALL_SCRIPT"
+elif [ -f "$repo/scripts/check_all_spec_packages.py" ] && [ -r "$repo/scripts/check_all_spec_packages.py" ]; then
+  checker="$repo/scripts/check_all_spec_packages.py"
+elif [ "$checker" = "$checker_placeholder" ]; then
+  checker="$hook_dir/../scripts/check_all_spec_packages.py"
+fi
+
+if [ ! -f "$checker" ]; then
+  printf '%s\n' \
+    "error: Spec gate checker not found at: $checker" \
+    "  The checker script is expected at the path above." \
+    "  Fix:" \
+    "    1. Re-run: python3 scripts/install_git_hooks.py --root \"$repo\"" \
+    "    2. The checker lives in the spec skill package under scripts/" >&2
+  exit 1
+fi
+
+python="__SPEC_PYTHON_PLACEHOLDER__"
+python_placeholder_prefix=__SPEC_PYTHON_
+python_placeholder="${python_placeholder_prefix}PLACEHOLDER__"
+if [ "$python" = "$python_placeholder" ]; then
+  python=${SPEC_PYTHON:-$(command -v python3 || true)}
+fi
+if [ -z "$python" ]; then
+  printf '%s\n' "error: Spec gate requires a trusted Python interpreter" >&2
+  exit 1
+fi
+if [ "$python" != "${python##*/}" ] && [ ! -x "$python" ]; then
+  printf '%s\n' "error: Spec gate requires a trusted Python interpreter" >&2
+  exit 1
+fi
+
+baseline=""
+for ref in refs/heads/main refs/heads/master; do
+  if baseline=$(git rev-parse --verify "$ref" 2>/dev/null); then
+    break
+  fi
+  baseline=""
+done
+set --
+if [ -n "$baseline" ]; then
+  set -- --legacy-baseline "$baseline"
+fi
+"$python" "$checker" --root "$repo" "$@"
+"$python" "$checker" --root "$repo" --index "$@"

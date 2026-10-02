@@ -1,0 +1,10 @@
+{
+  "name": "{{NAME}}",
+  "displayName": "{{DISPLAY_NAME}}",
+  "version": "{{VERSION}}",
+  "description": "{{DESCRIPTION}}",
+  "homepage": "{{HOMEPAGE}}",
+  "repository": "{{REPOSITORY}}",
+  "license": "{{LICENSE}}",
+  "keywords": {{KEYWORDS}}
+}

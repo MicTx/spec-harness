@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+
+.claude/settings.local.json
+.claude/worktrees/
+
+.trae/
+.zcode/
+
+# Agent-host local state (memory, runtime); never source assets.
+.agents/
+
+# Structure-audit scratch notes. Durable conclusions live in the task package.
+.spec/artifacts/
+
+dist/
+build/
+tmp/
+*.log
+
+# Local watermark identity and key. Never commit; tests use an in-memory sample.
+.watermark-identity.json
+.watermark-key
