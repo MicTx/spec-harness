@@ -164,7 +164,10 @@ def publish_public_tree(output: Path, repo: str, tag: str | None) -> None:
         for path in output.iterdir():
             target = work / path.name
             shutil.copytree(path, target) if path.is_dir() else shutil.copy2(path, target)
-        _run(["git", "add", "-A"], work)
+        # The allowlist has already rejected unsafe entries. Force-add the
+        # filtered tree so repository-level ignore rules cannot create a
+        # manifest/clone mismatch (for example, the public book EPUB).
+        _run(["git", "add", "-A", "-f"], work)
         status = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=work)
         if status.returncode:
             _run(["git", "commit", "-m", "chore(public): sync Spec Harness public source"], work)

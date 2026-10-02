@@ -74,7 +74,7 @@
     "scripts/complete_spec_package.py": "7c48ab19f2482059311d65ed9b813a24cd9af7f48dccb68cccebd136e1b0855e",
     "scripts/dashboard_support.py": "874138ecbaaf650a8c3591caa94b1504c5f612361bca878aa581c06ca09af64b",
     "scripts/doctor_spec_environment.py": "786bda2862e8240bddb90420034cfc5aabb41205f50cb2f7e902219822cc85c5",
-    "scripts/export_public_repo.py": "5ed35878dc052955f3d83f40b0587823c4c699f163e7d43a37c3e711ab1ec9fd",
+    "scripts/export_public_repo.py": "048d1eeda05bdb794055ffe3ae096d38a04d1d29315509c12c49d84b6672ca98",
     "scripts/export_skill_package.py": "52ed3fa4afafba084d7556b9f43e2a552dd61a611d4c7d4d492de6f283a60435",
     "scripts/generate_changelog.py": "bb64745c747d62a8746219eafbf9e07ef2bf906e1ef920396a7cbbda28e45a7b",
     "scripts/gitea_hook_repair.py": "cfb5ae4fa7177ec3f0f4d29199b7c2dc9bdb9628127ed10e4be1e2686e3ac84b",
