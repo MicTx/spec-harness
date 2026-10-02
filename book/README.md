@@ -33,6 +33,6 @@ python3 -m unittest discover -s book/tests -v
 
 `examples/mini_harness.py` 采用 `.mini-harness` 和单写者固定格式，支持 init/route/check/verify；不自动调用模型、调度助手、操作 Git 或发布远端。参考实现使用 `.spec` 和更完整的协作机制，二者不宣称格式兼容。
 
-源稿编辑 `src/` 下的章节文件，不直接修改组装稿或 EPUB。正式验收记录保存在仓库 `.spec/specs/archive/2026-09-07_docs-agent-harness-ebook/`；已删除的写作合同和过程日志可从交付提交 `d7d7fad` 的 Git 历史查看。
+源稿编辑 `src/` 下的章节文件，不直接修改组装稿或 EPUB。发布前运行本页列出的验证命令，构建产物通过检查后再分发。
 
 本轮不含纸书、ISBN、平台上架、真实销量验证或生产数据迁移。

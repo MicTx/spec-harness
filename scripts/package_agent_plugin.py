@@ -79,6 +79,7 @@ COPY_IGNORE = shutil.ignore_patterns(*IGNORE_PATTERNS)
 
 DEFAULT_NAME = "spec-harness"
 DEFAULT_DISPLAY_NAME = "Spec Harness"
+PUBLIC_REPOSITORY_URL = "https://github.com/MicTx/spec-harness"
 DEFAULT_LICENSE = "LicenseRef-Spec-NonCommercial"
 DEFAULT_KEYWORDS = ["spec", "task-package", "workflow", "agent-skills"]
 DEFAULT_OUTPUT_DIR = "dist"
@@ -113,8 +114,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--name", help=f"Plugin name (default: {DEFAULT_NAME})")
     parser.add_argument("--version", help="Plugin version (default: repository pyproject.toml version)")
     parser.add_argument("--description", help="Plugin description (default: pyproject.toml description)")
-    parser.add_argument("--homepage", default="", help="Homepage URL (empty omits the field)")
-    parser.add_argument("--repository", default="", help="Source repository URL (empty omits the field)")
+    parser.add_argument("--homepage", default=PUBLIC_REPOSITORY_URL, help="Homepage URL")
+    parser.add_argument("--repository", default=PUBLIC_REPOSITORY_URL, help="Source repository URL")
     parser.add_argument(
         "--force",
         action="store_true",
@@ -165,7 +166,7 @@ def render_template(template: str, values: dict[str, str]) -> str:
 
 
 def strip_empty_fields(manifest: dict) -> dict:
-    """Drop optional top-level fields left empty by defaults (homepage/repository)."""
+    """Drop optional top-level fields explicitly left empty by the caller."""
     return {key: value for key, value in manifest.items() if value != ""}
 
 

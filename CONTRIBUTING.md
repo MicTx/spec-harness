@@ -1,49 +1,83 @@
-# Contributing
+# Contributing to Spec Harness
 
-Keep the skill aligned with its implementation. Scripts and template fences are sources of truth. Other carriers point at them; they do not recopy gate lists.
+Thank you for improving Spec Harness. This guide covers the public GitHub repository and the checks expected for a pull request.
 
-## Development Rules
+## Before You Start
 
-- Keep `SKILL.md` concise. Put command details, templates, output contracts, and storage rules in `references/`.
-- If a workflow principle or script contract changes, update the source of truth first. Other docs should link, not duplicate the gate paragraph.
-- Do not add new runtime carriers such as `CLAUDE.md`, `CURSOR.md`, marketplace metadata, or package-manager manifests unless the project explicitly adopts that distribution path.
-- If `/spec:check` semantics change, update `check_spec_package.py` and any tests that lock its output. Docs describe the script; they do not restate every gate.
-- If issue-closure semantics change, update `issue_closure_support.py` and the carriers that consume it.
-- Keep helper scripts dependency-free unless there is a concrete need.
-- Avoid claims in README or metadata that are not backed by scripts or documented skill behavior.
-- Keep the installer surface minimal: root `install.sh` is the only runtime installer entrypoint unless a new distribution path is explicitly adopted.
-- The book assets are authoring artifacts, not runtime obligations. `release/` is the only tracked distribution channel: refresh it from `build_release.py` after version bumps; no selling material is shipped.
+- Read the [Git workflow guide](docs/git-workflow.en.md).
+- Search existing issues and pull requests before opening a new one.
+- For a security issue, follow [SECURITY.md](SECURITY.md) instead of opening a public issue.
+- Keep changes focused. A pull request should solve one problem and include the documentation needed to use it.
+
+## Development Setup
+
+    git clone https://github.com/MicTx/spec-harness.git
+    cd spec-harness
+    python3 -m venv .venv
+    source .venv/bin/activate
+    python3 -m pip install -e '.[dev]'
+
+Python 3.9 or newer is supported. The runtime scripts use only the Python standard library; the optional dev extra provides the test and lint tools.
+
+## Branches and Commits
+
+Create a branch from the current main branch. Use a short, descriptive branch name such as docs/git-guide, fix/path-validation, or spec/2026-10-02_audit-docs.
+
+Use Conventional Commits:
+
+    <type>(<scope>): <imperative summary>
+
+Common types are feat, fix, docs, test, refactor, and chore. Keep the subject concise and explain the user-visible reason in the body when the subject is not enough.
+
+    git fetch origin --prune
+    git switch main
+    git pull --ff-only origin main
+    git switch -c docs/git-guide
+
+Do not commit generated release archives, local credentials, private task records, or editor state unless the change explicitly updates a tracked distribution artifact.
+
+## Make a Change
+
+1. Identify the source of truth before editing. Runtime behavior belongs in scripts and tests; command contracts belong in references/; reader-facing behavior belongs in the README and public guides.
+2. Update the Chinese and English reader docs when a user-facing command or contract changes.
+3. Add a regression test for changed behavior, especially for path handling, archive contents, installer behavior, and task-package gates.
+4. Keep public documentation free of private repository paths, credentials, local machine paths, and maintainer-only task records.
 
 ## Verification
 
-Before submitting a change, install development dependencies and run:
+Run the checks that match the change. The full suite is:
 
-```bash
-python3 -m pip install -e '.[dev]'
-python3 -m py_compile scripts/*.py
-python3 scripts/smoke_test_spec_skill.py
-python3 -m pytest tests/
-ruff check scripts/ tests/
-```
+    python3 -m compileall -q scripts server hooks slots tests book
+    python3 scripts/slot_registry.py validate
+    python3 scripts/smoke_test_spec_skill.py
+    python3 -m pytest -q
+    ruff check scripts/ server/ hooks/ slots/ tests/ book/
+    ruff format --check scripts/ server/ hooks/ slots/ tests/ book/
+    python3 scripts/organize_project_structure.py --root . --check
+    python3 scripts/check_all_spec_packages.py --root .
+    git diff --check
 
-For documentation changes that affect `/spec:check`, verify that the docs still describe the current `check_spec_package.py` behavior: base gates, optional new-gate activation, evidence refill, and script/test/build command evidence.
+For documentation-only changes, run the Markdown link and structure checks plus the affected tests. If a check cannot run, state the reason in the pull request.
 
-For script behavior changes, also create a temporary task package and run the affected scripts against it:
+## Pull Requests
 
-```bash
-python3 scripts/init_spec_package.py --root /tmp/spec-test --slug demo --title Demo --force
-python3 scripts/route_spec_package.py --root /tmp/spec-test --slug demo
-python3 scripts/report_spec_package.py --root /tmp/spec-test --slug demo --view status
-python3 scripts/check_spec_package.py --root /tmp/spec-test --slug demo
-python3 scripts/complete_spec_package.py --root /tmp/spec-test --slug demo --allow-incomplete --force
-```
+Open a pull request against main from your fork or branch. Include:
 
-The repository CI runs compile, smoke, pytest, and ruff checks on push and pull request. Keep local verification aligned with `.github/workflows/ci.yml`, and use `git diff --check` before committing to catch whitespace issues.
+- The problem and the resulting behavior.
+- The files or public interfaces affected.
+- Verification commands and their results.
+- Compatibility or migration notes for changed commands, task-package formats, or exported layouts.
+- Screenshots or command output when a documentation or CLI change affects what users see.
 
-## Pull Request Checklist
+A pull request is ready when the change is reviewable from the diff, tests cover the changed behavior, and public documentation matches the implementation. Maintainers may request a smaller scope or a follow-up pull request when unrelated cleanup obscures the main change.
 
-- The change has a clear scope and does not include unrelated cleanup.
-- User-facing text points at the same workflow as the scripts.
-- `/spec:check` documentation matches `check_spec_package.py` when check gates, checklist evidence, or templates change.
-- Script behavior matches the documented command contracts.
-- New public-facing material is factual and does not overstate what the skill does.
+## Documentation Standards
+
+- Use direct language and concrete commands.
+- Keep examples executable and use the public repository URL.
+- Link to the source of truth instead of copying long gate lists into several files.
+- Keep historical decisions in maintainer records; public guides describe the current supported behavior.
+
+## License
+
+Contributions are accepted under the terms in [LICENSE](LICENSE).

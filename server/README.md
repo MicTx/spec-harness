@@ -73,7 +73,7 @@ SPEC_SKILL_DIR=/path/to/spec-repo PORT=8787 python3 server/server.py
 curl -s http://localhost:8787/v1/health
 ```
 
-- `linux/arm64` container validation: inside `python:3.12-slim`, the closure/server/Harness/export/Git-gate tests plus the source/export smoke run with the selected suites passing (the non-root guard is out of scope inside a root container), smoke `OK`, and the hook and `server/install.sh` shell syntax checks pass; exact evidence in `.spec/docs/2026-08-22_fix-issue-closure_issue-closure-linux-validation.md`.
+- For a Linux container deployment, run the repository verification commands from `CONTRIBUTING.md`, then run `bash -n server/install.sh` and the server smoke checks in the target image.
 
 ## Semantic boundary
 

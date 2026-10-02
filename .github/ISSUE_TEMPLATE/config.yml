@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation and support
+    url: https://github.com/MicTx/spec-harness/blob/main/SUPPORT.md
+    about: Read the support guide before opening an issue.
+  - name: Security vulnerability
+    url: https://github.com/MicTx/spec-harness/security/advisories/new
+    about: Report security issues privately. Do not post exploit details publicly.

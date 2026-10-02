@@ -1,168 +1,56 @@
-# Release Guide
+# Releases
 
-This project uses Semantic Versioning and automated tag-triggered releases.
+Spec Harness releases are published on [GitHub Releases](https://github.com/MicTx/spec-harness/releases). Each release contains the runtime skill archives, release notes, and SHA-256 checksums.
 
-## Versioning
+## Choose a Version
 
-Versions live in `pyproject.toml` as the single source of truth.
+- Use the latest tagged release for a stable installation.
+- Use a full commit SHA when you need a reproducible source checkout.
+- Read CHANGELOG.md before upgrading across a behavior or layout change.
 
-| Bump | When |
-| --- | --- |
-| **Patch** `v0.x.y → v0.x.y+1` | documentation fixes, metadata alignment, non-breaking script fixes |
-| **Minor** `v0.x.y → v0.x+1.0` | new helper-script capabilities, new workflow support, backward-compatible fields |
-| **Major** `v0.x.y → v1.0.0` | breaking changes to command aliases, task-package structure, exported layout, or behavior contracts |
+## Install from a Release Archive
 
-Until `v1.0.0`, backward compatibility is still preferred. Any intentional break should be called out explicitly in `CHANGELOG.md`.
+Download the archive and checksum file from the release page:
 
-## Build Artifacts
+    VERSION=0.13.10
+    curl -LO "https://github.com/MicTx/spec-harness/releases/download/v$VERSION/spec-harness-$VERSION.tar.gz"
+    curl -LO "https://github.com/MicTx/spec-harness/releases/download/v$VERSION/SHA256SUMS"
+    sha256sum -c SHA256SUMS --ignore-missing
+    tar xzf "spec-harness-$VERSION.tar.gz"
+    cd "spec-harness-$VERSION"
+    bash install.sh
 
-`scripts/build_release.py` produces standardized distributable artifacts in an output directory outside the source tree (default `../spec-harness-dist/`):
+On macOS, use shasum -a 256 -c SHA256SUMS when sha256sum is unavailable. On Windows, use Get-FileHash and compare the result with SHA256SUMS before extracting the ZIP archive.
 
-| Artifact | Description |
-| --- | --- |
-| `spec-harness-{version}.tar.gz` | Full runtime package for Unix (preserves permissions) |
-| `spec-harness-{version}.zip` | Full runtime package for Windows |
-| `SHA256SUMS` | SHA-256 checksums for release archives (the checksum file and release notes are excluded) |
-| `RELEASE_NOTES.md` | Changelog excerpt for the matching version |
+The archive root contains the local skill installer. server/install.sh is optional and only applies when the self-hosted server adapter is deployed.
 
-Each archive contains a `VERSION` file (version string) and `BUILD_INFO` file (version, Git SHA, deterministic canonical `runtime_sha256`, commit-derived build timestamp). The archive-root `install.sh` is the local skill installer; the optional `server/install.sh` is a separate self-hosted service deployment entrypoint.
+## Install from Source
 
-### Building Locally
+    git clone https://github.com/MicTx/spec-harness.git
+    cd spec-harness
+    git checkout v0.13.10
+    bash install.sh
 
-```bash
-# Full build with pre-build checks (py_compile, smoke, pytest, ruff)
-python3 scripts/build_release.py
+A tagged checkout is preferable to an unpinned main checkout when reproducibility matters. Replace the tag with a full commit SHA for an exact source revision.
 
-# Skip checks for a fast rebuild
-python3 scripts/build_release.py --skip-checks
+## Upgrade and Roll Back
 
-# Verify a specific version (used by CI release workflow)
-python3 scripts/build_release.py --expect-version 0.3.0
+Keep the installed host directory backed up when changing versions. Re-run the installer from the selected release or checkout; it preserves user-owned settings and refuses to overwrite an unrelated skill directory without an explicit override.
 
-# Custom output directory
-python3 scripts/build_release.py --output /tmp/my-dist
-```
+To roll back, install a previous tag or release archive:
 
-### Verifying Checksums
+    git fetch --tags origin
+    git checkout v0.13.9
+    bash install.sh
 
-```bash
-(cd ../spec-harness-dist && sha256sum -c SHA256SUMS)
-```
+## Checksums and Provenance
 
-### Installing from an Archive
+SHA256SUMS covers the release archives. Verify it before extraction. The archive also contains VERSION and BUILD_INFO; the latter records the source revision and the canonical runtime payload digest.
 
-```bash
-# Unix
-tar xzf spec-harness-0.11.0.tar.gz
-cd spec-harness-0.11.0
-./install.sh
+## Compatibility
 
-# Windows
-Expand-Archive spec-harness-0.11.0.zip
-cd spec-harness-0.11.0
-bash install.sh
-```
+Patch releases preserve existing command aliases and task-package formats whenever possible. Changes to command aliases, required task-package files, exported layouts, or behavior contracts are called out in the changelog and version policy.
 
-### Check-Gate Documentation Drift
+## Need Help?
 
-Before release, confirm `/spec:check` documentation still matches `scripts/check_spec_package.py`:
-
-- `SKILL.md`, README files, `references/commands.md`, `references/output-contracts.md`, `references/templates.md`, `references/storage-and-archive.md`, and `agents/openai.yaml` describe the same base gates.
-- Evidence rules mention non-placeholder script/test/build command proof.
-- Optional gates are documented as marker-driven: cross-artifact consistency, structure/document credibility, branch and multi-agent governance, orchestration governance, and behavior effects.
-- Installer-generated `/spec:check` command text remains consistent with the same rules.
-
-### Public GitHub Mirror
-
-The private development repository remains the development source. Build a filtered public tree before publishing:
-
-```bash
-python3 scripts/export_public_repo.py --output /tmp/spec-harness-public --tag v0.13.9
-python3 scripts/export_public_repo.py --output /tmp/spec-harness-public --repo MicTx/spec-harness --tag v0.13.9 --publish
-```
-
-The exporter excludes `.spec/`, `.maintainer/`, `.zcode/`, `.agents/`, private workflow files, and release working artifacts. `--publish` is the only mode that writes to GitHub.
-
-## Release Process
-
-### 1. Prepare
-
-1. Confirm `CHANGELOG.md` reflects the release candidate state under `## [Unreleased]`.
-2. Run the full verification suite:
-
-```bash
-python3 -m pip install -e '.[dev]'
-python3 -m compileall -q scripts server hooks slots tests book
-bash -n server/install.sh
-python3 scripts/smoke_test_spec_skill.py
-python3 scripts/slot_registry.py validate
-python3 -m pytest -q
-ruff check scripts/ server/ hooks/ slots/ tests/ book/
-ruff format --check scripts/ server/ hooks/ slots/ tests/ book/
-```
-
-### 2. Version Bump
-
-1. Update `version` in `pyproject.toml` to the target version (e.g. `0.3.0`).
-2. Fold `## [Unreleased]` entries in `CHANGELOG.md` into a versioned section `## [0.3.0] - YYYY-MM-DD`.
-3. Commit:
-
-```bash
-git add pyproject.toml CHANGELOG.md
-git commit -m "chore(release): bump version to 0.3.0"
-```
-
-### 3. Tag and Push
-
-```bash
-git tag v0.3.0
-git push origin main --tags
-```
-
-Pushing the `v*` tag triggers the GitHub Actions release workflow (`.github/workflows/release.yml`), which:
-
-1. Runs the full test suite.
-2. Builds artifacts via `scripts/build_release.py` (with `--expect-version` to verify tag/version match).
-3. Verifies checksums.
-4. Creates a GitHub Release with all artifacts attached and changelog notes.
-
-### 4. Verify
-
-- Check the GitHub Release page for the new release.
-- Download artifacts and verify: `sha256sum -c SHA256SUMS`.
-- Compare the tracked `release/` payload to a fresh `build_release.py` output at content level (unpacked, member by member; `tests/test_release_payload.py` enforces this). `BUILD_INFO` is the single byte-comparison exemption and is validated semantically instead: `runtime_sha256` must match across both sides (the freshness anchor over all payload content), while `git_sha`/`build_time` anchor the build to the real commit it was stamped from and intentionally lag HEAD — they are a build-point provenance record, not a payload-freshness claim.
-- Test installation from the archive in a clean environment.
-- Confirm the archive-root `install.sh` is executable in the Unix artifact; `server/install.sh` is the optional self-hosted deployment script and is run explicitly with `bash server/install.sh`.
-- Verify the exported runtime package still includes all required files (see checklist below).
-- Run a spot `/spec:check` against a completed task package and confirm the output sections match `references/output-contracts.md`.
-
-### Exported Runtime Package Checklist
-
-- `SKILL.md`
-- root `install.sh`
-- `agents/openai.yaml`
-- `references/`
-- `scripts/init_spec_package.py`
-- `scripts/route_spec_package.py`
-- `scripts/report_spec_package.py`
-- `scripts/check_spec_package.py`
-- `scripts/complete_spec_package.py`
-- `scripts/push_spec_package.py`
-- `scripts/smoke_test_spec_skill.py`
-- `scripts/issue_closure_support.py`
-- `scripts/spec_package_support.py`
-- `server/server.py`
-- `server/install.sh`
-- `server/README.md`
-- `VERSION` (build stamp)
-- `BUILD_INFO` (build stamp)
-
-## Breaking Change Policy
-
-Treat the following as release-note-worthy even before `v1.0.0`:
-
-- Renaming `spec:*` aliases
-- Changing slash-command mappings
-- Changing required task-package files
-- Changing exported runtime layout
-- Adding a new mandatory runtime dependency
+For installation or upgrade problems, open a [support issue](https://github.com/MicTx/spec-harness/issues/new/choose) with the version, operating system, installation method, and the shortest useful error output. Report security issues through [SECURITY.md](SECURITY.md).

@@ -54,6 +54,9 @@ Spec Harness 是一个适用于 Codex、Claude Code、Gemini CLI、Grok Build、
 │   ├── src/                         # 书稿章节与附录
 │   ├── examples/                    # 教学示例程序
 │   └── tests/                       # 构建验证测试
+├── docs/                            # 面向用户与贡献者的公开文档
+│   ├── git-workflow.md
+│   └── git-workflow.en.md
 ├── hooks/
 │   ├── pre-commit
 │   ├── pre-push
@@ -112,11 +115,10 @@ Spec Harness 是一个适用于 Codex、Claude Code、Gemini CLI、Grok Build、
 ├── tests/                           # 源码库独有：pytest 测试套件（含 fixtures/kiro）
 ├── release/                         # 源码库独有：跟踪的发布产物（spec-harness-{version} 四件，与 canonical 构建逐字节一致）
 ├── .github/                         # 源码库独有：CI 与 Issue 模板
-├── .maintainer/                     # 源码库独有：维护者笔记
-└── .spec/                           # 本仓库自举状态（specs/、docs/、architecture/）
+└── .github/                         # GitHub Issue/PR 模板
 ```
 
-`.maintainer/Agent.md` 和 `.spec/` 是此源码仓库的维护历史、自举任务记录、知识沉淀和架构记录；运行时任务包默认创建在目标项目的 `.spec/` 下。维护历史有助于解释该 Skill 的演进过程，但在导出的运行时 Skill 包中并非必须。源码仓库还包含根级文档 `README.md`、`README-en.md`、`CHANGELOG.md`、`CONTRIBUTING.md`、`RELEASE.md`、`SECURITY.md`、`CODE_OF_CONDUCT.md`、`LICENSE` 与 `.pre-commit-config.yaml`，这些文件同样不包含在导出的运行时 Skill 包中。
+运行时任务包默认创建在目标项目的 `.spec/` 下；公共仓库不包含维护记录和用户项目状态。根级 `CONTRIBUTING.md`、`RELEASE.md`、`SECURITY.md`、`SUPPORT.md` 与 `docs/` 提供贡献、版本、安全和 Git 使用说明。
 
 - **任务包是状态真源**：`.spec/specs/<slug>/tasks.md` 是任务合同真源；勾选状态、验收证据与完成总结都随包保存。每个 Development Record 独占一个 integration branch；默认路由与 Stop guard 按"显式 `--slug` > `spec.md` 记录的当前分支 > 旧包 `spec/<slug>` 惯例 > 非 Git 唯一包"选择且最多一个包，歧义时 fail closed。
 
@@ -144,8 +146,8 @@ bash install.sh
 
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness-src
-cd /tmp/spec-src
-git checkout 0123456789abcdef0123456789abcdef01234567
+cd /tmp/spec-harness-src
+git checkout v0.13.10
 bash install.sh
 ```
 
@@ -403,7 +405,7 @@ python3 scripts/complete_spec_package.py --root /path/to/project --slug 2026-06-
 python3 scripts/push_spec_package.py --root /path/to/project --branch spec/2026-06-12_payment-recovery
 ```
 
-安全预检、dirty-tree / retro-pack 和未归档阻断以 `push_spec_package.py` 为准。远端 hooks 损坏时停止删分支；自托管 Gitea 可用 `--repair-gitea-hooks --gitea-url <base-url> --gitea-token <admin-token>`（或 env `SPEC_GITEA_URL` / `SPEC_GITEA_TOKEN`）按官方 FAQ 跑修复任务并自动重试一次。禁止 `--no-verify`。
+安全预检、dirty-tree / retro-pack 和未归档阻断以 `push_spec_package.py` 为准。远端检查失败时保留工作分支并先修复原因；禁止使用 `--no-verify` 绕过门禁。
 
 任务包辅助脚本接受 `--root`（项目根目录，默认 `.`）和 `--specs-dir`（root 下用于规范存储的可信相对目录，默认 `.spec`；拒绝空值、绝对路径、`..` 穿越以及 `.git/.claude/node_modules/build/dist/vendor` 等门禁排除目录，且真实解析后的路径必须仍在 root 下）。`--allow-incomplete` 只能生成未完成摘要草稿，不能与 `--archive` 组合。
 
@@ -417,7 +419,7 @@ python3 scripts/push_spec_package.py --root /path/to/project --branch spec/2026-
 python3 scripts/export_skill_package.py --output /tmp/spec --force
 ```
 
-导出的内容包含 `SKILL.md`、根 `install.sh`、`pyproject.toml`、`agents/`、`hooks/`、`references/`、`server/`、`slots/` 及运行时辅助脚本（排除七个源码库独有工具）。不包含维护历史记录，如 `.spec/`、`.maintainer/` 或目标项目的 `.agents/runtime/`；也不包含仅用于源码仓库的七个脚本：`scripts/export_skill_package.py`、`scripts/export_public_repo.py`、`scripts/build_release.py`、`scripts/package_agent_plugin.py`、`scripts/skill_watermark.py`、`scripts/import_kiro_specs.py`、`scripts/migrate_task_ids.py`。运行时安装入口统一为包根目录的 `install.sh`（本地 skill 安装）；`server/` 则是第二种形态——server-mode，把任务包初始化和状态投影暴露为 `start`/`result`/`health` 三个 HTTP 接口，服务端仍负责后续 `run`/`check`/`done`，详见 [`server/README.md`](server/README.md)。两种形态共用同一套 `scripts` 与 `references`。
+导出的内容包含 `SKILL.md`、根 `install.sh`、`pyproject.toml`、`agents/`、`hooks/`、`references/`、`server/`、`slots/` 及运行时辅助脚本，并排除只用于源码维护的打包工具。运行时安装入口统一为包根目录的 `install.sh`（本地 skill 安装）；`server/` 则是第二种形态——server-mode，把任务包初始化和状态投影暴露为 `start`/`result`/`health` 三个 HTTP 接口，服务端仍负责后续 `run`/`check`/`done`，详见 [`server/README.md`](server/README.md)。两种形态共用同一套 `scripts` 与 `references`。
 
 导出的运行时包必须包含 `issue_closure_support.py` 与 `spec_package_support.py`；否则 completion/server/Git closeout 或 init/route/report/check 将无法共享机器闭环语义。
 
@@ -456,46 +458,11 @@ ruff format --check scripts/ server/ hooks/ tests/
 
 要手工检查行为，可用 `init_spec_package.py` 创建一个临时任务包，然后对其运行 route、report、check 和 complete 脚本。新生成的包在完成任务与 checklist 前无法通过单包门禁；push 验证目标 revision 中的 archive/commit 归属，未归档活跃包默认硬失败，显式 `--allow-unarchived` 时才 advisory；损坏包、缺失显式 slug、无效 v1 closeout 与无归属 commit 始终拦截。`--allow-incomplete --force` 仅用于生成摘要草稿，不能归档。
 
-## 版本发布
+## 获取版本
 
-私有开发仓库与 GitHub 公共源分开维护。发布公共源前运行 `scripts/export_public_repo.py`；默认只生成经过过滤和敏感信息扫描的临时树，传入 `--publish` 才创建或同步 `MicTx/spec-harness`。
+稳定版本和校验文件位于 [GitHub Releases](https://github.com/MicTx/spec-harness/releases)。安装、升级、回滚和 SHA-256 校验步骤见 [RELEASE.md](RELEASE.md)。
 
-本项目使用 Semantic Versioning 和自动化标签触发发布。
-
-- Patch（修订）版本用于文档修复、元数据对齐、验证改进及非破坏性的脚本修复。
-- Minor（次要）版本用于向后兼容的工作流或辅助脚本的添加。
-- 未来的 Major（主要）版本将用于命令别名、任务包结构、导出的运行时布局或行为契约的破坏性变更。
-
-### 构建发布产物
-
-```bash
-# 完整构建（含预检查：py_compile、smoke、pytest、ruff check、ruff format --check）
-python3 scripts/build_release.py  # 默认输出到源码根目录外的 ../spec-harness-dist/
-
-# 跳过预检查快速重建
-python3 scripts/build_release.py --skip-checks
-
-# 校验特定版本（CI release 工作流使用）
-python3 scripts/build_release.py --expect-version 0.3.0
-```
-
-默认产出在源码根目录外的 `../spec-harness-dist/`；也可用 `--output /tmp/my-dist` 指定目录：
-
-- `spec-harness-{version}.tar.gz` — Unix 完整运行时包（保留权限）
-- `spec-harness-{version}.zip` — Windows 完整运行时包
-- `SHA256SUMS` — release archive SHA-256 checksums (the checksum file and release notes are excluded)
-- `RELEASE_NOTES.md` — 对应版本的 Changelog 摘录
-
-每个压缩包含 `VERSION`（版本号）和 `BUILD_INFO`（版本、Git SHA、canonical `runtime_sha256`、以最后一次提交时间派生的确定性构建时间戳）文件。构建是确定性的：同一源状态产出逐字节一致的归档，`release/` 目录跟踪的产物由 `tests/test_release_payload.py` 锁定与 canonical 构建一致。
-
-### 发布流程
-
-1. 更新 `pyproject.toml` 版本号。
-2. 在 `CHANGELOG.md` 中将 `## [Unreleased]` 条目折叠为版本化章节。
-3. 提交并打标签：`git tag v0.3.0 && git push origin main --tags`。
-4. 推送 `v*` 标签自动触发 GitHub Actions release 工作流（`.github/workflows/release.yml`），构建产物并创建 GitHub Release。
-
-维护者的发布检查清单请参阅 [RELEASE.md](RELEASE.md)。
+需要参与开发时，请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 和 [Git 工作流](docs/git-workflow.md)；安全问题请按 [SECURITY.md](SECURITY.md) 报告。
 
 ## 适用范围
 
@@ -503,9 +470,9 @@ python3 scripts/build_release.py --expect-version 0.3.0
 
 本项目不提供 PR 创建、远程 CI 集成或包注册表发布；`spec:push` 仅提供本地 Git 合并/推送/删分支收尾，并保留强安全预检。`server/` 是可选的 self-hosted HTTP 接入层：`/start` 与 `/result` 需要 `SPEC_SERVER_TOKEN` Bearer 认证（`/health` 保持匿名供探活），未设 token 且监听非 loopback 地址时适配器拒绝启动，子进程并发受 `MAX_CONCURRENT_WORK` 上限约束（超限返回 429）；公网部署必须配置 `ALLOWED_ROOTS`，并建议由受信反向代理提供 TLS。
 
-## 开源协议
+## 许可协议
 
-不许商用。请参阅 [LICENSE](LICENSE)。
+本项目采用非商用源码许可，禁止销售和商业使用；它不等同于 OSI 定义的开放源代码许可。完整条款请参阅 [LICENSE](LICENSE)。
 
 ### 稳定身份与验证
 

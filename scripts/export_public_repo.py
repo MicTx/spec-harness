@@ -29,10 +29,29 @@ PUBLIC_ROOT_FILES = (
     "RELEASE.md",
     "SECURITY.md",
     "SKILL.md",
+    "SUPPORT.md",
     "install.sh",
     "pyproject.toml",
 )
-PUBLIC_DIRS = ("agent-plugin", "agents", "book", "hooks", "references", "scripts", "server", "slots", "tests")
+PUBLIC_DIRS = (
+    "agent-plugin",
+    "agents",
+    "book",
+    "docs",
+    "hooks",
+    "references",
+    "scripts",
+    "server",
+    "slots",
+    "tests",
+)
+PUBLIC_GITHUB_FILES = (
+    ".github/ISSUE_TEMPLATE/bug_report.md",
+    ".github/ISSUE_TEMPLATE/config.yml",
+    ".github/ISSUE_TEMPLATE/feature_request.md",
+    ".github/CODEOWNERS",
+    ".github/PULL_REQUEST_TEMPLATE.md",
+)
 PRIVATE_PATH_PARTS = {".agents", ".maintainer", ".spec", ".zcode", "release", ".github"}
 PRIVATE_TEXT_PATTERNS = (
     re.compile(r"git\.mxk\.dev", re.IGNORECASE),
@@ -66,6 +85,11 @@ def _safe_files(source: Path) -> list[tuple[Path, str]]:
             if path.is_symlink() or not path.is_file():
                 raise PublicExportError(f"public tree contains unsafe entry: {path}")
             files.append((path, path.relative_to(source).as_posix()))
+    for relative in PUBLIC_GITHUB_FILES:
+        path = source / relative
+        if not path.is_file() or path.is_symlink():
+            raise PublicExportError(f"required public file missing or symlinked: {relative}")
+        files.append((path, relative))
     return sorted(files, key=lambda pair: pair[1])
 
 

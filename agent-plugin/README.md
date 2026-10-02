@@ -3,8 +3,7 @@
 本目录是 `scripts/package_agent_plugin.py` 的打包模板：脚本读取这里的清单模板，
 渲染占位符、校验字段合法性，再组装本仓运行时 skill 载荷并产出可分发的插件 zip。
 
-格式依据（一手核实，2026-09-02，见
-`.spec/docs/2026-09-02_add-open-task-package-standard_agent-plugins-spike.md`）：
+格式依据 Agent Plugins 1.0 与 Claude Code plugin manifest 规范：
 
 | 模板文件 | 目标格式 | 产物清单位置 |
 |---|---|---|
@@ -19,7 +18,7 @@
 | `{{VERSION}}` | 插件版本 | 仓库 `pyproject.toml` 的 `version` |
 | `{{DESCRIPTION}}` | 简短描述 | `pyproject.toml` 的 `description` |
 | `{{DISPLAY_NAME}}` | 人类可读名（仅 Claude Code 格式） | 常量 `Spec Harness` |
-| `{{HOMEPAGE}}` / `{{REPOSITORY}}` | 主页 / 源码仓库 URL | 默认为空；为空时该字段从清单中剔除（两种 schema 下均可选） |
+| `{{HOMEPAGE}}` / `{{REPOSITORY}}` | 主页 / 源码仓库 URL | 默认为 `https://github.com/MicTx/spec-harness`；显式传空值时该字段从清单中剔除 |
 | `{{LICENSE}}` | SPDX 标识 | 常量 `LicenseRef-Spec-NonCommercial` |
 | `{{KEYWORDS}}` | 检索标签（JSON 数组字面量） | 常量 `["spec", "task-package", "workflow", "agent-skills"]` |
 

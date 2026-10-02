@@ -15,4 +15,4 @@ Participants should keep discussions professional, specific, and respectful. Tec
 
 Maintainers may remove comments, close issues, or restrict participation when behavior makes collaboration unsafe or unproductive.
 
-Reports can be made through the repository's private reporting path when available, or by opening a minimal issue asking for maintainer contact.
+Report conduct concerns through the [support issue form](https://github.com/MicTx/spec-harness/issues/new/choose) without publishing private information. Use [private vulnerability reporting](https://github.com/MicTx/spec-harness/security/advisories/new) for security concerns.

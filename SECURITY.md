@@ -2,21 +2,26 @@
 
 ## Supported Versions
 
-This repository currently maintains the `main` branch.
+Security fixes target the latest release and the main branch. Older releases may not receive backported fixes.
 
-## Reporting A Vulnerability
+## Report a Vulnerability
 
-Please report security issues through GitHub private vulnerability reporting if it is enabled for the repository. If it is not enabled, open a minimal public issue that avoids exploit details and ask for a private contact path.
+Use [GitHub private vulnerability reporting](https://github.com/MicTx/spec-harness/security/advisories/new) when it is available. If the form is unavailable, open a minimal public issue titled Security contact requested without exploit details; a maintainer will provide a private channel.
 
 Include:
 
-- Affected file or script.
-- Reproduction steps.
-- Expected impact.
-- Any relevant environment details.
+- The affected version or commit.
+- The affected file, command, or server endpoint.
+- Reproduction steps that do not expose credentials or personal data.
+- Expected and observed behavior.
+- Impact assessment and any suggested mitigation.
 
-## Security Scope
+Do not include secrets, private keys, access tokens, personal data, or a weaponized proof of concept in a public issue.
 
-The helper scripts primarily operate on local task-package files under a project root. The optional `server/` adapter runs a standard-library HTTP service that initializes and projects task-package state; it is not a hosted service and has no built-in authentication. The server defaults to loopback, requires an explicit `ALLOWED_ROOTS` policy for production, resolves real paths to prevent symlink escape, and should be placed behind a trusted TLS/authentication proxy before network exposure. The installer can clone a pinned HTTPS repository when `REPO_URL` and full `REPO_REF` are provided, and `push_spec_package.py` can perform local Git merge/push/branch-deletion operations after its safety prechecks pass. Runtime helper scripts do not require third-party Python dependencies.
+## Scope
 
-Security-relevant changes include server request parsing and response handling, `ALLOWED_ROOTS` real-path boundary validation and symlink handling, CORS/authentication/TLS deployment choices, path handling, `--specs-dir` root-boundary validation including symlink-resolved paths, archive behavior, file writes, installer replacement and backup rules, generated Claude Code slash-command files under `~/.claude/commands`, generated instructions that affect Git operations, explicit `spec:push` execution paths, `/spec:check` gates that authorize done/archive/commit/push flows, and workflow text that could cause an agent to touch files outside the intended project scope.
+Spec Harness runs helper scripts against task-package files under a project root. The optional server/ adapter is a self-hosted HTTP service; it defaults to loopback and must be protected by an authentication and TLS boundary before network exposure. Security reports are especially useful for path traversal, symlink escapes, unsafe archive handling, process isolation, installer replacement, secret disclosure, and authorization bypasses in the server adapter.
+
+## Disclosure
+
+Maintainers will acknowledge a valid report, reproduce it, coordinate a fix, and publish a release note when disclosure is appropriate. Please allow time for a fix before sharing details publicly.

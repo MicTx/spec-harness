@@ -54,6 +54,9 @@ The repository is the source package for Spec Harness; `spec` remains the compat
 │   ├── src/                         # chapters and appendices
 │   ├── examples/                    # teaching example programs
 │   └── tests/                       # build-verification tests
+├── docs/                            # public user and contributor guides
+│   ├── git-workflow.md
+│   └── git-workflow.en.md
 ├── hooks/
 │   ├── pre-commit
 │   ├── pre-push
@@ -112,11 +115,10 @@ The repository is the source package for Spec Harness; `spec` remains the compat
 ├── tests/                           # source-only: pytest suite (incl. fixtures/kiro)
 ├── release/                         # source-only: tracked release artifacts (spec-harness-{version} set, byte-identical to the canonical build)
 ├── .github/                         # source-only: CI and issue templates
-├── .maintainer/                      # source-only: maintainer notes
-└── .spec/                            # self-hosted state (specs/, docs/, architecture/)
+└── .github/                         # GitHub issue and pull-request templates
 ```
 
-`.maintainer/Agent.md` and `.spec/` are maintainer history, self-hosted task-package records, knowledge documents, and architecture records for this source repository; runtime task packages default to `.spec/` in target projects. The maintainer history can help explain how the skill evolved, but it is not required in the exported runtime skill package. The source repository also carries the root-level documents `README.md`, `README-en.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `RELEASE.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `LICENSE`, and `.pre-commit-config.yaml`; these files are likewise excluded from the exported runtime skill package.
+Runtime task packages default to `.spec/` in target projects; the public repository does not include maintainer records or user-project state. `CONTRIBUTING.md`, `RELEASE.md`, `SECURITY.md`, `SUPPORT.md`, and `docs/` contain the public contribution, release, security, and Git guides.
 
 - **The task package is the state truth.** `.spec/specs/<slug>/tasks.md` is the task-contract source; checkbox state, acceptance evidence, and completion summaries stay with the package. Each Development Record owns one integration branch; the default router and Stop guard select at most one package by explicit `--slug`, the branch recorded in `spec.md`, the legacy `spec/<slug>` convention, or a sole package outside Git. Ambiguous bindings fail closed.
 
@@ -144,8 +146,8 @@ For remote install or update, prefer cloning the repository, checking out a full
 
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness-src
-cd /tmp/spec-src
-git checkout 0123456789abcdef0123456789abcdef01234567
+cd /tmp/spec-harness-src
+git checkout v0.13.10
 bash install.sh
 ```
 
@@ -402,7 +404,7 @@ python3 scripts/complete_spec_package.py --root /path/to/project --slug 2026-06-
 python3 scripts/push_spec_package.py --root /path/to/project --branch spec/2026-06-12_payment-recovery
 ```
 
-Safety prechecks, dirty-tree / retro-pack handling, and unarchived blocking come from `push_spec_package.py`. Stop before deleting the working branch if remote hooks are broken; on a self-hosted Gitea you administer, `--repair-gitea-hooks --gitea-url <base-url> --gitea-token <admin-token>` (or env `SPEC_GITEA_URL` / `SPEC_GITEA_TOKEN`) runs the official FAQ maintenance tasks and retries the plan once. `--no-verify` is prohibited.
+Safety prechecks, dirty-tree / retro-pack handling, and unarchived blocking come from `push_spec_package.py`. Keep the working branch when a remote check fails and fix the cause before retrying; do not bypass the gates with `--no-verify`.
 
 Task-package helpers accept `--root` and `--specs-dir`. Spec roots must be trusted relative paths under root; empty values, absolute paths, `..` traversal, and gate-excluded runtime directories such as `.git`, `.claude`, `node_modules`, `build`, `dist`, and `vendor` are rejected. `--allow-incomplete` may generate a draft summary but cannot be combined with `--archive`.
 
@@ -416,7 +418,7 @@ To export only the runtime skill files:
 python3 scripts/export_skill_package.py --output /tmp/spec --force
 ```
 
-The export includes `SKILL.md`, root `install.sh`, `pyproject.toml`, `agents/`, `hooks/`, `references/`, `server/`, `slots/`, and runtime helper scripts (excluding the seven source-only tools). The optional server-mode adapter exposes `start`, `result`, and `health` for a self-hosted async workflow platform; it initializes and projects task-package state but does not replace `run`, `check`, or `done`. It excludes maintainer history such as `.spec/` and `.maintainer/`, target-project execution state such as `.agents/runtime/`, and the seven source-repository-only scripts `scripts/export_skill_package.py`, `scripts/export_public_repo.py`, `scripts/build_release.py`, `scripts/package_agent_plugin.py`, `scripts/skill_watermark.py`, `scripts/import_kiro_specs.py`, and `scripts/migrate_task_ids.py`. Local skill installation starts from the package-root `install.sh`; server deployment starts from `server/install.sh`.
+The export includes `SKILL.md`, root `install.sh`, `pyproject.toml`, `agents/`, `hooks/`, `references/`, `server/`, `slots/`, and runtime helper scripts while leaving source-maintenance packagers out of the runtime payload. The optional server-mode adapter exposes `start`, `result`, and `health` for a self-hosted async workflow platform; it initializes and projects task-package state but does not replace `run`, `check`, or `done`. Local skill installation starts from the package-root `install.sh`; server deployment starts from `server/install.sh`.
 
 The exported runtime package must include `issue_closure_support.py` and `spec_package_support.py`; otherwise completion, server/Git closeout, or init/route/report/check cannot share the machine closure contract.
 
@@ -450,46 +452,11 @@ ruff format --check scripts/ server/ hooks/ tests/
 
 For manual behavior checks, create a temporary task package with `init_spec_package.py`, then run route, report, check, and complete. A fresh package cannot pass the single-package gate until tasks and checklist are complete; active-but-unarchived packages hard-block push by default, and only explicit `--allow-unarchived` downgrades that one condition. Broken active/archive records, missing explicit slugs, invalid v1 issue closure, and unattributed commits always block.
 
-## Versioning And Releases
+## Versions And Releases
 
-The private development repository and the public GitHub source are maintained separately. Run `scripts/export_public_repo.py` to build a filtered tree; only `--publish` creates or syncs `MicTx/spec-harness`.
+Stable versions and checksums are published on [GitHub Releases](https://github.com/MicTx/spec-harness/releases). See [RELEASE.md](RELEASE.md) for installation, upgrade, rollback, and SHA-256 verification instructions.
 
-This project uses Semantic Versioning and automated tag-triggered releases.
-
-- Patch releases are for documentation fixes, metadata alignment, verification improvements, and non-breaking script fixes.
-- Minor releases are for backward-compatible workflow or helper-script additions.
-- A future major release should be used for breaking changes to command aliases, task-package structure, exported runtime layout, or behavior contracts.
-
-### Building Release Artifacts
-
-```bash
-# Full build with pre-build checks (py_compile, smoke, pytest, ruff check, ruff format --check)
-python3 scripts/build_release.py  # default output is ../spec-harness-dist/ outside the source tree
-
-# Skip checks for a fast rebuild
-python3 scripts/build_release.py --skip-checks
-
-# Verify a specific version (used by CI release workflow)
-python3 scripts/build_release.py --expect-version 0.3.0
-```
-
-By default, artifacts are written to `../spec-harness-dist/` outside the source tree; use `--output /tmp/my-dist` to choose another directory:
-
-- `spec-harness-{version}.tar.gz` — full runtime package for Unix (preserves permissions)
-- `spec-harness-{version}.zip` — full runtime package for Windows
-- `SHA256SUMS` — SHA-256 checksums for release archives (the checksum file and release notes are excluded)
-- `RELEASE_NOTES.md` — changelog excerpt for the matching version
-
-Each archive contains a `VERSION` file and `BUILD_INFO` file (version, Git SHA, canonical `runtime_sha256`, and a deterministic build timestamp derived from the last commit).
-
-### Release Process
-
-1. Update `version` in `pyproject.toml`.
-2. Fold `## [Unreleased]` entries in `CHANGELOG.md` into a versioned section.
-3. Commit and tag: `git tag v0.3.0 && git push origin main --tags`.
-4. Pushing the `v*` tag triggers the GitHub Actions release workflow (`.github/workflows/release.yml`), which builds artifacts and creates a GitHub Release.
-
-See [RELEASE.md](RELEASE.md) for the full maintainer release checklist.
+For contributions, read [CONTRIBUTING.md](CONTRIBUTING.md) and the [Git workflow guide](docs/git-workflow.en.md). Report security issues through [SECURITY.md](SECURITY.md).
 
 ## Scope
 
@@ -497,7 +464,7 @@ This project provides workflow instructions, templates, verification scripts, an
 
 ## License
 
-Non-commercial only. See [LICENSE](LICENSE).
+This project uses a source-available, non-commercial license. Commercial use and sale are not permitted. See [LICENSE](LICENSE) for the complete terms.
 
 ### Stable identity and verification
 
