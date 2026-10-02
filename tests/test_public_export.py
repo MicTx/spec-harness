@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -43,3 +44,16 @@ def test_public_export_rejects_source_symlink(tmp_path: Path):
     linked.symlink_to(outside)
     with pytest.raises(PublicExportError, match="unsafe entry"):
         build_public_tree(source, tmp_path / "public")
+
+
+def test_public_publish_does_not_create_on_github_lookup_failure(monkeypatch, tmp_path: Path):
+    import export_public_repo
+
+    monkeypatch.setattr(export_public_repo.shutil, "which", lambda _: "/bin/gh")
+
+    def failed_view(*args, **kwargs):
+        return subprocess.CompletedProcess(args=args, returncode=1, stdout="", stderr="TLS handshake timeout")
+
+    monkeypatch.setattr(export_public_repo.subprocess, "run", failed_view)
+    with pytest.raises(PublicExportError, match="lookup failed"):
+        export_public_repo.publish_public_tree(tmp_path, "MicTx/spec-harness", "v0.13.9")

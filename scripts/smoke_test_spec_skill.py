@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -576,7 +577,12 @@ def main() -> int:
         export_script = SCRIPTS_DIR / "export_skill_package.py"
         if export_script.exists():
             export_root = temp_root / "exported-skill"
-            run(str(export_script), "--output", str(export_root), "--force")
+            export_args = [str(export_script), "--output", str(export_root), "--force"]
+            identity = Path(os.environ.get("SPEC_SIGNING_IDENTITY", REPO_ROOT / ".watermark-identity.json"))
+            key = Path(os.environ.get("SPEC_SIGNING_KEY", REPO_ROOT / ".watermark-key"))
+            if not (identity.is_file() and key.is_file()):
+                export_args.append("--skip-signing")
+            run(*export_args)
             assert_runtime_layout(export_root)
             assert_doctor_self_check(export_root)
             exported_target_root = Path(tempfile.mkdtemp(prefix="spec-export-target-"))

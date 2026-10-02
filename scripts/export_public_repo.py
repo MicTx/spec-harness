@@ -119,7 +119,14 @@ def publish_public_tree(output: Path, repo: str, tag: str | None) -> None:
         raise PublicExportError("gh CLI is required for --publish")
     with tempfile.TemporaryDirectory(prefix="spec-harness-public-git-") as temp:
         work = Path(temp) / "repo"
-        view = subprocess.run([gh, "repo", "view", repo, "--json", "name"], capture_output=True, text=True)
+        try:
+            view = subprocess.run(
+                [gh, "repo", "view", repo, "--json", "name"], capture_output=True, text=True, timeout=60
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise PublicExportError("GitHub repository lookup timed out") from exc
+        if view.returncode != 0 and "not found" not in (view.stderr or "").lower():
+            raise PublicExportError(f"GitHub repository lookup failed: {(view.stderr or view.stdout).strip()}")
         if view.returncode == 0:
             _run(["git", "clone", f"https://github.com/{repo}.git", str(work)], Path(temp))
         else:
