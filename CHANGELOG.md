@@ -4,6 +4,10 @@ All notable user-facing changes to Spec Harness are recorded here. Internal deve
 
 ## [Unreleased]
 
+### Added
+
+- Added a reader introduction and a hands-on long-running task tutorial for AI learners, programmers, Agent developers, and long-running task developers.
+
 ## [0.13.10] - 2026-10-03
 
 ### Added

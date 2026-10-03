@@ -13,6 +13,8 @@ PUBLIC_DOCS = (
     "SECURITY.md",
     "SUPPORT.md",
     "docs/README.md",
+    "docs/introduction.md",
+    "docs/tutorial.md",
     "docs/git-workflow.md",
     "docs/git-workflow.en.md",
 )
