@@ -7,6 +7,8 @@
 
 Spec Harness 是一个适用于 Codex、Claude Code、Gemini CLI、Grok Build、OpenCode、OpenClaw、Hermes、Pi 及其他支持 Skill 的 CLI 的工作流 Skill，专为规范驱动开发（specification-driven development）设计。它可以帮助 AI 编程智能体在开始实现代码之前，将复杂的工作转化为可追踪的任务包，从而保持范围、任务、验证、归档输出和 Git 提交的一致性。
 
+阅读路线：[项目介绍](docs/introduction.md) · [长程任务教程](docs/tutorial.md) · [Git 工作流](docs/git-workflow.md)
+
 该仓库是 Spec Harness 的源码包；`spec` 保留为兼容 Skill/CLI 调用名。它包含 Skill 的入口文件、参考文档、OpenAI 智能体元数据、标准库 Python 辅助脚本以及可选的 self-hosted server-mode 适配器；它不运营托管服务或包管理器插件。
 
 > **范围与其他 `spec` Skill 的对比**：本 Skill 是一个**任务包工作流管理器**——它负责创建并追踪 `.spec/specs/YYYY-MM-DD_slug/{spec,tasks,checklist}.md` Development Record，并通过 `scripts/` 暴露内部 route/status/tasks/check/done/push 等脚本视图。它**不**充当“分发给其他专业 Skill 的中央路由器”。如果您也使用基于 `/spec` 路由的变体（例如位于 `~/.claude/skills/spec` 下的某些个人 ECC 配置），请确保您清楚当前宿主加载的是哪一个；它们名称相同但职责不同，不应混用。Slug 命名遵循 `[a-z0-9_-]+` 规则（参见 `scripts/spec_package_support.validate_slug`）；允许使用下划线，但不允许连续的连字符/下划线以及开头/结尾的分隔符；Development Record 标准额外要求使用 `YYYY-MM-DD_<verb>-<object>`（verb 取受控动词，详见 `references/naming-and-commits.md`）。
