@@ -11,7 +11,7 @@ SCRIPTS = ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from export_public_repo import PUBLIC_ROOT_FILES
+from export_public_repo import PUBLIC_ROOT_FILES  # noqa: E402  # intentional path setup
 
 PUBLIC_DOCS = (
     "CHANGELOG.md",

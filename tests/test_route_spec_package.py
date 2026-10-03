@@ -148,7 +148,9 @@ def test_completed_task_projection_agrees_across_route_and_report(tmp_path, asci
 
 def test_route_and_status_expose_declared_verification_scope(tmp_path):
     slug = "2026-10-03_fix-route-scope"
-    scoped_spec = COMPLETE_SPEC + """
+    scoped_spec = (
+        COMPLETE_SPEC
+        + """
 ### 5.1 验证策略
 - 范围级别：package
 - 变更对象：changed module
@@ -157,6 +159,7 @@ def test_route_and_status_expose_declared_verification_scope(tmp_path):
 - 全项目检查：适用外：发布门禁
 - 升级触发：共享基础设施或跨模块契约变化
 """
+    )
     scoped_checklist = COMPLETE_CHECKLIST.replace(
         "## 验收证据\n",
         "## 验收证据\n- 验证范围：package；实际执行命令必须属于该范围\n",

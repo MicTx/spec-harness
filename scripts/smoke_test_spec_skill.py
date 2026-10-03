@@ -55,7 +55,9 @@ def mark_checklist_passed(path: Path) -> None:
     content = content.replace("- [ ]", "- [x]")
     content = content.replace("**验收结果**：待修复", "**验收结果**：通过")
     replacements = {
-        "- 验证范围：<package|integration|project>；实际执行命令必须属于该范围": "- 验证范围：package；实际执行命令必须属于该范围",
+        (
+            "- 验证范围：<package|integration|project>；实际执行命令必须属于该范围"
+        ): "- 验证范围：package；实际执行命令必须属于该范围",
         "- 脚本验证：": "- 脚本验证：smoke script assertions passed",
         "- 旧新对比：": "- 旧新对比：fresh package now routes to status instead of run",
         "- 差异边界：": "- 差异边界：scripts/ references/ README.md only",

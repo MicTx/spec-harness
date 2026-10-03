@@ -964,9 +964,7 @@ def test_verification_scope_rejects_duplicate_sections():
     [("package", "快速检查"), ("integration", "集成检查"), ("project", "集成检查"), ("project", "全项目检查")],
 )
 def test_verification_scope_requires_real_checks_for_declared_level(level, field):
-    text = _verification_scope(level).replace(
-        f"- {field}：", f"- {field}：适用外：本轮未覆盖"
-    )
+    text = _verification_scope(level).replace(f"- {field}：", f"- {field}：适用外：本轮未覆盖")
     errors = verification_scope_errors(text)
     assert any(field in error and "必须填写真实" in error for error in errors)
 
