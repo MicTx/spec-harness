@@ -66,11 +66,11 @@ Pull Request 应包含：
 
 提交前至少运行这些能回答“当前树是否可交付”的命令：
 
-    python3 -m compileall -q scripts server hooks slots tests book
+    python3 -m compileall -q scripts server hooks slots tests
     python3 scripts/smoke_test_spec_skill.py
     python3 -m pytest -q
-    ruff check scripts/ server/ hooks/ slots/ tests/ book/
-    ruff format --check scripts/ server/ hooks/ slots/ tests/ book/
+    ruff check scripts/ server/ hooks/ slots/ tests/
+    ruff format --check scripts/ server/ hooks/ slots/ tests/
     git diff --check
 
 文档改动还要检查链接和目录结构；否则文字正确也可能指向不存在的文件：

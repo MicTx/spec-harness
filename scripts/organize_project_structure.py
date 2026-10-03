@@ -461,7 +461,7 @@ def normalize_mentioned_path(doc_rel: str, raw: str, root: Optional[Path] = None
         joined = (Path(doc_rel).parent / target).as_posix()
         return collapse_repo_path(joined)
     # A bare name is relative to the document's directory, then each ancestor
-    # up to the repo root — first existing base wins. Kits, books, and slot
+    # up to the repo root — first existing base wins. Kits and slot
     # packages all reference siblings this way; repo-root-only resolution
     # produced mass false "dangling" findings. Without a root (or when no
     # base exists on disk), fall back to the repo-root join so true

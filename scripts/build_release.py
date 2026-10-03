@@ -85,7 +85,7 @@ def _run_cmd(args: list[str], cwd: Path, label: str, *, timeout: int = 600) -> s
 
 def run_prebuild_checks(root: Path) -> None:
     """Validate the tree before packaging: compile, smoke, pytest, ruff, ruff-format, export."""
-    compile_roots = ("scripts", "server", "hooks", "slots", "tests", "book")
+    compile_roots = ("scripts", "server", "hooks", "slots", "tests")
 
     print("  compileall ...", end=" ", flush=True)
     _run_cmd([PYTHON, "-m", "compileall", "-q", *compile_roots], root, "compileall")
@@ -121,7 +121,7 @@ def run_prebuild_checks(root: Path) -> None:
         print("skipped (ruff not installed)")
     else:
         _run_cmd(
-            [PYTHON, "-m", "ruff", "check", "scripts/", "server/", "hooks/", "slots/", "tests/", "book/"],
+            [PYTHON, "-m", "ruff", "check", "scripts/", "server/", "hooks/", "slots/", "tests/"],
             root,
             "ruff",
         )
@@ -143,7 +143,6 @@ def run_prebuild_checks(root: Path) -> None:
                 "hooks/",
                 "slots/",
                 "tests/",
-                "book/",
             ],
             root,
             "ruff format",

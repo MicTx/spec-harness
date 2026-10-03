@@ -236,9 +236,8 @@ def test_release_dir_holds_versioned_artifacts_matching_naming_rule():
         assert f"{PROJECT_NAME}-{version}{suffix}" in names, f"release/ must track {PROJECT_NAME}-{{version}}{suffix}"
     assert "SHA256SUMS" in names
     assert "RELEASE_NOTES.md" in names
-    # No sales-kit naming and no unversioned archives may survive here.
+    # No unversioned archives may survive here.
     for name in names:
-        assert "sales" not in name.lower(), name
         assert not (name.endswith(ARTIFACT_SUFFIXES) and version not in name), name
 
 

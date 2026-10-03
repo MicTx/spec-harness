@@ -30,4 +30,4 @@ Open these only when the task shape calls for them:
 - Slot contract: `slots.md` + `scripts/slot_registry.py validate`
 - Structure-audit facts: `scripts/organize_project_structure.py` (`--check` is the hard architecture-consistency gate)
 
-Other carriers should point here instead of copying gate lists. The book explains the ideas; `.spec/` records project state; neither replaces the runtime contracts below.
+Other carriers should point here instead of copying gate lists. The public guides explain the ideas; `.spec/` records project state; neither replaces the runtime contracts below.

@@ -64,11 +64,11 @@ Include:
 
 Run checks that can answer whether the current tree is ready to publish. The full suite is:
 
-    python3 -m compileall -q scripts server hooks slots tests book
+    python3 -m compileall -q scripts server hooks slots tests
     python3 scripts/smoke_test_spec_skill.py
     python3 -m pytest -q
-    ruff check scripts/ server/ hooks/ slots/ tests/ book/
-    ruff format --check scripts/ server/ hooks/ slots/ tests/ book/
+    ruff check scripts/ server/ hooks/ slots/ tests/
+    ruff format --check scripts/ server/ hooks/ slots/ tests/
     git diff --check
 
 For documentation changes, also check links and repository structure; correct prose is not useful when it points to a missing file:

@@ -36,7 +36,6 @@ PUBLIC_ROOT_FILES = (
 PUBLIC_DIRS = (
     "agent-plugin",
     "agents",
-    "book",
     "docs",
     "hooks",
     "references",
@@ -166,7 +165,7 @@ def publish_public_tree(output: Path, repo: str, tag: str | None) -> None:
             shutil.copytree(path, target) if path.is_dir() else shutil.copy2(path, target)
         # The allowlist has already rejected unsafe entries. Force-add the
         # filtered tree so repository-level ignore rules cannot create a
-        # manifest/clone mismatch (for example, the public book EPUB).
+        # manifest/clone mismatch caused by repository ignore rules.
         _run(["git", "add", "-A", "-f"], work)
         status = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=work)
         if status.returncode:

@@ -15,7 +15,7 @@ It does not provide a model, make product decisions, or act as a central router 
 
 Choose a path: start with the [Introduction](docs/introduction.md), follow the [long-running task tutorial](docs/tutorial.md), or use the [Git workflow](docs/git-workflow.en.md) when you are ready to land changes.
 
-The repository is the source package for Spec Harness; `spec` remains the compatible Skill/CLI invocation name. It contains the runtime entrypoint, references, standard-library Python helpers, optional server-mode and extension slots, and a training book. It is not a hosted service or package-manager plugin.
+The repository is the source package for Spec Harness; `spec` remains the compatible Skill/CLI invocation name. It contains the runtime entrypoint, references, standard-library Python helpers, optional server-mode and extension slots. It is not a hosted service or package-manager plugin.
 
 > **Scope vs. other `spec` skills**: This skill is a *task-package workflow manager* — it creates and tracks `.spec/specs/YYYY-MM-DD_slug/{spec,tasks,checklist}.md` Development Records and exposes internal route/status/tasks/check/done/push script views via `scripts/`. It does **not** act as a "central router that dispatches to other specialized skills". If you also use a `/spec`-router variant (e.g. some personal ECC configurations under `~/.claude/skills/spec`), make sure you know which one a given host has loaded; they share a name but serve different responsibilities and should not be mixed. Slug naming follows `[a-z0-9_-]+` (see `scripts/spec_package_support.validate_slug`); underscores are allowed but consecutive hyphens/underscores and leading/trailing separators are not. The Development Record standard additionally uses `YYYY-MM-DD_<verb>-<object>` (verb from a controlled vocabulary, see `references/naming-and-commits.md`).
 
@@ -54,14 +54,6 @@ The repository is the source package for Spec Harness; `spec` remains the compat
 │   ├── planner.md
 │   ├── reviewer.md
 │   └── confirmer.md
-├── book/                            # source-only: training ebook (supersedes the old HTML decks)
-│   ├── README.md
-│   ├── verify_ebook.py
-│   ├── metadata.yaml
-│   ├── epub.css
-│   ├── src/                         # chapters and appendices
-│   ├── examples/                    # teaching example programs
-│   └── tests/                       # build-verification tests
 ├── docs/                            # public user and contributor guides
 │   ├── git-workflow.md
 │   └── git-workflow.en.md
@@ -302,7 +294,7 @@ spec/
             └── test_workflow_route.py
 ```
 
-Exported contents are governed by the machine rule in `scripts/export_skill_package.py`: the root files `SKILL.md`, `install.sh`, and `pyproject.toml`; the whole directories `agents/`, `hooks/`, `references/`, `server/`, and `slots/`; and every source-repo script except the seven source-only tools (`export_skill_package.py`, `export_public_repo.py`, `build_release.py`, `package_agent_plugin.py`, `skill_watermark.py`, `import_kiro_specs.py`, `migrate_task_ids.py`). Source-repo directories such as `agent-plugin/`, `tests/`, `release/`, and `book/` never enter the runtime package. This export tree is locked by tests against the exporter's actual output, file by file.
+Exported contents are governed by the machine rule in `scripts/export_skill_package.py`: the root files `SKILL.md`, `install.sh`, and `pyproject.toml`; the whole directories `agents/`, `hooks/`, `references/`, `server/`, and `slots/`; and every source-repo script except the seven source-only tools (`export_skill_package.py`, `export_public_repo.py`, `build_release.py`, `package_agent_plugin.py`, `skill_watermark.py`, `import_kiro_specs.py`, `migrate_task_ids.py`). Source-repo directories such as `agent-plugin/`, `tests/`, and `release/` never enter the runtime package. This export tree is locked by tests against the exporter's actual output, file by file.
 
 For Codex-style skill loading, place the exported directory under your local skills root, then trigger it with:
 
@@ -452,7 +444,7 @@ Then run smoke, pytest, and lint:
 ```bash
 python3 scripts/smoke_test_spec_skill.py
 python3 -m pytest tests/
-ruff check scripts/ server/ hooks/ tests/ book/
+ruff check scripts/ server/ hooks/ tests/
 ruff format --check scripts/ server/ hooks/ tests/
 ```
 

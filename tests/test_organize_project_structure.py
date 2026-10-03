@@ -738,23 +738,23 @@ def test_fenced_tree_names_are_not_dangling_paths(tmp_path):
     root = make_tree(
         tmp_path,
         {
-            "book/src/map.md": (
+            "guides/src/map.md": (
                 "See `examples/mini_harness.py`.\n\n"
                 "```text\n"
-                "book/\n"
+                "guides/\n"
                 "└── examples/\n"
                 "    ├── mini_harness.py\n"
                 "    └── test_mini_harness.py\n"
                 "```\n\n"
                 "Missing `scripts/gone.py` stays dangling.\n"
             ),
-            "book/examples/mini_harness.py": "print('teach')\n",
+            "guides/examples/mini_harness.py": "print('teach')\n",
         },
     )
     report = collect_facts(root, ".spec", stale_days=90, large_bytes=512 * 1024)
     assert "mini_harness.py" not in report.dangling_doc_groups
     assert "test_mini_harness.py" not in report.dangling_doc_groups
-    assert report.dangling_doc_groups.get("scripts/gone.py") == ["book/src/map.md"]
+    assert report.dangling_doc_groups.get("scripts/gone.py") == ["guides/src/map.md"]
 
 
 def test_shell_variable_prefix_is_not_part_of_the_path(tmp_path):

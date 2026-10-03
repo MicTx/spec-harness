@@ -15,7 +15,7 @@ Spec Harness 是一个给 AI 编程智能体使用的任务包工作流 Skill。
 
 先读：[项目介绍](docs/introduction.md)；要动手则读[长程任务教程](docs/tutorial.md)；要发布再读 [Git 工作流](docs/git-workflow.md)。
 
-该仓库是 Spec Harness 的源码包；`spec` 保留为兼容的 Skill/CLI 调用名。仓库同时包含运行时入口、reference、标准库 Python 脚本、可选的 self-hosted server-mode 适配器、插槽和培训书稿。它不运营托管服务，也不提供包管理器插件。
+该仓库是 Spec Harness 的源码包；`spec` 保留为兼容的 Skill/CLI 调用名。仓库同时包含运行时入口、reference、标准库 Python 脚本、可选的 self-hosted server-mode 适配器和插槽。它不运营托管服务，也不提供包管理器插件。
 
 > **范围与其他 `spec` Skill 的对比**：本 Skill 是一个**任务包工作流管理器**——它负责创建并追踪 `.spec/specs/YYYY-MM-DD_slug/{spec,tasks,checklist}.md` Development Record，并通过 `scripts/` 暴露内部 route/status/tasks/check/done/push 等脚本视图。它**不**充当“分发给其他专业 Skill 的中央路由器”。如果您也使用基于 `/spec` 路由的变体（例如位于 `~/.claude/skills/spec` 下的某些个人 ECC 配置），请确保您清楚当前宿主加载的是哪一个；它们名称相同但职责不同，不应混用。Slug 命名遵循 `[a-z0-9_-]+` 规则（参见 `scripts/spec_package_support.validate_slug`）；允许使用下划线，但不允许连续的连字符/下划线以及开头/结尾的分隔符；Development Record 标准额外要求使用 `YYYY-MM-DD_<verb>-<object>`（verb 取受控动词，详见 `references/naming-and-commits.md`）。
 
@@ -54,14 +54,6 @@ Spec Harness 是一个给 AI 编程智能体使用的任务包工作流 Skill。
 │   ├── planner.md
 │   ├── reviewer.md
 │   └── confirmer.md
-├── book/                            # 源码库独有：培训电子书（承接旧 HTML 培训页）
-│   ├── README.md
-│   ├── verify_ebook.py
-│   ├── metadata.yaml
-│   ├── epub.css
-│   ├── src/                         # 书稿章节与附录
-│   ├── examples/                    # 教学示例程序
-│   └── tests/                       # 构建验证测试
 ├── docs/                            # 面向用户与贡献者的公开文档
 │   ├── git-workflow.md
 │   └── git-workflow.en.md
@@ -303,7 +295,7 @@ spec/
             └── test_workflow_route.py
 ```
 
-导出内容由 `scripts/export_skill_package.py` 的机器规则决定：根文件为 `SKILL.md`、`install.sh`、`pyproject.toml`；`agents/`、`hooks/`、`references/`、`server/`、`slots/` 整目录进入；`scripts/` 目录包含源码库 `scripts/` 下除七个源码库独有脚本（`export_skill_package.py`、`export_public_repo.py`、`build_release.py`、`package_agent_plugin.py`、`skill_watermark.py`、`import_kiro_specs.py`、`migrate_task_ids.py`）之外的全部脚本；`agent-plugin/`、`tests/`、`release/`、`book/` 等源码库目录不进入运行时包。上述导出树由测试锁定与导出器实际输出逐文件一致。
+导出内容由 `scripts/export_skill_package.py` 的机器规则决定：根文件为 `SKILL.md`、`install.sh`、`pyproject.toml`；`agents/`、`hooks/`、`references/`、`server/`、`slots/` 整目录进入；`scripts/` 目录包含源码库 `scripts/` 下除七个源码库独有脚本（`export_skill_package.py`、`export_public_repo.py`、`build_release.py`、`package_agent_plugin.py`、`skill_watermark.py`、`import_kiro_specs.py`、`migrate_task_ids.py`）之外的全部脚本；`agent-plugin/`、`tests/`、`release/` 等源码库目录不进入运行时包。上述导出树由测试锁定与导出器实际输出逐文件一致。
 
 对于 Codex 风格的 Skill 加载，将导出的目录放置在本地 Skill 根目录下，然后触发：
 
@@ -458,7 +450,7 @@ python3 -m pip install -e '.[dev]'
 ```bash
 python3 scripts/smoke_test_spec_skill.py
 python3 -m pytest tests/
-ruff check scripts/ server/ hooks/ tests/ book/
+ruff check scripts/ server/ hooks/ tests/
 ruff format --check scripts/ server/ hooks/ tests/
 ```
 

@@ -172,7 +172,7 @@ Execution requirements:
 - Vocabulary boundary: the check-stage `处置枚举` words (`fix_this_round` / `followup` / `accepted_risk`) are round-action labels only; archive closure still uses the five `issue_dispositions` types (`resolved_current` / `resolved_followup` / `accepted_risk` / `external_blocked` / `non_actionable`) at `done`. The two vocabularies must never be mixed — a check-round disposition is not an archive closure.
 - Dual stop conditions end the check→fix loop; both must be readable directly from the package docs: (a) semantic termination — a round produces `无新增项` (no failing item beyond the previous round's set), so the loop has converged; (b) budget cap — `最多 N 轮` check rounds, with the package declaring its own N (e.g. in `spec.md`).
 - Stop-loss attribution: 同一门禁连续 N 轮失败即停止重跑 that gate — re-running an unchanged setup is not a fix. Write the attribution down: suspect the standard is too broad and 拆细 it into finer, separately verifiable items, or fix the `verify` itself, or mark `转人工` (escalate to a human) when neither is within the agent's reach.
-- Cross-round bookkeeping: findings live in `checklist.md` as the disk truth (stable IDs dedupe across rounds), and each round hands back a three-state count — fixed this round, still failing, newly found.
+- Cross-round accounting: findings live in `checklist.md` as the disk truth (stable IDs dedupe across rounds), and each round hands back a three-state count — fixed this round, still failing, newly found.
 - Do not enter the `done` stage before passing.
 
 Output contract:

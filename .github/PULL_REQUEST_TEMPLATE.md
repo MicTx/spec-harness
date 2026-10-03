@@ -22,12 +22,12 @@ List changed commands, task-package formats, exported layouts, or migration step
 
 ## Checklist
 
-- [ ] `python3 -m compileall -q scripts server hooks slots tests book` passes
+- [ ] `python3 -m compileall -q scripts server hooks slots tests` passes
 - [ ] `python3 scripts/slot_registry.py validate` passes
 - [ ] `python3 scripts/smoke_test_spec_skill.py` passes
 - [ ] `python3 -m pytest -q` passes
-- [ ] `ruff check scripts/ server/ hooks/ slots/ tests/ book/` passes
-- [ ] `ruff format --check scripts/ server/ hooks/ slots/ tests/ book/` passes
+- [ ] `ruff check scripts/ server/ hooks/ slots/ tests/` passes
+- [ ] `ruff format --check scripts/ server/ hooks/ slots/ tests/` passes
 - [ ] `python3 scripts/organize_project_structure.py --root . --check` passes for documentation or layout changes
 - [ ] User-facing behavior changes are reflected in `CHANGELOG.md`
 - [ ] Runtime layout or installer changes were verified against an exported package

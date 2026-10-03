@@ -27,7 +27,7 @@ The four principles and their conflict order live in `engineering-philosophy.md`
 - The main session is the orchestrator: it plans, implements the critical path, verifies, and accepts. Bounded sidecar work is delegated only after `scripts/route_decision.py` plus a written assignment contract (`references/orchestration.md`). Loop-shaped work follows a managed slot's README protocol (e.g. `team-loop`). Outsourcing that bypasses these managed paths stays forbidden.
 - Before checking off a task, actually run the verification its `verify` line describes; self-reported results are not completion.
 - Do not add new `CLAUDE.md`, `CURSOR.md`, or other default carriers, and never write spec distillations into global carriers: distilled knowledge lands in the executing project's own `.spec/docs/` only, as project-specific engineering facts.
-- Script/template fences are the sources of truth; other carriers point, never copy gate lists. sales-kit is not a runtime obligation.
+- Script/template fences are the sources of truth; other carriers point, never copy gate lists. Distribution artifacts are not runtime obligations.
 
 Stage steps live in `commands.md`. Directories and archiving live in `storage-and-archive.md`.
 
