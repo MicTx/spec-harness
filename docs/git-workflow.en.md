@@ -1,17 +1,17 @@
 # Git Workflow
 
-This guide is for users and contributors to Spec Harness. The public repository is [MicTx/spec-harness](https://github.com/MicTx/spec-harness), and released versions are listed on [GitHub Releases](https://github.com/MicTx/spec-harness/releases).
+This guide answers one concrete question: how does a change move from a local worktree to the public repository without losing its meaning? The public repository is [MicTx/spec-harness](https://github.com/MicTx/spec-harness), and releases are listed on [GitHub Releases](https://github.com/MicTx/spec-harness/releases). Read the branch and commit sections before deciding whether a change needs the full task-package workflow.
 
 ## Get the Source
 
-Use a tag for a stable installation and a full commit SHA for reproducible builds:
+Fix the source revision before you edit: use a tag for a stable installation and a full commit SHA for reproducible builds:
 
     git clone https://github.com/MicTx/spec-harness.git
     cd spec-harness
     git fetch --tags origin
     git checkout v0.13.10
 
-Contributors normally clone a fork and keep the official repository as upstream:
+Contributors normally clone a fork and keep the official repository as `upstream`:
 
     git clone https://github.com/<you>/spec-harness.git
     cd spec-harness
@@ -24,7 +24,7 @@ Do not run reset --hard with uncommitted work. Commit, stash, or save the work e
 
 ## Branches
 
-Use one branch per change and create it from the current main branch:
+A branch is a boundary around one purpose, not just a place to put files. Use one branch per change and create it from the current `main` branch:
 
     git switch -c docs/git-guide
 
@@ -37,7 +37,7 @@ Synchronize before opening a pull request:
 
 ## Commits
 
-Use Conventional Commits:
+Make the change legible to a future maintainer by using Conventional Commits:
 
     <type>(<scope>): <imperative summary>
 
@@ -50,7 +50,7 @@ Keep the subject short and imperative. Use the body for the problem, behavior ch
 
 ## Pull Requests
 
-Push the branch and open a pull request against main:
+Push the branch and open a pull request against `main`:
 
     git push -u origin docs/git-guide
 
@@ -62,7 +62,7 @@ Include:
 - Compatibility or migration notes.
 - Examples, screenshots, or reproduction steps for documentation and CLI changes.
 
-Run the relevant checks before pushing. The full suite is:
+Run checks that can answer whether the current tree is ready to publish. The full suite is:
 
     python3 -m compileall -q scripts server hooks slots tests book
     python3 scripts/smoke_test_spec_skill.py
@@ -71,7 +71,7 @@ Run the relevant checks before pushing. The full suite is:
     ruff format --check scripts/ server/ hooks/ slots/ tests/ book/
     git diff --check
 
-For documentation changes, also check links and the repository structure:
+For documentation changes, also check links and repository structure; correct prose is not useful when it points to a missing file:
 
     python3 scripts/organize_project_structure.py --root . --check
 

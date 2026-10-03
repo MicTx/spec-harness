@@ -1,6 +1,6 @@
 # Contributing to Spec Harness
 
-Thank you for improving Spec Harness. This guide covers the public GitHub repository and the checks expected for a pull request.
+This guide answers the contributor's first three questions: where is the source of truth, which files may change together, and what evidence makes a pull request reviewable? It covers the public GitHub repository and the checks expected for a pull request.
 
 ## Before You Start
 
@@ -38,8 +38,8 @@ Do not commit generated release archives, local credentials, private task record
 
 ## Make a Change
 
-1. Identify the source of truth before editing. Runtime behavior belongs in scripts and tests; command contracts belong in references/; reader-facing behavior belongs in the README and public guides.
-2. Update the Chinese and English reader docs when a user-facing command or contract changes.
+1. Identify the source of truth before editing. Runtime behavior belongs in scripts and tests; command contracts belong in `references/`; reader-facing behavior belongs in the README and public guides.
+2. Update the Chinese and English reader docs when a user-facing command or contract changes; a command that works but cannot be found is still an incomplete change.
 3. Add a regression test for changed behavior, especially for path handling, archive contents, installer behavior, and task-package gates.
 4. Keep public documentation free of private repository paths, credentials, local machine paths, and maintainer-only task records.
 

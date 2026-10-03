@@ -1,5 +1,7 @@
 # Operating Rules
 
+Use this page to decide whether a task needs a task package before you create one. The question is not “can the agent edit a file?” but “will another person need the same scope, evidence, and recovery point later?”
+
 ## When to use
 
 - Building from scratch, unclear scope, work that spans cycles, high early-decision cost
@@ -14,7 +16,7 @@
 
 ## Core
 
-The four principles and their conflict order live in `engineering-philosophy.md`. The three on-disk documents are the state machine: `spec.md` owns scope, `tasks.md` owns execution, `checklist.md` owns acceptance.
+The four principles and their conflict order live in `engineering-philosophy.md`. The three on-disk documents form the state machine: `spec.md` owns scope, `tasks.md` owns execution, and `checklist.md` owns acceptance. Each file answers a different question; do not use one as a substitute for another.
 
 - Do not start while assumptions are unwritten or verification is undefined.
 - Every task must have `boundary` / `verify`.

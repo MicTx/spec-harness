@@ -1,6 +1,8 @@
 # Commands
 
-Read only the `## /spec:<stage>` section for the current stage; do not read this file end to end. The default line is `new / run / check / done / push`, plus `update` / `status`; `goal` is an optional entry point; `doctor` and `organize` are environment/structure maintenance entry points outside the task-package state machine.
+This page is a stage reference, not a tutorial. Find the stage that matches the current project state, read that section, and then run the command it names. The default line is `new / run / check / done / push`; `update` and `status` adjust or inspect an existing package; `goal` is the one-shot entry point; `doctor` and `organize` maintain the environment or structure outside the task-package state machine.
+
+The shortest safe path is always: route from disk, make one bounded change, run its verification, then let the next stage consume the recorded state. Do not read this file end to end when one stage is enough.
 
 ## Contents
 

@@ -1,8 +1,8 @@
 # spec server-mode
 
-By default spec ships as a **local skill**: installed into `~/.claude/skills` (or Codex/other skill-aware CLIs), triggered by the host via `$spec`, reading and writing `.spec/` inside the caller's local git repository.
+By default spec ships as a **local skill**: installed into `~/.claude/skills` (or Codex/other skill-aware CLIs), triggered by the host via `$spec`, reading and writing `.spec/` inside the caller's local Git repository. This local form is the reference behavior.
 
-`server/` is spec's **second form**: it exposes task-package initialization and status projection over three HTTP endpoints for asynchronous task-workflow platforms (e.g. UUMit) to call remotely. It does not replace server-side `run`, `check`, or `done` operations and creates no second state machine; the `.spec` Development Record stays the single source of truth. Both forms share the same [`../scripts/`](../scripts) and [`../references/`](../references) sources — only the entry point differs.
+`server/` is spec's **second form**: it exposes task-package initialization and status projection over three HTTP endpoints for an asynchronous task-workflow platform to call remotely. It does not replace server-side `run`, `check`, or `done` operations and creates no second state machine; the `.spec` Development Record stays the single source of truth. Both forms share the same [`../scripts/`](../scripts) and [`../references/`](../references) sources — only the entry point differs.
 
 ## Three-endpoint contract
 

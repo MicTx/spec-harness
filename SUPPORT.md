@@ -1,13 +1,13 @@
 # Support
 
-Use the public issue tracker for installation questions, reproducible bugs, and feature proposals.
+Use the public issue tracker for installation questions, reproducible bugs, and feature proposals. The project has no hosted service or guaranteed response time, so the fastest route is a small, reproducible report.
 
-Before opening an issue:
+Before opening an issue, narrow the question:
 
 - Read the [README](README.md) and [Git workflow guide](docs/git-workflow.en.md).
 - Search existing issues and the [release notes](https://github.com/MicTx/spec-harness/releases).
 - Confirm the version, operating system, host CLI, and installation method.
-- Run the smallest relevant verification command and include its result.
+- Run the smallest relevant verification command and include its result, exact version, and host CLI.
 
 Choose the right channel:
 

@@ -8,6 +8,8 @@ assignees: []
 
 ## Problem
 
+<!-- Describe the user problem before proposing a mechanism. -->
+
 What workflow gap are you trying to solve?
 
 ## Proposed change
@@ -36,4 +38,3 @@ What should explicitly stay out of scope?
 ## Extra context
 
 Add examples, command aliases, or host CLI expectations if relevant.
-

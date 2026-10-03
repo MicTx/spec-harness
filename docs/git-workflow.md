@@ -1,17 +1,17 @@
 # Git 工作流
 
-本文面向使用和贡献 Spec Harness 的读者。公共仓库是 [MicTx/spec-harness](https://github.com/MicTx/spec-harness)，发布版本位于 [GitHub Releases](https://github.com/MicTx/spec-harness/releases)。
+本文回答一个具体问题：怎样让一次文档或代码改动，从本地工作树安全地走到公共仓库？公共仓库是 [MicTx/spec-harness](https://github.com/MicTx/spec-harness)，发布版本位于 [GitHub Releases](https://github.com/MicTx/spec-harness/releases)。先读完“分支”和“提交”，再决定是否需要任务包；小改动不必套完整流程。
 
 ## 获取代码
 
-固定版本用于稳定安装，完整提交 SHA 用于可复现构建：
+先固定你要理解的代码，再开始改：标签适合稳定安装，完整提交 SHA 适合可复现构建：
 
     git clone https://github.com/MicTx/spec-harness.git
     cd spec-harness
     git fetch --tags origin
     git checkout v0.13.10
 
-贡献者通常从 fork 克隆，并保留官方仓库为 upstream：
+贡献者通常从 fork 克隆，并把官方仓库保留为 `upstream`：
 
     git clone https://github.com/<you>/spec-harness.git
     cd spec-harness
@@ -24,20 +24,20 @@
 
 ## 分支
 
-每个改动使用独立分支，并从最新 main 创建：
+分支的作用不是装饰，而是把一组有共同目的的 diff 绑定在一起。每个改动使用独立分支，并从最新 `main` 创建：
 
     git switch -c docs/git-guide
 
 推荐使用能表达意图的前缀：docs/、fix/、feat/、test/、chore/。使用 Spec Harness 任务包时，按任务包命名规则使用 spec/YYYY-MM-DD_<verb>-<object>，例如 spec/2026-10-02_audit-docs。
 
-提交前同步主分支：
+开 PR 前先同步主分支：
 
     git fetch upstream --prune
     git rebase upstream/main
 
 ## 提交
 
-提交信息采用 Conventional Commits：
+提交信息要让未来的读者知道这次变化属于哪一类，因此采用 Conventional Commits：
 
     <type>(<scope>): <imperative summary>
 
@@ -52,7 +52,7 @@
 
 ## 拉取请求
 
-推送分支并创建面向 main 的 Pull Request：
+推送分支并创建面向 `main` 的 Pull Request：
 
     git push -u origin docs/git-guide
 
@@ -64,7 +64,7 @@ Pull Request 应包含：
 - 需要用户迁移的兼容性说明。
 - 文档或 CLI 变化的示例输出、截图或复现步骤。
 
-提交前至少运行：
+提交前至少运行这些能回答“当前树是否可交付”的命令：
 
     python3 -m compileall -q scripts server hooks slots tests book
     python3 scripts/smoke_test_spec_skill.py
@@ -73,7 +73,7 @@ Pull Request 应包含：
     ruff format --check scripts/ server/ hooks/ slots/ tests/ book/
     git diff --check
 
-文档改动还要检查链接和目录结构：
+文档改动还要检查链接和目录结构；否则文字正确也可能指向不存在的文件：
 
     python3 scripts/organize_project_structure.py --root . --check
 

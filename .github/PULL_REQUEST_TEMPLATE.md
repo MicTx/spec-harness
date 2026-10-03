@@ -1,5 +1,7 @@
 # Pull Request
 
+<!-- A good PR lets a reviewer answer: what changed, why, and what proves it? -->
+
 What does this PR change, and which user problem does it solve?
 
 ## Type of Change

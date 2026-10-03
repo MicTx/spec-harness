@@ -5,6 +5,9 @@ The first built-in spec slot: the agents-team loop-triggering and efficient-mana
 close_agent) comes from the agents-team skill; this slot provides the disk truth (state machine +
 primitives) and hook triggering, and the main session reads and writes state per the protocol.
 
+Use this slot when the work must keep trying until its disk evidence converges. It owns the loop
+execution segment only; the main session still owns routing, acceptance, and `done`/`push`.
+
 ## What it solves
 
 | Gap | Solution |

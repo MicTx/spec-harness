@@ -1,6 +1,6 @@
 # Orchestration Contract
 
-The multi-agent routing contract for spec. The main session is always the orchestrator: it owns routing, acceptance, and the `done`/`push` gates. Bounded sidecar work may be delegated only when the route decision and an assignment contract are both written down.
+Parallel work is useful only when each item can be understood and checked on its own. This file defines the boundary between the main session, a bounded sidecar, and a managed slot. The main session is always the orchestrator: it owns routing, acceptance, and the `done`/`push` gates. Delegation is allowed only after a route decision and an assignment contract are written down.
 
 This file is the source of truth for the five-route vocabulary, assignment contracts, waiting/merge rules, and the optional `### 5.4 编排策略` section. Stage steps live in `commands.md`; slot-specific loop protocol lives in `slots/team-loop/README.md`.
 

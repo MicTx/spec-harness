@@ -1,5 +1,7 @@
 # Changelog Guide
 
+Changelog entries answer a reader's question: “what changed for me?” The generator is a manual helper; it converts Git history into concise entries, but the prose still names the trigger, resulting behavior, and compatibility impact. It must not rewrite historical facts.
+
 ## Overview
 
 The spec workflow ships a standardized Chinese changelog generator (`scripts/generate_changelog.py`) that converts every commit in a given range into concise, well-formed Chinese changelog entries. The generator runs manually on demand (e.g. assembling release notes after done/push); it is not an automatic workflow step.

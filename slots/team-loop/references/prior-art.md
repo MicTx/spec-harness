@@ -1,6 +1,8 @@
 # Prior-art research (2026-09-19, official first-party docs)
 
-Where this skill's mechanisms come from and the adoption decisions. All sources are official (first-party) documentation, verifiable as of the fetch date.
+This note records why the team-loop slot has the shape it does. It is an evidence trail for
+maintainers, not a user-facing promise that every upstream feature is available here. All sources
+are official first-party documentation, verifiable as of the fetch date.
 
 ## 1. Claude Code hooks (code.claude.com/docs/en/hooks.md)
 

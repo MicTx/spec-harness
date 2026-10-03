@@ -8,6 +8,8 @@ assignees: []
 
 ## Summary
 
+<!-- State the user-visible failure in one sentence. Keep secrets and private paths out of the report. -->
+
 Describe the problem in one or two sentences.
 
 ## Area
@@ -52,4 +54,3 @@ Describe what actually happened. Include the exact error message when possible.
 ## Evidence
 
 Paste the shortest useful command output, traceback, or file diff.
-

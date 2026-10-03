@@ -1,5 +1,7 @@
 # Security Policy
 
+Report a security problem when a helper, installer, task-package gate, or optional server-mode adapter lets an untrusted input cross a boundary it should not cross. Public documentation and ordinary bugs use the support or issue paths instead.
+
 ## Supported Versions
 
 Security fixes target the latest release and the main branch. Older releases may not receive backported fixes.
@@ -8,7 +10,7 @@ Security fixes target the latest release and the main branch. Older releases may
 
 Use [GitHub private vulnerability reporting](https://github.com/MicTx/spec-harness/security/advisories/new) when it is available. If the form is unavailable, open a minimal public issue titled Security contact requested without exploit details; a maintainer will provide a private channel.
 
-Include:
+Include enough evidence for reproduction without turning the report into a public exploit:
 
 - The affected version or commit.
 - The affected file, command, or server endpoint.
@@ -20,7 +22,7 @@ Do not include secrets, private keys, access tokens, personal data, or a weaponi
 
 ## Scope
 
-Spec Harness runs helper scripts against task-package files under a project root. The optional server/ adapter is a self-hosted HTTP service; it defaults to loopback and must be protected by an authentication and TLS boundary before network exposure. Security reports are especially useful for path traversal, symlink escapes, unsafe archive handling, process isolation, installer replacement, secret disclosure, and authorization bypasses in the server adapter.
+Spec Harness runs helper scripts against task-package files under a project root. The optional `server/` adapter is a self-hosted HTTP service; it defaults to loopback and must be protected by an authentication and TLS boundary before network exposure. Useful reports show the input, the boundary that was crossed, and the observed impact. Areas include path traversal, symlink escapes, unsafe archive handling, process isolation, installer replacement, secret disclosure, and authorization bypasses in the server adapter.
 
 ## Disclosure
 

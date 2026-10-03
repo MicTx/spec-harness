@@ -5,26 +5,32 @@
 
 [🇨🇳 阅读中文版](README.md)
 
-Spec Harness is a workflow skill for Codex, Claude Code, Gemini CLI, Grok Build, OpenCode, OpenClaw, Hermes, Pi, and other skill-aware CLIs for specification-driven development. It helps an AI coding agent turn complex work into a tracked task package before implementation, then keep scope, tasks, validation, archival output, and Git handoff consistent.
+Spec Harness is a task-package workflow Skill for AI coding agents. It answers a question that comes before code generation: when a change lasts for days, crosses sessions, and goes through several tests, can a new agent still tell what the goal is, which files are in scope, and what proves completion?
 
-Reading path: [Introduction](docs/introduction.md) · [Long-running task tutorial](docs/tutorial.md) · [Git workflow](docs/git-workflow.en.md)
+The workflow keeps one evidence chain on disk:
 
-The repository is the source package for Spec Harness; `spec` remains the compatible Skill/CLI invocation name. It contains the skill entry file, reference documents, OpenAI agent metadata, standard-library Python helper scripts, and an optional self-hosted server-mode adapter. It is not a hosted service or package-manager plugin.
+    goal -> scope -> tasks -> verification -> archive -> commit -> push
+
+It does not provide a model, make product decisions, or act as a central router for other Skills. It makes a long-running engineering task recoverable and reviewable.
+
+Choose a path: start with the [Introduction](docs/introduction.md), follow the [long-running task tutorial](docs/tutorial.md), or use the [Git workflow](docs/git-workflow.en.md) when you are ready to land changes.
+
+The repository is the source package for Spec Harness; `spec` remains the compatible Skill/CLI invocation name. It contains the runtime entrypoint, references, standard-library Python helpers, optional server-mode and extension slots, and a training book. It is not a hosted service or package-manager plugin.
 
 > **Scope vs. other `spec` skills**: This skill is a *task-package workflow manager* — it creates and tracks `.spec/specs/YYYY-MM-DD_slug/{spec,tasks,checklist}.md` Development Records and exposes internal route/status/tasks/check/done/push script views via `scripts/`. It does **not** act as a "central router that dispatches to other specialized skills". If you also use a `/spec`-router variant (e.g. some personal ECC configurations under `~/.claude/skills/spec`), make sure you know which one a given host has loaded; they share a name but serve different responsibilities and should not be mixed. Slug naming follows `[a-z0-9_-]+` (see `scripts/spec_package_support.validate_slug`); underscores are allowed but consecutive hyphens/underscores and leading/trailing separators are not. The Development Record standard additionally uses `YYYY-MM-DD_<verb>-<object>` (verb from a controlled vocabulary, see `references/naming-and-commits.md`).
 
-## What It Does
+## What You Get
 
 - **Single-orchestrator workflow (default) with managed delegation**: the main session owns the critical path, routing, acceptance, and the done/push gates. `scripts/route_decision.py` maps task text to one machine-judged route (`local / explore / build / review / external`); `explore/build/review` may spawn bounded sidecar lanes under the assignment contract (`references/orchestration.md`); loop-convergence work hands the execution segment to a managed slot protocol (e.g. `team-loop`). Delegation never moves routing, acceptance, or gate authorization out of the main session.
 - Routes user intent internally through `/spec` and exposes ten user stages: `new`, `goal`, `run`, `check`, `done`, `push`, `update`, `status`, `doctor`, and `organize`.
 - Creates `.spec/specs/YYYY-MM-DD_slug/` Development Records containing `spec.md`, `tasks.md`, and `checklist.md`.
 - Renders status overviews, task progress, validation, and completion summaries from task-package files.
-- Enforces a documented workflow around explicit assumptions, minimal implementation, clear boundaries, verification evidence, and cross-artifact consistency.
+- Keeps assumptions, the smallest useful implementation, boundaries, and verification evidence in ordinary text instead of leaving them in one chat session.
 - Enforces machine-verifiable issue closure: every discovered problem either resolves to a completed current task or to a follow-up Development Record that this workflow has already executed and archived. Archive, Stop hook, server projection, and Git push share the same five typed dispositions, so free-form "next work" cannot be handed back to the user.
 - Minimal task contract: each task needs only `boundary` (what may change) and `verify` (how completion is proven), with optional `id` / `depends-on`; a checkbox requires actually running the verification first.
 - Generates `completion-summary.md` and can archive completed task packages under `.spec/specs/archive/`.
 - Execution governance layer: `check` reports a deterministic convergence status (converged / not converged plus a gap list; `converged`/`gaps` via `--format json`), and `hooks/claude_stop_guard.py` follows the official Claude Code Stop hook protocol to block claimed completion of unconverged records while reporting the gap list.
-- Standardizes `.spec/docs/` knowledge capture and `.spec/architecture/` Module DAGs: task packages record what was done, docs record what was learned, and architecture records what the system currently looks like.
+- Separates three kinds of memory: task packages record what changed, `.spec/docs/` records what was learned, and `.spec/architecture/` records what the system currently looks like.
 - Governs project-structure review tasks from first principles: audit ownership boundaries, dependency direction, runtime/source/state separation, and entrypoint discoverability before moving files; only restructure when the current layout is proven unreasonable, then verify references, export contents, Module DAGs, READMEs, and tests.
 - Enforces Git branch governance: `/spec:new` first requires a clean tree, checks out `main` (or the explicit main branch), fast-forwards it to upstream, and then creates an independent `spec/YYYY-MM-DD_<slug>` integration branch from main; if upstream `fetch` fails with a transport outage (same `remote_unavailable_detected` classifier as `push`), the branch is created from local main and recorded as local mode, while auth, permission, and non-fast-forward failures still stop; `run/check/done` execute on that branch, `push` only merges branches with the `spec/` prefix.
 - Supports configurable Git record labels in completion summaries: defaults to `auto` (detects Chinese/English from the `spec.md` title), or `--git-record-language zh|en` to force; commit messages follow Conventional Commits (see `references/naming-and-commits.md`).

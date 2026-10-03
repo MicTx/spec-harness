@@ -1,6 +1,6 @@
 # 最小工作流 Harness 教学程序
 
-`mini_harness.py` 使用 Python 标准库，适用 Python 3.9+。它演示规格、任务依赖、验收与验证记录，不是完整 Agent 运行时。
+`mini_harness.py` 使用 Python 标准库，适用 Python 3.9+。它把书里的最小骨架变成可运行练习：规格、任务依赖、验收和验证记录都能在隔离目录中看到；它不是完整 Agent 运行时。
 
 ## 使用
 

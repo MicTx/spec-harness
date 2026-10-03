@@ -1,5 +1,7 @@
 # Code of Conduct
 
+The project values disagreement that improves a verifiable result. Keep the discussion focused on evidence, behavior, and the people affected by a change.
+
 ## Our Standard
 
 Participants should keep discussions professional, specific, and respectful. Technical disagreement is welcome when it is grounded in evidence and focused on improving the project.

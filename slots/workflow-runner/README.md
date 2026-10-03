@@ -1,6 +1,7 @@
 # workflow-runner slot
 
-The second built-in spec slot: delegating the **execution segment** of a spec package to the
+This slot answers a narrow execution question: when several independent items can run with the same
+contract, how do we fan them out and keep a reviewable disk record? It delegates the **execution segment** of a spec package to the
 repository-owned `workflow_fanout.py` deterministic driver. **Shape detection -> driver
 preconditions -> managed execution -> structured evidence.** Routing, acceptance, and the
 done/push gates never move out of the main session.

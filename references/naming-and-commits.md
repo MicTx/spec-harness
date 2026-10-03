@@ -1,5 +1,7 @@
 # Naming And Commits
 
+Names are the first index a human or LLM uses when it returns to a task. A good slug tells the reader what kind of change happened; a good commit footer lets that reader walk back from Git to the evidence that justified it.
+
 Single source of truth for slugs, commits, and Git records. The three rule sets share one design goal: let humans and LLMs review a spec round at minimal cost.
 
 ## Contents

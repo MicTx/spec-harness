@@ -1,5 +1,7 @@
 # Changelog
 
+This file records user-visible behavior changes. For a detailed design or recovery story, follow the linked documentation; do not infer a new command or guarantee from a changelog bullet alone.
+
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation.
 
 ## [Unreleased]

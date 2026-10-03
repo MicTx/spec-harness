@@ -1,5 +1,7 @@
 # Engineering Philosophy
 
+These principles are decision tools, not slogans. When two reasonable actions compete, use the conflict order below to choose the smallest action that leaves the strongest evidence.
+
 ## Contents
 
 - Four principles

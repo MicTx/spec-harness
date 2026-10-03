@@ -1,6 +1,8 @@
 # Output Contracts
 
-Read only the section for the current stage; never read this file end to end. Internal stages, task packages, and gates stay strictly script-enforced, but user-visible replies must start from the user's goal and the project's actual progress. Entries with a script use the script output directly; entries without one fill in the same project-update structure. Never write a separate process summary, a command relay, or make the user drive a next stage the agent can complete itself.
+This page separates two audiences. Scripts need stable field names; people need a short answer about the project they asked to change. Read only the current stage section. Keep internal stages, package paths, and gate counts in machine output, while the human-facing reply starts with the goal, actual progress, concrete risk, and delivered evidence.
+
+Entries with a script use that script's output directly; entries without one use the same project-update structure. Do not make the user relay commands or choose a stage the agent can execute itself.
 
 ## Project-update schema (the only user-visible skeleton; section names are the machine contract emitted by `dashboard_support.py` — keep them verbatim)
 

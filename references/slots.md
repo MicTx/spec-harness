@@ -1,6 +1,6 @@
 # Extension Slots
 
-The pluggable capability mechanism for spec. A slot is a self-contained directory under `slots/<name>/`, declared by its `manifest.json`, shipped together with install.sh; spec's core scripts stay untouched.
+Slots answer a narrow extension question: can a capability ship beside the task-package state machine without changing that state machine? A slot is a self-contained directory under `slots/<name>/`, declared by `manifest.json` and shipped with `install.sh`; the core scripts stay untouched.
 
 ## When to build a slot
 

@@ -1,10 +1,10 @@
 # References Directory Guide
 
-SKILL.md keeps the trigger conditions, the single-orchestrator execution loop, the command table, and the hard boundaries. Reference files are read per stage — never all at once, and never end-to-end reads of `commands.md` or `output-contracts.md`.
+`SKILL.md` answers “should this workflow be used, and who owns the decision?” Reference files answer the next question at the moment it matters. Read them per stage; do not load every page at once or read `commands.md`/`output-contracts.md` end to end.
 
 ## Reading order
 
-Read per the current work:
+Start with the smallest page that can unblock the current action:
 
 1. `operating-rules.md` — when to use / not use
 2. The current `## /spec:<stage>` section of `commands.md`
@@ -13,7 +13,7 @@ Read per the current work:
 5. `storage-and-archive.md` — directories and archiving
 6. `naming-and-commits.md` — slugs and commits
 
-Read on demand:
+Open these only when the task shape calls for them:
 
 - `orchestration.md` — before delegating sidecar work or writing `### 5.4 编排策略`
 - `engineering-philosophy.md` — on principle conflicts
@@ -30,4 +30,4 @@ Read on demand:
 - Slot contract: `slots.md` + `scripts/slot_registry.py validate`
 - Structure-audit facts: `scripts/organize_project_structure.py` (`--check` is the hard architecture-consistency gate)
 
-Other carriers point at these sources and never copy gate lists. sales-kit / book / this repository's `.spec/` are not runtime contracts.
+Other carriers should point here instead of copying gate lists. The book explains the ideas; `.spec/` records project state; neither replaces the runtime contracts below.

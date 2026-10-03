@@ -5,26 +5,32 @@
 
 [🇬🇧 Read this in English](README-en.md)
 
-Spec Harness 是一个适用于 Codex、Claude Code、Gemini CLI、Grok Build、OpenCode、OpenClaw、Hermes、Pi 及其他支持 Skill 的 CLI 的工作流 Skill，专为规范驱动开发（specification-driven development）设计。它可以帮助 AI 编程智能体在开始实现代码之前，将复杂的工作转化为可追踪的任务包，从而保持范围、任务、验证、归档输出和 Git 提交的一致性。
+Spec Harness 是一个给 AI 编程智能体使用的任务包工作流 Skill。它解决一个比“能不能写出代码”更早的问题：当任务持续数天、换过 Agent、经历多轮测试后，我们还能不能说清楚目标、边界、证据和下一步？
 
-阅读路线：[项目介绍](docs/introduction.md) · [长程任务教程](docs/tutorial.md) · [Git 工作流](docs/git-workflow.md)
+它把这条链固定在磁盘上：
 
-该仓库是 Spec Harness 的源码包；`spec` 保留为兼容 Skill/CLI 调用名。它包含 Skill 的入口文件、参考文档、OpenAI 智能体元数据、标准库 Python 辅助脚本以及可选的 self-hosted server-mode 适配器；它不运营托管服务或包管理器插件。
+    目标 → 范围 → 任务 → 验证 → 归档 → 提交 → 推送
+
+因此，新的会话不必从聊天记录猜测进度，维护者也不必把“看起来完成”当成证据。Spec Harness 不提供模型，不替用户做产品决策，也不充当中央 Skill 路由器；它只管理这条可恢复、可审查的工程工作流。
+
+先读：[项目介绍](docs/introduction.md)；要动手则读[长程任务教程](docs/tutorial.md)；要发布再读 [Git 工作流](docs/git-workflow.md)。
+
+该仓库是 Spec Harness 的源码包；`spec` 保留为兼容的 Skill/CLI 调用名。仓库同时包含运行时入口、reference、标准库 Python 脚本、可选的 self-hosted server-mode 适配器、插槽和培训书稿。它不运营托管服务，也不提供包管理器插件。
 
 > **范围与其他 `spec` Skill 的对比**：本 Skill 是一个**任务包工作流管理器**——它负责创建并追踪 `.spec/specs/YYYY-MM-DD_slug/{spec,tasks,checklist}.md` Development Record，并通过 `scripts/` 暴露内部 route/status/tasks/check/done/push 等脚本视图。它**不**充当“分发给其他专业 Skill 的中央路由器”。如果您也使用基于 `/spec` 路由的变体（例如位于 `~/.claude/skills/spec` 下的某些个人 ECC 配置），请确保您清楚当前宿主加载的是哪一个；它们名称相同但职责不同，不应混用。Slug 命名遵循 `[a-z0-9_-]+` 规则（参见 `scripts/spec_package_support.validate_slug`）；允许使用下划线，但不允许连续的连字符/下划线以及开头/结尾的分隔符；Development Record 标准额外要求使用 `YYYY-MM-DD_<verb>-<object>`（verb 取受控动词，详见 `references/naming-and-commits.md`）。
 
-## 核心功能
+## 你会得到什么
 
 - **单编排者工作流（默认）+ 受管委派**：主会话负责关键路径、路由、验收与 done/push 门禁。`scripts/route_decision.py` 把任务文本机器判定为五路由之一（`local / explore / build / review / external`）；`explore/build/review` 可按 assignment contract（`references/orchestration.md`）派发有界 sidecar lane；循环收敛类任务命中扩展插槽（如 `team-loop`）triggers 时按该插槽受管协议接管执行段。委派永不移走路由、验收与门禁授权。
-- 用 `/spec` 内部路由用户意图，暴露 `new`、`goal`、`run`、`check`、`done`、`push`、`update`、`status`、`doctor`、`organize` 十个用户阶段。
+- 用 `/spec` 内部路由用户意图；用户可使用 `new`、`goal`、`run`、`check`、`done`、`push`、`update`、`status`、`doctor`、`organize` 这些阶段。
 - 创建包含 `spec.md`、`tasks.md` 和 `checklist.md` 的 `.spec/specs/YYYY-MM-DD_slug/` Development Record。
 - 基于任务包文件渲染状态总览、任务进度、验证以及完成摘要。
-- 强制执行包含显式假设、最小化实现、清晰边界、验证证据以及跨制品一致性的文档化工作流。
+- 把假设、最小实现、边界和验证证据写进普通文本，而不是藏在一次对话里。
 - 强制机器可验证的问题闭环：执行中发现的问题要么指向当前已完成 task，要么由本次链路中已执行并归档的 follow-up Development Record 承接；关闭态统一使用五类 disposition，archive、Stop hook、server projection 与 Git push 共享同一门禁，不能把自由"后续事项"交给用户。
 - 任务合同最小化：每个任务只需 `boundary`（允许改什么）与 `verify`（怎么证明完成），可选 `id` 与 `depends-on`；勾选前必须真实运行验证。
 - 生成 `completion-summary.md`，并将已完成的任务包归档至 `.spec/specs/archive/`。
 - 执行治理层：`check` 输出确定性收敛状态（已收敛/未收敛+差距清单，`--format json` 提供 `converged`/`gaps`）；`hooks/claude_stop_guard.py` 按 Claude Code 官方 Stop hook 协议阻断对未收敛任务包的完成宣称并回报差距清单。
-- 标准化 `.spec/docs/` 知识沉淀与 `.spec/architecture/` Module DAG：任务包记录"做了什么"，docs 记录"学到了什么"，architecture 记录"系统现在长什么样"。
+- 区分三种记忆：任务包记录“做了什么”，`.spec/docs/` 记录“学到了什么”，`.spec/architecture/` 记录“系统现在长什么样”。
 - 对"当前项目结构是否合理"类任务提供第一性原理治理：先审计职责边界、依赖方向、运行时/源码/状态分离和入口可发现性；只有证明不合理时才重排目录，并在迁移前后验证引用路径、导出包、Module DAG、README 与测试。
 - 在 Git 仓库中固化分支治理：`/spec:new` 先要求 clean tree，切回 `main`（或显式主分支）并快进到 upstream，然后从主分支创建独立 `spec/YYYY-MM-DD_<slug>` integration branch；upstream `fetch` 因传输层不可达失败时改为从本地主分支创建并记录本地模式，认证/权限/非快进仍停止；`run/check/done` 在该分支完成，`push` 只合并 `spec/` 前缀分支。
 - 支持在完成摘要中配置 Git 记录标签：默认 `auto` 从 `spec.md` 标题自动检测中英文，也可用 `--git-record-language zh|en` 显式指定；提交文案采用 Conventional Commits（详见 `references/naming-and-commits.md`）。

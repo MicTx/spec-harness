@@ -1,23 +1,25 @@
 ---
 name: spec
 description: >-
-  Spec Harness provides specification-driven development with task packages. Use for spec commands
+  Spec Harness turns multi-step work into a recoverable, verifiable task package. Use for spec commands
   and tracked multi-step development. The main session plans, executes,
   verifies, and archives inside one session. Skip simple fixes and experiments.
 ---
 
 # Spec Workflow
 
-Manages development task packages in `.spec/specs/YYYY-MM-DD_slug/` with three files: `spec.md` (scope), `tasks.md` (implementation), and `checklist.md` (acceptance). Scripts in `scripts/` handle routing and validation.
+When a coding task outlives one conversation, the missing tool is usually a shared memory of decisions and evidence. Spec Harness supplies that memory as a Development Record under `.spec/specs/YYYY-MM-DD_slug/`: `spec.md` holds scope, `tasks.md` holds executable work, and `checklist.md` holds acceptance. Scripts in `scripts/` route and validate the record.
+
+The contract is intentionally small. Every task says what it may change (`boundary`) and how completion is proved (`verify`). The main session still owns routing, integration, acceptance, and Git closeout; a worker result never replaces those decisions.
 
 ## When to use
 
-Use spec for:
+Use spec when:
 - Multi-step or cross-session development tasks
 - Work requiring tracked scope, tasks, and acceptance criteria
 - User explicitly requests spec mode or task packages
 
-Skip for simple fixes, one-off experiments, or tasks with clear short plans.
+Skip it for a small reversible fix, a one-off experiment, or work whose complete plan and proof fit in one short command sequence.
 
 ## Commands
 
@@ -27,7 +29,7 @@ Read only the relevant section from `references/commands.md` for your current st
 
 | Command | Purpose |
 | --- | --- |
-| `/spec` | Auto-route to next stage |
+| `/spec` | Resolve the next action from the current package |
 | `/spec:new` | Create task package with scope, tasks, and acceptance criteria |
 | `/spec:run` | Execute all tasks; resumes from package state if interrupted |
 | `/spec:check` | Human-AI review round; writes actionable issues back to package |

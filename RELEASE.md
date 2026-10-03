@@ -1,12 +1,12 @@
 # Releases
 
-Spec Harness releases are published on [GitHub Releases](https://github.com/MicTx/spec-harness/releases). Each release contains the runtime skill archives, release notes, and SHA-256 checksums.
+Spec Harness releases answer two different needs: a tagged source revision for reproducible installs and a checked archive for users who do not need Git. Releases are published on [GitHub Releases](https://github.com/MicTx/spec-harness/releases) with notes and SHA-256 checksums.
 
 ## Choose a Version
 
 - Use the latest tagged release for a stable installation.
 - Use a full commit SHA when you need a reproducible source checkout.
-- Read CHANGELOG.md before upgrading across a behavior or layout change.
+- Read `CHANGELOG.md` before upgrading across a behavior or layout change; aliases, task-package files, export layout, and behavior contracts are compatibility surfaces.
 
 ## Install from a Release Archive
 
@@ -35,7 +35,7 @@ A tagged checkout is preferable to an unpinned main checkout when reproducibilit
 
 ## Upgrade and Roll Back
 
-Keep the installed host directory backed up when changing versions. Re-run the installer from the selected release or checkout; it preserves user-owned settings and refuses to overwrite an unrelated skill directory without an explicit override.
+Keep the installed host directory backed up when changing versions. Re-run the installer from the selected release or checkout. It preserves user-owned settings and refuses to overwrite an unrelated skill directory without an explicit override.
 
 To roll back, install a previous tag or release archive:
 
