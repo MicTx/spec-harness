@@ -102,9 +102,11 @@ def test_completed_task_projection_agrees_across_route_and_report(tmp_path, asci
     assert state["total"] == (5 if blocker else 4)
     assert state["currentTask"] is None
     assert state["dependencyErrors"] == []
+    assert state["verificationScope"] is None
     assert state["updateCheckpoint"] == "none"
     assert summary["progress"] == ("4/5" if blocker else "4/4")
     assert summary["blocked"] == (blocker[1] if blocker else "无")
+    assert summary["verification_scope"] == "历史包未声明"
 
     task_list = render_tasks(slug, sections, tasks)
     route = route_for_package(tmp_path, slug, ascii_mode=ascii_mode, compact=compact)
@@ -142,6 +144,60 @@ def test_completed_task_projection_agrees_across_route_and_report(tmp_path, asci
         assert f"- [!] {blocker[1]}" in task_list
     else:
         assert "- [!]" not in task_list
+
+
+def test_route_and_status_expose_declared_verification_scope(tmp_path):
+    slug = "2026-10-03_fix-route-scope"
+    scoped_spec = COMPLETE_SPEC + """
+### 5.1 验证策略
+- 范围级别：package
+- 变更对象：changed module
+- 快速检查：pytest tests/test_changed.py
+- 集成检查：适用外：无直接受影响链路
+- 全项目检查：适用外：发布门禁
+- 升级触发：共享基础设施或跨模块契约变化
+"""
+    scoped_checklist = COMPLETE_CHECKLIST.replace(
+        "## 验收证据\n",
+        "## 验收证据\n- 验证范围：package；实际执行命令必须属于该范围\n",
+        1,
+    )
+    _create_package(
+        tmp_path / ".spec" / "specs",
+        slug,
+        spec_text=scoped_spec,
+        tasks_text=COMPLETED_PROJECTION_TASKS,
+        checklist_text=scoped_checklist,
+    )
+    state = _route_state(tmp_path, slug)
+    assert state["verificationScope"] == "package"
+    sections, tasks = parse_tasks(COMPLETED_PROJECTION_TASKS)
+    summary = package_status_summary(slug, COMPLETED_PROJECTION_TASKS, scoped_spec, scoped_checklist, sections, tasks)
+    assert summary["verification_scope"] == "package"
+    status = render_status(slug, "Test", COMPLETED_PROJECTION_TASKS, scoped_spec, scoped_checklist, sections, tasks)
+    assert "## 验证范围" in status
+    assert "级别：package" in status
+
+    invalid_spec = scoped_spec.replace("- 范围级别：package", "- 范围级别：project")
+    _create_package(
+        tmp_path / ".spec" / "specs",
+        "2026-10-03_fix-route-scope-invalid",
+        spec_text=invalid_spec,
+        tasks_text=COMPLETED_PROJECTION_TASKS,
+        checklist_text=scoped_checklist,
+    )
+    invalid_route = route_for_package(tmp_path, "2026-10-03_fix-route-scope-invalid")
+    assert "验证范围尚未满足" in invalid_route
+    invalid_status = render_status(
+        "2026-10-03_fix-route-scope-invalid",
+        "Test",
+        COMPLETED_PROJECTION_TASKS,
+        invalid_spec,
+        scoped_checklist,
+        sections,
+        tasks,
+    )
+    assert "验证范围尚未满足" in invalid_status
 
 
 @pytest.mark.parametrize("ascii_mode,compact", [(False, False), (True, False), (False, True), (True, True)])

@@ -42,6 +42,7 @@ from spec_package_support import (
     is_development_record_slug,
     is_placeholder_value,
     normalize_items,
+    normalize_verification_scope_value,
     orchestration_strategy_errors,
     parse_task_records,
     read_regular_text,
@@ -52,6 +53,10 @@ from spec_package_support import (
     section_prefix_exists,
     validate_branch_bound_package,
     validate_slug,
+    verification_scope,
+    verification_scope_errors,
+    verification_scope_fields,
+    verification_scope_section_exists,
 )
 from update_checkpoint_support import detect_update_checkpoint
 
@@ -167,6 +172,13 @@ class GateResults:
     orchestration_section_exists: bool = False
     orchestration_errors: list[str] = field(default_factory=list)
 
+    # Verification strategy (optional for historical packages; required for
+    # newly initialized packages whose template carries 5.1).
+    verification_scope: str | None = None
+    verification_scope_fields: dict[str, str] = field(default_factory=dict)
+    verification_scope_errors: list[str] = field(default_factory=list)
+    verification_scope_section_exists: bool = False
+
     @property
     def orchestration_ok(self) -> bool:
         return not self.orchestration_errors
@@ -203,6 +215,7 @@ class GateResults:
 
     # Evidence
     evidence_fields: dict[str, str] = field(default_factory=dict)
+    verification_scope_evidence: str = ""
     evidence_present: bool = False
     evidence_filled_count: int = 0
     command_evidence_ok: bool = False
@@ -261,6 +274,10 @@ def compute_gate_results(
     r.orchestration_section_exists = orchestration_seen or section_prefix_exists(
         spec_content, ORCHESTRATION_HEADING_PREFIX
     )
+    r.verification_scope = verification_scope(spec_content)
+    r.verification_scope_fields = verification_scope_fields(spec_content)
+    r.verification_scope_errors = verification_scope_errors(spec_content)
+    r.verification_scope_section_exists = verification_scope_section_exists(spec_content)
     try:
         r.task_contract_errors = dependency_errors(parse_task_records(tasks_content))
     except SpecControlError as exc:
@@ -305,6 +322,18 @@ def compute_gate_results(
 
     # Evidence
     r.evidence_fields = extract_evidence_fields(checklist_content)
+    if r.verification_scope_section_exists:
+        r.verification_scope_evidence = r.evidence_fields.get("验证范围", "").strip()
+        normalized_evidence_scope = normalize_verification_scope_value(r.verification_scope_evidence)
+        if is_placeholder_value(r.verification_scope_evidence):
+            r.verification_scope_errors.append(
+                "`## 验收证据` 缺少与 spec.md 一致的验证范围：需填写 package/integration/project"
+            )
+        elif normalized_evidence_scope != (r.verification_scope or ""):
+            r.verification_scope_errors.append(
+                "`## 验收证据` 验证范围与 spec.md 不一致："
+                f"声明 {r.verification_scope or '未声明'}，记录 {r.verification_scope_evidence}"
+            )
     r.evidence_present = any(key in r.evidence_fields for key in EVIDENCE_KEYS)
     r.evidence_filled_count = sum(
         1 for key in EVIDENCE_KEYS if key in r.evidence_fields and not is_placeholder_value(r.evidence_fields[key])
@@ -359,8 +388,12 @@ def compute_gate_results(
     )
 
     r.has_new_gate_markers = (
-        r.consistency_section_exists or r.structure_section_exists or r.boundary_regression_section_exists
+        r.consistency_section_exists
+        or r.structure_section_exists
+        or r.boundary_regression_section_exists
+        or r.verification_scope_section_exists
     )
+    verification_scope_ok = not r.verification_scope_errors
     r.base_ok = (
         r.development_record_ok
         and r.assumptions_ok
@@ -369,6 +402,7 @@ def compute_gate_results(
         and r.function_ok
         and r.command_evidence_ok
         and r.orchestration_ok
+        and verification_scope_ok
         # Anchor-in-force: only a stale (present, resolvable, mismatched)
         # anchor blocks; None (absent/skip) keeps legacy behavior.
         and r.evidence_anchor_ok is not False
@@ -444,6 +478,8 @@ def convergence_state(results: GateResults) -> tuple[bool, list[str]]:
         gaps.append("验收未通过")
     if r.blocked_tasks:
         gaps.append("存在阻塞任务")
+    if r.verification_scope_errors:
+        gaps.extend(r.verification_scope_errors)
     evidence_satisfied = r.evidence_refill_ok if r.has_new_gate_markers else r.command_evidence_ok
     if not evidence_satisfied:
         gaps.append(
@@ -479,6 +515,16 @@ def gate_rows(r: GateResults, slug: str | None) -> list[tuple[str, bool | None, 
             "编排策略",
             r.orchestration_ok if r.orchestration_section_exists else None,
             "; ".join(r.orchestration_errors) or "route 合法",
+        ),
+        (
+            "验证范围",
+            (not r.verification_scope_errors) if r.verification_scope_section_exists else None,
+            "; ".join(r.verification_scope_errors)
+            or (
+                f"范围级别 {r.verification_scope}；证据记录 {r.verification_scope_evidence}"
+                if r.verification_scope
+                else "历史包未声明"
+            ),
         ),
         ("开发记录规范", r.development_record_ok, f"slug `{slug}`"),
         (
@@ -569,6 +615,8 @@ def render(
         alerts.append(f"项目尚未完成验收：{failure_details['功能与验证']}")
     if "编排策略" in failure_details:
         alerts.append(f"编排策略尚未满足：{failure_details['编排策略']}")
+    if "验证范围" in failure_details:
+        alerts.append(f"验证范围尚未满足：{failure_details['验证范围']}")
     for label in (
         "跨载体一致性",
         "项目结构与文档可信度",
@@ -612,6 +660,7 @@ def render(
             "待确认": str(len(r.pending_questions)),
             "门禁": "通过" if r.overall_ok else f"未过 {len(failed_labels)}",
             "证据": str(r.evidence_filled_count),
+            "范围": r.verification_scope or "",
         },
         current=current_task,
         alerts=alerts,
@@ -703,6 +752,7 @@ def main() -> int:
                     "converged": converged,
                     "gaps": gaps,
                     "overallGaps": overall_gaps,
+                    "verificationScope": results.verification_scope,
                     "archived": archived,
                 },
                 ensure_ascii=False,

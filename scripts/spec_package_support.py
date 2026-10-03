@@ -510,6 +510,156 @@ def extract_structured_section_fields(content: str, heading_prefix: str) -> dict
     return fields
 
 
+VERIFICATION_SCOPE_HEADING_PREFIX = "### 5.1 验证策略"
+VERIFICATION_SCOPE_LEVELS = ("package", "integration", "project")
+VERIFICATION_SCOPE_REQUIRED_FIELDS = (
+    "范围级别",
+    "变更对象",
+    "快速检查",
+    "集成检查",
+    "全项目检查",
+    "升级触发",
+)
+
+
+def _verification_scope_section_lines(spec_content: str) -> tuple[list[str], int]:
+    """Return the first real 5.1 section and count real headings outside fences."""
+    in_fence = False
+    in_section = False
+    headings = 0
+    section_lines: list[str] = []
+    for line in spec_content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if heading_line_matches(line, VERIFICATION_SCOPE_HEADING_PREFIX):
+            headings += 1
+            if not in_section:
+                in_section = True
+                continue
+            break
+        if in_section and re.match(r"^#{1,3} ", line):
+            break
+        if in_section:
+            section_lines.append(line)
+    return section_lines, headings
+
+
+def verification_scope_section_exists(spec_content: str) -> bool:
+    """Return whether a real (non-code-fenced) 5.1 section is present."""
+    _lines, headings = _verification_scope_section_lines(spec_content)
+    return headings > 0
+
+
+def verification_scope_fields(spec_content: str) -> dict[str, str]:
+    """Return the declared verification strategy for a package.
+
+    The section is intentionally optional for historical records. New
+    packages get it from the template, while old archives remain readable
+    without being regraded against a contract that did not exist at creation.
+    """
+    section_lines, _headings = _verification_scope_section_lines(spec_content)
+    if not section_lines and not verification_scope_section_exists(spec_content):
+        return {}
+    fields: dict[str, str] = {}
+    for line in section_lines:
+        if line[:1] in (" ", "\t"):
+            continue
+        match = re.match(r"^-\s*([^：:]+?)\s*[：:]\s*(.*)$", line)
+        if match:
+            fields.setdefault(match.group(1).strip(), match.group(2).strip())
+    return fields
+
+
+def verification_scope_errors(spec_content: str) -> list[str]:
+    """Validate the opt-in verification-scope contract fail-closed."""
+    section_lines, heading_count = _verification_scope_section_lines(spec_content)
+    if heading_count == 0:
+        return []
+    fields = verification_scope_fields(spec_content)
+    errors = [
+        f"`{VERIFICATION_SCOPE_HEADING_PREFIX}` 缺少字段：{field}"
+        for field in VERIFICATION_SCOPE_REQUIRED_FIELDS
+        if not fields.get(field)
+    ]
+    if heading_count > 1:
+        errors.append(f"`{VERIFICATION_SCOPE_HEADING_PREFIX}` 出现 {heading_count} 次，必须唯一")
+    duplicate_counts: dict[str, int] = {field: 0 for field in VERIFICATION_SCOPE_REQUIRED_FIELDS}
+    for line in section_lines:
+        if line[:1] in (" ", "\t"):
+            continue
+        match = re.match(r"^-\s*([^：:]+?)\s*[：:]\s*(.*)$", line)
+        if match and match.group(1).strip() in duplicate_counts:
+            duplicate_counts[match.group(1).strip()] += 1
+    errors.extend(
+        f"`{VERIFICATION_SCOPE_HEADING_PREFIX}` 字段 {field} 出现 {count} 次，必须唯一"
+        for field, count in duplicate_counts.items()
+        if count > 1
+    )
+    for field in VERIFICATION_SCOPE_REQUIRED_FIELDS:
+        value = fields.get(field, "").strip()
+        if value and is_placeholder_value(value):
+            errors.append(f"`{VERIFICATION_SCOPE_HEADING_PREFIX}` 字段 {field} 仍是占位内容")
+        if value.startswith("<") and value.endswith(">"):
+            errors.append(f"`{VERIFICATION_SCOPE_HEADING_PREFIX}` 字段 {field} 必须填写真实内容")
+    level = normalize_verification_scope_value(fields.get("范围级别", ""))
+    if level and level not in VERIFICATION_SCOPE_LEVELS:
+        errors.append(
+            f"`{VERIFICATION_SCOPE_HEADING_PREFIX}` 范围级别必须是单 token "
+            f"（{' / '.join(VERIFICATION_SCOPE_LEVELS)}），当前为 {level!r}"
+        )
+    if level in {"package", "integration"}:
+        full_project = fields.get("全项目检查", "").strip()
+        if full_project and not (full_project.startswith("适用外") or "仅在" in full_project or "仅当" in full_project):
+            errors.append(
+                f"`{VERIFICATION_SCOPE_HEADING_PREFIX}` package/integration 范围必须说明"
+                "全项目检查的升级条件或适用外理由"
+            )
+    required_real_fields = {
+        "package": ("快速检查",),
+        "integration": ("快速检查", "集成检查"),
+        "project": ("快速检查", "集成检查", "全项目检查"),
+    }.get(level, ())
+    for field in required_real_fields:
+        value = fields.get(field, "").strip()
+        if value.startswith(
+            (
+                "适用外",
+                "不适用",
+                "仅在",
+                "仅当",
+                "条件：",
+                "条件:",
+                "由全项目检查",
+                "未执行",
+                "未运行",
+                "未验证",
+                "未检查",
+                "未跑",
+                "跳过",
+                "不执行",
+            )
+        ):
+            errors.append(f"`{VERIFICATION_SCOPE_HEADING_PREFIX}` {level} 范围必须填写真实的{field}，不能标记为适用外")
+    return errors
+
+
+def verification_scope(spec_content: str) -> str | None:
+    """Return the normalized declared scope, or ``None`` for legacy records."""
+    value = normalize_verification_scope_value(verification_scope_fields(spec_content).get("范围级别", ""))
+    return value or None
+
+
+def normalize_verification_scope_value(value: str) -> str:
+    """Normalize a scope token and ignore the template's explanatory suffix."""
+    token = value.strip().strip("`")
+    token = re.split(r"[；;]", token, maxsplit=1)[0]
+    return token.strip().strip("`").lower()
+
+
 def normalize_items(items: list[str], ignored: set[str] | None = None) -> list[str]:
     ignore = set(GENERIC_PLACEHOLDERS)
     if ignored:

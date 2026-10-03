@@ -414,6 +414,66 @@ def _write_complete_package(root: Path, slug: str) -> Path:
     return package_dir
 
 
+def _write_scoped_complete_package(root: Path, slug: str, level: str = "package") -> Path:
+    package_dir = _write_complete_package(root, slug)
+    scope = f"""
+### 5.1 验证策略
+- 范围级别：{level}
+- 变更对象：changed module
+- 快速检查：pytest tests/test_changed.py
+- 集成检查：适用外：无直接受影响链路
+- 全项目检查：适用外：发布门禁
+- 升级触发：共享基础设施或跨模块契约变化
+"""
+    (package_dir / "spec.md").write_text(_COMPLETE_SPEC_ZH + scope, encoding="utf-8")
+    checklist = (package_dir / "checklist.md").read_text(encoding="utf-8")
+    checklist = checklist.replace("## 验收证据\n", f"## 验收证据\n- 验证范围：{level}\n", 1)
+    (package_dir / "checklist.md").write_text(checklist, encoding="utf-8")
+    return package_dir
+
+
+def test_complete_cli_rejects_malformed_verification_scope(tmp_path):
+    package = _write_scoped_complete_package(tmp_path, "2026-10-03_fix-invalid-scope", "unknown")
+    script = Path(__file__).resolve().parent.parent / "scripts" / "complete_spec_package.py"
+    result = subprocess.run(
+        [sys.executable, str(script), "--root", str(tmp_path), "--slug", package.name, "--archive"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "spec package has not passed check gates" in result.stderr
+    assert package.exists()
+
+
+def test_complete_cli_summary_records_verification_scope(tmp_path):
+    package = _write_scoped_complete_package(tmp_path, "2026-10-03_fix-valid-scope")
+    script = Path(__file__).resolve().parent.parent / "scripts" / "complete_spec_package.py"
+    result = subprocess.run(
+        [sys.executable, str(script), "--root", str(tmp_path), "--slug", package.name],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    summary = (package / "completion-summary.md").read_text(encoding="utf-8")
+    assert "## 验证范围" in summary
+    assert "- 级别：package" in summary
+
+
+def test_complete_cli_rejects_mismatched_verification_scope_evidence(tmp_path):
+    package = _write_scoped_complete_package(tmp_path, "2026-10-03_fix-mismatched-scope", "project")
+    checklist = (package / "checklist.md").read_text(encoding="utf-8")
+    (package / "checklist.md").write_text(checklist.replace("验证范围：project", "验证范围：package"), encoding="utf-8")
+    script = Path(__file__).resolve().parent.parent / "scripts" / "complete_spec_package.py"
+    result = subprocess.run(
+        [sys.executable, str(script), "--root", str(tmp_path), "--slug", package.name, "--archive"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "spec package has not passed check gates" in result.stderr
+    assert package.exists()
+
+
 def test_complete_rejects_allow_incomplete_archive(tmp_path):
     package = tmp_path / ".spec" / "specs" / "2026-07-13_fix-incomplete"
     package.mkdir(parents=True)
@@ -929,3 +989,36 @@ def test_build_summary_process_metrics_place_between_gate_evidence_and_followups
     assert summary.index("## 过程指标") < summary.index("## 遗留事项")
     assert "- check 轮数：4" in summary
     assert "- 转人工标记：无" in summary
+
+
+def test_build_summary_records_verification_scope():
+    summary = build_summary(
+        title="Scoped",
+        completed_at="2026-05-02",
+        result="完成",
+        verified_assumptions=[],
+        open_risks=[],
+        delivered=[],
+        not_delivered=[],
+        deviations=[],
+        simplifications=[],
+        out_of_scope=[],
+        touched_areas=[],
+        untouched_areas=[],
+        build_evidence=[],
+        test_evidence=["pytest tests/test_changed.py"],
+        manual_evidence=[],
+        effect_metrics=[],
+        consistency_evidence=[],
+        commit_ref="abc123",
+        push_ref="pending",
+        git_record_language="zh",
+        knowledge_docs=[],
+        follow_ups=[],
+        rejected_extensions=[],
+        gate_evidences=["check exit 0"],
+        verification_scope_level="package",
+    )
+    assert "## 验证范围" in summary
+    assert "- 级别：package" in summary
+    assert "不扩大" not in summary

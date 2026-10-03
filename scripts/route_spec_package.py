@@ -160,6 +160,7 @@ def route_for_package(
     alerts.extend(f"项目定义不完整：{project_gap_message(gap)}" for gap in r.spec_clarification_gaps)
     # 编排策略结构错误在执行前拦截：非法 5.4 route 不得继续 stage=run。
     alerts.extend(f"编排策略尚未满足：{error}" for error in r.orchestration_errors)
+    alerts.extend(f"验证范围尚未满足：{error}" for error in r.verification_scope_errors)
 
     orchestration_blocked = bool(r.orchestration_errors)
     if checkpoint_pending or blocked or r.pending_questions or r.spec_clarification_gaps or orchestration_blocked:
@@ -226,6 +227,7 @@ def route_for_package(
             "待确认": str(len(r.pending_questions)),
             "门禁": "通过" if check_passed else f"缺口 {gate_gap_total}",
             "证据": str(r.evidence_filled_count),
+            "范围": r.verification_scope or "",
         },
         alerts=alerts,
         next_step=next_action,
@@ -243,6 +245,7 @@ def route_for_package(
                 "currentTask": current_task,
                 "dependencyErrors": r.task_contract_errors,
                 "orchestrationErrors": r.orchestration_errors,
+                "verificationScope": r.verification_scope,
                 "updateCheckpoint": checkpoint_status.state,
             },
             ensure_ascii=False,

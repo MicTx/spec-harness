@@ -55,6 +55,7 @@ def mark_checklist_passed(path: Path) -> None:
     content = content.replace("- [ ]", "- [x]")
     content = content.replace("**验收结果**：待修复", "**验收结果**：通过")
     replacements = {
+        "- 验证范围：<package|integration|project>；实际执行命令必须属于该范围": "- 验证范围：package；实际执行命令必须属于该范围",
         "- 脚本验证：": "- 脚本验证：smoke script assertions passed",
         "- 旧新对比：": "- 旧新对比：fresh package now routes to status instead of run",
         "- 差异边界：": "- 差异边界：scripts/ references/ README.md only",
@@ -85,6 +86,20 @@ def populate_spec(path: Path) -> None:
             "- 最简单可行方案：xxx": "- 最简单可行方案：收敛模板源并修补状态机判断",
             "- 暂不引入：xxx": "- 暂不引入：测试框架和额外配置层",
             "- 不做的抽象/配置化：xxx": "- 不做的抽象/配置化：不引入 DSL 或数据库",
+            (
+                "- 变更对象：本任务包 boundary 涉及的模块、入口和数据契约"
+            ): "- 变更对象：spec helper scripts、模板与状态机入口",
+            (
+                "- 快速检查：<变更对象对应的局部测试/静态检查命令>"
+            ): "- 快速检查：python3 -m pytest -q tests/test_route_spec_package.py",
+            "- 集成检查：适用外：本轮没有直接受影响的跨模块用户路径": "- 集成检查：适用外：smoke 已覆盖本轮直接路径",
+            (
+                "- 全项目检查：适用外：本轮不涉及共享基础设施、跨模块契约或发布载荷；由发布门禁统一执行"
+            ): "- 全项目检查：适用外：本轮不涉及发布载荷；由发布门禁统一执行",
+            (
+                "- 升级触发：只有改动共享基础设施、跨模块契约、构建/依赖、发布载荷，"
+                "或 package/integration 检查暴露跨边界回归时，才把范围升级并记录理由"
+            ): "- 升级触发：共享基础设施或发布载荷变化时记录理由并升级",
             "- 风险点：xxx -> 缓解措施": "- 风险点：修复破坏旧输出 -> 缓解措施：用 smoke test 覆盖关键分支",
         },
     )

@@ -88,7 +88,7 @@ The optional Claude Stop hook (`hooks/claude_stop_guard.py`) checks package conv
 
 4. **Issue handling**: Actionable issues found during `check` must be written back to the current package and fixed in the same round. Do not output executable fixes as user deliverables. Only ask the user about a project-shaping constraint, a decision that cannot be reasonably assumed, or an external dependency the agent cannot resolve. Closed issues must have one of: `resolved_current`, `resolved_followup`, `accepted_risk`, `external_blocked`, `non_actionable`.
 
-5. **Validation**: `scripts/check_spec_package.py` exit code is the single source of truth for package state. `check_all_spec_packages.py` validates before commit/push. Verbal "passed" doesn't count.
+5. **Validation**: each new package declares a verification level in `spec.md`: `package` (default, focused checks for the changed boundary), `integration` (focused checks plus directly affected cross-module paths), or `project` (full project suite). `check` and `done` use the declared level and evidence; they do not require a whole-project suite for every package. `scripts/check_spec_package.py` remains the single source of truth for package state, while `check_all_spec_packages.py` validates package records before commit/push. Verbal "passed" doesn't count.
 
 6. **Commit/push separation**:
    - Only `done` archives work and creates the package commit

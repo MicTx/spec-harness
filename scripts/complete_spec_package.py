@@ -43,6 +43,7 @@ from spec_package_support import (
     resolve_specs_root,
     validate_branch_bound_package,
     validate_slug,
+    verification_scope,
 )
 
 
@@ -408,6 +409,7 @@ def build_summary(
     gate_evidences: list[str],
     issue_dispositions: list[dict[str, object]] | None = None,
     process_metrics: list[str] | None = None,
+    verification_scope_level: str | None = None,
 ) -> str:
     git_labels = git_record_labels(git_record_language)
     closure = render_issue_closure(issue_dispositions or [])
@@ -464,6 +466,10 @@ def build_summary(
 
 ### 手工验证
 {bullet_lines(manual_evidence, "待补充")}
+
+## 验证范围
+- 级别：{verification_scope_level or "历史包未声明"}
+- 规则：check 与 done 复用该范围；只有记录升级触发时才执行全项目检查
 
 ## 哲学生效证据
 ### 行为成效回填
@@ -734,6 +740,7 @@ def main() -> int:
         # Process metrics stay opt-in in both draft and archive modes: no
         # package-derived default, an unpassed flag renders no section.
         process_metrics=args.process_metric,
+        verification_scope_level=verification_scope(spec_content),
     )
 
     if args.archive:

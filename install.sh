@@ -499,14 +499,14 @@ EOF_BODY
       cat <<EOF_BODY
 # /$command_name
 
-Run an extra human-in-the-loop review pass: inspect implementation, evidence, gaps, and write required fixes back into the spec package. The machine gate is check_spec_package.py: tasks must be complete, checklist must be fully checked with a passing result, every task needs boundary/verify, and checklist evidence must include non-placeholder script/test/build proof plus any enabled consistency or structure gates.
+Run an extra human-in-the-loop review pass: inspect implementation, evidence, gaps, and write required fixes back into the spec package. Read the package's declared verification level first: package (default focused checks), integration (focused checks plus directly affected paths), or project (full suite). Do not expand a package/integration review to the whole project without the recorded upgrade trigger. The machine gate is check_spec_package.py: tasks must be complete, checklist must be fully checked with a passing result, every task needs boundary/verify, and checklist evidence must include non-placeholder script/test/build proof plus any enabled consistency or structure gates.
 EOF_BODY
       ;;
     done)
       cat <<EOF_BODY
 # /$command_name
 
-Close the task: verify completion, extract reusable knowledge, archive the task package, and create the local Git commit. Do not merge, push, or delete branches in this stage; use spec:push for the post-commit Git handoff.
+Close the task: re-verify the declared package/integration/project scope, extract reusable knowledge, archive the task package, and create the local Git commit. Do not widen a focused scope to a whole-project suite implicitly. Do not merge, push, or delete branches in this stage; use spec:push for the post-commit Git handoff.
 EOF_BODY
       ;;
     push)

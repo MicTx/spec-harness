@@ -74,7 +74,8 @@ Landing in Spec:
 
 - Every success criterion in `spec.md` carries `verify`
 - Every task in `tasks.md` carries `verify`
-- `/spec:check` and `/spec:done` must carry evidence; `check_spec_package.py` requires at least one non-placeholder script/test/build evidence item, and when cross-carrier or structure gates are enabled, the corresponding checklist sections must pass as well
+- Every new package declares the smallest verification level that can prove its boundary: `package` by default, `integration` when directly affected cross-module paths matter, and `project` only for shared or release-wide risk
+- `/spec:check` and `/spec:done` must carry evidence at the declared level; `check_spec_package.py` requires at least one non-placeholder script/test/build evidence item, and when cross-carrier or structure gates are enabled, the corresponding checklist sections must pass as well
 
 ## Conflict priority
 

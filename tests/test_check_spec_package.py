@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from check_spec_package import (
     compute_gate_results,
+    gate_failure_details,
     gate_rows,
     is_likely_template,
     overall_check_passed,
@@ -160,9 +161,11 @@ def _make_tasks(done=True):
 """
 
 
-def _make_checklist(passed=False):
+def _make_checklist(passed=False, verification_scope=None):
     result = "**验收结果**：通过" if passed else "**验收结果**：待修复"
     evidence = "- 脚本验证：pytest -q" if passed else ""
+    if passed and verification_scope:
+        evidence += f"\n- 验证范围：{verification_scope}"
     return f"""\
 ## 基础
 - [x] Item 1
@@ -1361,3 +1364,55 @@ def test_spec_without_any_checkboxes_is_vacuous_pass():
     )
     assert results.unchecked_spec_functions == 0
     assert results.overall_ok is True
+
+
+def _scope_spec(level: str = "package"):
+    return (
+        _make_spec()
+        + f"""
+### 5.1 验证策略
+- 范围级别：{level}
+- 变更对象：changed module
+- 快速检查：pytest tests/test_changed.py
+- 集成检查：适用外：无直接受影响链路
+- 全项目检查：适用外：发布门禁
+- 升级触发：共享基础设施或跨模块契约变化
+"""
+    )
+
+
+def test_check_reports_declared_verification_scope():
+    results = compute_gate_results(
+        _scope_spec("package"),
+        _make_tasks(done=True),
+        _make_checklist(passed=True, verification_scope="package"),
+        slug="2026-09-25_fix-scope",
+    )
+    assert results.verification_scope == "package"
+    assert results.verification_scope_section_exists is True
+    assert results.verification_scope_errors == []
+    rows = {label: passed for label, passed, _evidence in gate_rows(results, "2026-09-25_fix-scope")}
+    assert rows["验证范围"] is True
+    assert results.overall_ok is True
+
+
+@pytest.mark.parametrize("evidence_scope", [None, "package"])
+def test_check_rejects_missing_or_mismatched_verification_scope_evidence(evidence_scope):
+    results = compute_gate_results(
+        _scope_spec("project"),
+        _make_tasks(done=True),
+        _make_checklist(passed=True, verification_scope=evidence_scope),
+        slug="2026-09-25_fix-scope",
+    )
+    assert results.overall_ok is False
+    assert any("验证范围" in error for error in results.verification_scope_errors)
+    assert gate_failure_details(results, "2026-09-25_fix-scope")["验证范围"]
+
+
+def test_check_rejects_malformed_declared_verification_scope():
+    results = compute_gate_results(
+        _scope_spec("unknown"), _make_tasks(done=True), _make_checklist(passed=True), slug="2026-09-25_fix-scope"
+    )
+    assert results.verification_scope_errors
+    assert results.overall_ok is False
+    assert gate_failure_details(results, "2026-09-25_fix-scope")["验证范围"]

@@ -13,7 +13,7 @@ Spec Harness 是一个给 AI 编程智能体使用的任务包工作流 Skill。
 
 因此，新的会话不必从聊天记录猜测进度，维护者也不必把“看起来完成”当成证据。Spec Harness 不提供模型，不替用户做产品决策，也不充当中央 Skill 路由器；它只管理这条可恢复、可审查的工程工作流。
 
-先读：[项目介绍](docs/introduction.md)；要动手则读[长程任务教程](docs/tutorial.md)；要发布再读 [Git 工作流](docs/git-workflow.md)。
+先读：[项目介绍](docs/introduction.md)；要动手则读[长程任务教程](docs/tutorial.md)；要发布再读 [Git 工作流](docs/git-workflow.md)。完整的中英文文档入口见[文档索引](docs/README.md)。
 
 该仓库是 Spec Harness 的源码包；`spec` 保留为兼容的 Skill/CLI 调用名。仓库同时包含运行时入口、reference、标准库 Python 脚本、可选的 self-hosted server-mode 适配器和插槽。它不运营托管服务，也不提供包管理器插件。
 
@@ -24,6 +24,7 @@ Spec Harness 是一个给 AI 编程智能体使用的任务包工作流 Skill。
 - **单编排者工作流（默认）+ 受管委派**：主会话负责关键路径、路由、验收与 done/push 门禁。`scripts/route_decision.py` 把任务文本机器判定为五路由之一（`local / explore / build / review / external`）；`explore/build/review` 可按 assignment contract（`references/orchestration.md`）派发有界 sidecar lane；循环收敛类任务命中扩展插槽（如 `team-loop`）triggers 时按该插槽受管协议接管执行段。委派永不移走路由、验收与门禁授权。
 - 用 `/spec` 内部路由用户意图；用户可使用 `new`、`goal`、`run`、`check`、`done`、`push`、`update`、`status`、`doctor`、`organize` 这些阶段。
 - 创建包含 `spec.md`、`tasks.md` 和 `checklist.md` 的 `.spec/specs/YYYY-MM-DD_slug/` Development Record。
+- 每个新任务包在 `spec.md` 声明验证范围：默认 `package` 局部检查，必要时升级为 `integration`，只有共享基础设施、跨模块契约、构建/依赖或发布载荷变更才使用 `project` 全套检查；`check` 与 `done` 复用同一范围，不会按包重复跑全项目套件。
 - 基于任务包文件渲染状态总览、任务进度、验证以及完成摘要。
 - 把假设、最小实现、边界和验证证据写进普通文本，而不是藏在一次对话里。
 - 强制机器可验证的问题闭环：执行中发现的问题要么指向当前已完成 task，要么由本次链路中已执行并归档的 follow-up Development Record 承接；关闭态统一使用五类 disposition，archive、Stop hook、server projection 与 Git push 共享同一门禁，不能把自由"后续事项"交给用户。
@@ -371,6 +372,8 @@ python3 scripts/check_all_spec_packages.py --root /path/to/project
 
 `check_spec_package.py` 是 `/spec:check` 的单包机器真源。`check_all_spec_packages.py` 还验证 active/archive 四件套、新 archive 的 v1 问题处置、显式 slug 命中，并可用 `--revision <sha/ref>` 校验目标 Git 树。门禁细节以脚本输出为准。
 
+新任务包的 `spec.md` `### 5.1 验证策略` 选择 `package`、`integration` 或 `project`。`/spec:check` 只运行声明层级内最有决定性的检查；`/spec:done` 复用同一份证据。完整项目套件保留给明确的跨边界风险或发布门禁。
+
 为目标仓库增量安装最终 Git 执行点（同内容幂等；已有不同 hook 时拒绝覆盖并提示手工链入）：
 
 ```bash
@@ -431,6 +434,8 @@ python3 scripts/smoke_test_spec_skill.py
 
 导出包 smoke 会独立验证运行时布局、doctor 自检，并完整执行任务包初始化流程。
 
+
+## 验证
 
 辅助脚本特意使用了标准库 Python。基础的语法检查命令为：
 

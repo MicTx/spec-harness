@@ -197,6 +197,12 @@ class Dashboard:
             return []
         return self._section("项目进展", [self._item("已完成", f"{self.done}/{self.total}")])
 
+    def _verification_scope_lines(self) -> list[str]:
+        scope = self.metrics.get("范围", "")
+        if not scope or scope == "历史包未声明":
+            return []
+        return self._section("验证范围", [self._item("级别", scope)])
+
     def _metric_value(self, column: str) -> str:
         if column == "进度":
             return f"{self.done}/{self.total}"
@@ -313,6 +319,7 @@ class Dashboard:
             [
                 self._header_lines(),
                 self._progress_lines(),
+                self._verification_scope_lines(),
                 self._strip_lines(),
                 self._current_lines(),
                 self._metrics_lines(),

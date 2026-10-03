@@ -64,7 +64,7 @@ Pull Request 应包含：
 - 需要用户迁移的兼容性说明。
 - 文档或 CLI 变化的示例输出、截图或复现步骤。
 
-提交前至少运行这些能回答“当前树是否可交付”的命令：
+提交前至少运行这些能回答“当前树是否可交付”的命令。下面的完整套件属于发布/主分支门禁，不是每个任务包 `check`/`done` 的默认验证；任务包按 `spec.md` 声明的 `package`、`integration` 或 `project` 范围执行：
 
     python3 -m compileall -q scripts server hooks slots tests
     python3 scripts/smoke_test_spec_skill.py

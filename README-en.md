@@ -13,7 +13,7 @@ The workflow keeps one evidence chain on disk:
 
 It does not provide a model, make product decisions, or act as a central router for other Skills. It makes a long-running engineering task recoverable and reviewable.
 
-Choose a path: start with the [Introduction](docs/introduction.md), follow the [long-running task tutorial](docs/tutorial.md), or use the [Git workflow](docs/git-workflow.en.md) when you are ready to land changes.
+Choose a path: start with the [Introduction](docs/introduction.md), follow the [long-running task tutorial](docs/tutorial.md), or use the [Git workflow](docs/git-workflow.en.md) when you are ready to land changes. The [documentation index](docs/README.md) lists the Chinese and English entry points.
 
 The repository is the source package for Spec Harness; `spec` remains the compatible Skill/CLI invocation name. It contains the runtime entrypoint, references, standard-library Python helpers, optional server-mode and extension slots. It is not a hosted service or package-manager plugin.
 
@@ -24,6 +24,7 @@ The repository is the source package for Spec Harness; `spec` remains the compat
 - **Single-orchestrator workflow (default) with managed delegation**: the main session owns the critical path, routing, acceptance, and the done/push gates. `scripts/route_decision.py` maps task text to one machine-judged route (`local / explore / build / review / external`); `explore/build/review` may spawn bounded sidecar lanes under the assignment contract (`references/orchestration.md`); loop-convergence work hands the execution segment to a managed slot protocol (e.g. `team-loop`). Delegation never moves routing, acceptance, or gate authorization out of the main session.
 - Routes user intent internally through `/spec` and exposes ten user stages: `new`, `goal`, `run`, `check`, `done`, `push`, `update`, `status`, `doctor`, and `organize`.
 - Creates `.spec/specs/YYYY-MM-DD_slug/` Development Records containing `spec.md`, `tasks.md`, and `checklist.md`.
+- Each new package declares a verification level in `spec.md`: `package` focused checks by default, `integration` for directly affected cross-module paths, or `project` for the full suite when shared infrastructure, cross-module contracts, build/dependency, or release-payload changes require it. `check` and `done` reuse that level instead of rerunning the whole project suite for every package.
 - Renders status overviews, task progress, validation, and completion summaries from task-package files.
 - Keeps assumptions, the smallest useful implementation, boundaries, and verification evidence in ordinary text instead of leaving them in one chat session.
 - Enforces machine-verifiable issue closure: every discovered problem either resolves to a completed current task or to a follow-up Development Record that this workflow has already executed and archived. Archive, Stop hook, server projection, and Git push share the same five typed dispositions, so free-form "next work" cannot be handed back to the user.
@@ -369,6 +370,8 @@ python3 scripts/check_all_spec_packages.py --root /path/to/project
 ```
 
 `check_spec_package.py` is the single-package machine source of truth for `/spec:check`. `check_all_spec_packages.py` additionally validates active/archive four-file records, v1 issue closure for new archives, explicit slug existence, and target Git trees through `--revision <sha/ref>`. Gate details come from the script output.
+
+New packages use `spec.md` `### 5.1 验证策略` to choose `package`, `integration`, or `project`. `/spec:check` runs the strongest check within that declared level, and `/spec:done` reuses the same evidence. The full project suite remains a deliberate cross-boundary or release gate.
 
 Install final Git execution-point gates incrementally (idempotent for identical hooks; refuses to overwrite different project-owned hooks):
 

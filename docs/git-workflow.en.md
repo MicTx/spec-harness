@@ -62,7 +62,7 @@ Include:
 - Compatibility or migration notes.
 - Examples, screenshots, or reproduction steps for documentation and CLI changes.
 
-Run checks that can answer whether the current tree is ready to publish. The full suite is:
+Run checks that can answer whether the current tree is ready to publish. The full suite below is a publish/main-branch gate, not the default for every task-package `check`/`done`; packages use the `package`, `integration`, or `project` level declared in `spec.md`:
 
     python3 -m compileall -q scripts server hooks slots tests
     python3 scripts/smoke_test_spec_skill.py

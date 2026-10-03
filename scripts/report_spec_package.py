@@ -318,6 +318,7 @@ def render_status(
         else:
             alerts.append(f"项目定义不完整：{project_gap_message(gap)}")
     alerts.extend(f"编排策略尚未满足：{error}" for error in orchestration_errors)
+    alerts.extend(f"验证范围尚未满足：{error}" for error in r.verification_scope_errors)
     if r.all_tasks_done and not r.overall_ok and not alerts:
         alerts.append("项目尚未满足最终验收要求")
 
@@ -363,6 +364,7 @@ def render_status(
             "待确认": str(len(pending_questions)),
             "门禁": "通过" if r.overall_ok else "未过",
             "证据": str(r.evidence_filled_count),
+            "范围": r.verification_scope or "",
         },
         current=current,
         alerts=alerts,
@@ -467,6 +469,7 @@ def package_status_summary(
         "needs_work": "是" if (definition_gaps or acceptance_failed) else "否",
         "gate_failed": "是" if not r.overall_ok else "否",
         "orchestration": first_error,
+        "verification_scope": r.verification_scope or "历史包未声明",
         "checkpoint": checkpoint_label,
         "acceptance": "验收未通过" if acceptance_failed else "无",
     }
@@ -598,6 +601,7 @@ def render_multi_status(
             orchestration_packages += 1
         if summary["acceptance"] != "无":
             row += f"；{summary['acceptance']}"
+        row += f"；范围 {summary['verification_scope']}"
         rows.append(row)
 
     detail = rows

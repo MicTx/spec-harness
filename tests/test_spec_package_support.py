@@ -35,6 +35,8 @@ from spec_package_support import (
     section_exists,
     select_active_package,
     slug_verb_advisory,
+    verification_scope,
+    verification_scope_errors,
 )
 
 
@@ -890,3 +892,96 @@ def test_git_head_sha_empty_outside_git(tmp_path):
     plain = tmp_path / "plain"
     plain.mkdir()
     assert git_head_sha(plain) == ""
+
+
+def _verification_scope(level: str = "package", full_project: str = "适用外：发布门禁") -> str:
+    return f"""### 5.1 验证策略
+- 范围级别：{level}
+- 变更对象：changed module
+- 快速检查：pytest tests/test_changed.py
+- 集成检查：适用外：无直接受影响链路
+- 全项目检查：{full_project}
+- 升级触发：共享基础设施或跨模块契约变化
+"""
+
+
+def test_verification_scope_accepts_package_default():
+    assert verification_scope(_verification_scope()) == "package"
+    assert verification_scope_errors(_verification_scope()) == []
+
+
+def test_verification_scope_accepts_parenthetical_heading_suffix():
+    text = _verification_scope().replace("### 5.1 验证策略", "### 5.1 验证策略（说明）")
+    assert verification_scope(text) == "package"
+    assert verification_scope_errors(text) == []
+
+
+def test_verification_scope_ignores_code_fenced_examples():
+    example = """```markdown
+### 5.1 验证策略
+- 范围级别：project
+```\n"""
+    text = example + _verification_scope()
+    assert verification_scope(text) == "package"
+    assert verification_scope_errors(text) == []
+
+
+@pytest.mark.parametrize("level", ["unknown", "package integration", ""])
+def test_verification_scope_rejects_unknown_or_missing_level(level):
+    errors = verification_scope_errors(_verification_scope(level))
+    assert errors
+    if level:
+        assert "范围级别必须是单 token" in errors[0]
+    else:
+        assert any("缺少字段：范围级别" in error for error in errors)
+
+
+def test_verification_scope_rejects_placeholder_and_unjustified_full_project_check():
+    text = _verification_scope(full_project="pytest -q")
+    errors = verification_scope_errors(text.replace("pytest tests/test_changed.py", "<command>"))
+    assert any("快速检查" in error for error in errors)
+    assert any("升级条件或适用外理由" in error for error in errors)
+
+
+def test_verification_scope_is_optional_for_legacy_spec():
+    assert verification_scope("## 5. 技术决策\n- 技术栈：legacy\n") is None
+    assert verification_scope_errors("## 5. 技术决策\n- 技术栈：legacy\n") == []
+
+
+def test_verification_scope_rejects_duplicate_top_level_fields():
+    text = _verification_scope() + "- 范围级别：project\n"
+    errors = verification_scope_errors(text)
+    assert any("范围级别" in error and "必须唯一" in error for error in errors)
+
+
+def test_verification_scope_rejects_duplicate_sections():
+    errors = verification_scope_errors(_verification_scope() + "\n" + _verification_scope())
+    assert any("出现 2 次" in error and "必须唯一" in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    ("level", "field"),
+    [("package", "快速检查"), ("integration", "集成检查"), ("project", "集成检查"), ("project", "全项目检查")],
+)
+def test_verification_scope_requires_real_checks_for_declared_level(level, field):
+    text = _verification_scope(level).replace(
+        f"- {field}：", f"- {field}：适用外：本轮未覆盖"
+    )
+    errors = verification_scope_errors(text)
+    assert any(field in error and "必须填写真实" in error for error in errors)
+
+
+def test_verification_scope_rejects_conditional_required_check():
+    text = _verification_scope("integration").replace(
+        "- 集成检查：适用外：无直接受影响链路",
+        "- 集成检查：仅当 CI 触发时运行",
+    )
+    errors = verification_scope_errors(text)
+    assert any("集成检查" in error and "必须填写真实" in error for error in errors)
+
+
+@pytest.mark.parametrize("marker", ["未执行", "跳过", "不执行"])
+def test_verification_scope_rejects_non_run_required_check(marker):
+    text = _verification_scope("project").replace("- 全项目检查：适用外：发布门禁", f"- 全项目检查：{marker}")
+    errors = verification_scope_errors(text)
+    assert any("全项目检查" in error and "必须填写真实" in error for error in errors)

@@ -190,6 +190,21 @@ def test_check_section_matches_shipped_decisive_check_line():
     )
 
 
+def test_check_section_uses_declared_verification_scope_instead_of_default_full_suite():
+    section = _check_section()
+    assert "### 5.1 验证策略" in section
+    assert "package" in section and "integration" in section and "project" in section
+    assert "not required for a package/integration scope" in section
+
+
+def test_spec_template_declares_package_scope_and_upgrade_trigger():
+    content = _read("templates.md")
+    spec_fence = next(block for block in content.split("```markdown")[1:] if "# [项目名称] - 项目范围" in block)
+    assert "### 5.1 验证策略" in spec_fence
+    assert "范围级别：package" in spec_fence
+    assert "升级触发" in spec_fence
+
+
 # -- commands.md: /spec:check structured writeback & dual stop conditions --
 
 

@@ -91,6 +91,8 @@ def test_init_end_to_end():
         spec_content = (pkg_dir / "spec.md").read_text(encoding="utf-8")
         assert "E2E Test" in spec_content
         assert "[项目名称]" not in spec_content
+        assert "### 5.1 验证策略" in spec_content
+        assert "范围级别：package" in spec_content
 
 
 ROOT = Path(__file__).resolve().parent.parent
