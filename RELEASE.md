@@ -12,7 +12,7 @@ Spec Harness releases answer two different needs: a tagged source revision for r
 
 Download the archive and checksum file from the release page:
 
-    VERSION=0.13.13
+    VERSION=0.13.14
     curl -LO "https://github.com/MicTx/spec-harness/releases/download/v$VERSION/spec-harness-$VERSION.tar.gz"
     curl -LO "https://github.com/MicTx/spec-harness/releases/download/v$VERSION/SHA256SUMS"
     sha256sum -c SHA256SUMS --ignore-missing
@@ -28,7 +28,7 @@ The archive root contains the local skill installer. server/install.sh is option
 
     git clone https://github.com/MicTx/spec-harness.git
     cd spec-harness
-    git checkout v0.13.13
+    git checkout v0.13.14
     bash install.sh
 
 A tagged checkout is preferable to an unpinned main checkout when reproducibility matters. Replace the tag with a full commit SHA for an exact source revision.
@@ -40,7 +40,7 @@ Keep the installed host directory backed up when changing versions. Re-run the i
 To roll back, install a previous tag or release archive:
 
     git fetch --tags origin
-    git checkout v0.13.12
+    git checkout v0.13.13
     bash install.sh
 
 ## Checksums and Provenance
