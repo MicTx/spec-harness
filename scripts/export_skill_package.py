@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: LicenseRef-Spec-NonCommercial
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Export a clean runtime skill package from this authoring repository.
 """

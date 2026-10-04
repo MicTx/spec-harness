@@ -28,7 +28,7 @@ def _base_agent_plugins_manifest() -> dict:
         "name": "spec-harness",
         "version": "1.2.3",
         "description": "Task-package workflow skill",
-        "license": "LicenseRef-Spec-NonCommercial",
+        "license": "AGPL-3.0-or-later",
         "keywords": ["spec", "task-package"],
     }
 

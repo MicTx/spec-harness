@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: LicenseRef-Spec-NonCommercial
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """端到端 smoke：用真实 CLI 子进程走通 init -> fail -> backoff -> retry -> converge。
 
 验证对象：loop_state.py / loop_control.py 的 CLI 面（README 协议里 agent 实际敲的命令）。

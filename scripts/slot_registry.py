@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: LicenseRef-Spec-NonCommercial
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """spec 插槽注册器：枚举、展示与校验 `slots/<name>/manifest.json`。
 
 插槽契约（详见 references/slots.md）：

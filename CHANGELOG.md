@@ -6,6 +6,10 @@ All notable user-facing changes to Spec Harness are recorded here. Internal deve
 
 ## [Unreleased]
 
+### Changed
+
+- Relicensed the project from the custom non-commercial source license to the GNU Affero General Public License v3 or later (AGPL-3.0-or-later); the LICENSE file, package metadata, and source headers now carry the AGPL terms.
+
 ## [0.13.12] - 2026-10-04
 
 ### Fixed

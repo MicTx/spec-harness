@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: LicenseRef-Spec-NonCommercial
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Claude Code Stop hook：spec team-loop 插槽收敛守卫。
 
 协议（官方 hooks 文档，Stop 事件）：

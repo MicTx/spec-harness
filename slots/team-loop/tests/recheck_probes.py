@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: LicenseRef-Spec-NonCommercial
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """check 轮独立复核探针：不信任自报，用未调参过的输入重新取证。
 
 场景均为上一轮测试/清单未覆盖的边界。任何 FAIL 都回写任务包处理。

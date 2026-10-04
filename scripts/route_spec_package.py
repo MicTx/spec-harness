@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: LicenseRef-Spec-NonCommercial
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Render the internal spec stage decision that is compatible with Claude Code and Codex-style skill invocation.
 """

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: LicenseRef-Spec-NonCommercial
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for scripts/gitea_hook_repair.py against a local HTTP stub."""
 
 from __future__ import annotations

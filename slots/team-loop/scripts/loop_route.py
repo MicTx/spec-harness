@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: LicenseRef-Spec-NonCommercial
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """agents-team-loop 路由决策：任务文本 -> 是否进入受管 loop + 建议配置。
 
 代码触发半边：任何会话/脚本都可以 `loop_route.py --text "..."` 拿到结构化判定，

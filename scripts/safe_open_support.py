@@ -1,5 +1,5 @@
 # scripts/safe_open_support.py
-# SPDX-License-Identifier: LicenseRef-Spec-NonCommercial
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Shared safe-open primitives for runtime and archive file reads.
 
 Single definition point for the O_NOFOLLOW/O_NONBLOCK open + fstat

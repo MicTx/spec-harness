@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # scripts/update_checkpoint.py
-# SPDX-License-Identifier: LicenseRef-Spec-NonCommercial
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Recovery CLI for update-stage checkpoints.
 
 Wraps ``update_checkpoint_support`` primitives into the operator-facing

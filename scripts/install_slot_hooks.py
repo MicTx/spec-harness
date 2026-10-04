@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: LicenseRef-Spec-NonCommercial
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """spec 插槽 hook 安装器：按插槽 manifest 注册 Claude Code hooks。
 
 - 身份判定用相对标记 `slots/<name>/hooks/<脚本名>`：与安装根无关，

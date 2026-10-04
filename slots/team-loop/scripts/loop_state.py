@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: LicenseRef-Spec-NonCommercial
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """agents-team-loop 状态机：run/round/task 生命周期、检查点、事件日志与恢复。
 
 设计对齐（见 references/prior-art.md）：

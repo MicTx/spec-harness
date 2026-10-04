@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: LicenseRef-Spec-NonCommercial
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Claude Code TeammateIdle / TaskCompleted hook：teammate 质量门禁。
 
 协议（官方 hooks 文档）：

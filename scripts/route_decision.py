@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: LicenseRef-Spec-NonCommercial
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """spec 编排路由决策：任务文本 -> 五路由判定 + lane 建议。
 
 把 `### 5.4 编排策略` 的 route 词表从纯约定升级为机器可判定入口：

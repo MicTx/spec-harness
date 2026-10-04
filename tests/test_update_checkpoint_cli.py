@@ -1,5 +1,5 @@
 # tests/test_update_checkpoint_cli.py
-# SPDX-License-Identifier: LicenseRef-Spec-NonCommercial
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """CLI contract tests for scripts/update_checkpoint.py.
 
 Exercises the recovery CLI end to end through a real interpreter process:

@@ -9,11 +9,11 @@ description = "Task-package workflow for AI coding agents with verifiable scope,
 readme = "README.md"
 authors = [{name = "Spec Harness contributors"}]
 requires-python = ">=3.9"
-license = {text = "LicenseRef-Spec-NonCommercial"}
+license = {text = "AGPL-3.0-or-later"}
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: Other/Proprietary License",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
     "Operating System :: MacOS",
     "Operating System :: Microsoft :: Windows",
     "Operating System :: POSIX",

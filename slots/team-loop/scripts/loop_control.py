@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: LicenseRef-Spec-NonCommercial
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """agents-team-loop 控制原语：重试退避、并发上限、心跳 staleness、可组合终止、中断。
 
 缺口3 的答案。设计对齐（见 references/prior-art.md）：

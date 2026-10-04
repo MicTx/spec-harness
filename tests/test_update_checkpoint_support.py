@@ -1,5 +1,5 @@
 # tests/test_update_checkpoint_support.py
-# SPDX-License-Identifier: LicenseRef-Spec-NonCommercial
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Unit tests for update-checkpoint primitives.
 
 Covers the contract surface required by the update stage: normal

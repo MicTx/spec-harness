@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: LicenseRef-Spec-NonCommercial
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # spec server-mode installer.
 #
 # Deploys an exported spec runtime package as an HTTP service exposing the

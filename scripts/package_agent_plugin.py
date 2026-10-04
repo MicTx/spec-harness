@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: LicenseRef-Spec-NonCommercial
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Package this repository's runtime skill as a distributable agent plugin zip.
 
@@ -80,7 +80,7 @@ COPY_IGNORE = shutil.ignore_patterns(*IGNORE_PATTERNS)
 DEFAULT_NAME = "spec-harness"
 DEFAULT_DISPLAY_NAME = "Spec Harness"
 PUBLIC_REPOSITORY_URL = "https://github.com/MicTx/spec-harness"
-DEFAULT_LICENSE = "LicenseRef-Spec-NonCommercial"
+DEFAULT_LICENSE = "AGPL-3.0-or-later"
 DEFAULT_KEYWORDS = ["spec", "task-package", "workflow", "agent-skills"]
 DEFAULT_OUTPUT_DIR = "dist"
 

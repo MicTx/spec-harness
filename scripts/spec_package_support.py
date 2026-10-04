@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: LicenseRef-Spec-NonCommercial
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Shared task-package semantics.
 
 Branch-bound invariant: ``validate_branch_bound_package`` gates Git-backed

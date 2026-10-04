@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: LicenseRef-Spec-NonCommercial
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Shared validation for closing findings without leaving user-owned work.
 
 The Development Record triad remains the task source of truth. This module only

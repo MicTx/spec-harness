@@ -2,7 +2,7 @@
 
 面向 AI 编程智能体的任务包工作流工具，用可验证的范围、证据和 Git 门禁管理长期改动。
 
-[![License: Non-Commercial](https://img.shields.io/badge/License-Non--Commercial-yellow.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
 
 [🇬🇧 Read this in English](README-en.md)
@@ -338,7 +338,7 @@ Spec Harness 提供任务包、工作流指令、模板、验证脚本和可选�
 
 ## 许可协议
 
-本项目采用非商用源码许可，禁止销售和商业使用；它不等同于 OSI 定义的开放源代码许可。完整条款见 [LICENSE](LICENSE)。
+本项目采用 GNU Affero General Public License v3（AGPL-3.0-or-later）开源许可。完整条款见 [LICENSE](LICENSE)。
 
 ### 稳定身份与验证
 

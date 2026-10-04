@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: LicenseRef-Spec-NonCommercial
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """workflow-runner 路由决策：任务文本 -> 是否需要仓库自有确定性编排 + 建议模式。
 
 判定为启发式评分（可解释、可测试），与 team-loop 的 loop_route.py 同构：

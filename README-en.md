@@ -2,7 +2,7 @@
 
 Task-package workflow for AI coding agents with verifiable scope, evidence, and Git gates.
 
-[![License: Non-Commercial](https://img.shields.io/badge/License-Non--Commercial-yellow.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
 
 [🇨🇳 阅读中文版](README.md)
@@ -338,7 +338,7 @@ Spec Harness provides task packages, workflow instructions, templates, verificat
 
 ## License
 
-This project uses a source-available, non-commercial license. Commercial use and sale are prohibited; the license is not an OSI-approved open-source license. See [LICENSE](LICENSE) for the complete terms.
+This project is licensed under the GNU Affero General Public License v3 (AGPL-3.0-or-later). See [LICENSE](LICENSE) for the complete terms.
 
 ### Stable identity and verification
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: LicenseRef-Spec-NonCommercial
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """workflow-runner 子进程确定性 fan-out 驱动（pi / codex 双后端）。
 
 仓库自有确定性编排由本脚本承担，pi / codex CLI 仅作为可替换 worker 后端：
