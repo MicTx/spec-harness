@@ -1394,6 +1394,9 @@ def scope_from_changed_paths(
                 candidate = parts[prefix_length + 1]
                 if candidate == "archive" and len(parts) > prefix_length + 2:
                     candidate = parts[prefix_length + 2]
+                    if candidate == "retired":
+                        # organize's dated retired container, never a package slug
+                        candidate = ""
                 if candidate and candidate != "archive":
                     if not is_development_record_slug(candidate):
                         raise ValueError(f"invalid Development Record slug in trusted path: {candidate}")

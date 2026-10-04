@@ -6,6 +6,12 @@ All notable user-facing changes to Spec Harness are recorded here. Internal deve
 
 ## [Unreleased]
 
+## [0.13.12] - 2026-10-04
+
+### Fixed
+
+- The push closeout now accepts the `archive/retired/YYYY-MM-DD/` containers the organize command creates as historical paths: they no longer fail record-slug validation or the archived-bundle scan, so an organize round followed by push closes cleanly.
+
 ## [0.13.11] - 2026-10-04
 
 ### Added

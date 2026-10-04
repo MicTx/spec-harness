@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import check_all_spec_packages as check_all_module
 from check_all_spec_packages import (
     MAX_SPEC_FILE_BYTES,
+    archived_package_dirs,
     check_all_packages,
     check_git_index,
     check_git_revision,
@@ -212,6 +213,28 @@ def test_archive_cannot_duplicate_active_slug(tmp_path):
 
     failures = check_all_packages(tmp_path, slugs=[slug])
     assert any("both active and archive" in failure.reason for failure in failures)
+
+
+def test_archived_package_dirs_skip_retired_container(tmp_path):
+    retired = tmp_path / ".spec" / "specs" / "archive" / "retired" / "2026-09-30"
+    retired.mkdir(parents=True)
+    (retired / "MANIFEST.md").write_text("# retired container\n", encoding="utf-8")
+    (retired / "docs").mkdir()
+    (retired / "docs" / "guide.md").write_text("guide\n", encoding="utf-8")
+
+    assert archived_package_dirs(tmp_path / ".spec") == []
+
+
+def test_check_all_ignores_retired_archive_container(tmp_path):
+    slug = "2026-07-13_fix-archived"
+    make_archived_package(tmp_path, slug)
+    retired = tmp_path / ".spec" / "specs" / "archive" / "retired" / "2026-09-30"
+    retired.mkdir(parents=True)
+    (retired / "MANIFEST.md").write_text("# retired container\n", encoding="utf-8")
+    (retired / "server").mkdir()
+    (retired / "server" / "run.py").write_text("print('retired')\n", encoding="utf-8")
+
+    assert check_all_packages(tmp_path, require_archived=True) == []
 
 
 def test_git_baseline_allows_unchanged_legacy_archive_but_rejects_modified_or_new(tmp_path):

@@ -783,6 +783,22 @@ def test_touched_spec_path_only_accepts_trusted_roots():
     ]
 
 
+def test_touched_spec_path_exempts_retired_archive_subtree():
+    sys.path.insert(0, str(ROOT / "scripts"))
+    try:
+        from spec_package_support import scope_from_changed_paths
+    finally:
+        sys.path.pop(0)
+
+    paths = [
+        ".spec/specs/archive/retired/2026-09-30/MANIFEST.md",
+        ".spec/specs/archive/retired/2026-09-30/docs/guide.md",
+        ".trae/specs/archive/retired/2026-09-30/server/run.py",
+    ]
+
+    assert scope_from_changed_paths(paths) == []
+
+
 @pytest.mark.parametrize("operation", ["execute_plan", "execute_local_only_plan", "execute_recovery_plan"])
 def test_push_execution_paths_check_clean_tree_before_mutation(tmp_path, monkeypatch, operation):
     monkeypatch.syspath_prepend(str(ROOT / "scripts"))

@@ -203,6 +203,10 @@ def package_dirs(specs_root: Path, *, archived: bool) -> list[Path]:
     for child in sorted(packages_root.iterdir()):
         if not archived and child.name == "archive":
             continue
+        if archived and child.name == "retired":
+            # organize's retired container holds retired assets plus MANIFEST.md,
+            # not a package bundle
+            continue
         if child.name.startswith("."):
             continue
         if child.is_symlink():

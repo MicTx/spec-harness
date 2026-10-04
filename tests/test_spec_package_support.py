@@ -707,6 +707,25 @@ def test_scope_from_changed_paths_prefers_nested_custom_root():
     assert slugs == ["2026-07-13_fix-nested"]
 
 
+def test_scope_from_changed_paths_exempts_retired_archive_subtree():
+    paths = [
+        ".spec/specs/archive/retired",
+        ".spec/specs/archive/retired/2026-09-30/MANIFEST.md",
+        ".spec/specs/archive/retired/2026-09-30/docs/guide.md",
+        ".spec/local/specs/archive/retired/2026-09-30/server/run.py",
+    ]
+
+    assert scope_from_changed_paths(paths, [".spec/local"]) == []
+
+
+def test_scope_from_changed_paths_still_maps_and_rejects_archive_slugs():
+    assert scope_from_changed_paths([".spec/specs/archive/2026-07-13_fix-archived/spec.md"]) == [
+        "2026-07-13_fix-archived"
+    ]
+    with pytest.raises(ValueError, match="invalid Development Record slug"):
+        scope_from_changed_paths([".spec/specs/archive/not-a-development-record/spec.md"])
+
+
 # -- detect_language --
 
 

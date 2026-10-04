@@ -228,7 +228,7 @@ python3 scripts/push_spec_package.py --root <git-repo> --branch <working-branch>
 
 Spec gate scope (choose one):
 
-- **touched (default)**: gate the active/archive packages the working branch touches relative to main; archive paths map to their real slugs. With no Spec-path changes the gate is not skipped: every non-merge commit must carry a `Spec: <slug>` footer, and the slug must resolve to a valid archive in the target revision.
+- **touched (default)**: gate the active/archive packages the working branch touches relative to main; archive paths map to their real slugs. With no Spec-path changes the gate is not skipped: every non-merge commit must carry a `Spec: <slug>` footer, and the slug must resolve to a valid archive in the target revision. The `archive/retired/YYYY-MM-DD/` containers the `organize` command creates are historical-path exemptions: they never map to a package slug and the archive bundle scan skips them.
 - **Single-package mode**: `--slug <slug>` (repeatable); gate only the named packages.
 - **All-packages mode**: `--all-packages`; gate every active package (legacy behavior).
 
