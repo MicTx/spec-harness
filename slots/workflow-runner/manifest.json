@@ -2,7 +2,7 @@
   "name": "workflow-runner",
   "version": "1.0.0",
   "summary": "仓库自有确定性 fan-out 执行段：任务形态判定 -> 并发派发 -> JSONL 收敛",
-  "description": "spec 的第二个内置插槽。当任务包的执行段呈现批量 fan-out、并行评审、多视角分析或 review-fix 收敛形态时，使用仓库自有 workflow_fanout.py 托管确定性派发与收敛。slot 提供触发判定（workflow_route.py）、可选路由注入 hook 与协议文档；routing、验收与 done/push 门禁永不移出主会话。后端不可用时显式降级为普通 sidecar 或 team-loop。",
+  "description": "内置插槽：当任务包的执行段呈现批量 fan-out、并行评审、多视角分析或 review-fix 收敛形态时，使用仓库自有 workflow_fanout.py 托管确定性派发与收敛。slot 提供触发判定（workflow_route.py）与协议文档；routing、验收与 done/push 门禁永不移出主会话。后端不可用时显式降级为普通 sidecar 或 team-loop。",
   "triggers": [
     "批量并行子代理任务（fan-out / pipeline over items）",
     "多维度并行评审（review dimensions -> verify -> synthesize）",
@@ -16,9 +16,9 @@
     "scripts/workflow_route.py",
     "scripts/workflow_fanout.py"
   ],
-  "hooks": {
-    "UserPromptSubmit": ["hooks/workflow_route_hook.py"]
-  },
+  "hooks": {},
   "tests": "tests",
-  "docs": ["README.md"]
+  "docs": [
+    "README.md"
+  ]
 }

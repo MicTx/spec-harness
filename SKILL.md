@@ -56,7 +56,7 @@ The main session is the orchestrator and owns routing, acceptance, and the `done
 
 - Default: `local` — the main session executes on its own.
 - Sidecar lanes: for `explore` / `build` / `review` routes with clean ownership slices, the main session spawns bounded in-process subagents under the assignment contract in `references/orchestration.md`, then merges results and runs final verification itself. Claude Code publishes installer-owned copies of `agents/orchestrator.md` and `agents/planner.md` into `~/.claude/agents/`; on hosts without those names, read the portable contract and inject it into an available general-purpose agent.
-- Slot protocol: if the task matches a slot's triggers (see Extension slots below, e.g. `team-loop` for loop-until-converged, batch fan-out, review-fix loops), the main session follows that slot's README protocol for the execution segment only — disk-truth state machine, admission/backoff/heartbeat discipline, and no fake task results.
+- Slot protocol: if the task matches a slot's triggers (see Extension slots below, e.g. `team-loop` for agents-team loop-until-converged work), the main session follows that slot's README protocol for the execution segment only; no fake task results.
 - Invariants that never change: task-level `boundary`/`verify` discipline, honest checkbox verification, check gates, and `done`/`push` authorization all stay with the main session. Outsourcing work outside these managed paths remains forbidden.
 
 ## Execution loop
@@ -114,15 +114,14 @@ Pluggable capability mechanism for spec: each `slots/<name>/` is a self-containe
 - Enumerate/validate: `python3 scripts/slot_registry.py list|validate`
 - Hook install/remove: `python3 scripts/install_slot_hooks.py --slot <name> [--remove]`
 - Activation rule: when a task's shape matches a slot's triggers, the execution segment is handed to that slot's README protocol (see the Managed paths under Core capability). Orchestration routing (`scripts/route_decision.py`) is independent of slot activation.
-- Currently built in: `team-loop` — agents-team loop triggering and efficient management (loop-until-converged, batch fan-out, review-fix loops → see `slots/team-loop/README.md`). When the run loop matches its triggers, decide with `slots/team-loop/scripts/loop_route.py --text "<package goal>"` and then follow its protocol for the execution segment; routing, acceptance, and the done/push gates never move out of the main session.
-- Also built in: `workflow-runner` — delegating an execution segment to the repository-owned deterministic driver (batch fan-out, multi-dimension parallel review, perspective panels, review-fix loops → see `slots/workflow-runner/README.md`). `slots/workflow-runner/scripts/workflow_fanout.py` runs bounded subprocess fan-out with Pi/Codex as replaceable worker CLIs, per-item hard timeout, caching, and JSONL disk truth. Decide with `slots/workflow-runner/scripts/workflow_route.py --text "<package goal>"` — its `suggestedSurface` always names the repository-owned driver; unavailable backends degrade to ordinary sidecar orchestration or `team-loop`. Routing, acceptance, and the done/push gates never move out of the main session.
+- Currently built in: `team-loop` — agents-team loop-until-converged execution (→ see `slots/team-loop/README.md`). When the run loop matches its triggers, decide with `slots/team-loop/scripts/loop_route.py --text "<package goal>"` and then follow its protocol for the execution segment; routing, acceptance, and the done/push gates never move out of the main session.
+- Also built in: `workflow-runner` — delegating an execution segment to the repository-owned deterministic driver: batch fan-out, multi-dimension parallel review, perspective panels, review-fix loops (→ see `slots/workflow-runner/README.md`). Decide with `slots/workflow-runner/scripts/workflow_route.py --text "<package goal>"` — its `suggestedSurface` always names the repository-owned driver; unavailable backends degrade to ordinary sidecar orchestration or `team-loop`. Routing, acceptance, and the done/push gates never move out of the main session.
 
 ## Reference documentation
 
 Read these files only when needed for your current task:
 
 - `references/00-readme.md` — reading order guide
-- `references/operating-rules.md` — usage boundaries and anti-patterns
 - `references/commands.md` — detailed stage execution (read only your current stage section)
 - `references/output-contracts.md` — required output format per stage
 - `references/templates.md` — task package templates
@@ -133,4 +132,4 @@ Read these files only when needed for your current task:
 - `references/naming-and-commits.md` — slug naming and commit conventions
 - `references/engineering-philosophy.md` — four core principles
 
-Stable task identity uses the optional `id: task-name` and stays compatible with legacy positional IDs; dependencies are validated uniformly. Self-reported results never complete a task: the verification described by `verify` must actually run before a checkbox is checked. Protocol migrations do not modify historical archives.
+Protocol migrations do not modify historical archives.

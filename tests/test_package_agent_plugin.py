@@ -204,8 +204,6 @@ def test_build_agent_plugins_end_to_end():
             # 打包工具与缓存不进载荷
             assert not any("export_skill_package.py" in name for name in names)
             assert not any("package_agent_plugin.py" in name for name in names)
-            assert not any(name.endswith("/scripts/import_kiro_specs.py") for name in names)
-            assert not any(name.endswith("/scripts/migrate_task_ids.py") for name in names)
             assert not any("__pycache__" in name for name in names)
             assert not any(name.endswith(".pyc") for name in names)
 

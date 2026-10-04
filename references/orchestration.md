@@ -206,9 +206,3 @@ Write this section from `route_decision.py` output plus the main session's judgm
 - Stacking another independent read on a finding that is already confirmed
 - A lane faking completion to pass a check instead of reporting that it is blocked
 
-## Deliberately not in this contract
-
-- Codex-only `codex-orchestrate` launcher (host-bound runtime; not a spec core asset)
-- An external tmux/worktree backend (the `external` token is reserved; this round does not ship one)
-- Configurable scoring thresholds or a lane DSL
-- A new slot: routing is part of the spec execution loop, not a pluggable capability

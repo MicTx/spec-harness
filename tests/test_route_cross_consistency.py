@@ -30,12 +30,15 @@
     route=local 共存合法性说明在位；workflow-runner README 核心协议第 3 步含
     Claude Code 分支自包含委派包（五字段）与四模式验收点。
 
-已知缺口（边界决定本轮不改启发式，仅记录为建议性语义的局限，留待有书面
-决策的独立小包）：
+历史裁定（2026-10-04_remove-process-bloat）：
+- team-loop 已让出 batch-fanout / review-fix 触发域（归 workflow-runner，仓库自有
+  执行面裁定），loop_route.py 不再对批量/评审-修复形态做推荐。
+
+已知缺口（workflow 侧，钉住现状、守护漂移）：
 - 泛化「批量」单词即可过 workflow_route 推荐阈（score=2）：「批量更新这 3 个配置
   文件的版本号」实测 route=local + workflowRecommended=True，与 README 书面激活域
   （只激活 explore/build/review 执行段）存在张力。workflow_route.py docstring 明示
-  「激活只是建议」，该缺口是建议性语义的局限；本文件只钉住现状、守护漂移。
+  「激活只是建议」，该缺口是建议性语义的局限。
 - 循环收敛形态文本（如「iterate until all tests pass」）同样落在 route=local 且
   workflowRecommended=True（review-fix-loop 推荐）；同理只钉住不修复。
 """
@@ -57,7 +60,7 @@ ORCHESTRATION_DOC = ROOT / "references" / "orchestration.md"
 WORKFLOW_README = ROOT / "slots" / "workflow-runner" / "README.md"
 
 ROUTES = ("local", "explore", "build", "review", "external")
-LOOP_MODES = ("until-converged", "fixed-rounds", "batch-fanout", "none")
+LOOP_MODES = ("until-converged", "fixed-rounds", "none")
 WORKFLOW_MODES = ("batch-fanout", "parallel-review", "perspective-panel", "review-fix-loop", "none")
 ALLOWED_TOKENS = frozenset(ROUTES + LOOP_MODES + WORKFLOW_MODES)
 
@@ -191,15 +194,15 @@ GOLDEN_TRIPLES = [
     ("iterate until all tests pass", "local", True, True),
     ("对这 12 个章节循环抽取元数据，直至校验全部通过", "local", True, False),
     # 已知缺口锚点：泛化「批量」过 wf 推荐阈 -> local + wf=True
-    ("批量更新这 3 个配置文件的版本号", "local", True, True),
+    ("批量更新这 3 个配置文件的版本号", "local", False, True),
     # 并行评审扇出：route=review，loop/wf 双推荐
-    ("批量评审 20 个模块的鉴权代码，逐个独立审查后汇总", "review", True, True),
+    ("批量评审 20 个模块的鉴权代码，逐个独立审查后汇总", "review", False, True),
     ("多代理并行评审这个风险改动", "review", False, True),
     # 探索扇出
-    ("批量梳理支付失败链路，结构不清需要多面并行探索", "explore", True, True),
+    ("批量梳理支付失败链路，结构不清需要多面并行探索", "explore", False, True),
     ("梳理支付失败链路：这个代码库结构不清，需要多面并行探索", "explore", False, False),
     # 实现扇出与局部实现
-    ("批量实现导出功能，前端/后端/测试切片分工", "build", True, True),
+    ("批量实现导出功能，前端/后端/测试切片分工", "build", False, True),
     ("实现支付失败修复，模块边界清晰可并行开发，前端/后端/测试可拆分", "build", False, False),
     # 纯局部负例
     ("修复 README 中的一个错别字", "local", False, False),

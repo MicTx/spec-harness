@@ -294,15 +294,6 @@ def validate_followup_archives(
     return failures
 
 
-def validate_archived_development_record(
-    specs_root: Path,
-    slug: str,
-    baseline_equivalent: Callable[[str], bool] | None = None,
-) -> list[str]:
-    """Validate one archived Development Record and every follow-up it closes through."""
-    return validate_followup_archives(specs_root, [slug], baseline_equivalent=baseline_equivalent)
-
-
 def validate_issue_dispositions(
     issues: Any,
     *,
@@ -389,23 +380,6 @@ def validate_issue_dispositions(
             )
         )
     return failures
-
-
-def require_valid_issue_dispositions(
-    issues: Any,
-    *,
-    specs_root: Path | None = None,
-    current_slug: str | None = None,
-    current_tasks_content: str | None = None,
-) -> None:
-    failures = validate_issue_dispositions(
-        issues,
-        specs_root=specs_root,
-        current_slug=current_slug,
-        current_tasks_content=current_tasks_content,
-    )
-    if failures:
-        raise IssueClosureError("; ".join(failures))
 
 
 def parse_issue_disposition_arg(value: str) -> dict[str, Any]:

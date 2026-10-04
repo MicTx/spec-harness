@@ -2,25 +2,32 @@
   "name": "team-loop",
   "version": "1.0.0",
   "summary": "agents-team 循环触发与高效管理：路由触发、状态机检查点、重试退避、并发上限、心跳、协作中断、可组合终止",
-  "description": "spec 的第一个内置插槽。为 agents-team 多代理运行时提供受管循环：hook + 代码双触发、run/round/task 磁盘真源状态机、缺口原语（重试退避/并发准入/staleness/中断恢复/终止条件族）、Stop 收敛守卫与 TeammateIdle 质量门禁。",
+  "description": "内置插槽：为 agents-team 多代理运行时提供受管循环收敛（loop-until-converged / fixed-rounds）。hook + 代码双触发、run/round/task 磁盘真源状态机、缺口原语（重试退避/并发准入/staleness/中断恢复/终止条件族）、Stop 收敛守卫与 TeammateIdle 质量门禁。批量 fan-out 与评审-修复闭环形态归 workflow-runner，本插槽不与其争夺触发域。",
   "triggers": [
     "循环/多轮/迭代直至通过",
-    "批量并行子代理任务（fan-out）",
-    "评审-修复-再验证闭环",
     "多代理 team 模式下的重试/并发/心跳/中断管理"
   ],
-  "requires": ["agents-team 技能（工具面 spawn_agent / wait / close_agent）"],
+  "requires": [
+    "agents-team 技能（工具面 spawn_agent / wait / close_agent）"
+  ],
   "scripts": [
     "scripts/loop_route.py",
     "scripts/loop_state.py",
     "scripts/loop_control.py"
   ],
   "hooks": {
-    "UserPromptSubmit": ["hooks/loop_route_hook.py"],
-    "Stop": ["hooks/loop_stop_guard.py"],
-    "TeammateIdle": ["hooks/loop_teammate_gate.py"],
-    "TaskCompleted": ["hooks/loop_teammate_gate.py"]
+    "Stop": [
+      "hooks/loop_stop_guard.py"
+    ],
+    "TeammateIdle": [
+      "hooks/loop_teammate_gate.py"
+    ],
+    "TaskCompleted": [
+      "hooks/loop_teammate_gate.py"
+    ]
   },
   "tests": "tests",
-  "docs": ["README.md", "references/prior-art.md"]
+  "docs": [
+    "README.md"
+  ]
 }

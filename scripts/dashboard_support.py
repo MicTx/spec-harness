@@ -329,10 +329,3 @@ class Dashboard:
                 self._detail_lines(),
             ]
         )
-
-
-def truncate_alerts(alerts: list[str], pointer: str, limit: int = DEFAULT_MAX_ALERTS) -> list[str]:
-    """Collapse long alert lists into the first ``limit`` lines plus a disk pointer."""
-    if len(alerts) <= limit:
-        return alerts
-    return alerts[:limit] + [f"其余 {len(alerts) - limit} 项见 {pointer}"]

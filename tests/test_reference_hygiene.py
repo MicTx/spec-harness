@@ -162,7 +162,6 @@ def test_active_runtime_has_no_host_workflow_engine_surface():
         ROOT / "slots" / "workflow-runner" / "manifest.json",
         ROOT / "slots" / "workflow-runner" / "scripts" / "workflow_route.py",
         ROOT / "slots" / "workflow-runner" / "scripts" / "workflow_fanout.py",
-        ROOT / "slots" / "workflow-runner" / "hooks" / "workflow_route_hook.py",
     ]
     for path in paths:
         hit = forbidden.search(path.read_text(encoding="utf-8"))

@@ -10,7 +10,7 @@ done/push gates never move out of the main session.
 
 | Gap | Solution |
 |---|---|
-| (1) No automatic trigger | Optional `UserPromptSubmit` hook runs `slots/workflow-runner/scripts/workflow_route.py` and injects a recommendation (never blocks) + code trigger `slots/workflow-runner/scripts/workflow_route.py --text "<goal>"` |
+| (1) No automatic trigger | Code trigger `slots/workflow-runner/scripts/workflow_route.py --text "<goal>"` returns a structured recommendation (advisory, never blocks) |
 | (2) Main session hand-spawns sidecars for parallel work | Deterministic orchestration: fan-out counts, verify gates, and convergence loops are code in `slots/workflow-runner/scripts/workflow_fanout.py`; Pi/Codex are worker CLIs only |
 | (3) Parallel evidence is scattered | The driver writes a JSONL disk truth and per-item output files; both are recorded as package evidence |
 

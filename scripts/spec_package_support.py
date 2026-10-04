@@ -18,7 +18,6 @@ import argparse
 import json
 import os
 import re
-import secrets
 import subprocess
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -448,10 +447,6 @@ def extract_heading_title_from_content(content: str, fallback: str, suffix: str)
 
 def extract_heading_title(path: Path, fallback: str, suffix: str) -> str:
     return extract_heading_title_from_content(read_text(path), fallback, suffix)
-
-
-def extract_title(spec_path: Path, slug: str) -> str:
-    return extract_heading_title(spec_path, slug, " - 项目范围")
 
 
 def extract_title_from_content(spec_content: str, slug: str) -> str:
@@ -1038,27 +1033,6 @@ def read_json_file(path: Path, *, max_bytes: int = MAX_RUNTIME_JSON_BYTES) -> di
     return payload
 
 
-def write_json_atomic(path: Path, payload: dict, *, mode: int = 0o600) -> None:
-    ensure_private_dir(path.parent)
-    if path.exists() and path.is_symlink():
-        raise SpecControlError(f"refusing to write through symlink: {path}")
-    tmp = path.parent / f".{path.name}.tmp-{os.getpid()}-{secrets.token_hex(4)}"
-    descriptor = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            descriptor = -1
-            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, path)
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-        if tmp.exists():
-            tmp.unlink(missing_ok=True)
-
-
 @dataclass
 class TaskRecord:
     id: str
@@ -1192,26 +1166,6 @@ def ready_task_ids(records: list[TaskRecord]) -> set[str]:
         and item.executable
         and all(ref in completed for ref in task_dependencies(item))
     }
-
-
-def find_task_record(records: list[TaskRecord], task_id: str) -> TaskRecord | None:
-    if not TASK_ID_PATTERN.fullmatch(task_id.strip()):
-        raise SpecControlError(f"invalid task id (expected task_NNNN or task-name): {task_id!r}")
-    return next((record for record in records if record.id == task_id.strip()), None)
-
-
-def package_tasks_path(root: Path, slug: str, specs_dir_name: str | None = None) -> Path:
-    specs_root = resolve_specs_root(root, specs_dir_name)
-    return resolve_specs_child(specs_root, "specs", slug, "tasks.md")
-
-
-def load_task_records(root: Path, slug: str, specs_dir_name: str | None = None) -> list[TaskRecord]:
-    tasks_path = package_tasks_path(root, slug, specs_dir_name)
-    try:
-        content = tasks_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        raise SpecControlError(f"cannot read tasks.md for {slug}: {exc}") from exc
-    return parse_task_records(content)
 
 
 def resolve_active_slug(

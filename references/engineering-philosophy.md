@@ -2,21 +2,16 @@
 
 These principles are decision tools, not slogans. When two reasonable actions compete, use the conflict order below to choose the smallest action that leaves the strongest evidence.
 
+The engineering philosophy of this `spec` skill centers on four principles. The goal is not to add a "values statement" but to reduce the four most common AI mistakes on complex tasks: guessing, over-engineering, drive-by changes, and finishing without evidence.
+
 ## Contents
 
 - Four principles
 - Conflict priority
 - Gate design
-- Principle evidence
-- Single-orchestrator constraint
-- Full-chain mapping
 - Quick self-check
 
-The engineering philosophy of this `spec` skill centers on four principles. The goal is not to add a "values statement" but to reduce the four most common AI mistakes on complex tasks: guessing, over-engineering, drive-by changes, and finishing without evidence.
-
 Scope boundary: this philosophy couples only to the carriers this repository already has (`SKILL.md`, `references/*`, `agents/openai.yaml`, `scripts/*`, install/export behavior, and the generated host command aliases); it requires no new multi-end distribution structures.
-
-CLI compatibility convention: `/spec:xx` is the current Claude Code command label; `spec:<stage>` is the stage alias for Codex / generic skill-aware CLIs. Both map to the process stages `new/goal/run/check/done/push/update/status`; `goal` is the explicit one-shot composite entry; `route` is the internal stage resolver behind `/spec`; `tasks` is a script view under status — not a user command.
 
 ## Four principles
 
@@ -102,31 +97,6 @@ Gates fail closed. A gate that did not run is not a passed gate (未运行=未�
 | Needs human review | the `/spec:check` round | item-by-item checklist walk with evidence |
 | Dynamic condition | hook | `hooks/claude_stop_guard.py` convergence guard |
 | Host side effect | explicit authorization | `workflow-runner` package contract and main-session verification |
-
-## Principle evidence
-
-The four principles already land in fields: `假设` (assumptions), `最小实现路径` (minimal path), `boundary`, `verify`. Do not write a "philosophy in action" narrative per package.
-
-## Single-orchestrator constraint
-
-The main session carries the critical path: problem modeling, task decomposition, integration, testing, independent acceptance, and global state. It is the only orchestrator. Bounded sidecar delegation is allowed only after a machine route decision (`scripts/route_decision.py`) plus a written assignment contract (see `references/orchestration.md`); loop-shaped execution runs only under a managed slot's README protocol with its disk-truth state machine, concurrency admission, retry backoff, and termination checks persisted. No fake parallelism; outsourcing that bypasses these managed paths stays forbidden, and routing, acceptance, and the `done`/`push` gates never move out.
-
-- Stay explicit: write assumptions when unsure; never advance silently.
-- Stay minimal: delegate only lanes with clean ownership and real waiting value; no parallel frameworks for theoretical throughput; even on a route hit, add no parallelism beyond the contracted lanes.
-- Stay bounded: change only what the current task's `boundary` covers; sidecar lanes inherit the same boundary discipline.
-- Verification first: self-reported results are not acceptance — neither from the main thread nor from a sidecar lane; run the task's `verify`-described verification before checking off.
-
-## Full-chain mapping
-
-| Stage | Default action | Typical mistake | Philosophy correction | Failure signal |
-| --- | --- | --- | --- | --- |
-| `/spec` | Auto-route the next step | Diving straight in | State the current understanding, the active package, and the next hop first | The next hop relies on an implicit assumption |
-| `/spec:new` | Create the task package | Assuming requirements silently | Write facts, assumptions, ambiguities, and the minimal path first | `spec.md` missing assumptions or out-of-scope |
-| `/spec:goal` | Run the goal chain end to end | Treating automation as gate bypass | Still chain new/run/check/done/push on the package's disk truth (done itself covers the archive commit); stop at any gate failure | Committing despite failed verification, or pushing an untriaged dirty tree |
-| `/spec:run` | Advance implementation | Scope creep or drive-by refactoring | Implement within task boundaries in this session; run `verify` independently before checking off | The current task lacks `boundary` or `verify`; checked off without running verification |
-| `/spec:check` | Run acceptance | Verbal-only "passed" | Judge item by item with the checklist and evidence; base gates + enabled new gates + command-class evidence must all hold | No file-level evidence; missing script/test/build evidence or empty outcome metrics |
-| `/spec:done` | Archive and commit | Ending without a completion summary, writing executable fixes as free-form leftovers, or archiving without committing | Output delivery scope, assumption review, verification evidence, and the v1 issue dispositions, then finish this round's commit; a follow-up may be referenced only after it was executed and archived | Summary contains placeholders, invalid dispositions, executable leftovers, or no commit after archiving |
-| `/spec:push` | Git handoff | Dangerous Git operations without the safety preflight | Enforce clean tree, non-main execution, protected-branch refusal, and the remote SHA lease before merging, pushing, and deleting the merged branch | Deleting a branch before the worktree and merge state are confirmed |
 
 ## Quick self-check
 

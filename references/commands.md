@@ -4,40 +4,9 @@ This page is a stage reference, not a tutorial. Find the stage that matches the 
 
 The shortest safe path is always: route from disk, make one bounded change, run its verification, then let the next stage consume the recorded state. Do not read this file end to end when one stage is enough.
 
-## Contents
-
-- CLI compatibility layer
-- `/spec`
-- `/spec:new`
-- `/spec:run`
-- `/spec:check`
-- `/spec:done`
-- `/spec:push`
-- `/spec:update`
-- `/spec:status`
-- `/spec:doctor`
-- `/spec:organize`
-- `/spec:goal`
-
 ## CLI compatibility layer
 
-Only the main chain stays user-visible:
-
-| Command | Stage | Purpose |
-| --- | --- | --- |
-| `/spec` | route (internalized) | Decide the next step automatically; route is not exposed as an explicit stage |
-| `/spec:new` | new | Create a task package; lock scope, tasks, and acceptance criteria |
-| `/spec:goal` | goal | One goal sentence runs the full chain: plan, create/resume, execute, verify, archive, commit, then hand off to push |
-| `/spec:run` | run | Execute to a result in one shot; resume from the task package if interrupted |
-| `/spec:check` | check | Add a human-AI review round; write actionable issues back to the package and fix them in the same round |
-| `/spec:done` | done | Close the task, distill knowledge, archive, and create the Git commit |
-| `/spec:push` | push | After done and commit, merge, push, and delete the merged branch |
-| `/spec:update` | update | Add, remove, or adjust tasks and scope mid-flight |
-| `/spec:status` | status | Overview across task packages: per-package progress, blockers, next step |
-| `/spec:doctor` | doctor | Environment self-check and repair: Python/git, skill installation, command files, project skeleton, hook pointers; `--fix` applies safe repairs |
-| `/spec:organize` | organize | Structure tidy-up: first-principles structure audit from machine facts; when unreasonable, optimize the layout without breaking inter-module references, clean/merge deprecated items, and sync docs |
-
-Codex / generic skill-aware CLIs (Gemini CLI, Grok Build, OpenCode, OpenClaw, Hermes, Pi, etc.) trigger `$spec` and then use `spec:new/goal/run/check/done/push/update/status/doctor/organize`. The route and tasks views remain internal script capabilities, not user commands. See the README installation section for the per-host install directory matrix.
+The command inventory (command → stage → purpose) lives once in `SKILL.md`. Claude Code exposes `/spec:<command>`; Codex / generic skill-aware CLIs (Gemini CLI, Grok Build, OpenCode, OpenClaw, Hermes, Pi, etc.) trigger `$spec` and then use `spec:new/goal/run/check/done/push/update/status/doctor/organize`. The route and tasks views remain internal script capabilities, not user commands. See the README installation section for the per-host install directory matrix.
 
 Before executing any command, pass the four questions from `engineering-philosophy.md`: are the assumptions written down, is this the minimal path, is the boundary clear, and how is completion proven. If any answer is missing, fix the documents first.
 
@@ -503,7 +472,7 @@ Output contract:
 
 ## `/spec:goal`
 
-Goal: take one explicit goal sentence and run the one-shot chain: self-plan and create or resume the task package, self-run the task queue with self-verification, then have `/spec:done` archive and commit after the gates pass, and finish with `push` once the safety preflight passes.
+Goal: take one explicit goal sentence and run the one-shot chain — `new` → `run` → `check` → `done` → `push` — inside this session. `goal` creates no second state machine: every stage takes the task-package disk content and the existing scripts as truth, and no gate of `/spec:new`, `/spec:run`, `/spec:check`, `/spec:done`, Git hooks, or `/spec:push` is skipped.
 
 Compatible invocation:
 
@@ -512,29 +481,20 @@ Compatible invocation:
 
 Execution order:
 
-1. Run `python3 scripts/route_spec_package.py --root <project>` first; with a clear user goal and no resumable package, create the `YYYY-MM-DD_<verb>-<object>` task package and its `spec/YYYY-MM-DD_<slug>` integration branch per `/spec:new`.
-2. Self-plan: derive the problem definition, facts, assumptions, open questions, in/out scope, minimal path, task queue, acceptance criteria, issue dispositions, and Git boundaries from the goal; write down whatever can be reasonably assumed instead of blocking on a question list. Independent gaps discovered along the way may open new Development Records, but the current chain must continue to archive.
-3. Self-run: execute tasks in dependency order inside this session per `/spec:run`, running each `verify` before checking off.
-4. Self-supervise: after every change round, check for boundary violations, unrequested abstractions, and needed syncs to `SKILL.md`, `references/*`, `README*`, `agents/openai.yaml`, script contracts, the Module DAG, or task-package documents.
-5. Self-verify: after the tasks, run the builds, tests, smoke, script gates, and manual-equivalent checks required by the package's declared `package`/`integration`/`project` level; do not widen a focused package to the whole project without its upgrade trigger. On failure, fix and rerun — never skip.
-6. Self-review: run `check_spec_package.py` per `/spec:check`, write executable gaps back and fix them in this round; a gap with independent scope opens a follow-up Development Record that must run through the current `goal` chain — its run/check/done/archive — before the original package closes with `resolved_followup`. Never just create the package or hand the slug over as user homework. Continue until `checklist.md` is fully checked with `**验收结果**：通过`.
-7. Self-archive and commit: per `/spec:done`, run `complete_spec_package.py --archive`, generate the knowledge distillation (into the executing project's own `.spec/docs/`, per `/spec:done`) and the completion summary, then `git add` this package's files and run `git commit` as a single direct command; the message uses Conventional Commits with the `Spec: <slug>` footer. The `done` stage never pushes, merges, or deletes branches. Never modify files and commit in the same Bash call; never `--no-verify`.
-8. Self-push/finish: after the commit, run `python3 scripts/push_spec_package.py --root <git-repo> --branch <working-branch> --main-branch main --remote origin --slug <slug>`; the push script publishes the working branch, merges main, pushes main, and deletes the merged branch.
+1. Route with `python3 scripts/route_spec_package.py --root <project>`; with a clear goal and no resumable package, create or resume the package and its integration branch per `/spec:new`, self-planning scope, tasks, and acceptance from the goal — write down whatever can be reasonably assumed instead of blocking on a question list.
+2. Self-run per `/spec:run` and self-verify at the package's declared verification level; after every change round, self-supervise for boundary violations, unrequested abstractions, and needed syncs (`SKILL.md`, `references/*`, `README*`, `agents/openai.yaml`, script contracts, the Module DAG, package documents).
+3. Self-review per `/spec:check` until `checklist.md` is fully checked with `**验收结果**：通过`, then self-archive and commit per `/spec:done` and hand off to `/spec:push`:
 
-Stop conditions:
+    ```bash
+    python3 scripts/push_spec_package.py --root <git-repo> --branch <working-branch> --main-branch main --remote origin --slug <slug>
+    ```
 
-- When the goal still cannot pin down an MVP, the target repository, or a project-shaping constraint, ask one focused question first.
-- When the work tree holds unrelated dirty changes that cannot be safely triaged, stop and output triage advice.
-- When any verification, check, Git hook, commit, or push safety preflight fails, stop at the failure point and output the failed command, error summary, completed work, and the next repair action.
-- Never force a push or branch deletion when the remote is missing, permission is denied, the target branch is protected, the lease mismatches, or the working branch is undeletable.
+Chain-specific rules:
 
-Constraints:
-
-- `goal` creates no second state machine; every stage takes the task-package disk content and the existing scripts as truth.
-- No skipping the gates of `/spec:new`, `/spec:run`, `/spec:check`, `/spec:done`, Git hooks, or `/spec:push`.
-- Never replace the current-tree check with old output or verbal judgment.
-- The automatic commit includes only changes covered by the current task's `boundary`; unrelated changes must be split into atomic commits or a new task package.
-- Actionable issues found must be written back and completed this round; executable fixes are never handed to the user as homework. Independent scope may open a follow-up spec, but it must be executed, accepted, and archived inside this chain before the original package closes. Closures use the five structured dispositions; free-form `nextTasks` / `unresolvedRisks` are not allowed. Only three things may interrupt the user: a project-shaping constraint, a decision that cannot be reasonably assumed, and an external dependency the agent cannot execute.
+- A gap with independent scope opens a follow-up Development Record that must run through its own run/check/done/archive inside this chain before the original package closes with `resolved_followup`; never just create the package or hand the slug over as user homework. Closures use the five structured dispositions; free-form `nextTasks` / `unresolvedRisks` are not allowed.
+- The automatic commit includes only changes covered by the current task's `boundary`; unrelated changes must be split into atomic commits or a new task package. Never replace the current-tree check with old output or verbal judgment.
+- Only three things may interrupt the user: a project-shaping constraint, a decision that cannot be reasonably assumed, and an external dependency the agent cannot execute.
+- Stop at the first failed verification, check gate, Git hook, commit, or push safety preflight: report the failed command, error summary, completed work, and the next repair action. Never force a push or branch deletion when the remote is missing, permission is denied, the target branch is protected, the lease mismatches, or the working branch is undeletable.
 
 Output contract:
 

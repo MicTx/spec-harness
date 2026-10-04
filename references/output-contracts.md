@@ -66,21 +66,6 @@ Only the title always appears; omit any whole section with no effective content.
 7. The output must let a user who knows nothing about the spec workflow answer directly: where things stand, what is being done, what the problems are, and what was finally delivered.
 8. No empty-value placeholders or filler: `无`, `n/a`, `看起来` (seems), `整体` (overall), `顺利` (smooth), `建议可以` (maybe suggest), `温馨提示` (friendly tip), `如下所示` (as shown below), `让我` (let me), `我们来` (let's).
 
-## Contents
-
-- Invocation compatibility layer
-- `/spec`
-- `/spec:new`
-- `/spec:run`
-- `/spec:check`
-- `/spec:done`
-- `/spec:push`
-- `/spec:update`
-- `/spec:status`
-- `/spec:goal`
-- `/spec:doctor`
-- `/spec:organize`
-
 ## Invocation compatibility layer
 
 The user-visible entries remain `/spec`, `/spec:new`, `/spec:run`, `/spec:check`, `/spec:done`, `/spec:push`, `/spec:update`, `/spec:status`, `/spec:goal`, `/spec:doctor`, and `/spec:organize`. They only decide how the background advances; they never change the project-update structure.

@@ -568,10 +568,6 @@ def ensure_local_branch_exists(root: Path, branch: str, label: str) -> None:
         raise PushError(f"required local {label} does not exist: {branch}")
 
 
-def ensure_remote_branch_exists(root: Path, remote: str, branch: str) -> None:
-    remote_branch_sha(root, remote, branch, "remote branch")
-
-
 def remote_branch_sha(root: Path, remote: str, branch: str, label: str) -> str:
     result = git(root, "ls-remote", "--exit-code", "--heads", remote, branch, check=False)
     output = combined_process_output(result)
@@ -854,25 +850,23 @@ def run_spec_gate(
         notes.append(f"touched-package gate: {', '.join(slugs)}")
     revision = f"refs/heads/{branch}"
     baseline_hashes = legacy_archive_hashes(root, legacy_baseline, specs_dirs)
+    archive_gate_reason = "active package must be archived"
     try:
         with git_revision_snapshot(root, revision) as snapshot:
-            broken = check_all_packages(
-                snapshot,
-                explicit=specs_dirs,
-                require_archived=False,
-                slugs=slugs,
-                legacy_hashes=baseline_hashes,
-            )
-            if broken:
-                raise PushError(render_failures(root, broken))
-
-            active_unarchived = check_all_packages(
+            # One pass with the archive gate on; classify failures instead of
+            # re-running the whole validation a second time on the same snapshot.
+            failures = check_all_packages(
                 snapshot,
                 explicit=specs_dirs,
                 require_archived=True,
                 slugs=slugs,
                 legacy_hashes=baseline_hashes,
             )
+            broken = [f for f in failures if f.reason != archive_gate_reason]
+            active_unarchived = [f for f in failures if f.reason == archive_gate_reason]
+            if broken:
+                raise PushError(render_failures(root, broken))
+
             if active_unarchived:
                 if allow_unarchived:
                     notes.append("active Spec package(s) present; push continues (--allow-unarchived)")

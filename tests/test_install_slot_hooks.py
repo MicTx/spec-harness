@@ -22,7 +22,6 @@ loader_spec.loader.exec_module(sys.modules["slot_registry"])
 spec_loader.loader.exec_module(install_slot_hooks)
 
 SLOT_EVENTS = {
-    "UserPromptSubmit": ["hooks/loop_route_hook.py"],
     "Stop": ["hooks/loop_stop_guard.py"],
     "TeammateIdle": ["hooks/loop_teammate_gate.py"],
     "TaskCompleted": ["hooks/loop_teammate_gate.py"],
@@ -47,7 +46,7 @@ def collect_commands(items: list[Any]) -> list[str]:
 def test_install_writes_matcher_group_schema():
     """官方 schema：事件值是 matcher 组数组 [{matcher?, hooks: [条目, ...]}]，缺 hooks 包装会被整组忽略。"""
     payload, added = install_slot_hooks.apply_install({}, "team-loop", SLOT_DIR, SLOT_EVENTS)
-    assert added == 4
+    assert added == 3
     for event, rels in SLOT_EVENTS.items():
         groups = payload["hooks"][event]
         assert groups, event
@@ -64,7 +63,7 @@ def test_install_migrates_legacy_bare_entries():
     legacy_stop = 'python3 "/old/root/slots/team-loop/hooks/loop_stop_guard.py"'
     base = {"hooks": {"Stop": [{"type": "command", "command": legacy_stop, "timeout": 20}]}}
     payload, added = install_slot_hooks.apply_install(base, "team-loop", SLOT_DIR, SLOT_EVENTS)
-    assert added == 4
+    assert added == 3
     groups = payload["hooks"]["Stop"]
     assert len(groups) == 1
     assert collect_commands(groups) == [f'python3 "{SLOT_DIR / "hooks" / "loop_stop_guard.py"}"']

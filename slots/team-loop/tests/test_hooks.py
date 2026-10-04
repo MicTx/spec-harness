@@ -46,33 +46,6 @@ def make_run(tmp_path, status="active", with_inflight=True, name="run-1"):
     return store
 
 
-class TestRouteHook:
-    def test_recommended_prompt_injects_context(self):
-        payload = {
-            "hook_event_name": "UserPromptSubmit",
-            "prompt": "对这 12 个章节循环抽取，直至校验全部通过",
-        }
-        code, out, err = run_hook("loop_route_hook", payload)
-        assert code == 0
-        data = json.loads(out)
-        ctx = data["hookSpecificOutput"]["additionalContext"]
-        assert data["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
-        assert "team-loop" in ctx and "spec" in ctx
-        assert len(ctx) < 10000  # 官方上限
-
-    def test_plain_prompt_silent(self):
-        code, out, _ = run_hook("loop_route_hook", {"hook_event_name": "UserPromptSubmit", "prompt": "写个函数"})
-        assert code == 0 and out == ""
-
-    def test_garbage_stdin_silent(self):
-        code, out, _ = run_hook("loop_route_hook", "not json {")
-        assert code == 0 and out == ""
-
-    def test_empty_prompt_silent(self):
-        code, out, _ = run_hook("loop_route_hook", {"prompt": ""})
-        assert code == 0 and out == ""
-
-
 class TestStopGuard:
     def test_no_run_allows(self, tmp_path):
         code, out, _ = run_hook("loop_stop_guard", {"hook_event_name": "Stop", "cwd": str(tmp_path)})

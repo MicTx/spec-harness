@@ -4,14 +4,6 @@ Names are the first index a human or LLM uses when it returns to a task. A good 
 
 Single source of truth for slugs, commits, and Git records. The three rule sets share one design goal: let humans and LLMs review a spec round at minimal cost.
 
-## Contents
-
-- Design principles
-- Slug naming
-- Commit messages
-- Language choice
-- The review triangle
-
 ## Design principles
 
 Language is handled in two layers:
@@ -120,18 +112,3 @@ Auto-detection: with `complete_spec_package.py --git-record-language auto`, deci
 
 `/spec:done` defaults to `auto`; force with `--git-record-language zh` or `en` when needed. Commit descriptions need no argument — they naturally follow the user's input.
 
-## The review triangle
-
-The three artifacts share one identity — the slug — and cover before, during, and after:
-
-| Artifact | Role | Time | Link mechanism |
-| --- | --- | --- | --- |
-| slug | Identity anchor | Before (fixed at new) | Directory name |
-| commit | Action log | During (each commit) | Footer `Spec: <slug>` points back to the identity |
-| completion-summary | Outcome synthesis | After (generated at done) | Git record section references slug and commit |
-
-Review paths:
-
-- Human: `git log --oneline` for the timeline → open a commit → follow the footer to the package → read the summary.
-- LLM: `grep -r "Spec: 2026-06-12"` hits the related commits, or scan `archive/` → read the summary → trace back to commits.
-- The all-English structural layer keeps grep, sorting, and parsing stable under any user language.

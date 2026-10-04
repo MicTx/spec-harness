@@ -188,16 +188,6 @@ def overall_state(
     return HEALTH_OK
 
 
-def current_section_name(sections: list[str], grouped: dict[str, list[Task]]) -> str:
-    if sections and all(task.is_completed for section in sections for task in grouped.get(section, [])):
-        return "已完成"
-    for section in sections:
-        section_tasks = grouped.get(section, [])
-        if any(not task.is_completed for task in section_tasks):
-            return section
-    return sections[-1] if sections else "未分阶段"
-
-
 def status_next_step(
     primary_task: Task | None,
     blocked_tasks: list[Task],

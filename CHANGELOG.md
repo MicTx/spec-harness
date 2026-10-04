@@ -6,9 +6,22 @@ All notable user-facing changes to Spec Harness are recorded here. Internal deve
 
 ## [Unreleased]
 
+## [0.13.11] - 2026-10-04
+
 ### Added
 
 - Added a reader introduction and a hands-on long-running task tutorial for AI learners, programmers, Agent developers, and long-running task developers.
+
+### Changed
+
+- Package checks reuse a cached scan of archived development records, so repeated gates finish almost instantly instead of rescanning every archive each run.
+- The push closeout runs the repository gate once and sorts its findings, instead of repeating the same full check twice.
+- Trimmed the skill entry document and reference guides down to rules that name their triggering stage, and folded the former operating-rules page into the remaining guides.
+- The team-loop slot leaves batch fan-out and review-fix loops to the workflow-runner slot, so a batch request no longer routes twice.
+
+### Removed
+
+- Removed the legacy protocol import and task-id migration tools from the runtime package; protocol migrations never rewrite historical archives.
 
 ## [0.13.10] - 2026-10-03
 

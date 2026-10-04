@@ -114,11 +114,10 @@ Anti-deadlock invariants (every host must satisfy them):
   (omitted means inherit the main session; the `CLAUDE_CODE_SUBAGENT_MODEL` environment variable is the unified-gateway fallback).
   For tiered models, change the gateway mapping — not agent definitions, and never model arguments inside spawn commands.
 
-## Hook contract (the slot ships three guards)
+## Hook contract (the slot ships two guards)
 
 | Hook | Event | Behavior |
 |---|---|---|
-| `hooks/loop_route_hook.py` | UserPromptSubmit | Route-suggestion injection (never blocks) |
 | `hooks/loop_stop_guard.py` | Stop | Active unconverged run -> block with the next step; no run -> release; silent while stop_hook_active |
 | `hooks/loop_teammate_gate.py` | TeammateIdle / TaskCompleted | Teammate in_flight task without a recorded ok -> exit 2 feedback telling it to continue |
 
@@ -129,11 +128,6 @@ Anti-deadlock invariants (every host must satisfy them):
 - Retry backoff waits for real (no spawn before the backoff expires).
 - The Stop hook may be officially blocked at most 8 times in a row: every block must produce substantive state progress — no idling.
 - One run per directory (project `.agents/runtime/loop/<run-id>/`); with multiple runs in parallel, guards fail closed.
-
-## Prior art
-
-See `references/prior-art.md`: official Claude Code hooks / agent teams, the LangGraph checkpointer,
-and AutoGen's composable termination conditions.
 
 ## Tests
 

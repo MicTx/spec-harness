@@ -154,8 +154,8 @@ def validate_slot(slot_dir: Path) -> list[str]:
                 problems.append(problem)
 
     hooks = manifest.get("hooks")
-    if not isinstance(hooks, dict) or not hooks:
-        problems.append("hooks 必须是非空对象（事件 -> 脚本列表）")
+    if not isinstance(hooks, dict):
+        problems.append("hooks 必须是对象（事件 -> 脚本列表）；无 hook 的 slot 声明为空对象")
     else:
         for event, entries in hooks.items():
             if event not in KNOWN_HOOK_EVENTS:

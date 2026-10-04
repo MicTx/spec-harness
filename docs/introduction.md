@@ -59,7 +59,7 @@ git checkout v0.13.10
 bash install.sh
 ```
 
-然后在目标项目里使用 `$spec`，或通过 Claude Code 的 `/spec:goal` 给出一句完整目标。也可以直接运行 `init_spec_package.py` 观察任务包的三张纸。
+然后在目标项目里使用 `$spec`，或通过 Claude Code 的 `/spec:goal` 给出一句完整目标。也可以直接运行 `scripts/init_spec_package.py` 观察任务包的三张纸。
 
 如果今天暂停，下一位 Agent 不应该先问“我们聊到哪里了”。他应该能从任务包看到：已经知道什么、还缺什么、哪条验证失败，以及接下来最小的一步是什么。
 

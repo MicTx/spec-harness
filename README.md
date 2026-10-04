@@ -67,7 +67,6 @@ Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 
 │   ├── commands.md
 │   ├── engineering-philosophy.md
 │   ├── naming-and-commits.md
-│   ├── operating-rules.md
 │   ├── output-contracts.md
 │   ├── slots.md
 │   ├── storage-and-archive.md
@@ -82,12 +81,10 @@ Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 
 │   ├── doctor_spec_environment.py
 │   ├── export_skill_package.py      # 源码库独有打包器（不进运行时导出）
 │   ├── generate_changelog.py
-│   ├── import_kiro_specs.py         # 源码库独有一次性迁移工具（不进运行时导出）
 │   ├── init_spec_package.py
 │   ├── install_git_hooks.py
 │   ├── install_slot_hooks.py
 │   ├── issue_closure_support.py
-│   ├── migrate_task_ids.py           # 源码库独有一次性迁移工具（不进运行时导出）
 │   ├── organize_project_structure.py  # /spec:organize 结构审计事实引擎
 │   ├── package_agent_plugin.py      # 源码库独有打包器（不进运行时导出）
 │   ├── gitea_hook_repair.py
@@ -111,7 +108,7 @@ Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 
 ├── slots/                           # 可插拔插槽（随运行时包分发；契约见 references/slots.md）
 │   ├── team-loop/                   # agents-team 循环触发与高效管理
 │   └── workflow-runner/             # 仓库自有确定性 fan-out 执行段（并行评审/收敛）
-├── tests/                           # 源码库独有：pytest 测试套件（含 fixtures/kiro）
+├── tests/                           # 源码库独有：pytest 测试套件
 ├── release/                         # 源码库独有：跟踪的发布产物（spec-harness-{version} 四件，与 canonical 构建逐字节一致）
 └── .github/                         # CI 与 Issue/PR 模板
 ```
@@ -241,7 +238,6 @@ spec/
 │   ├── commands.md
 │   ├── engineering-philosophy.md
 │   ├── naming-and-commits.md
-│   ├── operating-rules.md
 │   ├── output-contracts.md
 │   ├── slots.md
 │   ├── storage-and-archive.md
@@ -260,8 +256,6 @@ spec/
 │   ├── issue_closure_support.py
 │   ├── organize_project_structure.py
 │   ├── gitea_hook_repair.py
-│   ├── path_safety.py
-│   ├── payload_contract.py
 │   ├── push_spec_package.py
 │   ├── read_version.py
 │   ├── report_spec_package.py
@@ -281,10 +275,7 @@ spec/
     ├── team-loop/
     │   ├── manifest.json
     │   ├── README.md
-    │   ├── references/
-    │   │   └── prior-art.md
     │   ├── hooks/
-    │   │   ├── loop_route_hook.py
     │   │   ├── loop_stop_guard.py
     │   │   └── loop_teammate_gate.py
     │   ├── scripts/
@@ -302,15 +293,12 @@ spec/
     └── workflow-runner/
         ├── manifest.json
         ├── README.md
-        ├── hooks/
-        │   └── workflow_route_hook.py
         ├── scripts/
         │   ├── workflow_fanout.py
         │   └── workflow_route.py
         └── tests/
             ├── conftest.py
             ├── test_workflow_fanout.py
-            ├── test_workflow_hook.py
             └── test_workflow_route.py
 ```
 
@@ -354,4 +342,4 @@ Spec Harness 提供任务包、工作流指令、模板、验证脚本和可选�
 
 ### 稳定身份与验证
 
-可选 `id: task-name` 和显式 `depends-on` 保留任务身份与依赖；迁移默认 dry-run，不修改历史归档。自报结果不能完成任务：勾选前必须真实运行任务的 `verify`。
+可选 `id: task-name` 和显式 `depends-on` 保留任务身份与依赖；协议迁移不修改历史归档。自报结果不能完成任务：勾选前必须真实运行任务的 `verify`。

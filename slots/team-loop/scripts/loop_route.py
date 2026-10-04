@@ -2,15 +2,15 @@
 # SPDX-License-Identifier: LicenseRef-Spec-NonCommercial
 """agents-team-loop 路由决策：任务文本 -> 是否进入受管 loop + 建议配置。
 
-缺口1「触发不自动」的代码触发半边（hook 半边见 hooks/loop_route_hook.py）：
-任何会话/脚本都可以 `loop_route.py --text "..."` 拿到结构化判定，
+代码触发半边：任何会话/脚本都可以 `loop_route.py --text "..."` 拿到结构化判定，
 无需人工记忆该加载哪个 skill。
 
 判定为启发式评分（可解释、可测试），不做魔法：
 - loop 形状：循环/多轮/迭代直至/直到通过/retry until 等收敛语义
-- 批量形状：N 个独立目标 / 批量 / fan-out
-- QA 形状：评审-修复-再验循环
 - 显式团队词：agents-team/spawn_agent/子代理/并行代理
+
+批量 fan-out 与评审-修复闭环形态归 workflow-runner（仓库自有执行面裁定）；
+本脚本不再对这两类形态做推荐，避免双 slot 同文本撞车。
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import re
 import sys
 from typing import Any, Optional
 
-MODES = ("until-converged", "fixed-rounds", "batch-fanout", "none")
+MODES = ("until-converged", "fixed-rounds", "none")
 
 LOOP_PATTERNS = [
     r"循环",
@@ -38,24 +38,6 @@ LOOP_PATTERNS = [
     r"\biterat\w*\b.{0,30}\buntil\b",
     r"\bretry\b.{0,30}\buntil\b",
     r"\buntil\b.{0,16}\b(pass|converge|green|done)\b",
-]
-BATCH_PATTERNS = [
-    r"批量",
-    r"所有.{0,8}(章节|文件|模块|项目|条目|页面)",
-    r"每个.{0,8}(都|逐一|分别)",
-    r"\d+\s*(个|篇|章|项|条).{0,10}(独立|不同|分别)",
-    r"\bN\s*个独立\b",
-    r"\bfan[- ]?out\b",
-    r"\bfor each\b",
-]
-QA_PATTERNS = [
-    r"评审.{0,8}(后|再)",
-    r"审查.{0,8}(后|再)",
-    r"(修复|改正).{0,6}(后.{0,4}再|并复)",
-    r"验证.{0,8}通过",
-    r"\breview\b.{0,12}\bfix\b",
-    r"\bfix\b.{0,12}\b(review|verify)\b",
-    r"\bverify\b.{0,16}\bpass",
 ]
 TEAM_PATTERNS = [
     r"agents-team",
@@ -80,18 +62,14 @@ def route(text: str) -> dict[str, Any]:
         return {"loopRecommended": False, "mode": "none", "score": 0, "reason": "空文本", "suggestedConfig": None}
 
     loop_hits = _score(text, LOOP_PATTERNS)
-    batch_hits = _score(text, BATCH_PATTERNS)
-    qa_hits = _score(text, QA_PATTERNS)
     team_hits = _score(text, TEAM_PATTERNS)
     explicit_rounds = ROUND_EXPLICIT.search(text)
 
-    total = loop_hits * 2 + batch_hits * 2 + qa_hits + team_hits + (2 if explicit_rounds else 0)
+    total = loop_hits * 2 + team_hits + (2 if explicit_rounds else 0)
     recommended = total >= 2
 
     mode = "until-converged"
-    if batch_hits >= 1 and loop_hits == 0 and qa_hits == 0:
-        mode = "batch-fanout"
-    elif explicit_rounds and loop_hits == 0 and batch_hits == 0:
+    if explicit_rounds and loop_hits == 0:
         mode = "fixed-rounds"
     if not recommended:
         mode = "none"
@@ -109,17 +87,10 @@ def route(text: str) -> dict[str, Any]:
         }
         if explicit_rounds:
             config["maxRounds"] = min(100, max(1, int(explicit_rounds.group(1))))
-        if mode == "batch-fanout":
-            config["concurrency"] = 4
-            config["maxRounds"] = 2
 
     reasons = []
     if loop_hits:
         reasons.append(f"循环/收敛语义 x{loop_hits}")
-    if batch_hits:
-        reasons.append(f"批量独立目标 x{batch_hits}")
-    if qa_hits:
-        reasons.append(f"评审-修复闭环 x{qa_hits}")
     if team_hits:
         reasons.append(f"显式团队词 x{team_hits}")
     if explicit_rounds:

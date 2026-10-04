@@ -2,13 +2,6 @@
 
 This page explains where a fact belongs after a task starts. The rule is simple: the active trio describes the current work, the archive preserves the completed record, `.spec/docs/` stores reusable project knowledge, and `.spec/architecture/` describes the current system. Keeping those roles separate makes a paused task recoverable without turning the repository into one undifferentiated diary.
 
-## Contents
-
-- Standard layout
-- Development Record
-- Knowledge / architecture
-- Archiving
-
 ## Standard layout
 
 ```text

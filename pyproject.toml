@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta:__legacy__"
 
 [project]
 name = "spec-harness"
-version = "0.13.10"
+version = "0.13.11"
 description = "Task-package workflow for AI coding agents with verifiable scope, evidence, and Git gates."
 readme = "README.md"
 authors = [{name = "Spec Harness contributors"}]

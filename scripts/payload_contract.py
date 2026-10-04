@@ -12,7 +12,7 @@ SCRIPT_BLACKLIST = frozenset(
         "build_release.py",
         "package_agent_plugin.py",
         "skill_watermark.py",
-        "import_kiro_specs.py",
-        "migrate_task_ids.py",
+        "path_safety.py",
+        "payload_contract.py",
     }
 )

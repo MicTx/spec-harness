@@ -67,7 +67,6 @@ Start with the [introduction](docs/introduction.md), follow the [long-running ta
 │   ├── commands.md
 │   ├── engineering-philosophy.md
 │   ├── naming-and-commits.md
-│   ├── operating-rules.md
 │   ├── output-contracts.md
 │   ├── slots.md
 │   ├── storage-and-archive.md
@@ -82,12 +81,10 @@ Start with the [introduction](docs/introduction.md), follow the [long-running ta
 │   ├── doctor_spec_environment.py
 │   ├── export_skill_package.py      # source-only packager (excluded from runtime export)
 │   ├── generate_changelog.py
-│   ├── import_kiro_specs.py         # source-only one-shot migration tool (excluded from runtime export)
 │   ├── init_spec_package.py
 │   ├── install_git_hooks.py
 │   ├── install_slot_hooks.py
 │   ├── issue_closure_support.py
-│   ├── migrate_task_ids.py          # source-only one-shot migration tool (excluded from runtime export)
 │   ├── organize_project_structure.py  # /spec:organize structure-audit fact engine
 │   ├── package_agent_plugin.py      # source-only packager (excluded from runtime export)
 │   ├── gitea_hook_repair.py
@@ -111,7 +108,7 @@ Start with the [introduction](docs/introduction.md), follow the [long-running ta
 ├── slots/                           # pluggable slots shipped with the runtime package
 │   ├── team-loop/                   # agents-team loop triggering and management
 │   └── workflow-runner/             # repository-owned deterministic fan-out execution
-├── tests/                           # source-only pytest suite, including fixtures/kiro
+├── tests/                           # source-only pytest suite
 ├── release/                         # source-only tracked release artifacts
 └── .github/                         # CI and issue/pull-request templates
 ```
@@ -241,7 +238,6 @@ spec/
 │   ├── commands.md
 │   ├── engineering-philosophy.md
 │   ├── naming-and-commits.md
-│   ├── operating-rules.md
 │   ├── output-contracts.md
 │   ├── slots.md
 │   ├── storage-and-archive.md
@@ -260,8 +256,6 @@ spec/
 │   ├── issue_closure_support.py
 │   ├── organize_project_structure.py
 │   ├── gitea_hook_repair.py
-│   ├── path_safety.py
-│   ├── payload_contract.py
 │   ├── push_spec_package.py
 │   ├── read_version.py
 │   ├── report_spec_package.py
@@ -281,10 +275,7 @@ spec/
     ├── team-loop/
     │   ├── manifest.json
     │   ├── README.md
-    │   ├── references/
-    │   │   └── prior-art.md
     │   ├── hooks/
-    │   │   ├── loop_route_hook.py
     │   │   ├── loop_stop_guard.py
     │   │   └── loop_teammate_gate.py
     │   ├── scripts/
@@ -302,15 +293,12 @@ spec/
     └── workflow-runner/
         ├── manifest.json
         ├── README.md
-        ├── hooks/
-        │   └── workflow_route_hook.py
         ├── scripts/
         │   ├── workflow_fanout.py
         │   └── workflow_route.py
         └── tests/
             ├── conftest.py
             ├── test_workflow_fanout.py
-            ├── test_workflow_hook.py
             └── test_workflow_route.py
 ```
 
@@ -354,4 +342,4 @@ This project uses a source-available, non-commercial license. Commercial use and
 
 ### Stable identity and verification
 
-Optional `id: task-name` and explicit `depends-on` preserve task identity and dependencies. Migration defaults to dry-run and does not rewrite historical archives. A self-reported result cannot complete a task; run its `verify` command before checking it off.
+Optional `id: task-name` and explicit `depends-on` preserve task identity and dependencies; protocol migrations never rewrite historical archives. A self-reported result cannot complete a task; run its `verify` command before checking it off.

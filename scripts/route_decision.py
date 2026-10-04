@@ -28,7 +28,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
-ROUTES = ("local", "explore", "build", "review", "external")
+# 单源词表：与门禁接受的编排 token 共用 spec_package_support.ORCHESTRATION_ROUTES，
+# 避免两份字面量静默漂移（route 判出的 token 必须是门禁认可的 token）。
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+from spec_package_support import ORCHESTRATION_ROUTES as ROUTES  # noqa: E402
 
 # 小而局部：没有跨模块/并行信号，直接主线程做。
 LOCAL_PATTERNS = [

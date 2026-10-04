@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -272,6 +273,47 @@ def _read_archive_file_bytes(path: Path) -> bytes:
         raise ValueError(str(exc)) from exc
 
 
+_LEGACY_CACHE_KEY_SEP = "\x1f"
+_LEGACY_CACHE_DIR = "spec-cache"
+
+
+def _legacy_cache_path(root: Path, cache_key: str) -> Path:
+    return root / ".git" / _LEGACY_CACHE_DIR / f"legacy-archive-hashes-{cache_key}.json"
+
+
+def _load_legacy_cache(root: Path, cache_key: str) -> dict[tuple[str, str], str] | None:
+    """Best-effort read of the immutable-archive hash cache; None on any miss."""
+    try:
+        data = json.loads(_legacy_cache_path(root, cache_key).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("hashes"), dict):
+        return None
+    hashes: dict[tuple[str, str], str] = {}
+    for key, value in data["hashes"].items():
+        parts = key.split(_LEGACY_CACHE_KEY_SEP)
+        if len(parts) == 2 and isinstance(value, str):
+            hashes[(parts[0], parts[1])] = value
+    return hashes or None
+
+
+def _store_legacy_cache(root: Path, cache_key: str, hashes: dict[tuple[str, str], str]) -> None:
+    """Best-effort cache write; failures never break the gate."""
+    path = _legacy_cache_path(root, cache_key)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(
+            {"hashes": {f"{a}{_LEGACY_CACHE_KEY_SEP}{b}": v for (a, b), v in hashes.items()}},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        pass
+
+
 def legacy_archive_hashes(
     root: Path,
     baseline_revision: str | None = None,
@@ -305,6 +347,14 @@ def legacy_archive_hashes(
             break
     if baseline is None:
         return {}
+    # The baseline sha pins immutable archive content, so (baseline, specs_dirs)
+    # is a sound cache key: same key always means same blobs in git.
+    cache_key = hashlib.sha256(
+        f"{baseline}{_LEGACY_CACHE_KEY_SEP}{json.dumps(specs_dirs or [], ensure_ascii=False)}".encode("utf-8")
+    ).hexdigest()[:16]
+    cached = _load_legacy_cache(root, cache_key)
+    if cached is not None:
+        return cached
     listed = subprocess.run(
         [git_bin, "ls-tree", "-r", "--name-only", baseline],
         cwd=root,
@@ -339,6 +389,7 @@ def legacy_archive_hashes(
             digest.update(bundle[filename].encode("utf-8"))
             digest.update(b"\0")
         hashes[identity] = digest.hexdigest()
+    _store_legacy_cache(root, cache_key, hashes)
     return hashes
 
 

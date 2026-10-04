@@ -29,9 +29,6 @@ from spec_package_support import (
     MAX_SPEC_FILE_BYTES,
     SpecControlError,
     add_specs_dir_arg,
-    checklist_passed,
-    count_unchecked_checkboxes,
-    count_unfinished_tasks,
     detect_language,
     extract_evidence_fields,
     extract_section_bullets,
@@ -42,7 +39,6 @@ from spec_package_support import (
     resolve_specs_child,
     resolve_specs_root,
     validate_branch_bound_package,
-    validate_slug,
     verification_scope,
 )
 
@@ -541,11 +537,7 @@ def main() -> int:
         )
         return 1
 
-    try:
-        slug = validate_slug(args.slug.strip())
-    except ValueError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+    slug = args.slug.strip()
 
     root = Path(args.root).resolve()
     try:
@@ -615,21 +607,6 @@ def main() -> int:
             print(
                 "error: spec package has not passed check gates; "
                 "run check_spec_package.py or use --allow-incomplete to bypass",
-                file=sys.stderr,
-            )
-            return 1
-        incomplete_tasks = count_unfinished_tasks(tasks_content)
-        incomplete_checks = count_unchecked_checkboxes(checklist_content)
-        if incomplete_tasks > 0:
-            print(
-                f"error: tasks.md still has {incomplete_tasks} incomplete checkbox item(s); "
-                "use --allow-incomplete to bypass",
-                file=sys.stderr,
-            )
-            return 1
-        if incomplete_checks > 0 or not checklist_passed(checklist_content):
-            print(
-                "error: checklist.md is not fully passed; use --allow-incomplete to bypass",
                 file=sys.stderr,
             )
             return 1

@@ -1,4 +1,8 @@
-"""loop_route 路由判定测试：正例路由、反例不路由、配置生成。"""
+"""loop_route 路由判定测试：正例路由、反例不路由、配置生成。
+
+批量 fan-out / 评审-修复形态已让渡给 workflow-runner（2026-10-04_remove-process-bloat
+裁定）：这类文本本路由不再推荐，见 test_fanout_shapes_defer_to_workflow_runner。
+"""
 
 from __future__ import annotations
 
@@ -9,8 +13,6 @@ POSITIVES = [
     ("多轮实现并评审-修复，直到测试通过", "until-converged"),
     ("iterate until all tests pass", "until-converged"),
     ("loop over these files until validation green", "until-converged"),
-    ("批量处理这 40 个条目，每个都独立并行完成", "batch-fanout"),
-    ("5 个独立调研目标并行 fan-out 完成后汇总", "batch-fanout"),
     ("用子代理团队反复打磨方案直至达标", "until-converged"),
     # check 轮回归：收敛语义无循环关键词 / 英文进行时
     ("把这份报告改到领导满意为止", "until-converged"),
@@ -44,17 +46,23 @@ def test_negative_no_route():
         assert decision["suggestedConfig"] is None
 
 
+def test_fanout_shapes_defer_to_workflow_runner():
+    """批量/评审-修复形态归 workflow-runner：本路由不推荐、mode=none。"""
+    for text in (
+        "批量处理这 40 个条目，每个都独立并行完成",
+        "5 个独立调研目标并行 fan-out 完成后汇总",
+        "批量处理所有文件的元数据，每个都独立完成",
+    ):
+        decision = route(text)
+        assert decision["loopRecommended"] is False, text
+        assert decision["mode"] == "none", f"{text} -> {decision['mode']}"
+
+
 def test_explicit_rounds_config():
     decision = route("分 3 轮推进这个重构任务")
     assert decision["loopRecommended"] is True
     assert decision["mode"] == "fixed-rounds"
     assert decision["suggestedConfig"]["maxRounds"] == 3
-
-
-def test_batch_mode_concurrency_bump():
-    decision = route("批量处理所有文件的元数据，每个都独立完成")
-    assert decision["mode"] == "batch-fanout"
-    assert decision["suggestedConfig"]["concurrency"] == 4
 
 
 def test_reason_is_explainable():

@@ -4,14 +4,6 @@ Templates are executable contracts in prose. Read only the three init fences bel
 
 When changing the init templates, change only these three fences.
 
-## Contents
-
-- `spec.md` (read by default)
-- `tasks.md` (read by default)
-- `checklist.md` (read by default)
-- `completion-summary.md` (not by default)
-- `.spec/docs` and the Module DAG (not by default)
-
 ## `spec.md`
 
 ```markdown

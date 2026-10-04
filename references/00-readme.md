@@ -6,12 +6,11 @@
 
 Start with the smallest page that can unblock the current action:
 
-1. `operating-rules.md` — when to use / not use
-2. The current `## /spec:<stage>` section of `commands.md`
-3. The same-stage section of `output-contracts.md`; paste script output when a script exists
-4. The three init fences in `templates.md` (`new` only)
-5. `storage-and-archive.md` — directories and archiving
-6. `naming-and-commits.md` — slugs and commits
+1. The current `## /spec:<stage>` section of `commands.md`
+2. The same-stage section of `output-contracts.md`; paste script output when a script exists
+3. The three init fences in `templates.md` (`new` only)
+4. `storage-and-archive.md` — directories and archiving
+5. `naming-and-commits.md` — slugs and commits
 
 Open these only when the task shape calls for them:
 
