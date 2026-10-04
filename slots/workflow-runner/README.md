@@ -96,14 +96,8 @@ host-native orchestration APIs never select an execution surface.
 
 ## Install (slot form)
 
-```bash
-# Route-recommendation hook (optional; code trigger works without it)
-python3 scripts/install_slot_hooks.py --slot workflow-runner
-# Rollback
-python3 scripts/install_slot_hooks.py --slot workflow-runner --remove
-```
-
-Fully usable without hook registration: run
+This slot ships no hooks (`manifest.json` declares `"hooks": {}`); trigger detection is
+code-only by design. Run
 `slots/workflow-runner/scripts/workflow_route.py --text "<goal>"` in-session, then follow this
 README's protocol.
 
@@ -111,6 +105,7 @@ README's protocol.
 
 `tests/` covers: positive routing (fan-out / parallel review / panel / review-fix loop texts),
 negative routing (single serial local tasks, plain Q&A), repository-owned surface generation,
-the hook's fail-open behavior, and the fan-out driver's command construction / concurrency /
-timeout fail-per-item / JSONL convergence (via binary stubs). Real worker CLI execution remains
-external evidence; no host-native Workflow runtime is part of this contract.
+and the fan-out driver's command construction / concurrency / output bounding / process-group
+cleanup / timeout fail-per-item / JSONL convergence (via binary stubs, including real-path
+cases that exercise the production selector loop without monkeypatching). Real worker CLI
+execution remains external evidence; no host-native Workflow runtime is part of this contract.

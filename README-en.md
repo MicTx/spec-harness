@@ -30,6 +30,7 @@ Start with the [introduction](docs/introduction.md), follow the [long-running ta
 - **One evidence chain**: `goal -> scope -> tasks -> verification -> archive -> commit -> push`; every task declares a `boundary` and a `verify` command.
 - **Explicit stages**: `new`, `goal`, `run`, `check`, `done`, `push`, `update`, `status`, `doctor`, and `organize`.
 - **Recoverable state**: reports, failures, completion summaries, and archives come from files on disk, so another session can continue.
+- **Stable task identity**: tasks can declare an `id:` and explicit `depends-on`; protocol migrations never rewrite historical archives.
 - **Controlled execution**: the main session keeps routing, integration, acceptance, and done/push gates; `workflow-runner` and other slots only execute bounded work.
 - **Two runtime forms**: the local Skill is the reference implementation; the optional `server/` adapter projects remote task-package start/result/health operations.
 
@@ -37,80 +38,20 @@ Start with the [introduction](docs/introduction.md), follow the [long-running ta
 
 ```text
 .
-├── SKILL.md
-├── install.sh
+├── SKILL.md                  # skill entrypoint: stage commands and runtime contracts
+├── install.sh                # local Skill installer (multi-host, see table below)
 ├── pyproject.toml
-├── agent-plugin/                    # source-only: agent-plugin manifest templates
-│   ├── plugin.json.template
-│   ├── claude-plugin.json.template
-│   └── README.md
-├── agents/
-│   ├── openai.yaml
-│   ├── orchestrator.md
-│   ├── planner.md
-│   ├── reviewer.md
-│   └── confirmer.md
-├── docs/                            # public user and contributor guides
-│   ├── README.md
-│   ├── introduction.md
-│   ├── tutorial.md
-│   ├── git-workflow.md
-│   └── git-workflow.en.md
-├── hooks/
-│   ├── pre-commit
-│   ├── pre-push
-│   ├── claude_stop_guard.py
-│   └── spec_disk_truth_gate.py
-├── references/
-│   ├── 00-readme.md
-│   ├── changelog-guide.md
-│   ├── commands.md
-│   ├── engineering-philosophy.md
-│   ├── naming-and-commits.md
-│   ├── output-contracts.md
-│   ├── slots.md
-│   ├── storage-and-archive.md
-│   ├── templates.md
-│   └── orchestration.md
-├── scripts/
-│   ├── build_release.py             # source-only packager (excluded from runtime export)
-│   ├── check_all_spec_packages.py
-│   ├── check_spec_package.py
-│   ├── complete_spec_package.py
-│   ├── dashboard_support.py
-│   ├── doctor_spec_environment.py
-│   ├── export_skill_package.py      # source-only packager (excluded from runtime export)
-│   ├── generate_changelog.py
-│   ├── init_spec_package.py
-│   ├── install_git_hooks.py
-│   ├── install_slot_hooks.py
-│   ├── issue_closure_support.py
-│   ├── organize_project_structure.py  # /spec:organize structure-audit fact engine
-│   ├── package_agent_plugin.py      # source-only packager (excluded from runtime export)
-│   ├── gitea_hook_repair.py
-│   ├── path_safety.py
-│   ├── payload_contract.py
-│   ├── push_spec_package.py
-│   ├── read_version.py
-│   ├── report_spec_package.py
-│   ├── route_decision.py
-│   ├── route_spec_package.py
-│   ├── safe_open_support.py
-│   ├── slot_registry.py
-│   ├── smoke_test_spec_skill.py
-│   ├── spec_package_support.py
-│   ├── update_checkpoint.py
-│   └── update_checkpoint_support.py
-├── server/
-│   ├── README.md
-│   ├── install.sh
-│   └── server.py
-├── slots/                           # pluggable slots shipped with the runtime package
-│   ├── team-loop/                   # agents-team loop triggering and management
-│   └── workflow-runner/             # repository-owned deterministic fan-out execution
-├── tests/                           # source-only pytest suite
-├── release/                         # source-only tracked release artifacts
-└── .github/                         # CI and issue/pull-request templates
+├── agent-plugin/             # source-only: agent-plugin manifest templates
+├── agents/                   # optional orchestration agents (orchestrator/planner/reviewer/confirmer)
+├── docs/                     # public user and contributor guides
+├── hooks/                    # pre-commit / pre-push and Stop gates
+├── references/               # runtime contract references (commands, templates, slots, archival)
+├── scripts/                  # stage scripts; build/export/package packagers stay out of the runtime export
+├── server/                   # optional self-hosted server-mode adapter
+├── slots/                    # pluggable slots: team-loop and workflow-runner (contracts in references/slots.md)
+├── tests/                    # source-only pytest suite
+├── release/                  # source-only tracked release artifacts (spec-harness-{version}, four files)
+└── .github/                  # CI and issue/pull-request templates
 ```
 
 Runtime task packages default to `.spec/` in target projects; this source repository does not contain user-project state. Detailed contracts live in [`references/`](references/00-readme.md), and user-facing guides live in [`docs/`](docs/README.md).
@@ -131,7 +72,7 @@ Run the installer from a checked-out source or release tree:
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.13.10
+git checkout v0.13.13
 bash install.sh
 ```
 
@@ -286,6 +227,7 @@ spec/
     │       ├── conftest.py
     │       ├── recheck_probes.py
     │       ├── smoke_run.py
+    │       ├── test_audit_regressions.py
     │       ├── test_hooks.py
     │       ├── test_loop_control.py
     │       ├── test_loop_route.py
@@ -299,6 +241,7 @@ spec/
         └── tests/
             ├── conftest.py
             ├── test_workflow_fanout.py
+            ├── test_workflow_fanout_realpath.py
             └── test_workflow_route.py
 ```
 
@@ -339,7 +282,3 @@ Spec Harness provides task packages, workflow instructions, templates, verificat
 ## License
 
 This project is licensed under the GNU Affero General Public License v3 (AGPL-3.0-or-later). See [LICENSE](LICENSE) for the complete terms.
-
-### Stable identity and verification
-
-Optional `id: task-name` and explicit `depends-on` preserve task identity and dependencies; protocol migrations never rewrite historical archives. A self-reported result cannot complete a task; run its `verify` command before checking it off.

@@ -41,6 +41,7 @@ import math
 import os
 import selectors
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -106,6 +107,24 @@ def _has_symlink_component(path: Path) -> bool:
     return False
 
 
+def _kill_process_tree(process: subprocess.Popen) -> None:
+    """Kill the worker and any children it spawned.
+
+    Workers run in their own session (``start_new_session=True``), so the
+    process group covers grandchildren; a bare ``process.kill()`` would leave
+    them running and still holding the pipe write ends.
+    """
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        return
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    try:
+        process.kill()
+    except OSError:
+        pass
+
+
 def _run_bounded(cmd: list[str], timeout: float) -> tuple[subprocess.CompletedProcess[str], bool, bool]:
     """Run one worker while bounding captured stdout/stderr in memory."""
     # Keep monkeypatched ``subprocess.run`` compatibility for the unit tests;
@@ -113,7 +132,7 @@ def _run_bounded(cmd: list[str], timeout: float) -> tuple[subprocess.CompletedPr
     if getattr(subprocess.run, "__module__", "subprocess") != "subprocess":
         completed = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         return completed, False, False
-    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=False)
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=False, start_new_session=True)
     assert process.stdout is not None and process.stderr is not None
     selector = selectors.DefaultSelector()
     stdout = bytearray()
@@ -128,7 +147,7 @@ def _run_bounded(cmd: list[str], timeout: float) -> tuple[subprocess.CompletedPr
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 timed_out = True
-                process.kill()
+                _kill_process_tree(process)
                 break
             for key, _ in selector.select(min(remaining, 0.2)):
                 chunk = os.read(key.fileobj.fileno(), 65536)
@@ -136,18 +155,21 @@ def _run_bounded(cmd: list[str], timeout: float) -> tuple[subprocess.CompletedPr
                     selector.unregister(key.fileobj)
                     continue
                 target = key.data
-                if len(target) < MAX_OUTPUT_BYTES:
-                    target.extend(chunk[: MAX_OUTPUT_BYTES - len(target)])
-                if len(chunk) > MAX_OUTPUT_BYTES - min(len(target), MAX_OUTPUT_BYTES):
+                # 截断判定必须对 extend 前的剩余空间做：用扩展后长度会把
+                # 「整块装入」误判成「丢过字节」，杀伤合法大输出。
+                room = MAX_OUTPUT_BYTES - len(target)
+                if len(chunk) > room:
+                    target.extend(chunk[: max(room, 0)])
                     output_limited = True
-                    process.kill()
+                    _kill_process_tree(process)
                     break
+                target.extend(chunk)
             if output_limited:
                 break
         try:
             process.wait(timeout=2)
         except subprocess.TimeoutExpired:
-            process.kill()
+            _kill_process_tree(process)
             process.wait()
     finally:
         for key in list(selector.get_map().values()):
@@ -178,11 +200,16 @@ def _write_results(path: Path, records: list[dict[str, Any]]) -> None:
 
 
 def build_command(backend: str, prompt: str, output_file: Optional[Path]) -> list[str]:
-    """按后端构造一次性子进程命令。codex 用 --output-last-message 落盘。"""
+    """按后端构造一次性子进程命令。codex 用 --output-last-message 落盘。
+
+    prompt 之前固定加 ``--``：plan.json 是外部输入面，以 ``-`` 开头的
+    prompt 否则会被 worker CLI 的参数解析器吞成选项（pi 与 codex 的
+    解析器都支持 ``--`` 终止符）。
+    """
     if backend == "pi":
-        return ["pi", "-p", "--no-session", "--mode", "text", prompt]
+        return ["pi", "-p", "--no-session", "--mode", "text", "--", prompt]
     if backend == "codex":
-        cmd = ["codex", "exec", "--sandbox", "read-only", prompt]
+        cmd = ["codex", "exec", "--sandbox", "read-only", "--", prompt]
         if output_file is not None:
             cmd[4:4] = ["--output-last-message", str(output_file)]
         return cmd
@@ -336,6 +363,10 @@ def run_item(
     except (OSError, UnicodeError) as exc:
         record["error"] = f"output write failed: {exc}"
         return record
+    if backend == "pi":
+        # pi 没有 codex 式 --output-last-message 落盘，`.out` 永远不会存在；
+        # outputFile 必须指向真实产物（完整 stdout/stderr 转储），否则证据链悬空。
+        record["outputFile"] = str(dump_output)
     record["stdoutSummary"] = stdout[:STDOUT_SUMMARY_CAP]
     record["returncode"] = completed.returncode
 

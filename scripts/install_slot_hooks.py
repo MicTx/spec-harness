@@ -76,8 +76,16 @@ def load_settings(path: Path) -> dict[str, Any]:
 
 
 def relative_markers(slot_name: str, hook_files: list[Path]) -> list[str]:
-    """插槽身份标记：slots/<name>/hooks/<file>，与安装根无关。"""
-    return [f"slots/{slot_name}/hooks/{f.name}" for f in hook_files]
+    """插槽身份标记：slots/<name>/hooks/<file>，与安装根无关。
+
+    额外纳入目录级标记 ``slots/<name>/hooks/``：插槽拥有其 hooks/ 命名空间，
+    manifest 删掉的旧脚本（如 897a42f 删除的 loop_route_hook.py）留下的注册
+    条目同样属于本插槽，--remove 必须能回收，否则残留指向已删脚本的悬空
+    hook 在每次事件触发时报错。
+    """
+    markers = [f"slots/{slot_name}/hooks/{f.name}" for f in hook_files]
+    markers.append(f"slots/{slot_name}/hooks/")
+    return markers
 
 
 def _entry_command(entry: Any) -> str:

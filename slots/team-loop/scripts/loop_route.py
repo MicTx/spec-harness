@@ -115,8 +115,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.text is not None:
         text = args.text
     elif args.file:
-        with open(args.file, encoding="utf-8") as handle:
-            text = handle.read()
+        try:
+            with open(args.file, encoding="utf-8") as handle:
+                text = handle.read()
+        except OSError as exc:
+            print(f"[loop-route] 无法读取文件: {exc}", file=sys.stderr)
+            return 2
     else:
         text = sys.stdin.read()
 

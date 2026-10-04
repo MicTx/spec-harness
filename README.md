@@ -30,6 +30,7 @@ Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 
 - **一条可验证链**：`目标 → 范围 → 任务 → 验证 → 归档 → 提交 → 推送`，每个任务都声明 `boundary` 与 `verify`。
 - **明确的入口**：`new`、`goal`、`run`、`check`、`done`、`push`、`update`、`status`、`doctor`、`organize`。
 - **可恢复的状态**：报告、失败原因、完成摘要和归档都来自磁盘文件，换会话仍能继续。
+- **稳定的任务身份**：任务可用 `id:` 与 `depends-on` 声明身份与依赖；协议迁移不改写历史归档。
 - **受控的执行面**：主会话保留路由、集成、验收和 done/push 门禁；`workflow-runner` 与其他 slots 只执行有边界的工作段。
 - **两种运行形态**：本地 Skill 是参考实现；可选 `server/` 适配器只负责远端任务包的 start/result/health 投影。
 
@@ -37,80 +38,20 @@ Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 
 
 ```text
 .
-├── SKILL.md
-├── install.sh
+├── SKILL.md                  # Skill 入口：阶段指令与运行时契约
+├── install.sh                # 本地 Skill 安装器（多宿主，见下表）
 ├── pyproject.toml
-├── agent-plugin/                    # 源码库独有：Agent 插件清单模板
-│   ├── plugin.json.template
-│   ├── claude-plugin.json.template
-│   └── README.md
-├── agents/
-│   ├── openai.yaml
-│   ├── orchestrator.md
-│   ├── planner.md
-│   ├── reviewer.md
-│   └── confirmer.md
-├── docs/                            # 面向用户与贡献者的公开文档
-│   ├── README.md
-│   ├── introduction.md
-│   ├── tutorial.md
-│   ├── git-workflow.md
-│   └── git-workflow.en.md
-├── hooks/
-│   ├── pre-commit
-│   ├── pre-push
-│   ├── claude_stop_guard.py
-│   └── spec_disk_truth_gate.py
-├── references/
-│   ├── 00-readme.md
-│   ├── changelog-guide.md
-│   ├── commands.md
-│   ├── engineering-philosophy.md
-│   ├── naming-and-commits.md
-│   ├── output-contracts.md
-│   ├── slots.md
-│   ├── storage-and-archive.md
-│   ├── templates.md
-│   └── orchestration.md
-├── scripts/
-│   ├── build_release.py             # 源码库独有打包器（不进运行时导出）
-│   ├── check_all_spec_packages.py
-│   ├── check_spec_package.py
-│   ├── complete_spec_package.py
-│   ├── dashboard_support.py
-│   ├── doctor_spec_environment.py
-│   ├── export_skill_package.py      # 源码库独有打包器（不进运行时导出）
-│   ├── generate_changelog.py
-│   ├── init_spec_package.py
-│   ├── install_git_hooks.py
-│   ├── install_slot_hooks.py
-│   ├── issue_closure_support.py
-│   ├── organize_project_structure.py  # /spec:organize 结构审计事实引擎
-│   ├── package_agent_plugin.py      # 源码库独有打包器（不进运行时导出）
-│   ├── gitea_hook_repair.py
-│   ├── path_safety.py
-│   ├── payload_contract.py
-│   ├── push_spec_package.py
-│   ├── read_version.py
-│   ├── report_spec_package.py
-│   ├── route_decision.py
-│   ├── route_spec_package.py
-│   ├── safe_open_support.py
-│   ├── slot_registry.py
-│   ├── smoke_test_spec_skill.py
-│   ├── spec_package_support.py
-│   ├── update_checkpoint.py
-│   └── update_checkpoint_support.py
-├── server/
-│   ├── README.md
-│   ├── install.sh
-│   └── server.py
-├── slots/                           # 可插拔插槽（随运行时包分发；契约见 references/slots.md）
-│   ├── team-loop/                   # agents-team 循环触发与高效管理
-│   └── workflow-runner/             # 仓库自有确定性 fan-out 执行段（并行评审/收敛）
-├── tests/                           # 源码库独有：pytest 测试套件
-├── release/                         # 源码库独有：跟踪的发布产物（spec-harness-{version} 四件，与 canonical 构建逐字节一致）
-└── .github/                         # CI 与 Issue/PR 模板
+├── agent-plugin/             # 源码库独有：Agent 插件清单模板
+├── agents/                   # 可选编排代理定义（orchestrator/planner/reviewer/confirmer）
+├── docs/                     # 面向用户与贡献者的公开文档
+├── hooks/                    # pre-commit / pre-push 与 Stop 门禁
+├── references/               # 运行时契约参考（命令、模板、slots、归档）
+├── scripts/                  # 阶段脚本；build/export/package 打包器不进运行时导出
+├── server/                   # 可选 self-hosted server-mode 适配器
+├── slots/                    # 可插拔插槽：team-loop 与 workflow-runner（契约见 references/slots.md）
+├── tests/                    # 源码库独有：pytest 测试套件
+├── release/                  # 源码库独有：跟踪的发布产物（spec-harness-{version} 四件）
+└── .github/                  # CI 与 Issue/PR 模板
 ```
 
 运行时任务包默认写入目标项目的 `.spec/`；源码仓库本身不包含用户项目状态。详细契约在 [`references/`](references/00-readme.md)，面向人的教程在 [`docs/`](docs/README.md)。
@@ -131,7 +72,7 @@ Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.13.10
+git checkout v0.13.13
 bash install.sh
 ```
 
@@ -286,6 +227,7 @@ spec/
     │       ├── conftest.py
     │       ├── recheck_probes.py
     │       ├── smoke_run.py
+    │       ├── test_audit_regressions.py
     │       ├── test_hooks.py
     │       ├── test_loop_control.py
     │       ├── test_loop_route.py
@@ -299,6 +241,7 @@ spec/
         └── tests/
             ├── conftest.py
             ├── test_workflow_fanout.py
+            ├── test_workflow_fanout_realpath.py
             └── test_workflow_route.py
 ```
 
@@ -339,7 +282,3 @@ Spec Harness 提供任务包、工作流指令、模板、验证脚本和可选�
 ## 许可协议
 
 本项目采用 GNU Affero General Public License v3（AGPL-3.0-or-later）开源许可。完整条款见 [LICENSE](LICENSE)。
-
-### 稳定身份与验证
-
-可选 `id: task-name` 和显式 `depends-on` 保留任务身份与依赖；协议迁移不修改历史归档。自报结果不能完成任务：勾选前必须真实运行任务的 `verify`。

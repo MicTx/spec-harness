@@ -157,3 +157,38 @@ def test_write_settings_creates_backup(tmp_path):
     install_slot_hooks.write_settings(settings, payload)
     backups = list(settings.parent.glob("settings.json.bak-*"))
     assert len(backups) == 1
+
+
+def test_remove_recycles_legacy_entries_of_deleted_hooks():
+    """issue-20：manifest 已删脚本的旧版注册也要能被 --remove 回收。
+
+    897a42f 删除了 team-loop 的 UserPromptSubmit 注入 hook；旧版安装过的
+    项目里该条目指向已不存在的 loop_route_hook.py，若只按当前 manifest
+    文件名做标记，残留会永久悬空并在每次事件触发时报错。
+    """
+    legacy = 'python3 "/old/installed/path/slots/team-loop/hooks/loop_route_hook.py"'
+    base = {
+        "hooks": {
+            "UserPromptSubmit": [
+                {"matcher": "*", "hooks": [{"type": "command", "command": legacy}]},
+                {"matcher": "*", "hooks": [{"type": "command", "command": "echo foreign"}]},
+            ],
+            "Stop": [
+                {"type": "command", "command": "echo keep-me"},
+            ],
+        }
+    }
+    payload, removed = install_slot_hooks.apply_remove(base, "team-loop", SLOT_DIR, SLOT_EVENTS)
+    assert removed == 1
+    # 他人条目保留，悬空的旧版条目被回收，事件组随之收缩
+    assert "UserPromptSubmit" in payload["hooks"]
+    assert collect_commands(payload["hooks"]["UserPromptSubmit"]) == ["echo foreign"]
+    assert collect_commands(payload["hooks"]["Stop"]) == ["echo keep-me"]
+
+
+def test_remove_legacy_only_leaves_clean_settings():
+    legacy = 'python3 "/x/slots/team-loop/hooks/loop_route_hook.py"'
+    base = {"hooks": {"UserPromptSubmit": [{"type": "command", "command": legacy}]}}
+    payload, removed = install_slot_hooks.apply_remove(base, "team-loop", SLOT_DIR, SLOT_EVENTS)
+    assert removed == 1
+    assert "hooks" not in payload

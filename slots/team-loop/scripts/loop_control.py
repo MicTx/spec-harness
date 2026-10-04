@@ -112,6 +112,29 @@ def stale_tasks(store: LoopStore, now: float) -> list[str]:
     return out
 
 
+def reap_stale_tasks(store: LoopStore, now: float, reason: str = "") -> dict[str, Any]:
+    """把心跳超时的 in_flight 任务按失败转入重试路径（docstring 承诺的处置半边）。
+
+    经 ``task_result(fail)`` 走状态机：attempts < maxAttempts -> pending（带
+    退避窗口），耗尽 -> failed（termination 捕获）；并发额度随之释放。
+    closed round 内的孤儿 in_flight（历史楔死状态）同样可回收。
+    """
+    cfg = store.state["config"]
+    rng = random.Random()
+    reaped: list[dict[str, Any]] = []
+    for rnd in store.state["rounds"]:
+        for tid, task in list(rnd.get("tasks", {}).items()):
+            if task["status"] != "in_flight" or not _is_stale(task, cfg, now):
+                continue
+            detail = reason or f"staleness reaped: 心跳超时超过 {cfg['stalenessSec']}s"
+            outcome_state = store.task_result(rnd["index"], tid, "fail", detail)
+            if outcome_state == "retry":
+                delay = backoff_delay(task["attempts"], cfg["retry"], rng)
+                store.task_backoff_until(rnd["index"], tid, now + delay)
+            reaped.append({"task": f"r{rnd['index']}/{tid}", "outcome": outcome_state})
+    return {"reaped": reaped}
+
+
 # ---------------------------------------------------------------------------
 # 可组合终止条件（AutoGen 风格 AND 组合）
 # ---------------------------------------------------------------------------
@@ -133,14 +156,15 @@ def termination_check(store: LoopStore, now: float) -> dict[str, Any]:
     """评估终止条件族。
 
     返回 {stop: bool, reasons: [...], verdict: "converged"|"stopped"|"continue"}。
-    - allDone 且外部未请求停止 -> converged（自然收敛）
-    - maxRounds / runTimeout / budgetTasks / external STOP -> stopped（管理停止）
+    - 全部轮 pass 关闭、任务全终态且外部未请求停止 -> converged（自然收敛）
+    - maxRounds / runTimeout / budgetTasks / external STOP / failed 任务 -> stopped（管理停止）
     """
     st = store.state
     cfg = st["config"]
     reasons: list[str] = []
 
     open_rounds = [r for r in st["rounds"] if r["status"] == "open"]
+    fail_rounds = [r["index"] for r in st["rounds"] if r["status"] == "closed" and r.get("decision") == "fail"]
     all_tasks_terminal = True
     any_task = False
     failed_tasks: list[str] = []
@@ -155,8 +179,11 @@ def termination_check(store: LoopStore, now: float) -> dict[str, Any]:
     rounds_used = len(st["rounds"])
     if rounds_used > int(cfg["maxRounds"]):
         reasons.append(f"maxRounds={cfg['maxRounds']} 超限（当前 {rounds_used} 轮）")
-    elif rounds_used == int(cfg["maxRounds"]) and open_rounds:
-        reasons.append(f"maxRounds={cfg['maxRounds']} 已用尽且仍有 open round（当前 {rounds_used} 轮）")
+    elif rounds_used == int(cfg["maxRounds"]) and (open_rounds or fail_rounds):
+        # fail 关闭轮同样占用轮数预算：否则失败轮把 maxRounds 用尽后既开不了
+        # 新轮也触发不了停止理由，run 会以 verdict=continue 空转。
+        detail = f"open rounds {[r['index'] for r in open_rounds]}" if open_rounds else f"fail rounds {fail_rounds}"
+        reasons.append(f"maxRounds={cfg['maxRounds']} 已用尽且存在未收敛轮（当前 {rounds_used} 轮：{detail}）")
     if now - float(st["createdAt"]) > float(cfg["timeoutSec"]):
         reasons.append(f"runTimeout={cfg['timeoutSec']}s 超时")
     spawned = int(st["counters"]["tasksSpawned"])
@@ -178,14 +205,10 @@ def termination_check(store: LoopStore, now: float) -> dict[str, Any]:
 
     if reasons:
         return {"stop": True, "verdict": "stopped", "reasons": reasons}
-    if any_task and all_tasks_terminal and not open_rounds:
-        # 所有轮都已关闭且全部任务 done/cancelled -> 自然收敛
-        all_closed_pass = bool(st["rounds"]) and all(
-            r["decision"] in ("pass", None) or r["status"] == "closed" for r in st["rounds"]
-        )
-        hard_failed = bool(failed_tasks)
-        if all_closed_pass and not hard_failed:
-            return {"stop": True, "verdict": "converged", "reasons": ["全部任务完成且无 open round"]}
+    if any_task and all_tasks_terminal and not open_rounds and not fail_rounds and bool(st["rounds"]):
+        # 自然收敛：所有轮关闭且 decision 均为 pass（fail 轮意味着评审未过，
+        # 需要开新轮或命中停止理由，绝不能判 converged）。
+        return {"stop": True, "verdict": "converged", "reasons": ["全部轮 pass 关闭且全部任务终态"]}
     return {"stop": False, "verdict": "continue", "reasons": []}
 
 
@@ -247,8 +270,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("admit", help="并发准入判定")
     p.add_argument("--run-dir", required=True)
 
-    p = sub.add_parser("stale", help="staleness 检测")
+    p = sub.add_parser("stale", help="staleness 检测（--reap 时按失败回收进重试路径）")
     p.add_argument("--run-dir", required=True)
+    p.add_argument("--reap", action="store_true", help="把 stale in_flight 任务按 fail 记录结果转入重试路径")
+    p.add_argument("--reason", default="", help="reap 时写入 lastError 的原因")
 
     p = sub.add_parser("terminate", help="终止条件族评估")
     p.add_argument("--run-dir", required=True)
@@ -259,6 +284,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("backoff", help="计算第 N 次失败后的退避秒数")
     p.add_argument("--attempt", type=int, required=True)
+    p.add_argument("--run-dir", default=None, help="可选：用该 run 的 retry 配置计算（缺省用默认配置）")
     p.add_argument("--seed", type=int, default=None, help="可选随机种子（可复现）")
 
     p = sub.add_parser("stop", help="外部停止：写 STOP 哨兵")
@@ -277,10 +303,20 @@ def main(argv: Optional[list[str]] = None) -> int:
             rng = random.Random(args.seed)
             from loop_state import default_config
 
+            retry_cfg = default_config()["retry"]
+            config_source = "default"
+            if args.run_dir:
+                store = LoopStore(Path(args.run_dir))
+                if not store.exists():
+                    raise LoopStateError(f"run 不存在: {args.run_dir}")
+                store.load()
+                retry_cfg = store.state["config"]["retry"]
+                config_source = str(store.run_dir)
             _emit_json(
                 {
                     "attempt": args.attempt,
-                    "delaySec": backoff_delay(args.attempt, default_config()["retry"], rng),
+                    "delaySec": backoff_delay(args.attempt, retry_cfg, rng),
+                    "retryConfigSource": config_source,
                 }
             )
         elif args.command == "active":
@@ -296,7 +332,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             if args.command == "admit":
                 _emit_json(admission(store, now))
             elif args.command == "stale":
-                _emit_json({"stale": stale_tasks(store, now)})
+                if args.reap:
+                    _emit_json(reap_stale_tasks(store, now, reason=args.reason))
+                else:
+                    _emit_json({"stale": stale_tasks(store, now)})
             elif args.command == "terminate":
                 _emit_json(termination_check(store, now))
             elif args.command == "interrupt":

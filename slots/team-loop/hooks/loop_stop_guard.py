@@ -26,7 +26,7 @@ from pathlib import Path
 SKILL_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SKILL_DIR / "scripts"))
 
-from loop_control import find_active_runs, termination_check  # noqa: E402
+from loop_control import find_active_runs, stale_tasks, termination_check  # noqa: E402
 from loop_state import LoopStateError, LoopStore, find_run_root, utc_now  # noqa: E402
 
 
@@ -89,7 +89,17 @@ def main() -> int:
         )
         return 0
 
-    verdict = termination_check(store, utc_now())
+    try:
+        verdict = termination_check(store, utc_now())
+    except (OSError, LoopStateError) as exc:
+        # 例如 STOP 哨兵为 symlink：终止判定自身异常时必须 fail-closed，
+        # 未捕获崩溃会让守卫以非 0 非 2 退出码静默放行未收敛 run。
+        emit_block(
+            f"spec team-loop：终止判定无法安全评估（{run_dir}：{exc}）。"
+            f"请修复状态（如移除异常的 STOP 哨兵：python3 -c \"import os; os.unlink('{run_dir}/STOP')\"）"
+            "后再结束会话。"
+        )
+        return 0
     if verdict["stop"]:
         reasons = "；".join(verdict["reasons"])
         if verdict["verdict"] == "converged":
@@ -124,6 +134,15 @@ def main() -> int:
         parts.append('round start：python3 …/loop_state.py round start --goal "<本轮目标>"')
     if in_flight:
         parts.append(f"wait 在途任务 {', '.join(in_flight)} 并记录 task result")
+        try:
+            stale = stale_tasks(store, utc_now())
+        except (OSError, LoopStateError):
+            stale = []
+        if stale:
+            parts.append(
+                f"心跳超时的在途任务 {', '.join(stale)}：worker 已死时执行 "
+                f"python3 {SKILL_DIR}/scripts/loop_control.py stale --reap --run-dir {run_dir} 回收"
+            )
     if pending:
         parts.append(f"重派 pending 任务 {', '.join(pending)}（先过 admit 并发判定）")
     if not parts:

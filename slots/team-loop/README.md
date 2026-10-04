@@ -12,9 +12,9 @@ execution segment only; the main session still owns routing, acceptance, and `do
 
 | Gap | Solution |
 |---|---|
-| (1) No automatic triggering (manual skill loading) | Hook triggering (UserPromptSubmit route injection / Stop convergence guard / TeammateIdle gate) + code triggering (`loop_route.py`, callable from any session) |
+| (1) No automatic triggering (manual skill loading) | Hook triggering (Stop convergence guard / TeammateIdle gate) + code triggering (`loop_route.py`, callable from any session) |
 | (2) Loops not generic (bound to one domain) | Domain-agnostic run/round/task state machine with three modes: `until-converged / fixed-rounds / batch-fanout` |
-| (3) No retry/concurrency/heartbeat/interrupt primitives | `loop_control.py`: exponential backoff with jitter, concurrency admission, staleness watchdog, cooperative interrupt recovery, composable termination conditions (including an external STOP) |
+| (3) No retry/concurrency/heartbeat/interrupt primitives | `loop_control.py`: exponential backoff with jitter, concurrency admission, staleness watchdog with reap, cooperative interrupt recovery, composable termination conditions (including an external STOP) |
 
 ## Install (slot form)
 
@@ -39,7 +39,6 @@ in-session, then drive the loop per this README's protocol.
 
 | Path | Mechanism | Notes |
 |---|---|---|
-| Hook injection | A `UserPromptSubmit` hook runs `loop_route.py` and injects additionalContext | Happens automatically once registered; the agent takes over per this protocol on seeing the hint |
 | Code decision | Any session runs `loop_route.py --text "<goal>"` directly | Emits a JSON decision + suggested configuration, programmatically consumable |
 | Explicit request | The user names a loop / iterative advance / multi-round convergence | Enter initialization directly |
 
@@ -54,10 +53,10 @@ Commands are relative to the slot root (`slots/team-loop/`):
 5. **spawn + record** — right after `spawn_agent` returns the agent/submission:
    `scripts/loop_state.py task spawn --round N --id <t1> --agent <agent_id> --submission <submission_id>`
 6. **wait + heartbeat** — `wait` uses a bounded timeout; before and after every wait:
-   `scripts/loop_state.py task heartbeat --round N --id <t1>`; staleness detection via `scripts/loop_control.py stale`
+   `scripts/loop_state.py task heartbeat --round N --id <t1>`; staleness detection via `scripts/loop_control.py stale`, and dead-worker recycling via `scripts/loop_control.py stale --reap --run-dir <run directory>` (stale in_flight enters the failure retry path by fail, releasing the concurrency slot)
 7. **result** — `scripts/loop_state.py task result --round N --id <t1> --outcome ok --result "<verification evidence>"`,
    or `--outcome fail --error "<reason>"` (enters the retry path automatically)
-8. **Retry discipline** — after a failure, `scripts/loop_control.py backoff --attempt N` computes the backoff and
+8. **Retry discipline** — after a failure, `scripts/loop_control.py backoff --attempt N [--run-dir <run directory>]` computes the backoff and
    `scripts/loop_state.py task backoff --round N --id <t1> --until <epoch>` records it; respawn only after the backoff expires;
    at maxAttempts the task becomes failed (termination conditions catch it)
 9. **Termination decision** — at every round close and before every urge to stall: `scripts/loop_control.py terminate --run-dir <dir>`;
@@ -90,7 +89,7 @@ Anti-deadlock invariants (every host must satisfy them):
 - Decision Q&A is for short bounded questions only; long work must be split into a team-loop task + a handoff message +
   a persisted `task result` — never park long execution on a Q&A as a disguised stall.
 - Communication-layer stalls are backstopped by bounded timeouts; execution-layer stalls by the staleness watchdog
-  (`stalenessSec`, default 300s) and the Stop convergence guard. The two layers complement each other; both are required.
+  (`stalenessSec`, default 300s; `stale --reap` recycles dead workers into the retry path) and the Stop convergence guard. The two layers complement each other; both are required.
 - No busy-waiting: after sending a handoff, keep advancing other parts of the task; once a Q&A gets its reply or times out, continue immediately / record the failure into retry. No polling, no idling.
 
 ### Host adaptation table

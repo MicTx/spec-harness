@@ -49,8 +49,6 @@ TERMINAL_STATUSES = ("converged", "failed", "interrupted", "cancelled")
 TASK_STATUSES = ("pending", "in_flight", "done", "failed", "cancelled")
 ROUND_DECISIONS = ("pass", "fail")
 
-DEFAULT_ROOT_MARKERS = (".agents", ".git", ".claude")
-
 
 class LoopStateError(Exception):
     """状态机被非法使用或磁盘状态不一致。"""
@@ -163,16 +161,17 @@ def default_run_dir(root: Path, run_id: str) -> Path:
 
 
 def find_run_root(start: Path) -> Optional[Path]:
-    """从 start 向上找最近的可作为 loop root 的目录（含 .agents 或 .git 标记）。"""
+    """从 start 向上找最近的可作为 loop root 的目录（含 .agents 或 .git 标记）。
+
+    只认 .agents/.git：接受 .claude 会让非 git 的 home 子目录把 root 解析到
+    $HOME，run 泄漏到 ~/.agents 且 Stop 守卫跨项目误拦截。
+    """
     current = start.resolve(strict=False)
     for candidate in (current, *current.parents):
         if candidate.name == ".agents":
             return candidate.parent
         if (candidate / ".agents").is_dir() or (candidate / ".git").exists():
             return candidate
-        for marker in DEFAULT_ROOT_MARKERS:
-            if (candidate / marker).exists() and marker != ".agents":
-                return candidate
     return None
 
 
@@ -355,8 +354,12 @@ class LoopStore:
             raise LoopStateError(f"run 目录非空，拒绝覆盖: {run_dir}")
         merged = default_config()
         if config:
+            if not isinstance(config, dict):
+                raise LoopStateError("--config 必须是 JSON 对象")
             for key, value in config.items():
                 if key == "retry":
+                    if not isinstance(value, dict):
+                        raise LoopStateError("配置项 retry 必须是对象")
                     merged["retry"].update(value)
                 else:
                     merged[key] = value
@@ -504,6 +507,16 @@ class LoopStore:
         rnd = self._latest_open_round()
         if rnd is None:
             raise LoopStateError("没有 open round 可结束")
+        # 关轮前任务必须全部终态：孤儿 in_flight/pending 会让 termination_check
+        # 的 all_tasks_terminal 永远为假，run 楔死到超时，且永久占用并发额度。
+        # 需要放弃存活任务时先 task_cancel，再关轮。
+        live = [
+            tid for tid, task in rnd.get("tasks", {}).items() if task["status"] not in ("done", "failed", "cancelled")
+        ]
+        if live:
+            raise LoopStateError(
+                f"round {rnd['index']} 仍有非终态任务 {', '.join(live)}：先记录 result 或 cancel 再关轮"
+            )
         rnd["status"] = "closed"
         rnd["decision"] = decision
         self._persist()
@@ -536,8 +549,13 @@ class LoopStore:
 
     def task_spawn(self, round_index: int, task_id: str, agent_id: str, submission_id: str) -> None:
         self._require_active()
+        rnd = self._round(round_index)
+        if rnd["status"] != "open":
+            raise LoopStateError(f"round {round_index} 已关闭，不能 spawn 任务")
         task = self._task(round_index, task_id)
-        if task["status"] not in ("pending", "failed"):
+        # 只允许 pending：failed = 重试耗尽（attempts 已达 maxAttempts），再 spawn
+        # 会绕过重试预算无限白送尝试；中断恢复走 resume 的 in_flight -> pending。
+        if task["status"] != "pending":
             raise LoopStateError(f"task {task_id} 状态 {task['status']} 不可 spawn")
         in_flight = sum(
             1
@@ -704,12 +722,29 @@ class LoopStore:
             for tid, task in rnd.get("tasks", {}).items()
             if task["status"] == "pending"
         ]
+        in_flight = [
+            f"r{rnd['index']}/{tid}"
+            for rnd in self.state["rounds"]
+            for tid, task in rnd.get("tasks", {}).items()
+            if task["status"] == "in_flight"
+        ]
         actions = []
         if not open_rounds:
             actions.append("round_start：开启下一轮")
         if pending:
             actions.append("spawn：重新派发 pending 任务 " + ", ".join(pending))
-        return {"status": self.state["status"], "openRounds": open_rounds, "pending": pending, "nextActions": actions}
+        if in_flight:
+            actions.append(
+                "wait 在途任务 " + ", ".join(in_flight) + " 并记录 task result；"
+                "worker 已死（心跳超时）时用 loop_control.py stale --reap --run-dir <run目录> 回收"
+            )
+        return {
+            "status": self.state["status"],
+            "openRounds": open_rounds,
+            "pending": pending,
+            "inFlight": in_flight,
+            "nextActions": actions,
+        }
 
     # -- 摘要 -------------------------------------------------------------
 
@@ -837,10 +872,13 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             config = None
             if args.config:
                 raw = args.config
-                if raw.startswith("@"):
-                    config = json.loads(Path(raw[1:]).read_text(encoding="utf-8"))
-                else:
-                    config = json.loads(raw)
+                try:
+                    if raw.startswith("@"):
+                        config = json.loads(Path(raw[1:]).read_text(encoding="utf-8"))
+                    else:
+                        config = json.loads(raw)
+                except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                    raise LoopStateError(f"无效 --config: {exc}") from exc
             if args.run_dir:
                 run_dir = Path(args.run_dir)
             else:
@@ -883,11 +921,14 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                 result = None
                 if args.result:
                     raw = args.result
-                    result = (
-                        json.loads(Path(raw[1:]).read_text(encoding="utf-8"))
-                        if raw.startswith("@")
-                        else json.loads(raw)
-                    )
+                    try:
+                        result = (
+                            json.loads(Path(raw[1:]).read_text(encoding="utf-8"))
+                            if raw.startswith("@")
+                            else json.loads(raw)
+                        )
+                    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                        raise LoopStateError(f"无效 --result: {exc}") from exc
                 outcome_state = store.task_result(args.round, args.id, args.outcome, args.error, result)
                 _emit_json({"outcome": outcome_state})
             elif args.action == "backoff":

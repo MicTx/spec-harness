@@ -252,7 +252,13 @@ def main() -> int:
         rc, _, err = hook(
             "loop_teammate_gate", {"hook_event_name": "TeammateIdle", "teammate_name": "worker", "cwd": str(root)}
         )
-        check("teammate gate: 子串命中 in_flight -> exit 2", rc == 2 and "r1/a" in err, err)
+        # 无锚点子串匹配已收紧为等值/前缀+分隔符：worker 不得误配 review-worker 的任务
+        check("teammate gate: 无锚点子串不再误配他人任务", rc == 0, err)
+        rc, _, err = hook(
+            "loop_teammate_gate",
+            {"hook_event_name": "TeammateIdle", "teammate_name": "review-worker", "cwd": str(root)},
+        )
+        check("teammate gate: 精确 agentId 命中 in_flight -> exit 2", rc == 2 and "r1/a" in err, err)
 
         # --- F. 安装器：真实写入/回滚（临时项目，不碰 ~/.claude）-------------
         proj = root / "proj"
@@ -265,8 +271,12 @@ def main() -> int:
         )
         check("install: 项目级写入成功", rc == 0, out)
         settings = json.loads((proj / ".claude" / "settings.json").read_text(encoding="utf-8"))
-        events = ("UserPromptSubmit", "Stop", "TeammateIdle", "TaskCompleted")
-        check("install: 4 个事件注册", sum(len(settings["hooks"].get(e, [])) for e in events) == 4, str(settings))
+        events = ("Stop", "TeammateIdle", "TaskCompleted")
+        check(
+            "install: 3 个事件注册（UserPromptSubmit 注入 hook 已随 897a42f 删除）",
+            sum(len(settings["hooks"].get(e, [])) for e in events) == 3,
+            str(settings),
+        )
         # 官方 matcher 组 schema：组内必须有 hooks 数组，否则 Claude Code 整组忽略
         check(
             "install: 官方 matcher 组 schema（组内含 hooks 数组）",
