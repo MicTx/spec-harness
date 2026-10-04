@@ -21,6 +21,7 @@ from dashboard_support import (
     project_gap_message,
     task_strip_from_records,
 )
+from handoff_support import freshness, parse_handoff, read_handoff, validate_handoff
 from report_spec_package import parse_tasks
 from spec_package_support import (
     SpecControlError,
@@ -212,6 +213,20 @@ def route_for_package(
     else:
         next_action = current_task or "继续实现项目任务"
     gate_gap_total = len(r.spec_clarification_gaps) + r.missing_boundary + r.missing_verify + r.unchecked_items
+    handoff_line = None
+    try:
+        handoff_content = read_handoff(package_dir)
+    except (OSError, UnicodeError, ValueError):
+        handoff_content = None
+        handoff_line = "handoff：不可读（超大/非 UTF-8/非常规文件），运行 spec_handoff.py validate 诊断"
+    if handoff_content is not None and handoff_line is None:
+        if validate_handoff(handoff_content):
+            handoff_line = "handoff：结构非法，运行 spec_handoff.py validate 诊断"
+        else:
+            doc = parse_handoff(handoff_content)
+            if doc.latest is not None:
+                label, _detail = freshness(doc, root, tasks_content)
+                handoff_line = f"handoff：最新 {doc.latest.timestamp}（{label}，{doc.latest.collab}）"
     dash = Dashboard(
         slug=slug,
         stage=next_stage,
@@ -231,6 +246,8 @@ def route_for_package(
         },
         alerts=alerts,
         next_step=next_action,
+        detail=[handoff_line] if handoff_line else [],
+        detail_title="交接" if handoff_line else "交付信息",
         ascii_mode=ascii_mode,
         compact=compact,
     )
@@ -247,6 +264,7 @@ def route_for_package(
                 "orchestrationErrors": r.orchestration_errors,
                 "verificationScope": r.verification_scope,
                 "updateCheckpoint": checkpoint_status.state,
+                **({"handoff": handoff_line} if handoff_line else {}),
             },
             ensure_ascii=False,
         )

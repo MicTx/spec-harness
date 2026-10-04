@@ -20,6 +20,7 @@ from dashboard_support import (
     Dashboard,
     task_strip_from_records,
 )
+from handoff_support import HANDOFF_FILENAME, read_handoff, validate_handoff
 from spec_package_support import (
     EVIDENCE_ANCHOR_KEY,
     ORCHESTRATION_HEADING_PREFIX,
@@ -709,6 +710,26 @@ def main() -> int:
         if not path.exists():
             print(f"error: required file missing: {path}", file=sys.stderr)
             return 1
+
+    # Optional fifth member: a handoff document is validated only when it
+    # exists; packages without one (all legacy packages) are unaffected.
+    # An unreadable document (oversize, non-UTF-8, symlink/irregular) fails
+    # closed with a clean diagnostic instead of a traceback.
+    package_dir = resolve_specs_child(specs_root, *prefix)
+    handoff_path = package_dir / HANDOFF_FILENAME
+    if handoff_path.is_file():
+        try:
+            handoff_content = read_handoff(package_dir)
+        except (OSError, UnicodeError, ValueError) as exc:
+            print(f"error: unreadable handoff document: {exc}", file=sys.stderr)
+            return 1
+        if handoff_content is not None:
+            handoff_errors = validate_handoff(handoff_content)
+            if handoff_errors:
+                print("error: invalid handoff document:", file=sys.stderr)
+                for error in handoff_errors:
+                    print(f"  - {error}", file=sys.stderr)
+                return 1
 
     try:
         spec_content = read_regular_text(spec_path)

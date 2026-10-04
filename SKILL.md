@@ -70,6 +70,8 @@ The main session is the orchestrator and owns routing, acceptance, and the `done
 
 Continuation is the `/spec:run` instruction itself: read the package, do the next ready task, verify, check it off, repeat until the package converges. If a session is interrupted, re-running `/spec:run` resumes from `tasks.md` state — checked tasks stay done, the next unchecked ready task is where work continues.
 
+When the boundary is cross-collaborator — the same human returning later, a teammate taking over, a fresh agent session, or an agent-cluster lane — the package's optional `handoff.md` carries the transfer: append one entry on pause/takeover/escalation/lane-end (`python3 scripts/spec_handoff.py update --slug <slug> ...`), and a resuming session reads it first (`show`) plus the route 交接 hint. The document is a generated snapshot head (branch/HEAD/task anchors) plus an append-only entry log whose required slots adapt to the collaboration mode (`solo|team|agent|cluster`); the check gate validates it when present and `done` closes it with a terminal entry. Full contract: `references/handoff.md`.
+
 Pause/abort by the user, pending user messages, and project trust prompts always take priority over continuing an execution loop.
 
 The optional Claude Stop hook (`hooks/claude_stop_guard.py`) checks package convergence. Binding failures and outstanding gaps remain explicit. Hooks never expand Git authorization.
@@ -129,6 +131,7 @@ Read these files only when needed for your current task:
 - `references/slots.md` — extension slot contract (manifest/registry/installer)
 - `references/changelog-guide.md` — changelog generation and integration
 - `references/storage-and-archive.md` — directory structure and archiving
+- `references/handoff.md` — session-boundary handoff document (snapshot + append-only entry log, mode-adaptive slots)
 - `references/naming-and-commits.md` — slug naming and commit conventions
 - `references/engineering-philosophy.md` — four core principles
 

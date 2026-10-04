@@ -16,7 +16,7 @@ Goal: act as the default user entry point; run route internally, then continue w
 
 Execution order:
 
-1. Run `python3 scripts/route_spec_package.py --root <project>` first to determine the task-package state.
+1. Run `python3 scripts/route_spec_package.py --root <project>` first to determine the task-package state. When the package carries a `handoff.md`, the route output includes a 交接 line (`handoff：最新 <ts>（freshness，collab）`); a resuming session reads it with `python3 scripts/spec_handoff.py show --slug <slug>` before continuing (contract: [handoff.md](handoff.md)).
 2. With no active package, move to `new`; if the user also asks for `push` and the work tree / unpushed commits carry discrete changes, enter the push retro-pack path (atomic packing by theme, or one whole new spec package) — never skip packing and push directly.
 3. With an active package that can continue, move to `run`.
 4. When the user asks for a review, move to `check`.
@@ -98,7 +98,8 @@ Execution order:
 3. Execute routing. First produce an orchestration route decision with `python3 scripts/route_decision.py --text "<package goal>"` — adding `--root <project> --slug <slug>` lets the decision consume the package's open tasks and any valid `### 5.4 编排策略` route; an invalid 5.4 route is blocked by `route_spec_package.py` before the run stage (vocabulary and assignment contract in [orchestration.md](orchestration.md)). Then decide the task shape with `slots/team-loop/scripts/loop_route.py --text "<package goal/task description>"`. On a recommendation hit (`loopRecommended=true`) where loop-until-converged, batch fan-out, or a review-fix loop is needed, hand the execution segment to the managed protocol in `slots/team-loop/README.md` (init -> round -> task -> admit -> spawn/wait -> result -> terminate -> converge; disk truth lands under `.agents/runtime/loop/<run-id>/`); otherwise follow the orchestration route (`local` stays on the main thread; `explore`/`build`/`review` may spawn bounded sidecar lanes under the assignment contract). Both paths keep task-level `boundary`/`verify`, honest check-off discipline, and main-session acceptance gates identical; when a managed slot's tool surface is missing, surface the error explicitly per the slot README — never degrade silently or spawn agents outside the protocol.
 4. Start from the earliest ready unfinished task. One task at a time; on completion, run the verification its `verify` line describes, and check it off only after it passes.
 5. Continue with the next ready task until all tasks are done. On a blocker, record a `!` marker or a `blocked:` status line on the task, tell the user the concrete impact and what is already done — never skip silently or fake completion.
-6. After every task is checked, enter `check`: run the gate scripts, fill `checklist.md` evidence, fix failures, then move to `done`.
+6. When a session pauses or ends mid-package, hands the package to another collaborator, escalates a decision to a human, or finishes a cluster lane, append one handoff entry (`python3 scripts/spec_handoff.py update --slug <slug> --event pause|takeover|escalation|lane-end ...`); the schema and write points live in [handoff.md](handoff.md).
+7. After every task is checked, enter `check`: run the gate scripts, fill `checklist.md` evidence, fix failures, then move to `done`.
 
 Constraints:
 
@@ -181,7 +182,7 @@ With non-empty issue dispositions, pass repeatable `--issue-disposition '<json>'
 
 For an English Git record format, add `--git-record-language en`; the default `auto` detects Chinese/English from the `spec.md` title. Fields: `date-time | scope | feature | operation | outcome | commit | push`.
 
-4. Generate or update `completion-summary.md`, moving it to `.spec/specs/archive/YYYY-MM-DD_<slug>/` when needed.
+4. Generate or update `completion-summary.md`, moving it to `.spec/specs/archive/YYYY-MM-DD_<slug>/` when needed. When the package carries a `handoff.md`, `--archive` appends the terminal `close` entry (`status: done`) before the move so the frozen log archives with the package; a package without one is unaffected.
 5. Draft an atomic commit message from the completed tasks using Conventional Commits (see `references/naming-and-commits.md`):
 
 ```text

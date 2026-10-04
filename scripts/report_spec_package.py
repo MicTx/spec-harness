@@ -23,6 +23,7 @@ from dashboard_support import (
     task_strip_from_records,
     worst_health,
 )
+from handoff_support import handoff_brief
 from spec_package_support import (
     active_package_slugs,
     add_specs_dir_arg,
@@ -269,6 +270,7 @@ def render_status(
     compact: bool = False,
     checkpoint_pending: bool = False,
     checkpoint_status: CheckpointStatus | None = None,
+    handoff_line: str | None = None,
 ) -> str:
     primary_task = find_primary_task(tasks)
     blocked_tasks = [task for task in tasks if task.is_blocked]
@@ -359,6 +361,8 @@ def render_status(
         current=current,
         alerts=alerts,
         next_step=next_step,
+        detail=[handoff_line] if handoff_line else [],
+        detail_title="交接" if handoff_line else "交付信息",
         ascii_mode=ascii_mode,
         compact=compact,
     )
@@ -592,6 +596,9 @@ def render_multi_status(
         if summary["acceptance"] != "无":
             row += f"；{summary['acceptance']}"
         row += f"；范围 {summary['verification_scope']}"
+        brief = handoff_brief(package_dir, root, tasks_content)
+        if brief:
+            row += f"；{brief}"
         rows.append(row)
 
     detail = rows
@@ -741,6 +748,7 @@ def main() -> int:
             ascii_mode=args.ascii,
             compact=args.compact,
             checkpoint_status=checkpoint_status,
+            handoff_line=handoff_brief(spec_path.parent, root, tasks_content),
         )
     else:
         output = render_tasks(slug, sections, tasks)

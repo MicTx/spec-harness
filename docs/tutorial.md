@@ -23,7 +23,7 @@
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.13.14
+git checkout v0.13.15
 bash install.sh
 ```
 

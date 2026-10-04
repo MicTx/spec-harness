@@ -32,6 +32,7 @@ Pick your entry point by what you want to do: to understand the idea first, read
 - **One evidence chain**: `goal -> scope -> tasks -> verification -> archive -> commit -> push`; every task declares a `boundary` and a `verify` command.
 - **Explicit stages**: `new`, `goal`, `run`, `check`, `done`, `push`, `update`, `status`, `doctor`, and `organize`.
 - **Recoverable state**: reports, failures, completion summaries, and archives come from files on disk, so another session can continue.
+- **Session-boundary handoff**: packages may carry an optional `handoff.md` — a generated snapshot head plus an append-only entry log whose required slots adapt to the collaboration mode (solo / team / agent / cluster); maintained by `spec_handoff.py`, validated by the check gate, and frozen by a terminal entry at archive time.
 - **Stable task identity**: tasks can declare an `id:` and explicit `depends-on`; protocol migrations never rewrite historical archives.
 - **Controlled execution**: the main session keeps routing, integration, acceptance, and done/push gates; `workflow-runner` and other slots only execute bounded work.
 - **Two runtime forms**: the local Skill is the reference implementation; the optional `server/` adapter projects remote task-package start/result/health operations.
@@ -74,7 +75,7 @@ Run the installer from a checked-out source or release tree:
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.13.14
+git checkout v0.13.15
 bash install.sh
 ```
 
@@ -180,6 +181,7 @@ spec/
 │   ├── changelog-guide.md
 │   ├── commands.md
 │   ├── engineering-philosophy.md
+│   ├── handoff.md
 │   ├── naming-and-commits.md
 │   ├── output-contracts.md
 │   ├── slots.md
@@ -193,6 +195,7 @@ spec/
 │   ├── dashboard_support.py
 │   ├── doctor_spec_environment.py
 │   ├── generate_changelog.py
+│   ├── handoff_support.py
 │   ├── init_spec_package.py
 │   ├── install_git_hooks.py
 │   ├── install_slot_hooks.py
@@ -207,6 +210,7 @@ spec/
 │   ├── safe_open_support.py
 │   ├── slot_registry.py
 │   ├── smoke_test_spec_skill.py
+│   ├── spec_handoff.py
 │   ├── spec_package_support.py
 │   ├── update_checkpoint.py
 │   └── update_checkpoint_support.py

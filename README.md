@@ -32,6 +32,7 @@ Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 
 - **一条可验证链**：`目标 → 范围 → 任务 → 验证 → 归档 → 提交 → 推送`，每个任务都声明 `boundary` 与 `verify`。
 - **明确的入口**：`new`、`goal`、`run`、`check`、`done`、`push`、`update`、`status`、`doctor`、`organize`。
 - **可恢复的状态**：报告、失败原因、完成摘要和归档都来自磁盘文件，换会话仍能继续。
+- **会话边界交接**：任务包可选 `handoff.md`——生成式快照头 + append-only 条目日志，必填小节随协作模式（单人/多人/agent/集群）自适应，`spec_handoff.py` 维护、check 门禁校验、done 归档时冻结。
 - **稳定的任务身份**：任务可用 `id:` 与 `depends-on` 声明身份与依赖；协议迁移不改写历史归档。
 - **受控的执行面**：主会话保留路由、集成、验收和 done/push 门禁；`workflow-runner` 与其他 slots 只执行有边界的工作段。
 - **两种运行形态**：本地 Skill 是参考实现；可选 `server/` 适配器只负责远端任务包的 start/result/health 投影。
@@ -74,7 +75,7 @@ Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.13.14
+git checkout v0.13.15
 bash install.sh
 ```
 
@@ -180,6 +181,7 @@ spec/
 │   ├── changelog-guide.md
 │   ├── commands.md
 │   ├── engineering-philosophy.md
+│   ├── handoff.md
 │   ├── naming-and-commits.md
 │   ├── output-contracts.md
 │   ├── slots.md
@@ -193,6 +195,7 @@ spec/
 │   ├── dashboard_support.py
 │   ├── doctor_spec_environment.py
 │   ├── generate_changelog.py
+│   ├── handoff_support.py
 │   ├── init_spec_package.py
 │   ├── install_git_hooks.py
 │   ├── install_slot_hooks.py
@@ -207,6 +210,7 @@ spec/
 │   ├── safe_open_support.py
 │   ├── slot_registry.py
 │   ├── smoke_test_spec_skill.py
+│   ├── spec_handoff.py
 │   ├── spec_package_support.py
 │   ├── update_checkpoint.py
 │   └── update_checkpoint_support.py

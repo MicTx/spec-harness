@@ -15,6 +15,7 @@ Start with the smallest page that can unblock the current action:
 Open these only when the task shape calls for them:
 
 - `orchestration.md` — before delegating sidecar work or writing `### 5.4 编排策略`
+- `handoff.md` — before pausing a session, taking over a package, or joining an agent cluster's lanes
 - `engineering-philosophy.md` — on principle conflicts
 - The goal section and the script working-directory conventions at the end of `commands.md`
 
@@ -26,6 +27,7 @@ Open these only when the task shape calls for them:
 - Init templates: the three fences in `templates.md`
 - Orchestration routing: `orchestration.md` + `scripts/route_decision.py`
 - Directories and archiving: `storage-and-archive.md`
+- Handoff document: `handoff.md` + `scripts/spec_handoff.py`
 - Slot contract: `slots.md` + `scripts/slot_registry.py validate`
 - Structure-audit facts: `scripts/organize_project_structure.py` (`--check` is the hard architecture-consistency gate)
 

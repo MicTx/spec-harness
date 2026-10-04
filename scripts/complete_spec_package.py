@@ -16,6 +16,7 @@ from pathlib import Path
 
 from check_spec_package import overall_check_passed, package_physical_state_errors
 from dashboard_support import HEALTH_OK, HEALTH_RISK, Dashboard, task_strip_from_records
+from handoff_support import HandoffError, append_close_entry
 from issue_closure_support import (
     IssueClosureError,
     parse_issue_disposition_arg,
@@ -743,6 +744,13 @@ def main() -> int:
     _sections, package_tasks = parse_task_records_for_strip(tasks_content)
     strip, strip_labels = task_strip_from_records(package_tasks)
     if args.archive:
+        # Terminal handoff entry: the archive freezes the entry log with a
+        # close record; a package without a handoff document is unaffected.
+        try:
+            close_number = append_close_entry(package_dir, root, slug, tasks_content, spec_content)
+        except (OSError, UnicodeError, ValueError, HandoffError) as exc:
+            print(f"error: handoff close entry failed: {exc}", file=sys.stderr)
+            return 1
         try:
             archive_validated_package(
                 package_dir,
@@ -769,6 +777,11 @@ def main() -> int:
             detail=[
                 f"交付记录：{archive_destination}",
                 f"完成总结：{archive_destination / 'completion-summary.md'}",
+                *(
+                    [f"交接记录：{archive_destination / 'handoff.md'}（entry {close_number} 关闭）"]
+                    if close_number
+                    else []
+                ),
             ],
         )
         print(dash.render())

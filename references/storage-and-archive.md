@@ -11,6 +11,7 @@ This page explains where a fact belongs after a task starts. The rule is simple:
 │   │   ├── spec.md
 │   │   ├── tasks.md
 │   │   ├── checklist.md
+│   │   ├── handoff.md            # optional session-boundary handoff log
 │   │   └── orchestration/        # optional orchestration assets: script + run ledger
 │   └── archive/
 │       └── YYYY-MM-DD_slug/      # archived quartet
@@ -29,6 +30,7 @@ This page explains where a fact belongs after a task starts. The rule is simple:
 
 - Active packages live only at the `.spec/specs/` root; completed packages move wholesale into `archive/`.
 - A task package has at least the trio; an archive must additionally have `completion-summary.md`.
+- The optional `handoff.md` member is the session-boundary handoff document (`references/handoff.md`): a generated snapshot head plus an append-only entry log, validated by the check gate when present, closed with a terminal entry at `done`, and archived wholesale with the package.
 - An active package may additionally carry `orchestration/` — the workflow script and the run
   ledger (`runs.md`) — written by the main session; it archives wholesale with the package.
 - `.spec/docs/` holds reusable knowledge only, not task streams; it lives inside the executing project's repository and never mirrors into a global carrier.
