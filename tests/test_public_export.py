@@ -25,7 +25,7 @@ def test_public_export_excludes_private_development_state(tmp_path: Path):
     assert (output / "PUBLIC_MANIFEST.json").is_file()
     assert not (output / ".spec").exists()
     assert not (output / ".maintainer").exists()
-    assert (output / ".github/ISSUE_TEMPLATE/bug_report.md").is_file()
+    assert (output / ".github/ISSUE_TEMPLATE/bug_report.yml").is_file()
     assert (output / ".github/CODEOWNERS").is_file()
     assert (output / ".github/PULL_REQUEST_TEMPLATE.md").is_file()
     assert not (output / ".github/workflows").exists()

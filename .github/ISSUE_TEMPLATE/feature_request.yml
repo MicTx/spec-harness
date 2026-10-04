@@ -1,0 +1,52 @@
+name: Feature request
+description: Suggest a new capability or workflow improvement for the spec
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the user problem before proposing a mechanism.
+      placeholder: What workflow gap are you trying to solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposed-change
+    attributes:
+      label: Proposed change
+      description: The smallest useful change.
+    validations:
+      required: true
+  - type: textarea
+    id: user-impact
+    attributes:
+      label: User-facing impact
+      placeholder: How should this improve the experience for a skill user?
+    validations:
+      required: true
+  - type: textarea
+    id: scope-boundaries
+    attributes:
+      label: Scope boundaries
+      description: What should explicitly stay out of scope?
+  - type: dropdown
+    id: related-areas
+    attributes:
+      label: Related areas
+      multiple: true
+      options:
+        - SKILL.md
+        - agents/openai.yaml
+        - references/*
+        - scripts/*
+        - root install.sh / installer behavior
+        - Claude Code command aliases
+        - tests / CI workflow
+        - exported runtime package
+        - other
+  - type: textarea
+    id: extra-context
+    attributes:
+      label: Extra context
+      description: Examples, command aliases, or host CLI expectations if relevant.

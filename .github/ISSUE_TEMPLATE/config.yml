@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Questions and answers
+    url: https://github.com/MicTx/spec-harness/discussions/categories/q-a
+    about: Ask usage questions in Discussions; issues are for bugs and feature requests only.
   - name: Documentation and support
     url: https://github.com/MicTx/spec-harness/blob/main/SUPPORT.md
     about: Read the support guide before opening an issue.

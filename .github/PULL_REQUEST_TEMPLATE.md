@@ -16,6 +16,10 @@ What does this PR change, and which user problem does it solve?
 
 Describe the tests that verify your changes.
 
+## AI Assistance
+
+If AI tools helped produce this change, say which tool and which parts, and describe the human verification you performed. Write `None` for fully manual work.
+
 ## Compatibility
 
 List changed commands, task-package formats, exported layouts, or migration steps. Write `None` when no compatibility note is needed.
@@ -33,3 +37,4 @@ List changed commands, task-package formats, exported layouts, or migration step
 - [ ] Runtime layout or installer changes were verified against an exported package
 - [ ] README, `SKILL.md`, `references/*`, metadata, installer text, and templates stay aligned where applicable
 - [ ] No unrelated changes mixed in
+- [ ] AI-assisted work is disclosed above with the tool used and how a human verified it

@@ -2,6 +2,8 @@
 
 Task-package workflow for AI coding agents with verifiable scope, evidence, and Git gates.
 
+[![CI](https://img.shields.io/github/actions/workflow/status/MicTx/spec-harness/ci.yml)](https://github.com/MicTx/spec-harness/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/MicTx/spec-harness)](https://github.com/MicTx/spec-harness/releases)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
 
@@ -9,7 +11,7 @@ Task-package workflow for AI coding agents with verifiable scope, evidence, and 
 
 Spec Harness stores cross-session, multi-round engineering work as a recoverable Development Record. It provides task packages, routing, verification, archival, and Git closeout. It does not provide a model or make product decisions for you.
 
-Start with the [introduction](docs/introduction.md), follow the [long-running task tutorial](docs/tutorial.md), and use the [Git workflow](docs/git-workflow.en.md) when you are ready to release or roll back. The [documentation index](docs/README.md) lists every public entry point.
+Pick your entry point by what you want to do: to understand the idea first, read the [introduction](docs/introduction.md); to run one end to end, follow the [long-running task tutorial](docs/tutorial.md); to release or roll back, see the [Git workflow](docs/git-workflow.en.md). The [documentation index](docs/README.md) lists every public entry point.
 
 **Table of Contents**
 
@@ -115,21 +117,21 @@ Place the exported `spec/` directory in the host's Skill directory. Trigger it w
 
 ## Quick Start
 
-Create a task package in the project you want to change:
+Once installed, the shortest path is to give your host one complete goal:
+
+```text
+$spec
+spec:goal add payment recovery with tests
+# Claude Code: /spec:goal add payment recovery with tests
+```
+
+The host walks the stages with you: clarify the goal and scope first (`goal`), then execute (`run`) and review (`check`), and finally archive and commit (`done`, `push`). To bypass the host and drive the scripts directly, the effect is equivalent — create a task package in the project you want to change:
 
 ```bash
 python3 /tmp/spec-harness/scripts/init_spec_package.py \
   --root /path/to/project \
   --slug 2026-10-03_payment-recovery \
   --title "Payment Recovery"
-```
-
-Or start through a skill-aware host:
-
-```text
-$spec
-spec:goal add payment recovery with tests
-# Claude Code: /spec:goal add payment recovery with tests
 ```
 
 After initialization, inspect the stage, status, and package gate:

@@ -1,0 +1,141 @@
+name: Bug report
+description: Report a reproducible problem in the skill docs, metadata, export flow, or helper scripts
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: checkboxes
+    id: duplicates
+    attributes:
+      label: Duplicate check
+      description: Search open and closed issues before filing.
+      options:
+        - label: I have searched the existing issues, both open and closed.
+          required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: State the user-visible failure in one or two sentences. Keep secrets and private paths out of the report.
+      placeholder: The export flow fails when ...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part is affected?
+      multiple: true
+      options:
+        - SKILL.md
+        - agents/openai.yaml
+        - references/*
+        - scripts/*
+        - root install.sh / installer behavior
+        - Claude Code command aliases
+        - tests / CI workflow
+        - exported runtime package
+        - host CLI registration / loading
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: What should have happened.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the exact error message when possible.
+    validations:
+      required: true
+  - type: dropdown
+    id: host-cli
+    attributes:
+      label: Host CLI
+      options:
+        - Claude Code
+        - Codex
+        - Gemini CLI
+        - Grok Build
+        - OpenCode
+        - OpenClaw
+        - Hermes
+        - Pi agent
+        - ZCode
+        - direct script call
+        - other
+    validations:
+      required: true
+  - type: input
+    id: invocation
+    attributes:
+      label: Invocation used
+      description: "The /spec:* command, $spec trigger, or direct script call."
+      placeholder: "spec:goal ... / $spec / python3 scripts/..."
+    validations:
+      required: true
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: Install method
+      options:
+        - source checkout
+        - installer (install.sh)
+        - exported runtime package
+        - other
+    validations:
+      required: true
+  - type: input
+    id: skill-path
+    attributes:
+      label: Installed skill path
+      description: Where the skill copy lives, for example ~/.zcode/skills/spec.
+  - type: dropdown
+    id: source-kind
+    attributes:
+      label: Reproduces in
+      options:
+        - source checkout
+        - exported runtime package
+        - both
+        - not checked
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      multiple: true
+      options:
+        - Linux
+        - macOS
+        - Windows
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      placeholder: "python3 --version"
+  - type: input
+    id: skill-version
+    attributes:
+      label: Skill source version or commit
+      description: In a runtime copy, read it with `grep -m1 '^version' pyproject.toml` inside the copy.
+      placeholder: "0.13.13 or a commit SHA"
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: The shortest useful command output, traceback, or file diff.
+      render: shell

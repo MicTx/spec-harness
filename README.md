@@ -2,6 +2,8 @@
 
 面向 AI 编程智能体的任务包工作流工具，用可验证的范围、证据和 Git 门禁管理长期改动。
 
+[![CI](https://img.shields.io/github/actions/workflow/status/MicTx/spec-harness/ci.yml)](https://github.com/MicTx/spec-harness/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/MicTx/spec-harness)](https://github.com/MicTx/spec-harness/releases)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
 
@@ -9,7 +11,7 @@
 
 Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 Development Record。它提供任务包、路由、验证、归档和 Git 收尾，不提供模型，也不替用户做产品决策。
 
-最短路径：阅读[项目介绍](docs/introduction.md)，按[长程任务教程](docs/tutorial.md)安装并运行一次；需要发布或回滚时阅读 [Git 工作流](docs/git-workflow.md)。所有公开入口见[文档索引](docs/README.md)。
+按你要做的事选入口：想先理解它，读[项目介绍](docs/introduction.md)；想动手跑通一次，跟[长程任务教程](docs/tutorial.md)；要发布或回滚，看 [Git 工作流](docs/git-workflow.md)。全部公开入口见[文档索引](docs/README.md)。
 
 **目录**
 
@@ -115,21 +117,21 @@ python3 scripts/export_skill_package.py --output /tmp/spec --force
 
 ## 快速开始
 
-最短的可复现流程是在目标项目中创建一个任务包：
+装好之后，最短的路径是在宿主里给出一句完整目标：
+
+```text
+$spec
+spec:goal add payment recovery with tests
+# Claude Code: /spec:goal add payment recovery with tests
+```
+
+宿主会按阶段引导：先澄清目标与范围（`goal`），再执行（`run`）、复核（`check`），最后归档提交（`done`、`push`）。想绕过宿主直接驱动脚本时，效果等价——在目标项目中创建任务包：
 
 ```bash
 python3 /tmp/spec-harness/scripts/init_spec_package.py \
   --root /path/to/project \
   --slug 2026-10-03_payment-recovery \
   --title "Payment Recovery"
-```
-
-也可以直接让宿主执行：
-
-```text
-$spec
-spec:goal add payment recovery with tests
-# Claude Code: /spec:goal add payment recovery with tests
 ```
 
 初始化后，按顺序查看阶段、状态和门禁：

@@ -45,9 +45,9 @@ PUBLIC_DIRS = (
     "tests",
 )
 PUBLIC_GITHUB_FILES = (
-    ".github/ISSUE_TEMPLATE/bug_report.md",
+    ".github/ISSUE_TEMPLATE/bug_report.yml",
     ".github/ISSUE_TEMPLATE/config.yml",
-    ".github/ISSUE_TEMPLATE/feature_request.md",
+    ".github/ISSUE_TEMPLATE/feature_request.yml",
     ".github/CODEOWNERS",
     ".github/PULL_REQUEST_TEMPLATE.md",
 )
