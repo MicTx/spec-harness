@@ -55,7 +55,7 @@
     "scripts/complete_spec_package.py": "63bbf3df1130da0aa4bb7978c4cc1da4aa23affe03e95b3a8d164f9eaeae1d23",
     "scripts/dashboard_support.py": "e584da65efd14342e0d882ead674ad316d3e3cb5329050d41c7d7556f529d10c",
     "scripts/doctor_spec_environment.py": "79af23fb3e6c40dc9233bb40bb780eccc3840e02312e2ca664d5d5effcfcb0a3",
-    "scripts/export_public_repo.py": "aa19d33e8b041fe514d363143e22c3b653054b97eca71d4337a9184b74d0872e",
+    "scripts/export_public_repo.py": "55875f7c0cedf16331a6b517ad174a6fc9edd16b14c55bd36110b19cf9650fb3",
     "scripts/export_skill_package.py": "f7cd2b162d7d8c83ac09faf608c7e6a340deeb3ed7f97febf9d37c8c30f58498",
     "scripts/generate_changelog.py": "77d72388519fdea81ef03be1effe2284705918963d0a11008b47f740fef61778",
     "scripts/gitea_hook_repair.py": "a8f3a4f6f747f40f596e8afe3d58e8b332a072769fc27e89070277a86ebea7b6",
@@ -64,10 +64,11 @@
     "scripts/install_git_hooks.py": "2f732f625c86ce5cc0644d24a426d6b5cdf6bab66524dc8a6c54bcce2f0c3c7e",
     "scripts/install_slot_hooks.py": "bc100719382e877cf282472893b15ef3edb5ecffee3ab8574751c8d5c388aad5",
     "scripts/issue_closure_support.py": "349cf9280d536f96b4c86c27a2e3801785ed6f584cf72fd65a2a145ff9c248b2",
+    "scripts/lint_workflows.py": "f863e4b82477c4499921e8345b9844727614bb04f1d7c116c79569119b0c303e",
     "scripts/organize_project_structure.py": "0e11cccae5aed5577883c39fbf7f8871e1abc006375aa9a6a375294b59294f21",
     "scripts/package_agent_plugin.py": "e38830ed3e98d6366fff32c2a24f62ef264853aac1d1db2a511b65cde5ddf7b5",
     "scripts/path_safety.py": "10f0b9776fcfa16c12a5e23f73111baf675a19f384f97212e06e847cdd8dab68",
-    "scripts/payload_contract.py": "9f6eff67b8e459c19c5c3e1397f195635b27f7b27bbc86bc82de4944b56ac8b3",
+    "scripts/payload_contract.py": "532611c9d86d8a7df6d382a87e6907c3dcd73e810fbbc0ef0076d164adeebe33",
     "scripts/push_spec_package.py": "cbb1ee707592d0c9625f1fffd27f97171154ab31a6eedb3e1d61ef0ddc1f36b6",
     "scripts/read_version.py": "e7d0c7e64d13737fe6e2cc69eb5e621ff3d6ac57cb08177f66d954a5bf999300",
     "scripts/report_spec_package.py": "97b3d7c3edc560bc1cbe481dda8092e5bc902b3a4374a72add2760d0e6c800a2",
@@ -152,6 +153,7 @@
     "tests/test_spec_package_support.py": "c6820aadf1dd327a4ac315ecd7af84a3482c7c7ec4e7413bf2ff8fef01173833",
     "tests/test_stop_guard_hook.py": "e8038b152e0d876febf896757154e84017121e08e484da0da2cf2d79ba18f973",
     "tests/test_update_checkpoint_cli.py": "d9330ca5f546c0386b6ed907f66e34c383115b05b106412c3d94c742ca2a9a8b",
-    "tests/test_update_checkpoint_support.py": "f78e0ee52d7247a93bdb5dd16550093e1d6fc11432c8afebc68d856047f7de98"
+    "tests/test_update_checkpoint_support.py": "f78e0ee52d7247a93bdb5dd16550093e1d6fc11432c8afebc68d856047f7de98",
+    "tests/test_workflow_lint.py": "ff360d1a350a3dc8eb579bd9809c3e00f242accff5f930981c2861712c640855"
   }
 }

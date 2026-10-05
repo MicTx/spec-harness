@@ -18,6 +18,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from lint_workflows import lint_workflow_text
+
 PUBLIC_ROOT_FILES = (
     ".gitignore",
     "CHANGELOG.md",
@@ -114,6 +116,13 @@ def build_public_tree(source: Path, output: Path) -> dict[str, str]:
     for path, relative in _safe_files(source):
         data = path.read_bytes()
         _scan(relative, data)
+        if relative.startswith(".github/workflows/"):
+            # GitHub rejects an invalid workflow at startup ("No jobs
+            # were run", 0-second failures): gate the context rules
+            # before the file can reach the public repository.
+            problems = lint_workflow_text(relative, data.decode("utf-8", "replace"))
+            if problems:
+                raise PublicExportError("workflow startup validity: " + "; ".join(problems))
         target = output / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
