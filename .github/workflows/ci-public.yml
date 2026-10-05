@@ -21,10 +21,13 @@ jobs:
     env:
       # Keyless CI semantics: the canonical release payload lives
       # outside the public tree, and signing enforcement would reject
-      # the bare-export smoke without throwaway credentials.
+      # the bare-export smoke without throwaway credentials. The
+      # credential paths are exported as GITHUB_ENV inside the
+      # provisioning step: the `runner` context is not valid in a
+      # job-level `env:` block and GitHub fails the workflow file at
+      # startup (observed as 0-second startup failures, runs
+      # 37254342812/37254344520).
       SPEC_RELEASE_PARITY: "1"
-      SPEC_SIGNING_IDENTITY: ${{ runner.temp }}/smoke-identity.json
-      SPEC_SIGNING_KEY: ${{ runner.temp }}/smoke-key
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -38,6 +41,8 @@ jobs:
           # Base64 keeps the key ASCII-clean; raw bytes can strip below
           # the 32-byte minimum in skill_watermark.load_key.
           head -c 64 /dev/urandom | base64 | tr -d '\n' > "$RUNNER_TEMP/smoke-key"
+          echo "SPEC_SIGNING_IDENTITY=$RUNNER_TEMP/smoke-identity.json" >> "$GITHUB_ENV"
+          echo "SPEC_SIGNING_KEY=$RUNNER_TEMP/smoke-key" >> "$GITHUB_ENV"
       - name: Compile Python tree
         run: python3 -m compileall -q scripts server hooks slots tests
       - name: Check installer syntax

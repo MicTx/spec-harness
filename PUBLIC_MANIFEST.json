@@ -7,7 +7,7 @@
     ".github/ISSUE_TEMPLATE/config.yml": "4bfbe0b73a58e8c857fb04b146cc27577a6cf888bdf62c8f6a84a2838b207159",
     ".github/ISSUE_TEMPLATE/feature_request.yml": "8cd8b3cca1d72b478d61b68caa5b31ac36729fae09e81a4744fb14428cd6773e",
     ".github/PULL_REQUEST_TEMPLATE.md": "5ffab4f2a7ca1d17e8ae665d321a3eac53193a18360c94eef6a8e995af97d696",
-    ".github/workflows/ci-public.yml": "191dbf286984c834e2b936b50e3994a9778bfd2ad6ca01301759a69535f3f620",
+    ".github/workflows/ci-public.yml": "450c3f77bb8bcdadb7cbee0be2bd8e28faa5e421222848347ade6231238802c4",
     ".gitignore": "acf12c08ca75a417639c230f1cdc0ba079e5f4de6a731b25af5d6b9e5a7d2ce2",
     "CHANGELOG.md": "a1a5c38656a70e8ac7d44cac1ded0b9555fb267fa0f178198fc78992ac785b32",
     "CODE_OF_CONDUCT.md": "f88c102820ac43dec12fd5f4cb53408964a9d3209c28fb28037a0714288dbbdd",
