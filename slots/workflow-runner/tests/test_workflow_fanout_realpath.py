@@ -26,11 +26,21 @@ def _emitter(tmp_path: Path, name: str, body: str) -> Path:
 def _process_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
-        return True
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
+    # The signal probe also answers for unreaped zombies: when the whole
+    # process group is SIGKILLed together, the grandchild's parent is gone
+    # and a container PID 1 that never reaps leaves the Z entry in place,
+    # so CI would report the kill as failed. The contract under test is
+    # "the grandchild is terminated", which a zombie already satisfies.
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            tail = handle.read().rsplit(b")", 1)[-1].split()
+    except OSError:
+        return True  # non-Linux (e.g. macOS): keep the plain signal probe
+    return bool(tail) and tail[0] != b"Z"
 
 
 def test_real_path_output_under_cap_near_limit_not_flagged(tmp_path, monkeypatch):
