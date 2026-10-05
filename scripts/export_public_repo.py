@@ -45,6 +45,7 @@ PUBLIC_DIRS = (
     "tests",
 )
 PUBLIC_GITHUB_FILES = (
+    ".github/workflows/ci-public.yml",
     ".github/ISSUE_TEMPLATE/bug_report.yml",
     ".github/ISSUE_TEMPLATE/config.yml",
     ".github/ISSUE_TEMPLATE/feature_request.yml",
@@ -116,6 +117,10 @@ def build_public_tree(source: Path, output: Path) -> dict[str, str]:
         target = output / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
+        # write_bytes creates 0644 regardless of the source mode; keep the
+        # executable bit so the exported tree can be re-packed faithfully.
+        if path.stat().st_mode & 0o111:
+            target.chmod(target.stat().st_mode | 0o111)
         manifest[relative] = hashlib.sha256(data).hexdigest()
     manifest_path = output / "PUBLIC_MANIFEST.json"
     manifest_path.write_text(

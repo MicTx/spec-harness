@@ -28,11 +28,20 @@ def test_public_export_excludes_private_development_state(tmp_path: Path):
     assert (output / ".github/ISSUE_TEMPLATE/bug_report.yml").is_file()
     assert (output / ".github/CODEOWNERS").is_file()
     assert (output / ".github/PULL_REQUEST_TEMPLATE.md").is_file()
-    assert not (output / ".github/workflows").exists()
+    # Only the public-facing workflow ships; the self-hosted pipeline
+    # files stay private.
+    assert (output / ".github/workflows/ci-public.yml").is_file()
+    assert ".github/workflows/ci-public.yml" in manifest
+    assert not (output / ".github/workflows/ci.yml").exists()
+    assert not (output / ".github/workflows/release.yml").exists()
     assert not (output / "release").exists()
     assert (output / "docs/git-workflow.en.md").is_file()
     assert "scripts/export_public_repo.py" in manifest
     assert (ROOT / "README.md").read_bytes() == before
+    # write_bytes defaults to 0644; the exporter must keep the source
+    # executable bit and must not hand it out to plain files.
+    assert (output / "install.sh").stat().st_mode & 0o111
+    assert not (output / "README.md").stat().st_mode & 0o111
 
     payload = json.loads((output / "PUBLIC_MANIFEST.json").read_text(encoding="utf-8"))
     assert payload["project"] == "spec-harness"
