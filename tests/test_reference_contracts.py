@@ -212,10 +212,13 @@ def _check_section() -> str:
     return _section(_read("commands.md"), "## `/spec:check`")
 
 
-def test_check_section_carries_four_field_failure_writeback():
+def test_check_section_carries_two_field_failure_writeback():
     section = _check_section()
-    for field in ("未通过项", "证据缺口", "下一步替代动作", "处置枚举"):
+    for field in ("未通过项", "处置枚举", "说明"):
         assert field in section, f"structured writeback missing field: {field}"
+    assert "two required fields" in section, "writeback must state the two required fields"
+    assert "four fixed fields" not in section, "legacy four-field per-item template must be gone"
+    assert "required when the disposition is" in section, "conditional `说明` line must state its trigger"
 
 
 def test_check_section_names_check_stage_disposition_vocabulary():
@@ -239,7 +242,8 @@ def test_check_section_states_respond_prohibition():
 def test_check_section_states_dual_stop_conditions():
     section = _check_section()
     assert "无新增项" in section, "semantic stop condition must be readable directly from the doc"
-    assert "最多 N 轮" in section, "budget-cap stop condition must be readable directly from the doc"
+    assert "最多 3 轮" in section, "default budget-cap stop condition must be readable directly from the doc"
+    assert "may declare a different N" in section, "budget cap must stay overridable, never a declaration requirement"
 
 
 def test_check_section_states_stop_loss_attribution_rule():
