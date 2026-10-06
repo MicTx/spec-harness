@@ -1,12 +1,12 @@
 # Commands
 
-This page is a stage reference, not a tutorial. Find the stage that matches the current project state, read that section, and then run the command it names. The default line is `new / run / check / done / push`; `update` and `status` adjust or inspect an existing package; `goal` is the one-shot entry point; `doctor` and `organize` maintain the environment or structure outside the task-package state machine.
+This page is a stage reference, not a tutorial. Find the stage that matches the current project state, read that section, and then run the command it names. The default line is `new / run / check / done / push`; `update` and `status` adjust or inspect an existing package; `goal` is the one-shot entry point; `autorun` chains rounds recursively from the project planning documents; `doctor` and `organize` maintain the environment or structure outside the task-package state machine.
 
 The shortest safe path is always: route from disk, make one bounded change, run its verification, then let the next stage consume the recorded state. Do not read this file end to end when one stage is enough.
 
 ## CLI compatibility layer
 
-The command inventory (command → stage → purpose) lives once in `SKILL.md`. Claude Code exposes `/spec:<command>`; Codex / generic skill-aware CLIs (Gemini CLI, Grok Build, OpenCode, OpenClaw, Hermes, Pi, etc.) trigger `$spec` and then use `spec:new/goal/run/check/done/push/update/status/doctor/organize`. The route and tasks views remain internal script capabilities, not user commands. See the README installation section for the per-host install directory matrix.
+The command inventory (command → stage → purpose) lives once in `SKILL.md`. Claude Code exposes `/spec:<command>`; Codex / generic skill-aware CLIs (Gemini CLI, Grok Build, OpenCode, OpenClaw, Hermes, Pi, etc.) trigger `$spec` and then use `spec:new/goal/run/check/done/push/update/status/doctor/organize/autorun`. The route and tasks views remain internal script capabilities, not user commands. See the README installation section for the per-host install directory matrix.
 
 Before executing any command, pass the four questions from `engineering-philosophy.md`: are the assumptions written down, is this the minimal path, is the boundary clear, and how is completion proven. If any answer is missing, fix the documents first.
 
@@ -500,6 +500,54 @@ Chain-specific rules:
 Output contract:
 
 - Render the `/spec:goal` dashboard per the dashboard contract in `references/output-contracts.md`.
+
+## `/spec:autorun`
+
+Goal: run the recursive autonomous chain. One round = one fresh agent session: finish the active package goal-style (`run` → `check` → `done` → `push`), then plan the next round from the project planning documents (`/spec:new`), then open a new Terminal.app window in the same path with the autorun prompt injected, allowing recursive startup until every feature checkbox in the planning documents is checked. `autorun` creates no second state machine and skips no gate of `/spec:new`, `/spec:run`, `/spec:check`, `/spec:done`, or `/spec:push`.
+
+Compatible invocation:
+
+- Claude Code CLI: `/spec:autorun [--plan <docs>] [--max-rounds <n>]`
+- Codex / generic skill-aware CLI: command alias `spec:autorun`, triggered by `$spec`
+
+Planning-document discovery (`python3 scripts/autorun_spawn.py plan --root <project> [--plan <path[,path...]>]`):
+
+- `--plan` wins when given; each path must exist and stay under the project root.
+- Otherwise scan the conventional candidates under the project root: `.spec/plan.md`, `PLAN.md`, `ROADMAP.md`, `docs/plan.md`, `docs/roadmap.md`, `docs/plans/*.md` (sorted). A candidate qualifies as a planning document only when it contains at least one markdown feature checkbox (`- [ ]` / `- [x]`).
+- No qualifying document → fail closed with exit code 3: report the scanned candidates and ask the user to write project-level planning first. Never invent a plan or loop over package archives instead.
+- A feature is done when its checkbox is `- [x]`; the chain terminates when every checkbox across all qualifying documents is checked.
+
+Execution order (each round):
+
+1. Route with `python3 scripts/route_spec_package.py --root <project>`. With no active package and at least one unchecked feature, create the next package per `/spec:new` from the next unchecked feature or coherent feature group — self-plan scope/tasks/acceptance with the goal discipline (write down reasonable assumptions, do not stall on a question list). With neither an active package nor unchecked features, the chain is already complete: report and stop.
+2. Self-run the package per `/spec:run`, self-review per `/spec:check` until `checklist.md` is fully checked with `**验收结果**：通过`, self-archive and commit per `/spec:done`, then push:
+
+    ```bash
+    python3 scripts/push_spec_package.py --root <git-repo> --branch <working-branch> --main-branch main --remote origin --slug <slug>
+    ```
+
+3. After a successful push, re-run `plan` on the planning documents. All features checked → render the completion dashboard and stop (no spawn).
+4. Unchecked features remain → plan the next round per `/spec:new` (package + integration branch + three documents, self-planned from the next unchecked feature or coherent group). Every autorun-planned package must carry a final plan-sync task whose `boundary` covers the planning documents and `.spec/autorun/` chain state, so feature checkmarks and chain audit land on `main` with that round's push and the tree is clean when the next round's `/spec:new` runs.
+5. Spawn the next round:
+
+    ```bash
+    python3 scripts/autorun_spawn.py spawn --root <project> [--plan <docs>] [--host <codex|pi|claude>] [--max-rounds <n>]
+    ```
+
+    The script enforces the safety rails (round cap, single-chain lock, sequential spawn only after a successful push and next-package creation), opens a new Terminal.app window via osascript running the worker CLI headless with the autorun prompt injected, and records `.spec/autorun/chain.json` plus an append to `.spec/autorun/spawns.jsonl`. The current session then reports the round summary and the spawned window, and ends.
+
+Chain rules:
+
+- Fail fast, never spawn after failure: the first failed verification, check gate, Git hook, commit, or push safety preflight stops the whole chain in the current session; report per `/spec:goal`. A crashed round is recovered by the user re-running `/spec:autorun` — the interrupted package resumes from `tasks.md` state and the chain continues.
+- Strictly sequential: at most one spawned next-round session per project, enforced by the flock on `.spec/autorun/chain.lock`; parallel chains are refused, never queued.
+- Round cap: default 20, override with `--max-rounds`; the spawn refuses beyond the cap and reports instead of looping.
+- Worker hosts: `--host` > `SPEC_AUTORUN_HOST` environment > first available on PATH among codex, pi, claude. zcode has no CLI and cannot be spawned. Host prompt shapes: codex/pi/generic `$spec autorun ...`; claude `/spec:autorun ...`.
+- The Terminal.app automation is scope-limited to this spawn step (explicit overturn of the 2026-09-03 no-AppleScript policy, recorded in the `2026-10-06_add-autorun-command` Development Record); no other stage manipulates Terminal or AppleScript.
+- The three user-interruption conditions of `/spec:goal` (project-shaping constraint, undecidable decision, unresolvable external dependency) apply unchanged; a planning-document gap (exit 3) also stops the chain and asks the user to plan first.
+
+Output contract:
+
+- Follow the `/spec:autorun` section in `references/output-contracts.md`.
 
 ## Script working-directory conventions
 

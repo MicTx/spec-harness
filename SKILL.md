@@ -45,6 +45,7 @@ Read `references/commands.md` for details if using these:
 | Command | Purpose |
 | --- | --- |
 | `/spec:goal` | one-shot: plan, execute, review, archive, and commit |
+| `/spec:autorun` | recursive chain: finish the active package, plan the next round from the project planning documents, and spawn a fresh Terminal session with the autorun prompt until every planned feature is done |
 | `/spec:doctor` | Environment self-check and repair |
 | `/spec:organize` | First-principles structure audit. Default new package in the target project; never delete, archive under `archive/retired`; disposition covers every member of a confirmed class |
 

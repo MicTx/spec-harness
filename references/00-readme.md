@@ -30,5 +30,6 @@ Open these only when the task shape calls for them:
 - Handoff document: `handoff.md` + `scripts/spec_handoff.py`
 - Slot contract: `slots.md` + `scripts/slot_registry.py validate`
 - Structure-audit facts: `scripts/organize_project_structure.py` (`--check` is the hard architecture-consistency gate)
+- Autorun chain facts: `scripts/autorun_spawn.py` (planning-document discovery, round cap, single-chain lock)
 
 Other carriers should point here instead of copying gate lists. The public guides explain the ideas; `.spec/` records project state; neither replaces the runtime contracts below.

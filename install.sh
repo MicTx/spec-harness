@@ -106,7 +106,7 @@ resolve_python() {
 
 # User-facing stages for Claude command files. Single source: the stage list
 # documented in SKILL.md and references/commands.md.
-USER_STAGES=(new goal run check done push update status doctor organize)
+USER_STAGES=(new goal autorun run check done push update status doctor organize)
 
 format_stage_aliases() {
   local prefix="$1"
@@ -456,6 +456,7 @@ stage_description() {
     route) printf '%s\n' "Spec auto-routing" ;;
     new) printf '%s\n' "Spec: create a task package" ;;
     goal) printf '%s\n' "Spec: one-shot goal chain" ;;
+    autorun) printf '%s\n' "Spec: recursive autorun chain" ;;
     run) printf '%s\n' "Spec: execute or resume" ;;
     check) printf '%s\n' "Spec: collaborative review" ;;
     done) printf '%s\n' "Spec: archive and record" ;;
@@ -484,6 +485,13 @@ EOF_BODY
 # /$command_name
 
 Run the one-shot goal workflow: plan the task package, execute every task in this session, independently verify each delivery, archive and commit scoped changes after gates pass, then use the safe spec:push flow. Stop at any failed gate.
+EOF_BODY
+      ;;
+    autorun)
+      cat <<EOF_BODY
+# /$command_name
+
+Run the recursive autorun chain: finish the active task package goal-style through run, check, done, and push; after a successful push, discover the project planning documents, plan the next round with spec:new from the next unchecked feature, then open a new Terminal.app window in the same path with the autorun prompt injected for the next round. Recursion continues until every feature checkbox in the planning documents is checked; the first failure or a planning-document gap stops the chain with the recovery action. Safety rails: round cap, single-chain lock, sequential spawn only.
 EOF_BODY
       ;;
     run)

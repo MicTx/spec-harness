@@ -159,3 +159,14 @@ python3 scripts/organize_project_structure.py --root <project> [--check] [--form
 ```
 
 The output is a structure-audit report, not the project-update schema: group by "repository inventory / reference graph (live vs historical) / deprecated candidates / finding classes / architecture consistency / summary", listing facts and candidates only, no preset conclusions. The default is a new task package in the target project before any move or doc fix (default new package). Do not append findings to an unrelated active package. Verdicts are keep / archive / merge / migrate. Never delete; archive confirmed orphans under `archive/retired`. A confirmed class is unfinished until every member is dispositioned. When `--check` fails, list the drift items truthfully and fix them this round; structure is declared trustworthy only after the architecture-consistency repair completes.
+
+## `/spec:autorun`
+
+Facts come from the scripts; run directly:
+
+```bash
+python3 scripts/autorun_spawn.py plan --root <project> [--plan <path[,path...]>]
+python3 scripts/autorun_spawn.py status --root <project>
+```
+
+Round replies follow the project-update schema: 本轮完成 reports the finished package with its delivered functionality and verification; 正在处理/接下来 report the next planned round and its feature scope. The chain reply adds a compact chain line — planning documents with `<checked>/<total>` features, round `<n>/<cap>`, and either the spawned Terminal window (worker host, project path) or the stop reason (all features complete / planning documents missing, exit 3 / first failure). Never show internal spawn plumbing as the narrative; a stopped chain states what succeeded, what failed, and the exact recovery action (`re-run /spec:autorun` resumes from `tasks.md`).

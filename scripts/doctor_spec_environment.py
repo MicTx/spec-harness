@@ -212,6 +212,7 @@ class Doctor:
     USER_STAGES: Tuple[str, ...] = (
         "new",
         "goal",
+        "autorun",
         "run",
         "check",
         "done",
