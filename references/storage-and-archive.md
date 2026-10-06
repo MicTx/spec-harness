@@ -39,6 +39,7 @@ This page explains where a fact belongs after a task starts. The rule is simple:
   ledger (`runs.md`) — written by the main session; it archives wholesale with the package.
 - `.spec/docs/` holds reusable knowledge only, not task streams; it lives inside the executing project's repository and never mirrors into a global carrier.
 - `.spec/autorun/` is runtime chain state for `/spec:autorun` (`scripts/autorun_spawn.py`): the latest state in `chain.json`, an append-only audit in `spawns.jsonl`, and the transient `chain.lock`. It is never archived; each autorun-planned package carries a final plan-sync task whose boundary covers the planning documents and this directory, so checkmarks and audit land on `main` with the round's push and the tree is clean when the next round's `/spec:new` runs.
+- The planning-document cluster (`.spec/plan.md`, `PRD.md`, `docs/plans/`, `docs/design/`, and the other autorun candidates) is project content produced or reconciled by `/spec:autoplan` (`scripts/autoplan_gate.py`): it feeds the autorun chain's feature checkboxes and detail designs, is committed like normal project files, and is never task-package state — `autoplan` writes no `.spec/specs/` package and no `.spec/autorun/` chain state.
 - `.spec/architecture/` is the current module graph and belongs to no single package.
 - `--specs-dir` must be a trusted relative directory under root — never empty, absolute, or containing `..`.
 

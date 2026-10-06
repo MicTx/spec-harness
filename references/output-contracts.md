@@ -68,7 +68,7 @@ Only the title always appears; omit any whole section with no effective content.
 
 ## Invocation compatibility layer
 
-The user-visible entries remain `/spec`, `/spec:new`, `/spec:run`, `/spec:check`, `/spec:done`, `/spec:push`, `/spec:update`, `/spec:status`, `/spec:goal`, `/spec:doctor`, and `/spec:organize`. They only decide how the background advances; they never change the project-update structure.
+The user-visible entries remain `/spec`, `/spec:new`, `/spec:run`, `/spec:check`, `/spec:done`, `/spec:push`, `/spec:update`, `/spec:status`, `/spec:goal`, `/spec:autoplan`, `/spec:autorun`, `/spec:doctor`, and `/spec:organize`. They only decide how the background advances; they never change the project-update structure.
 
 `route` is the internal state resolver; the `tasks` view merges into `/spec:status`. Command names and stages may appear in error diagnostics or machine JSON, never as the title, tasks, or next step of a normal user reply.
 
@@ -170,3 +170,15 @@ python3 scripts/autorun_spawn.py status --root <project>
 ```
 
 Round replies follow the project-update schema: 本轮完成 reports the finished package with its delivered functionality and verification; 正在处理/接下来 report the next planned round and its feature scope. The chain reply adds a compact chain line — planning documents with `<checked>/<total>` features, round `<n>/<cap>`, and either the spawned Terminal window (worker host, project path) or the stop reason (all features complete / planning documents missing, exit 3 / first failure). Never show internal spawn plumbing as the narrative; a stopped chain states what succeeded, what failed, and the exact recovery action (`re-run /spec:autorun` resumes from `tasks.md`).
+
+## `/spec:autoplan`
+
+Facts come from the scripts; run directly:
+
+```bash
+python3 scripts/autoplan_gate.py discover --root <project> [--plan <path[,path...]>]
+python3 scripts/autoplan_gate.py gate --root <project> [--plan <path[,path...]>]
+python3 scripts/autorun_spawn.py plan --root <project>
+```
+
+The output is a planning report, not the project-update schema: the run mode (project start / phase boundary), an interrogation summary (rounds used of the cap, confirmed facts and assumptions recorded in the cluster), the cluster inventory (documents with `<checked>/<total>` features), the gate result (structural invariants, orphan warnings, reviewer consistency conclusion), and the readiness line — qualifying documents, unchecked features, suggested `/spec:autorun`. The reply never spawns the chain, never shows internal plumbing as the narrative, and lists the undecided items honestly when the session is non-interactive.

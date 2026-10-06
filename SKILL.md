@@ -18,6 +18,7 @@ Use spec when:
 - Multi-step or cross-session development tasks
 - Work requiring tracked scope, tasks, and acceptance criteria
 - User explicitly requests spec mode or task packages
+- Project start or phase boundary needing an interactive planning pass before the autonomous chain
 
 Skip it for a small reversible fix, a one-off experiment, or work whose complete plan and proof fit in one short command sequence.
 
@@ -45,6 +46,7 @@ Read `references/commands.md` for details if using these:
 | Command | Purpose |
 | --- | --- |
 | `/spec:goal` | one-shot: plan, execute, review, archive, and commit |
+| `/spec:autoplan` | interactive planning: interrogate the user in themed rounds, produce the framework and detail planning-document cluster down to autorun granularity, gate consistency, and report autorun readiness |
 | `/spec:autorun` | recursive chain: finish the active package, plan the next round from the project planning documents, and spawn a fresh Terminal session with the autorun prompt until every planned feature is done |
 | `/spec:doctor` | Environment self-check and repair |
 | `/spec:organize` | First-principles structure audit. Default new package in the target project; never delete, archive under `archive/retired`; disposition covers every member of a confirmed class |

@@ -63,10 +63,12 @@ PLAN_CANDIDATES: Tuple[str, ...] = (
     ".spec/plan.md",
     "PLAN.md",
     "ROADMAP.md",
+    "PRD.md",
     "docs/plan.md",
     "docs/roadmap.md",
+    "docs/prd.md",
 )
-PLAN_CANDIDATE_GLOBS: Tuple[str, ...] = ("docs/plans/*.md",)
+PLAN_CANDIDATE_GLOBS: Tuple[str, ...] = ("docs/plans/*.md", "docs/design/*.md")
 
 
 class AutorunError(Exception):

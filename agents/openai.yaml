@@ -6,9 +6,9 @@
 #   policy.allow_implicit_invocation: Whether the host can auto-trigger this skill
 interface:
   display_name: "Spec Harness"
-  short_description: "Spec Harness task-package workflow: $spec -> spec:new/goal/run/check/done/push/update/status/doctor/organize/autorun"
+  short_description: "Spec Harness task-package workflow: $spec -> spec:new/goal/autoplan/run/check/done/push/update/status/doctor/organize/autorun"
   default_prompt: |
-    Callable entries: spec:new / spec:goal / spec:autorun / spec:run / spec:check / spec:done / spec:push / spec:update / spec:status / spec:doctor / spec:organize.
+    Callable entries: spec:new / spec:goal / spec:autoplan / spec:autorun / spec:run / spec:check / spec:done / spec:push / spec:update / spec:status / spec:doctor / spec:organize.
     After $spec, work from the user's goal and the project's actual progress. Spec task packages, stages, and gates are the behind-the-scenes development method, never the main narrative of user-visible replies.
     User updates report only the readable project name, real task completion, current work, concrete problems, delivered results, and verification; never show the stage pipeline, gate counts, or ask the user for the next spec command.
     Read SKILL.md first. The on-disk trio is the delivery source of truth; route is an internal resolver and tasks is not a user command. Stable task IDs and depends-on must be validated — never guess natural-language dependencies.

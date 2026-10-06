@@ -65,6 +65,18 @@ class TestDiscoverPlanDocs:
         assert any("a-empty.md" in item for item in scanned)
         assert all(doc.name != "a-empty.md" for doc in docs)
 
+    def test_prd_and_design_candidates(self, tmp_path):
+        write_plan(tmp_path / "PRD.md", unchecked=1)
+        write_plan(tmp_path / "docs" / "prd.md", checked=1)
+        write_plan(tmp_path / "docs" / "design" / "schema.md", unchecked=1)
+        (tmp_path / "docs" / "design" / "notes.md").write_text("# no boxes\n", encoding="utf-8")
+        docs, _ = discover_plan_docs(tmp_path, None)
+        assert {str(doc.relative_to(tmp_path)) for doc in docs} == {
+            "PRD.md",
+            "docs/prd.md",
+            "docs/design/schema.md",
+        }
+
     def test_explicit_paths_resolve_under_root(self, tmp_path):
         write_plan(tmp_path / "PLAN.md", unchecked=1)
         docs, _ = discover_plan_docs(tmp_path, "PLAN.md")

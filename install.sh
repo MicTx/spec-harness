@@ -106,7 +106,7 @@ resolve_python() {
 
 # User-facing stages for Claude command files. Single source: the stage list
 # documented in SKILL.md and references/commands.md.
-USER_STAGES=(new goal autorun run check done push update status doctor organize)
+USER_STAGES=(new goal autoplan autorun run check done push update status doctor organize)
 
 format_stage_aliases() {
   local prefix="$1"
@@ -456,6 +456,7 @@ stage_description() {
     route) printf '%s\n' "Spec auto-routing" ;;
     new) printf '%s\n' "Spec: create a task package" ;;
     goal) printf '%s\n' "Spec: one-shot goal chain" ;;
+    autoplan) printf '%s\n' "Spec: interactive planning rounds" ;;
     autorun) printf '%s\n' "Spec: recursive autorun chain" ;;
     run) printf '%s\n' "Spec: execute or resume" ;;
     check) printf '%s\n' "Spec: collaborative review" ;;
@@ -485,6 +486,13 @@ EOF_BODY
 # /$command_name
 
 Run the one-shot goal workflow: plan the task package, execute every task in this session, independently verify each delivery, archive and commit scoped changes after gates pass, then use the safe spec:push flow. Stop at any failed gate.
+EOF_BODY
+      ;;
+    autoplan)
+      cat <<EOF_BODY
+# /$command_name
+
+Run the interactive planning workflow: interrogate the user in themed rounds (goal, scope, technology, priorities, risks) to pin down the project, delegate framework and detail planning to the planner sidecar until every feature reaches autorun granularity, gate the planning-document cluster for structural consistency, then report autorun readiness and stop. Never spawn the chain from autoplan.
 EOF_BODY
       ;;
     autorun)

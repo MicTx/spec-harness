@@ -31,5 +31,6 @@ Open these only when the task shape calls for them:
 - Slot contract: `slots.md` + `scripts/slot_registry.py validate`
 - Structure-audit facts: `scripts/organize_project_structure.py` (`--check` is the hard architecture-consistency gate)
 - Autorun chain facts: `scripts/autorun_spawn.py` (planning-document discovery, round cap, single-chain lock)
+- Autoplan cluster facts: `scripts/autoplan_gate.py` (planning-document discovery, structural readiness gate for the cluster)
 
 Other carriers should point here instead of copying gate lists. The public guides explain the ideas; `.spec/` records project state; neither replaces the runtime contracts below.

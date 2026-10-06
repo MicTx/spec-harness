@@ -1,12 +1,12 @@
 # Commands
 
-This page is a stage reference, not a tutorial. Find the stage that matches the current project state, read that section, and then run the command it names. The default line is `new / run / check / done / push`; `update` and `status` adjust or inspect an existing package; `goal` is the one-shot entry point; `autorun` chains rounds recursively from the project planning documents; `doctor` and `organize` maintain the environment or structure outside the task-package state machine.
+This page is a stage reference, not a tutorial. Find the stage that matches the current project state, read that section, and then run the command it names. The default line is `new / run / check / done / push`; `update` and `status` adjust or inspect an existing package; `goal` is the one-shot entry point; `autoplan` interrogates the user in rounds and produces the project planning-document cluster; `autorun` chains rounds recursively from that cluster; `doctor` and `organize` maintain the environment or structure outside the task-package state machine.
 
 The shortest safe path is always: route from disk, make one bounded change, run its verification, then let the next stage consume the recorded state. Do not read this file end to end when one stage is enough.
 
 ## CLI compatibility layer
 
-The command inventory (command → stage → purpose) lives once in `SKILL.md`. Claude Code exposes `/spec:<command>`; Codex / generic skill-aware CLIs (Gemini CLI, Grok Build, OpenCode, OpenClaw, Hermes, Pi, etc.) trigger `$spec` and then use `spec:new/goal/run/check/done/push/update/status/doctor/organize/autorun`. The route and tasks views remain internal script capabilities, not user commands. See the README installation section for the per-host install directory matrix.
+The command inventory (command → stage → purpose) lives once in `SKILL.md`. Claude Code exposes `/spec:<command>`; Codex / generic skill-aware CLIs (Gemini CLI, Grok Build, OpenCode, OpenClaw, Hermes, Pi, etc.) trigger `$spec` and then use `spec:new/goal/autoplan/run/check/done/push/update/status/doctor/organize/autorun`. The route and tasks views remain internal script capabilities, not user commands. See the README installation section for the per-host install directory matrix.
 
 Before executing any command, pass the four questions from `engineering-philosophy.md`: are the assumptions written down, is this the minimal path, is the boundary clear, and how is completion proven. If any answer is missing, fix the documents first.
 
@@ -513,7 +513,7 @@ Compatible invocation:
 Planning-document discovery (`python3 scripts/autorun_spawn.py plan --root <project> [--plan <path[,path...]>]`):
 
 - `--plan` wins when given; each path must exist and stay under the project root.
-- Otherwise scan the conventional candidates under the project root: `.spec/plan.md`, `PLAN.md`, `ROADMAP.md`, `docs/plan.md`, `docs/roadmap.md`, `docs/plans/*.md` (sorted). A candidate qualifies as a planning document only when it contains at least one markdown feature checkbox (`- [ ]` / `- [x]`).
+- Otherwise scan the conventional candidates under the project root: `.spec/plan.md`, `PLAN.md`, `ROADMAP.md`, `PRD.md`, `docs/plan.md`, `docs/roadmap.md`, `docs/prd.md`, `docs/plans/*.md`, `docs/design/*.md` (sorted). A candidate qualifies as a planning document only when it contains at least one markdown feature checkbox (`- [ ]` / `- [x]`).
 - No qualifying document → fail closed with exit code 3: report the scanned candidates and ask the user to write project-level planning first. Never invent a plan or loop over package archives instead.
 - A feature is done when its checkbox is `- [x]`; the chain terminates when every checkbox across all qualifying documents is checked.
 
@@ -548,6 +548,40 @@ Chain rules:
 Output contract:
 
 - Follow the `/spec:autorun` section in `references/output-contracts.md`.
+
+## `/spec:autoplan`
+
+Goal: interactive recursive planning entry that pairs with `/spec:autorun` — interrogate the user in themed rounds to pin down the project goal, delegate framework and detail planning to the planner sidecar, refine recursively until every feature reaches autorun granularity with consistent business, data, and flow, gate the cluster, and stop at the readiness report. `autoplan` creates no task package, writes no `.spec/autorun/` chain state, spawns no Terminal window, and is never invoked by the autorun chain.
+
+Compatible invocation:
+
+- Claude Code CLI: `/spec:autoplan [--plan <docs>] [--max-rounds <n>]`
+- Codex / generic skill-aware CLI: command alias `spec:autoplan`, triggered by `$spec`
+
+Planning-document discovery (`python3 scripts/autoplan_gate.py discover --root <project> [--plan <path[,path...]>]`):
+
+- Same candidate rules as `/spec:autorun`: `--plan` wins when given (each path must exist and stay under the project root); otherwise scan the conventional candidates. A candidate qualifies only with at least one markdown feature checkbox.
+- An existing cluster means a phase-boundary run: read the checked/unchecked state, reconcile the checked features against the repository reality, and re-plan only the remaining scope; an empty scan means a project-start run.
+
+Execution order:
+
+1. Preflight with `discover`. Record whether this is a project-start or phase-boundary run.
+2. Interrogation rounds, at most `--max-rounds` (default 5), themed in order: goal/users/value → scope/MVP/boundaries → technology/data/architecture → priorities/phases/dependencies → risks/verification. Each round first presents what is confirmed so far, the current assumptions, and this round's questions (grouped, answerable, with options whenever possible); answers land in the cluster's confirmed-facts / assumptions / open-questions sections. Converge when no project-shaping question remains or the user ends early. This is the one command exempt from the "do not block on a question list" discipline — the exemption is bounded by the round cap and the convergence rule (recorded in the `2026-10-06_add-autoplan-command` Development Record).
+3. Framework planning: delegate to the planner sidecar (inject the `agents/planner.md` contract into an in-process subagent; on hosts without that agent name, follow the portable injection rule in `references/orchestration.md`); the main session adjudicates and writes the master document (default `.spec/plan.md`): goal, target users, value, phase structure, the feature checkbox index grouped by phase (each checkbox is one autorun consumption unit: a feature or coherent feature group sized for one `/spec:new` package), and links to the detail documents.
+4. Recursive detail planning: one sidecar detail pass per phase → detail documents (default `docs/plans/NN-<slug>.md`) with sections for business logic, data model, flows (data and control), interfaces and boundaries, and acceptance hooks. Recurse until every leaf feature can directly support a `/spec:new` package (boundary and verify derivable from the design). Existing user PRD/design documents are reconciled and updated, never duplicated; the feature checkbox index must live inside the autorun candidate set.
+5. Consistency gate: `python3 scripts/autoplan_gate.py gate --root <project> [--plan ...]` (structural invariants, fail closed with exit 3) plus an independent reviewer pass (inject the `agents/reviewer.md` contract into a fresh subagent) for cross-document business/data/flow contradictions. Fix and re-run until both pass.
+6. Readiness report: `python3 scripts/autorun_spawn.py plan --root <project>` for the qualifying-document and checkbox facts; report autorun-readiness, suggest `/spec:autorun`, and stop. Never spawn the chain from autoplan.
+
+Constraints:
+
+- Interactive only: started by the user in an interactive session. In a non-interactive session, or when invoked from the autorun chain, stop and report the undecided items instead of guessing.
+- The question-list exemption applies to the interrogation phase only and is bounded by `--max-rounds` (default 5) and the convergence rule.
+- Planning delegates to in-process subagents under the sidecar contracts; adjudication and every file write stay in the main session. Model tier is the user's runtime choice; the skill adds no model routing.
+- The planning cluster is project content, not task-package state: it is never archived with a package and never written under `.spec/autorun/`.
+
+Output contract:
+
+- Follow the `/spec:autoplan` section in `references/output-contracts.md`.
 
 ## Script working-directory conventions
 
