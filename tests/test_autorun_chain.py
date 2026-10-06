@@ -14,13 +14,18 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from autorun_spawn import (  # noqa: E402  # type: ignore
     AutorunError,
     NoPlanError,
+    build_close_argv,
     build_prompt,
     build_terminal_command,
     build_worker_command,
     count_features,
     discover_plan_docs,
     main,
+    parse_spawn_result,
+    parse_window_lookup,
     plan_payload,
+    recycle_previous_window,
+    worker_running_on_tty,
 )
 
 
@@ -158,6 +163,7 @@ class TestSpawnCommand:
         argv = payload["osascript"]
         assert argv[0] == "osascript"
         assert "Terminal" in argv[2]
+        assert payload["window_recycle"] == {"status": "planned"}
         assert "codex" in payload["shell_command"]
         assert "$spec autorun" in payload["shell_command"]
         assert not (tmp_path / ".spec" / "autorun" / "chain.json").exists()
@@ -302,27 +308,161 @@ class TestCommandBuilders:
 
     def test_worker_commands(self, tmp_path):
         codex = build_worker_command("codex", tmp_path, "PROMPT")
-        assert codex[0] == "codex" and codex[1] == "exec"
+        assert codex[0] == "codex" and "exec" not in codex
         assert "--cd" in codex and str(tmp_path) in codex
         assert codex[-1] == "PROMPT"
         pi = build_worker_command("pi", tmp_path, "PROMPT")
-        assert pi[:4] == ["pi", "-p", "--no-session", "--mode"]
+        assert pi[:3] == ["pi", "--mode", "text"]
+        assert "-p" not in pi and "--no-session" not in pi
         claude = build_worker_command("claude", tmp_path, "PROMPT")
         assert claude[0] == "claude" and claude[-1] == "PROMPT"
+        assert "-p" not in claude
 
     def test_terminal_command_quotes_paths_and_prompts(self, tmp_path):
         spacey = tmp_path / "pro ject"
         spacey.mkdir(exist_ok=True)
         argv, shell = build_terminal_command(spacey, ["echo", "a b", 'q"uote'])
         assert argv[0] == "osascript"
-        assert argv[2].startswith('tell application "Terminal" to do script "')
-        assert argv[2].endswith('"')
+        assert argv[2].startswith('tell application "Terminal"')
+        assert argv[2].endswith("end tell")
+        assert 'do script "' in argv[2]
         assert shell.startswith("cd ")
         assert "pro ject" in shell
         # Every double quote the shell command carries must arrive escaped in
         # the AppleScript literal, so osascript never sees a broken string.
-        body = argv[2][len('tell application "Terminal" to do script "') : -1]
+        script_line = next(part for part in argv[2].splitlines() if 'do script "' in part)
+        assert script_line.endswith('"')
+        body = script_line.split('do script "', 1)[1][:-1]
         assert body.replace('\\"', '"') == shell
+
+
+class TestWindowRecycle:
+    def test_parse_spawn_result(self):
+        assert parse_spawn_result("42 /dev/ttys009\n") == (42, "/dev/ttys009")
+        assert parse_spawn_result("tab 1 of window 1") == (None, None)
+        assert parse_spawn_result("") == (None, None)
+        assert parse_spawn_result("42 ttys009") == (None, None)
+        assert parse_spawn_result("not-an-int /dev/ttys009") == (None, None)
+
+    def test_parse_window_lookup(self):
+        assert parse_window_lookup("7\n") == 7
+        assert parse_window_lookup("") is None
+        assert parse_window_lookup("abc") is None
+
+    def test_worker_running_on_tty(self, monkeypatch):
+        ps_output = "ttys009  /opt/homebrew/bin/claude\n"
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout=ps_output, stderr=""),
+        )
+        assert worker_running_on_tty("claude", "/dev/ttys009") is True
+        assert worker_running_on_tty("codex", "/dev/ttys009") is False
+
+    def test_close_argv_shape_and_validation(self):
+        argv = build_close_argv(42, 3)
+        assert argv[:2] == ["/bin/sh", "-c"]
+        assert argv[2].startswith("sleep 3;")
+        assert "close window id 42" in argv[2]
+        with pytest.raises(AutorunError):
+            build_close_argv(-1, 3)
+        with pytest.raises(AutorunError):
+            build_close_argv("42", 3)
+
+    def test_recycle_schedules_close(self, monkeypatch):
+        monkeypatch.setattr("autorun_spawn.worker_running_on_tty", lambda worker, tty: True)
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="7\n", stderr=""),
+        )
+        scheduled: list = []
+        monkeypatch.setattr("autorun_spawn.schedule_window_close", lambda wid, delay: scheduled.append((wid, delay)))
+        result = recycle_previous_window("/dev/ttys012", 42, "/dev/ttys009", "claude")
+        assert result == {"status": "scheduled", "window_id": 7, "delay_seconds": 3}
+        assert scheduled == [(7, 3)]
+
+    def test_recycle_skips_when_worker_not_observed(self, monkeypatch):
+        monkeypatch.setattr("autorun_spawn.WORKER_START_TIMEOUT_SECONDS", 0)
+        monkeypatch.setattr("autorun_spawn.worker_running_on_tty", lambda worker, tty: False)
+        result = recycle_previous_window("/dev/ttys012", 42, "/dev/ttys009", "claude")
+        assert result["status"] == "skipped"
+        assert "not observed" in result["reason"]
+
+    def test_recycle_skips_without_prev_tty(self):
+        result = recycle_previous_window(None, 42, "/dev/ttys009", "claude")
+        assert result["status"] == "skipped"
+        assert "no controlling Terminal" in result["reason"]
+
+    def test_recycle_skips_without_spawn_ids(self):
+        result = recycle_previous_window("/dev/ttys012", None, None, "claude")
+        assert result["status"] == "skipped"
+        assert "unavailable" in result["reason"]
+
+    def test_recycle_skips_when_prev_window_missing(self, monkeypatch):
+        monkeypatch.setattr("autorun_spawn.worker_running_on_tty", lambda worker, tty: True)
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="\n", stderr=""),
+        )
+        result = recycle_previous_window("/dev/ttys012", 42, "/dev/ttys009", "claude")
+        assert result["status"] == "skipped"
+        assert "no Terminal window hosts" in result["reason"]
+
+    def test_recycle_skips_same_window(self, monkeypatch):
+        monkeypatch.setattr("autorun_spawn.worker_running_on_tty", lambda worker, tty: True)
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="42\n", stderr=""),
+        )
+        result = recycle_previous_window("/dev/ttys012", 42, "/dev/ttys009", "claude")
+        assert result["status"] == "skipped"
+        assert "spawned window" in result["reason"]
+
+    def test_recycle_custom_command_skips_verification(self, monkeypatch):
+        calls: list = []
+
+        def fake_run(*a, **k):
+            calls.append(a[0])
+            if a[0][0] == "ps":
+                return subprocess.CompletedProcess(a[0], 0, stdout="", stderr="")
+            return subprocess.CompletedProcess(a[0], 0, stdout="7\n", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        scheduled: list = []
+        monkeypatch.setattr("autorun_spawn.schedule_window_close", lambda wid, delay: scheduled.append(wid))
+        result = recycle_previous_window("/dev/ttys012", 42, "/dev/ttys009", "")
+        assert result["status"] == "scheduled"
+        assert scheduled == [7]
+        assert all(argv[0] != "ps" for argv in calls)
+
+    def test_spawn_records_recycle_state(self, tmp_path, capsys, monkeypatch):
+        write_plan(tmp_path / "PLAN.md", unchecked=1)
+        make_active_package(tmp_path)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr("autorun_spawn.controlling_tty", lambda: "/dev/ttys012")
+
+        def fake_run(*a, **k):
+            argv = a[0]
+            if argv[0] == "ps":
+                return subprocess.CompletedProcess(argv, 0, stdout="ttys009  /usr/local/bin/claude\n", stderr="")
+            if argv[0] == "osascript" and "do script" in argv[2]:
+                return subprocess.CompletedProcess(argv, 0, stdout="42 /dev/ttys009\n", stderr="")
+            return subprocess.CompletedProcess(argv, 0, stdout="7\n", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        scheduled: list = []
+        monkeypatch.setattr("autorun_spawn.schedule_window_close", lambda wid, delay: scheduled.append((wid, delay)))
+        code = main(["spawn", "--root", str(tmp_path), "--host", "claude", "--format", "json"])
+        assert code == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["window_recycle"] == {"status": "scheduled", "window_id": 7, "delay_seconds": 3}
+        assert scheduled == [(7, 3)]
+        state = json.loads((tmp_path / ".spec" / "autorun" / "chain.json").read_text(encoding="utf-8"))
+        assert state["window_recycle"]["window_id"] == 7
+        assert state["prev_tty"] == "/dev/ttys012"
 
 
 class TestChannelSplit:

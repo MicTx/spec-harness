@@ -8,7 +8,11 @@ Subcommands:
   - ``plan``    discover the project planning documents and count feature
                 checkboxes (the machine truth for chain termination);
   - ``spawn``   open a new Terminal.app window in the project path running
-                the worker CLI headless with the autorun prompt injected,
+                the worker CLI in a full interactive session with the
+                autorun prompt injected; once the next-round worker is
+                confirmed running on the new window's tty, schedule the
+                close of the previous round's Terminal window (window
+                recycling, fail-open),
                 after enforcing the round cap, the single-chain lock, and
                 the next-round package presence;
   - ``status``  render the current chain state.
@@ -44,6 +48,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -53,6 +58,8 @@ EXIT_NO_PLAN = 3
 
 WORKER_HOSTS: Tuple[str, ...] = ("codex", "pi", "claude")
 DEFAULT_MAX_ROUNDS = 20
+WORKER_START_TIMEOUT_SECONDS = 60
+CLOSE_DELAY_SECONDS = 3
 CHAIN_DIR_NAME = ".spec/autorun"
 CHAIN_STATE_FILE = "chain.json"
 CHAIN_SPAWNS_FILE = "spawns.jsonl"
@@ -260,11 +267,16 @@ def build_prompt(host: str, plan_args: List[str], max_rounds: int) -> str:
 
 
 def build_worker_command(host: str, root: Path, prompt: str) -> List[str]:
-    """Build the headless worker argv for the next-round session."""
+    """Build the interactive worker argv for the next-round session.
+
+    Every host runs its CLI's normal interactive session (visible TUI,
+    session persisted), not a print/exec mode; the prompt is the initial
+    message. Recorded overturn of the headless worker choice in the
+    ``2026-10-06_add-autorun-command`` Development Record.
+    """
     if host == "codex":
         return [
             "codex",
-            "exec",
             "--cd",
             str(root),
             "--sandbox",
@@ -275,15 +287,31 @@ def build_worker_command(host: str, root: Path, prompt: str) -> List[str]:
             prompt,
         ]
     if host == "pi":
-        return ["pi", "-p", "--no-session", "--mode", "text", "--", prompt]
+        return ["pi", "--mode", "text", "--", prompt]
     if host == "claude":
-        return ["claude", "-p", "--dangerously-skip-permissions", prompt]
+        return ["claude", "--dangerously-skip-permissions", prompt]
     raise AutorunError(f"unknown worker host: {host}")
 
 
 def escape_applescript(text: str) -> str:
     """Escape a string for an AppleScript double-quoted literal."""
     return text.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _window_lookup_lines(tty_expression: str) -> List[str]:
+    """AppleScript lines filling ``match`` with the window id hosting the tab
+    whose tty equals ``tty_expression`` (a quoted literal or a variable)."""
+    return [
+        '\tset match to ""',
+        "\trepeat with w in windows",
+        "\t\trepeat with t in tabs of w",
+        "\t\t\tif tty of t is {} then".format(tty_expression),
+        "\t\t\t\tset match to (id of w as string)",
+        "\t\t\t\texit repeat",
+        "\t\t\tend if",
+        "\t\tend repeat",
+        "\tend repeat",
+    ]
 
 
 def build_terminal_command(
@@ -293,16 +321,171 @@ def build_terminal_command(
 
     Returns ``(osascript argv, shell command)``. The shell command is
     ``cd <root> && <worker argv>`` — or ``cd <root> && <custom command>``
-    when a raw ``--command`` override is given; AppleScript sees it as one
-    escaped string literal.
+    when a raw ``--command`` override is given. The AppleScript runs the
+    command in a new tab and replies ``"<window id> <tab tty>"`` on
+    stdout (the window is found by matching the spawned tab's tty, so no
+    front-window race), so the spawn can verify the next round and
+    recycle windows.
     """
     if custom_command is not None:
         tail = custom_command
     else:
         tail = " ".join(shlex.quote(part) for part in worker_command)
     shell_command = "cd {} && {}".format(shlex.quote(str(root)), tail)
-    applescript = 'tell application "Terminal" to do script "{}"'.format(escape_applescript(shell_command))
+    applescript = "\n".join(
+        [
+            'tell application "Terminal"',
+            '\tset spawnedTab to do script "{}"'.format(escape_applescript(shell_command)),
+            "\tset spawnedTty to tty of spawnedTab",
+            *_window_lookup_lines("spawnedTty"),
+            '\treturn match & " " & spawnedTty',
+            "end tell",
+        ]
+    )
     return ["osascript", "-e", applescript], shell_command
+
+
+def parse_spawn_result(stdout: str) -> Tuple[Optional[int], Optional[str]]:
+    """Parse the spawn osascript reply ``"<window id> <tab tty>"``."""
+    parts = stdout.strip().split()
+    if len(parts) != 2:
+        return None, None
+    raw_id, tty = parts
+    try:
+        window_id = int(raw_id)
+    except ValueError:
+        return None, None
+    if not tty.startswith("/dev/"):
+        return None, None
+    return window_id, tty
+
+
+def controlling_tty() -> Optional[str]:
+    """Return the controlling terminal of this process, or ``None``."""
+    try:
+        fd = os.open("/dev/tty", os.O_RDONLY)
+    except OSError:
+        return None
+    try:
+        return os.ttyname(fd)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def worker_running_on_tty(worker: str, tty: str) -> bool:
+    """Check whether a ``worker`` process runs on the given Terminal tty."""
+    completed = subprocess.run(
+        ["ps", "-axo", "tty=,comm="],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    if completed.returncode != 0:
+        return False
+    tty_name = tty.rsplit("/", 1)[-1]
+    for line in completed.stdout.splitlines():
+        fields = line.split(None, 1)
+        if len(fields) != 2:
+            continue
+        if fields[0].strip() == tty_name and os.path.basename(fields[1].strip()) == worker:
+            return True
+    return False
+
+
+def build_window_lookup_applescript(tty: str) -> str:
+    """Build the AppleScript finding the window id hosting the given tab tty."""
+    return "\n".join(
+        [
+            'tell application "Terminal"',
+            *_window_lookup_lines('"{}"'.format(escape_applescript(tty))),
+            "\treturn match",
+            "end tell",
+        ]
+    )
+
+
+def parse_window_lookup(stdout: str) -> Optional[int]:
+    """Parse the window-lookup osascript reply into a window id."""
+    text = stdout.strip()
+    if not text:
+        return None
+    try:
+        return int(text.split()[0])
+    except (ValueError, IndexError):
+        return None
+
+
+def build_close_argv(window_id: int, delay_seconds: int) -> List[str]:
+    """Build the detached argv closing a Terminal window after a delay."""
+    if isinstance(window_id, bool) or not isinstance(window_id, int) or window_id <= 0:
+        raise AutorunError(f"window id must be a positive integer: {window_id!r}")
+    if delay_seconds < 0:
+        raise AutorunError(f"close delay must be >= 0: {delay_seconds!r}")
+    script = "sleep {}; osascript -e {}".format(
+        delay_seconds,
+        shlex.quote('tell application "Terminal" to close window id {}'.format(window_id)),
+    )
+    return ["/bin/sh", "-c", script]
+
+
+def schedule_window_close(window_id: int, delay_seconds: int) -> None:
+    """Launch the detached close helper; it outlives this process group."""
+    subprocess.Popen(
+        build_close_argv(window_id, delay_seconds),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def recycle_previous_window(
+    prev_tty: Optional[str],
+    new_window_id: Optional[int],
+    new_tty: Optional[str],
+    worker_name: str,
+    timeout_seconds: Optional[int] = None,
+    delay_seconds: Optional[int] = None,
+) -> Dict[str, object]:
+    """Confirm the next round and close the previous round's Terminal window.
+
+    Fail-open: any skip condition leaves the previous window open and
+    returns the recorded reason; the chain continues in the new window.
+    """
+    if timeout_seconds is None:
+        timeout_seconds = WORKER_START_TIMEOUT_SECONDS
+    if delay_seconds is None:
+        delay_seconds = CLOSE_DELAY_SECONDS
+    if prev_tty is None:
+        return {"status": "skipped", "reason": "spawning session has no controlling Terminal"}
+    if new_window_id is None or new_tty is None:
+        return {"status": "skipped", "reason": "spawned window id or tty unavailable from osascript"}
+    if worker_name:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if worker_running_on_tty(worker_name, new_tty):
+                break
+            time.sleep(1.0)
+        else:
+            return {
+                "status": "skipped",
+                "reason": "worker {} not observed on {} within {}s".format(worker_name, new_tty, timeout_seconds),
+            }
+    lookup = subprocess.run(
+        ["osascript", "-e", build_window_lookup_applescript(prev_tty)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    prev_window_id = parse_window_lookup(lookup.stdout) if lookup.returncode == 0 else None
+    if prev_window_id is None:
+        return {"status": "skipped", "reason": "no Terminal window hosts {}".format(prev_tty)}
+    if prev_window_id == new_window_id:
+        return {"status": "skipped", "reason": "previous window is the spawned window"}
+    schedule_window_close(prev_window_id, delay_seconds)
+    return {"status": "scheduled", "window_id": prev_window_id, "delay_seconds": delay_seconds}
 
 
 def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
@@ -340,6 +523,7 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
         if args.command:
             host = "custom"
             worker_command: List[str] = []
+            worker_name = ""
         else:
             host = resolve_worker_host(args.host)
             plan_args: List[str] = []
@@ -347,6 +531,7 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
                 plan_args.append(f"--plan {args.plan}")
             prompt = build_prompt(host, plan_args, args.max_rounds)
             worker_command = build_worker_command(host, root, prompt)
+            worker_name = worker_command[0]
         osascript_argv, shell_command = build_terminal_command(root, worker_command, args.command)
 
         record = {
@@ -356,12 +541,14 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
             "max_rounds": args.max_rounds,
             "spawned_at": _utc_now(),
             "shell_command": shell_command,
+            "prev_tty": controlling_tty(),
         }
 
         if args.dry_run:
             return {
                 "dry_run": True,
                 "osascript": osascript_argv,
+                "window_recycle": {"status": "planned"},
                 **record,
             }
 
@@ -374,6 +561,13 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
         if completed.returncode != 0:
             detail = completed.stderr.strip() or completed.stdout.strip()
             raise AutorunError(f"osascript failed to open the Terminal window: {detail}")
+        new_window_id, new_tty = parse_spawn_result(completed.stdout)
+        record["window_recycle"] = recycle_previous_window(
+            prev_tty=record["prev_tty"],
+            new_window_id=new_window_id,
+            new_tty=new_tty,
+            worker_name=worker_name,
+        )
 
         state_file = chain_dir / CHAIN_STATE_FILE
         state = dict(record)
@@ -420,6 +614,14 @@ def _render_plan(payload: Dict[str, object]) -> str:
 def _render_spawn(payload: Dict[str, object]) -> str:
     lines = ["round: {}/{}".format(payload["round"], payload["max_rounds"]), "host: {}".format(payload["host"])]
     lines.append("shell_command: {}".format(payload["shell_command"]))
+    recycle = payload.get("window_recycle")
+    if isinstance(recycle, dict):
+        if recycle.get("status") == "scheduled":
+            lines.append("close: window {} in {}s".format(recycle["window_id"], recycle["delay_seconds"]))
+        elif recycle.get("status") == "planned":
+            lines.append("close: planned (previous window closes after the next round is confirmed running)")
+        else:
+            lines.append("close: skipped ({})".format(recycle.get("reason", "unknown")))
     if payload.get("dry_run"):
         lines.append("dry-run: osascript not executed")
     else:

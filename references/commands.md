@@ -534,7 +534,7 @@ Execution order (each round):
     python3 scripts/autorun_spawn.py spawn --root <project> [--plan <docs>] [--host <codex|pi|claude>] [--max-rounds <n>]
     ```
 
-    The script enforces the safety rails (round cap, single-chain lock, sequential spawn only after a successful push and next-package creation), opens a new Terminal.app window via osascript running the worker CLI headless with the autorun prompt injected, and records `.spec/autorun/chain.json` plus an append to `.spec/autorun/spawns.jsonl`. The current session then reports the round summary and the spawned window, and ends.
+    The script enforces the safety rails (round cap, single-chain lock, sequential spawn only after a successful push and next-package creation), opens a new Terminal.app window via osascript running the worker CLI in a full interactive session (visible TUI, session persisted — never a print/exec headless mode) with the autorun prompt injected as the initial message, and records `.spec/autorun/chain.json` plus an append to `.spec/autorun/spawns.jsonl`. The spawn then recycles Terminal windows: it confirms the next-round worker is running on the new window's tty (up to 60s; a raw `--command` override is trusted without this poll), locates the spawning session's Terminal window by its controlling tty, and schedules that previous window to close a few seconds later via a detached helper — so the current session's round summary lands before its window closes and long chains no longer accumulate one window per round. The close is fail-open: without a Terminal.app controlling window, or when the worker is not observed in time, the previous window is left open and the skip reason is recorded in the chain state. The current session then reports the round summary and the spawned window, and ends.
 
 Chain rules:
 
@@ -542,6 +542,7 @@ Chain rules:
 - Strictly sequential: at most one spawned next-round session per project, enforced by the flock on `.spec/autorun/chain.lock`; parallel chains are refused, never queued.
 - Round cap: default 20, override with `--max-rounds`; the spawn refuses beyond the cap and reports instead of looping.
 - Worker hosts: `--host` > `SPEC_AUTORUN_HOST` environment > first available on PATH among codex, pi, claude. zcode has no CLI and cannot be spawned. Host prompt shapes: codex/pi/generic `$spec autorun ...`; claude `/spec:autorun ...`.
+- Window recycling is part of the spawn step and inherits the Terminal.app automation scope: the previous round's window closes only after the next-round worker is confirmed running, and any skip (no Terminal.app controlling window, worker not observed within the timeout, window lookup failure) is recorded and leaves the window open — never close on an unconfirmed handoff.
 - The Terminal.app automation is scope-limited to this spawn step (explicit overturn of the 2026-09-03 no-AppleScript policy, recorded in the `2026-10-06_add-autorun-command` Development Record); no other stage manipulates Terminal or AppleScript.
 - The three user-interruption conditions of `/spec:goal` (project-shaping constraint, undecidable decision, unresolvable external dependency) apply unchanged; a planning-document gap (exit 3) also stops the chain and asks the user to plan first.
 
