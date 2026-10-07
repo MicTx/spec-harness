@@ -31,9 +31,12 @@ Contract output goes to stdout (text, or JSON with ``--format json``);
 diagnostics go to stderr. ``spawn`` writes only under ``.spec/autorun/``:
 ``chain.json`` (latest chain state), ``spawns.jsonl`` (append-only audit),
 and the transient ``chain.lock``. The Terminal.app automation is
-scope-limited to this spawn step (recorded overturn of the 2026-09-03
-no-AppleScript policy in the ``2026-10-06_add-autorun-command``
-Development Record); no other caller may reuse it.
+scope-limited to exactly two spawn steps — this script's autorun round
+spawn and the autoplan pass spawn in ``scripts/autoplan_spawn.py`` (which
+reuses this module's implementation by import) — both inheriting the
+recorded overturn of the 2026-09-03 no-AppleScript policy in the
+``2026-10-06_add-autorun-command`` Development Record; no other caller
+may reuse it.
 """
 
 from __future__ import annotations
@@ -57,6 +60,15 @@ EXIT_FAILURE = 1
 EXIT_NO_PLAN = 3
 
 WORKER_HOSTS: Tuple[str, ...] = ("codex", "pi", "claude")
+# Env markers each host CLI sets in its tool subprocesses. Markers inherit
+# down the shell chain (a codex session launched from a pi shell carries both
+# PI_CODING_AGENT and CODEX_SANDBOX), so multiple markers are disambiguated
+# by the nearest-ancestor walk in detect_session_host.
+HOST_ENV_MARKERS: Tuple[Tuple[str, str], ...] = (
+    ("codex", "CODEX_SANDBOX"),
+    ("pi", "PI_CODING_AGENT"),
+    ("claude", "CLAUDECODE"),
+)
 DEFAULT_MAX_ROUNDS = 20
 WORKER_START_TIMEOUT_SECONDS = 60
 CLOSE_DELAY_SECONDS = 3
@@ -245,16 +257,80 @@ def _active_package_present(root: Path) -> bool:
     return False
 
 
-def resolve_worker_host(explicit: Optional[str]) -> str:
-    """Resolve the worker host: ``--host`` > ``SPEC_AUTORUN_HOST`` > PATH order."""
+def _ancestor_host_tokens() -> List[str]:
+    """Walk the parent-process chain, returning host-name command tokens
+    nearest first (the innermost running CLI comes first)."""
+    found: List[str] = []
+    pid = os.getpid()
+    for _ in range(64):
+        try:
+            probe = subprocess.run(
+                ["ps", "-o", "ppid=,command=", "-p", str(pid)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            break
+        line = probe.stdout.strip()
+        if not line:
+            break
+        parts = line.split(None, 1)
+        if len(parts) < 2:
+            break
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            break
+        if pid <= 1:
+            break
+        for token in parts[1].split():
+            name = token.rstrip("/").rsplit("/", 1)[-1]
+            if name in WORKER_HOSTS:
+                found.append(name)
+                break
+    return found
+
+
+def detect_session_host(env: Optional[Dict[str, str]] = None) -> Optional[str]:
+    """Detect the host CLI running the current session, if identifiable.
+
+    A single env marker wins; multiple markers (shell inheritance) resolve
+    to the nearest ancestor actually running one of the marked hosts.
+    Returns ``None`` when nothing identifies a host — callers fall back to
+    PATH order instead of guessing.
+    """
+    env = os.environ if env is None else env
+    marked = [host for host, marker in HOST_ENV_MARKERS if env.get(marker)]
+    if len(marked) == 1:
+        return marked[0]
+    if len(marked) > 1:
+        for ancestor in _ancestor_host_tokens():
+            if ancestor in marked:
+                return ancestor
+    return None
+
+
+def resolve_worker_host(explicit: Optional[str]) -> Tuple[str, str]:
+    """Resolve the worker host and its provenance.
+
+    Order: ``--host`` > ``SPEC_AUTORUN_HOST`` > detected current-session host
+    (same-host chain continuation) > PATH order. Same-host continuation is
+    the robust default: a pi main session spawns a pi worker, not whatever
+    happens to sit first on PATH.
+    """
     host = explicit or os.environ.get("SPEC_AUTORUN_HOST") or ""
     if host:
         if host not in WORKER_HOSTS:
             raise AutorunError(f"unknown worker host: {host} (expected one of {WORKER_HOSTS})")
-        return host
+        return host, "flag" if explicit else "env"
+    detected = detect_session_host()
+    if detected and shutil.which(detected):
+        return detected, "session"
     for candidate in WORKER_HOSTS:
         if shutil.which(candidate):
-            return candidate
+            return candidate, "path"
     raise AutorunError(f"no worker host available on PATH (tried {WORKER_HOSTS})")
 
 
@@ -275,6 +351,11 @@ def build_worker_command(host: str, root: Path, prompt: str) -> List[str]:
     ``2026-10-06_add-autorun-command`` Development Record.
     """
     if host == "codex":
+        # codex >=0.160 seatbelt denies .git writes under workspace-write, so
+        # `git add`/`git commit` die with EPERM at the round's commit stage
+        # (verified 2026-10-07 against codex-cli 0.160.1). Carve the repo's
+        # .git back into the writable roots; everything else stays sandboxed.
+        git_root = json.dumps(str(root / ".git"))
         return [
             "codex",
             "--cd",
@@ -283,6 +364,8 @@ def build_worker_command(host: str, root: Path, prompt: str) -> List[str]:
             "workspace-write",
             "-c",
             "sandbox_workspace_write.network_access=true",
+            "-c",
+            f"sandbox_workspace_write.writable_roots=[{git_root}]",
             "--",
             prompt,
         ]
@@ -522,10 +605,11 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
 
         if args.command:
             host = "custom"
+            host_source = "custom"
             worker_command: List[str] = []
             worker_name = ""
         else:
-            host = resolve_worker_host(args.host)
+            host, host_source = resolve_worker_host(args.host)
             plan_args: List[str] = []
             if args.plan:
                 plan_args.append(f"--plan {args.plan}")
@@ -537,6 +621,7 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
         record = {
             "round": next_round,
             "host": host,
+            "host_source": host_source,
             "plan_docs": [doc["path"] for doc in plan["docs"]],  # type: ignore[index]
             "max_rounds": args.max_rounds,
             "spawned_at": _utc_now(),
@@ -683,7 +768,7 @@ def build_parser() -> argparse.ArgumentParser:
     spawn_parser.add_argument(
         "--host",
         choices=WORKER_HOSTS,
-        help="worker host (default: SPEC_AUTORUN_HOST or PATH order codex/pi/claude)",
+        help="worker host (default: SPEC_AUTORUN_HOST, else detected session host, else PATH order codex/pi/claude)",
     )
     spawn_parser.add_argument(
         "--command",

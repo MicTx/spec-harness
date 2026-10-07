@@ -33,7 +33,7 @@ Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 
 - **明确的入口**：`new`、`goal`、`autoplan`、`autorun`、`run`、`check`、`done`、`push`、`update`、`status`、`doctor`、`organize`。
 - **可恢复的状态**：报告、失败原因、完成摘要和归档都来自磁盘文件，换会话仍能继续。
 - **会话边界交接**：任务包可选 `handoff.md`——生成式快照头 + append-only 条目日志，必填小节随协作模式（单人/多人/agent/集群）自适应，`spec_handoff.py` 维护、check 门禁校验、done 归档时冻结。
-- **交互式递归规划**：`autoplan` 在项目初期或阶段收口时多轮征询摸清目标，由 planner 子代理做框架与细节规划并递归细化到 autorun 颗粒度，结构门禁与独立复核通过后停在就绪报告，从不自动起链。
+- **交互式递归规划**：`autoplan` 在项目初期或阶段收口时多轮征询摸清目标，随后按 `autorun` 同款串联递归把框架规划、逐阶段细节规划与一致性复核逐个交给全新会话接力（不用于进程内子代理），细化到 autorun 颗粒度，结构门禁与独立复核通过后停在就绪报告，从不自动起链。
 - **递归自动链**：`autorun` 以项目规划文档的功能 checkbox 为终止条件——本轮跑完推送到 main 后，自动规划下一轮并在同路径开新 Terminal 窗口注入提示词接续，直到全部功能勾选完成；轮次上限与单链锁护栏防止失控递归。
 - **稳定的任务身份**：任务可用 `id:` 与 `depends-on` 声明身份与依赖；协议迁移不改写历史归档。
 - **受控的执行面**：主会话保留路由、集成、验收和 done/push 门禁；`workflow-runner` 与其他 slots 只执行有边界的工作段。
@@ -77,7 +77,7 @@ Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.13.19
+git checkout v0.13.20
 bash install.sh
 ```
 
@@ -192,6 +192,7 @@ spec/
 │   └── orchestration.md
 ├── scripts/
 │   ├── autoplan_gate.py
+│   ├── autoplan_spawn.py
 │   ├── autorun_spawn.py
 │   ├── check_all_spec_packages.py
 │   ├── check_spec_package.py

@@ -33,7 +33,7 @@ Pick your entry point by what you want to do: to understand the idea first, read
 - **Explicit stages**: `new`, `goal`, `autoplan`, `autorun`, `run`, `check`, `done`, `push`, `update`, `status`, `doctor`, and `organize`.
 - **Recoverable state**: reports, failures, completion summaries, and archives come from files on disk, so another session can continue.
 - **Session-boundary handoff**: packages may carry an optional `handoff.md` — a generated snapshot head plus an append-only entry log whose required slots adapt to the collaboration mode (solo / team / agent / cluster); maintained by `spec_handoff.py`, validated by the check gate, and frozen by a terminal entry at archive time.
-- **Interactive recursive planning**: `autoplan` interrogates the user in themed rounds at project start or a phase boundary, delegates framework and detail planning to the planner sidecar down to autorun granularity, and stops at the readiness report once the structural gate and an independent review pass — it never starts the chain itself.
+- **Interactive recursive planning**: `autoplan` interrogates the user in themed rounds at project start or a phase boundary, then hands framework planning, per-phase detail planning, and the consistency review to fresh full sessions chained serially with the same spawn discipline as `autorun` (never in-process subagents), down to autorun granularity; it stops at the readiness report once the structural gate and an independent review pass — it never starts the chain itself.
 - **Recursive autorun chain**: `autorun` terminates on the feature checkboxes of the project planning documents — after this round is pushed to main, it plans the next round and opens a fresh Terminal window in the same path with the prompt injected, recursing until every planned feature is checked; a round cap and a single-chain lock guard the recursion.
 - **Stable task identity**: tasks can declare an `id:` and explicit `depends-on`; protocol migrations never rewrite historical archives.
 - **Controlled execution**: the main session keeps routing, integration, acceptance, and done/push gates; `workflow-runner` and other slots only execute bounded work.
@@ -77,7 +77,7 @@ Run the installer from a checked-out source or release tree:
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.13.19
+git checkout v0.13.20
 bash install.sh
 ```
 
@@ -192,6 +192,7 @@ spec/
 │   └── orchestration.md
 ├── scripts/
 │   ├── autoplan_gate.py
+│   ├── autoplan_spawn.py
 │   ├── autorun_spawn.py
 │   ├── check_all_spec_packages.py
 │   ├── check_spec_package.py

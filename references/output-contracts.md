@@ -178,7 +178,8 @@ Facts come from the scripts; run directly:
 ```bash
 python3 scripts/autoplan_gate.py discover --root <project> [--plan <path[,path...]>]
 python3 scripts/autoplan_gate.py gate --root <project> [--plan <path[,path...]>]
+python3 scripts/autoplan_spawn.py status --root <project>
 python3 scripts/autorun_spawn.py plan --root <project>
 ```
 
-The output is a planning report, not the project-update schema: the run mode (project start / phase boundary), an interrogation summary (rounds used of the cap, confirmed facts and assumptions recorded in the cluster), the cluster inventory (documents with `<checked>/<total>` features), the gate result (structural invariants, orphan warnings, reviewer consistency conclusion), and the readiness line — qualifying documents, unchecked features, suggested `/spec:autorun`. The reply never spawns the chain, never shows internal plumbing as the narrative, and lists the undecided items honestly when the session is non-interactive.
+The output is a planning report, not the project-update schema: the run mode (project start / phase boundary), an interrogation summary (rounds used of the cap, confirmed facts and assumptions recorded in the cluster), the pass-chain line — passes used of the cap and either the spawned pass window (worker host, pass kind, target document) or the stop reason (readiness reached / pass cap / first failure) — the cluster inventory (documents with `<checked>/<total>` features), the gate result (structural invariants, orphan warnings, reviewer consistency conclusion), and the readiness line — qualifying documents, unchecked features, suggested `/spec:autorun`. The reply never spawns the autorun chain, never shows internal plumbing as the narrative, and lists the undecided items honestly when the session is non-interactive.

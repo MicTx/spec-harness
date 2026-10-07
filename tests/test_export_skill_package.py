@@ -40,6 +40,7 @@ def test_collect_includes_core_scripts():
     files = _collect_script_files()
     assert "autorun_spawn.py" in files
     assert "autoplan_gate.py" in files
+    assert "autoplan_spawn.py" in files
     assert "spec_package_support.py" in files
     assert "init_spec_package.py" in files
     assert "route_spec_package.py" in files

@@ -4,6 +4,17 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation.
 
+## [0.13.20] - 2026-10-07
+
+### Changed
+
+- **Serial fresh-session planning passes for `autoplan`**: framework, detail, and review planning now run as serial full agent sessions in their own Terminal windows (visible interface, session saved and resumable) instead of in-process subagents sharing the main session's context budget — a failed pass only loses that pass and the chain resumes from the `.spec/autoplan/` state; the safety rails (pass cap, single-chain lock, stop at the first failure) mirror the autorun chain.
+
+### Fixed
+
+- **Codex chain rounds no longer die at the commit stage**: the spawned codex worker keeps its `workspace-write` sandbox but carves the repository's `.git` back into the writable roots — newer codex builds deny `.git` writes under that sandbox, which stopped `git add`/`git commit` with "Operation not permitted" and halted the whole chain.
+- **The chain continues on the host that started it**: worker-host resolution now detects the spawning session's CLI (codex/pi/claude) before falling back to PATH order, so a Pi session spawns Pi rounds instead of silently switching agents; every spawn records `host` plus `host_source` in the chain state for audit.
+
 ## [0.13.19] - 2026-10-07
 
 ### Changed

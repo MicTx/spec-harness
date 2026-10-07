@@ -11,6 +11,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import autorun_spawn  # noqa: E402  # type: ignore
 from autorun_spawn import (  # noqa: E402  # type: ignore
     AutorunError,
     NoPlanError,
@@ -19,12 +20,14 @@ from autorun_spawn import (  # noqa: E402  # type: ignore
     build_terminal_command,
     build_worker_command,
     count_features,
+    detect_session_host,
     discover_plan_docs,
     main,
     parse_spawn_result,
     parse_window_lookup,
     plan_payload,
     recycle_previous_window,
+    resolve_worker_host,
     worker_running_on_tty,
 )
 
@@ -223,6 +226,7 @@ class TestSpawnCommand:
         state = json.loads((tmp_path / ".spec" / "autorun" / "chain.json").read_text(encoding="utf-8"))
         assert state["round"] == 1
         assert state["host"] == "claude"
+        assert state["host_source"] == "flag"
         spawns = (tmp_path / ".spec" / "autorun" / "spawns.jsonl").read_text(encoding="utf-8").splitlines()
         assert len(spawns) == 1
         assert json.loads(spawns[0])["round"] == 1
@@ -257,6 +261,22 @@ class TestSpawnCommand:
         assert code == 0
         payload = json.loads(capsys.readouterr().out)
         assert payload["host"] == "pi"
+        assert payload["host_source"] == "env"
+
+    def test_session_detection_selects_running_host(self, tmp_path, capsys, monkeypatch):
+        write_plan(tmp_path / "PLAN.md", unchecked=1)
+        make_active_package(tmp_path)
+        monkeypatch.delenv("SPEC_AUTORUN_HOST", raising=False)
+        monkeypatch.setenv("PI_CODING_AGENT", "true")
+        monkeypatch.setattr(
+            "shutil.which",
+            lambda name: {"codex": "/codex", "pi": "/pi"}.get(name),
+        )
+        code = main(["spawn", "--root", str(tmp_path), "--dry-run", "--format", "json"])
+        assert code == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["host"] == "pi"
+        assert payload["host_source"] == "session"
 
     def test_command_override_skips_host_resolution(self, tmp_path, capsys, monkeypatch):
         write_plan(tmp_path / "PLAN.md", unchecked=1)
@@ -317,6 +337,107 @@ class TestCommandBuilders:
         claude = build_worker_command("claude", tmp_path, "PROMPT")
         assert claude[0] == "claude" and claude[-1] == "PROMPT"
         assert "-p" not in claude
+
+    def test_codex_worker_carves_git_writable_root(self, tmp_path):
+        # codex >=0.160 seatbelt denies .git writes under workspace-write; the
+        # worker argv must carve the repo's .git back into the writable roots.
+        codex = build_worker_command("codex", tmp_path, "PROMPT")
+        carve = "sandbox_workspace_write.writable_roots=[{}]".format(json.dumps(str(tmp_path / ".git")))
+        assert carve in codex
+        assert "-c" in codex
+        # json string escaping keeps the value a valid TOML basic string
+        assert carve.count('"') == 2
+
+
+class TestSessionHostDetection:
+    MARKERS = ("CODEX_SANDBOX", "PI_CODING_AGENT", "CLAUDECODE")
+
+    def clear_markers(self, monkeypatch):
+        for marker in self.MARKERS:
+            monkeypatch.delenv(marker, raising=False)
+
+    def test_single_marker_wins(self, monkeypatch):
+        self.clear_markers(monkeypatch)
+        monkeypatch.setenv("PI_CODING_AGENT", "true")
+        assert detect_session_host() == "pi"
+
+    def test_no_markers_returns_none_even_with_known_ancestors(self, monkeypatch):
+        # the ancestor walk only disambiguates inherited markers; it never
+        # invents a host without env evidence
+        self.clear_markers(monkeypatch)
+        monkeypatch.setattr(autorun_spawn, "_ancestor_host_tokens", lambda: ["codex"])
+        assert detect_session_host() is None
+
+    def test_multiple_markers_resolve_to_nearest_marked_ancestor(self, monkeypatch):
+        self.clear_markers(monkeypatch)
+        monkeypatch.setenv("CODEX_SANDBOX", "seatbelt")
+        monkeypatch.setenv("PI_CODING_AGENT", "true")
+        monkeypatch.setattr(autorun_spawn, "_ancestor_host_tokens", lambda: ["pi", "codex"])
+        assert detect_session_host() == "pi"
+
+    def test_multiple_markers_skip_unmarked_ancestors(self, monkeypatch):
+        self.clear_markers(monkeypatch)
+        monkeypatch.setenv("CODEX_SANDBOX", "seatbelt")
+        monkeypatch.setenv("CLAUDECODE", "1")
+        monkeypatch.setattr(autorun_spawn, "_ancestor_host_tokens", lambda: ["pi", "claude"])
+        assert detect_session_host() == "claude"
+
+    def test_multiple_markers_walk_miss_returns_none(self, monkeypatch):
+        self.clear_markers(monkeypatch)
+        monkeypatch.setenv("CODEX_SANDBOX", "seatbelt")
+        monkeypatch.setenv("PI_CODING_AGENT", "true")
+        monkeypatch.setattr(autorun_spawn, "_ancestor_host_tokens", lambda: [])
+        assert detect_session_host() is None
+
+
+class TestResolveWorkerHostOrder:
+    def clear_resolution_env(self, monkeypatch):
+        monkeypatch.delenv("SPEC_AUTORUN_HOST", raising=False)
+        for marker in ("CODEX_SANDBOX", "PI_CODING_AGENT", "CLAUDECODE"):
+            monkeypatch.delenv(marker, raising=False)
+
+    def test_flag_beats_env_and_detection(self, monkeypatch):
+        self.clear_resolution_env(monkeypatch)
+        monkeypatch.setenv("SPEC_AUTORUN_HOST", "pi")
+        monkeypatch.setenv("CODEX_SANDBOX", "seatbelt")
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/local/bin/claude" if name == "claude" else None)
+        assert resolve_worker_host("claude") == ("claude", "flag")
+
+    def test_env_var_beats_detection(self, monkeypatch):
+        self.clear_resolution_env(monkeypatch)
+        monkeypatch.setenv("SPEC_AUTORUN_HOST", "claude")
+        monkeypatch.setenv("PI_CODING_AGENT", "true")
+        monkeypatch.setattr("shutil.which", lambda name: {"pi": "/pi", "claude": "/claude"}.get(name))
+        assert resolve_worker_host(None) == ("claude", "env")
+
+    def test_detection_beats_path_order(self, monkeypatch):
+        self.clear_resolution_env(monkeypatch)
+        monkeypatch.setenv("PI_CODING_AGENT", "true")
+        # codex is first on PATH, but the running session is pi — same-host
+        # continuation must win
+        monkeypatch.setattr("shutil.which", lambda name: {"codex": "/codex", "pi": "/pi"}.get(name))
+        assert resolve_worker_host(None) == ("pi", "session")
+
+    def test_detected_host_missing_on_path_falls_back(self, monkeypatch):
+        self.clear_resolution_env(monkeypatch)
+        monkeypatch.setenv("PI_CODING_AGENT", "true")
+        monkeypatch.setattr("shutil.which", lambda name: "/codex" if name == "codex" else None)
+        assert resolve_worker_host(None) == ("codex", "path")
+
+    def test_no_detection_falls_back_to_path_order(self, monkeypatch):
+        self.clear_resolution_env(monkeypatch)
+        monkeypatch.setattr("shutil.which", lambda name: "/codex" if name == "codex" else None)
+        assert resolve_worker_host(None) == ("codex", "path")
+
+    def test_nothing_available_raises(self, monkeypatch):
+        self.clear_resolution_env(monkeypatch)
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        with pytest.raises(AutorunError, match="no worker host available"):
+            resolve_worker_host(None)
+
+    def test_unknown_explicit_host_raises(self, monkeypatch):
+        with pytest.raises(AutorunError, match="unknown worker host"):
+            resolve_worker_host("zcode")
 
     def test_terminal_command_quotes_paths_and_prompts(self, tmp_path):
         spacey = tmp_path / "pro ject"

@@ -21,6 +21,10 @@ This page explains where a fact belongs after a task starts. The rule is simple:
 │           └── completion-summary.md
 ├── docs/
 │   └── YYYY-MM-DD_slug_topic.md
+├── autoplan/
+│   ├── chain.json               # latest autoplan pass-chain state (pass, kind, target doc)
+│   ├── spawns.jsonl             # append-only pass-spawn audit log
+│   └── chain.lock               # transient single-chain lock (flock)
 ├── autorun/
 │   ├── chain.json               # latest autorun chain state (round, host, plan docs)
 │   ├── spawns.jsonl             # append-only spawn audit log
@@ -38,8 +42,9 @@ This page explains where a fact belongs after a task starts. The rule is simple:
 - An active package may additionally carry `orchestration/` — the workflow script and the run
   ledger (`runs.md`) — written by the main session; it archives wholesale with the package.
 - `.spec/docs/` holds reusable knowledge only, not task streams; it lives inside the executing project's repository and never mirrors into a global carrier.
+- `.spec/autoplan/` is runtime pass-chain state for `/spec:autoplan` (`scripts/autoplan_spawn.py`): the latest state in `chain.json`, an append-only audit in `spawns.jsonl`, and the transient `chain.lock`. Like `.spec/autorun/` it is never archived with a package.
 - `.spec/autorun/` is runtime chain state for `/spec:autorun` (`scripts/autorun_spawn.py`): the latest state in `chain.json`, an append-only audit in `spawns.jsonl`, and the transient `chain.lock`. It is never archived; each autorun-planned package carries a final plan-sync task whose boundary covers the planning documents and this directory, so checkmarks and audit land on `main` with the round's push and the tree is clean when the next round's `/spec:new` runs.
-- The planning-document cluster (`.spec/plan.md`, `PRD.md`, `docs/plans/`, `docs/design/`, and the other autorun candidates) is project content produced or reconciled by `/spec:autoplan` (`scripts/autoplan_gate.py`): it feeds the autorun chain's feature checkboxes and detail designs, is committed like normal project files, and is never task-package state — `autoplan` writes no `.spec/specs/` package and no `.spec/autorun/` chain state.
+- The planning-document cluster (`.spec/plan.md`, `PRD.md`, `docs/plans/`, `docs/design/`, and the other autorun candidates) is project content produced or reconciled by `/spec:autoplan` (`scripts/autoplan_gate.py`, pass chain via `scripts/autoplan_spawn.py`): it feeds the autorun chain's feature checkboxes and detail designs, is committed like normal project files, and is never task-package state — `autoplan` writes no `.spec/specs/` package and no `.spec/autorun/` chain state.
 - `.spec/architecture/` is the current module graph and belongs to no single package.
 - `--specs-dir` must be a trusted relative directory under root — never empty, absolute, or containing `..`.
 
