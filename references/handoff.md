@@ -7,7 +7,7 @@ This page is the source of truth for the optional package member `handoff.md` â€
 - A session ends or pauses mid-package (`pause`), someone else takes over (`takeover`), a human decision is required (`escalation`), a cluster lane finishes (`lane-end`), or the package archives (`close`).
 - Skip it for work that fits entirely inside one conversation; the package trio already carries that state.
 
-The document is optional by construction: packages without it (all historical packages) lose no gate, and no stage requires creating one. Once present, `check_spec_package.py` validates its structure and fails closed on malformation.
+The document is optional by construction: packages without it (all historical packages) lose no gate, and no stage requires creating one. Once present, `scripts/check_spec_package.py` validates its structure and fails closed on malformation.
 
 ## File layout
 
