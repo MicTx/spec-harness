@@ -2,6 +2,7 @@
 
 import fcntl
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -25,6 +26,7 @@ from autorun_spawn import (  # noqa: E402  # type: ignore
     main,
     parse_spawn_result,
     parse_window_lookup,
+    plan_args_for_prompt,
     plan_payload,
     recycle_previous_window,
     resolve_worker_host,
@@ -326,6 +328,17 @@ class TestCommandBuilders:
         assert build_prompt("codex", [], 5) == "$spec autorun --max-rounds 5"
         assert build_prompt("pi", ["--plan a.md,b.md"], 5) == "$spec autorun --plan a.md,b.md --max-rounds 5"
 
+    def test_plan_args_quote_spacey_paths(self):
+        # the prompt is re-parsed as arguments by the next session, so a path
+        # with a space must survive the round trip intact
+        plan_args = plan_args_for_prompt("docs/plan v2.md")
+        assert plan_args == ["--plan 'docs/plan v2.md'"]
+        assert build_prompt("codex", plan_args, 5) == "$spec autorun --plan 'docs/plan v2.md' --max-rounds 5"
+
+    def test_plan_args_quiet_without_plan(self):
+        assert plan_args_for_prompt(None) == []
+        assert plan_args_for_prompt("PLAN.md") == ["--plan PLAN.md"]
+
     def test_worker_commands(self, tmp_path):
         codex = build_worker_command("codex", tmp_path, "PROMPT")
         assert codex[0] == "codex" and "exec" not in codex
@@ -365,29 +378,88 @@ class TestSessionHostDetection:
         # the ancestor walk only disambiguates inherited markers; it never
         # invents a host without env evidence
         self.clear_markers(monkeypatch)
-        monkeypatch.setattr(autorun_spawn, "_ancestor_host_tokens", lambda: ["codex"])
+        monkeypatch.setattr(autorun_spawn, "_nearest_ancestor_host", lambda candidates: "codex")
         assert detect_session_host() is None
 
     def test_multiple_markers_resolve_to_nearest_marked_ancestor(self, monkeypatch):
         self.clear_markers(monkeypatch)
         monkeypatch.setenv("CODEX_SANDBOX", "seatbelt")
         monkeypatch.setenv("PI_CODING_AGENT", "true")
-        monkeypatch.setattr(autorun_spawn, "_ancestor_host_tokens", lambda: ["pi", "codex"])
+        seen: list = []
+        monkeypatch.setattr(autorun_spawn, "_nearest_ancestor_host", lambda candidates: seen.append(candidates) or "pi")
         assert detect_session_host() == "pi"
-
-    def test_multiple_markers_skip_unmarked_ancestors(self, monkeypatch):
-        self.clear_markers(monkeypatch)
-        monkeypatch.setenv("CODEX_SANDBOX", "seatbelt")
-        monkeypatch.setenv("CLAUDECODE", "1")
-        monkeypatch.setattr(autorun_spawn, "_ancestor_host_tokens", lambda: ["pi", "claude"])
-        assert detect_session_host() == "claude"
+        # only marked hosts are candidates, so an unmarked inner CLI can never
+        # win the disambiguation
+        assert seen == [("codex", "pi")]
 
     def test_multiple_markers_walk_miss_returns_none(self, monkeypatch):
         self.clear_markers(monkeypatch)
         monkeypatch.setenv("CODEX_SANDBOX", "seatbelt")
         monkeypatch.setenv("PI_CODING_AGENT", "true")
-        monkeypatch.setattr(autorun_spawn, "_ancestor_host_tokens", lambda: [])
+        monkeypatch.setattr(autorun_spawn, "_nearest_ancestor_host", lambda candidates: None)
         assert detect_session_host() is None
+
+
+class TestNearestAncestorHost:
+    """The parent-chain walk: nearest marked ancestor wins, first hit stops."""
+
+    def stub_chain(self, monkeypatch, chain):
+        """Serve ``ps -o ppid=,command= -p <pid>`` from a pid -> (ppid, command)."""
+        calls: list = []
+
+        def fake_run(argv, *a, **k):
+            pid = int(argv[-1])
+            calls.append(pid)
+            ppid, command = chain[pid]
+            if command is None:
+                return subprocess.CompletedProcess(argv, 1, stdout="", stderr="")
+            return subprocess.CompletedProcess(argv, 0, stdout=f"{ppid} {command}\n", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        return calls
+
+    def test_stops_at_first_marked_ancestor(self, monkeypatch):
+        me = os.getpid()
+        calls = self.stub_chain(
+            monkeypatch,
+            {
+                me: (2000, "/bin/zsh -c python3 scripts/autorun_spawn.py spawn"),
+                2000: (1900, "node /opt/homebrew/bin/pi --mode text"),
+                1900: (1, "launchd"),
+            },
+        )
+        assert autorun_spawn._nearest_ancestor_host(("pi",)) == "pi"
+        # nearest hit ends the walk: no further ps fork for the outer chain
+        assert calls == [me, 2000]
+
+    def test_skips_unmarked_ancestors(self, monkeypatch):
+        me = os.getpid()
+        calls = self.stub_chain(
+            monkeypatch,
+            {
+                me: (2000, "/bin/zsh -c python3 scripts/autorun_spawn.py spawn"),
+                2000: (1900, "node /opt/homebrew/bin/pi --mode text"),
+                1900: (1, "node /opt/homebrew/bin/codex --cd /tmp"),
+            },
+        )
+        assert autorun_spawn._nearest_ancestor_host(("codex",)) == "codex"
+        assert calls == [me, 2000, 1900]
+
+    def test_no_match_returns_none(self, monkeypatch):
+        me = os.getpid()
+        self.stub_chain(
+            monkeypatch,
+            {
+                me: (2000, "/bin/zsh -c python3 scripts/autorun_spawn.py spawn"),
+                2000: (1, "launchd"),
+            },
+        )
+        assert autorun_spawn._nearest_ancestor_host(("codex", "pi")) is None
+
+    def test_unreadable_ps_output_returns_none(self, monkeypatch):
+        me = os.getpid()
+        self.stub_chain(monkeypatch, {me: (0, None)})
+        assert autorun_spawn._nearest_ancestor_host(("codex",)) is None
 
 
 class TestResolveWorkerHostOrder:
@@ -429,6 +501,26 @@ class TestResolveWorkerHostOrder:
         monkeypatch.setattr("shutil.which", lambda name: "/codex" if name == "codex" else None)
         assert resolve_worker_host(None) == ("codex", "path")
 
+    def test_plain_path_fallback_is_quiet(self, monkeypatch, capsys):
+        self.clear_resolution_env(monkeypatch)
+        monkeypatch.setattr("shutil.which", lambda name: "/codex" if name == "codex" else None)
+        assert resolve_worker_host(None) == ("codex", "path")
+        assert capsys.readouterr().err == ""
+
+    def test_unresolved_markers_warn_on_path_fallback(self, monkeypatch, capsys):
+        # markers say "the session is codex/pi" but no marked CLI resolves and
+        # none runs in the process chain: continuing on a PATH host is a
+        # different CLI than the session's, so it is recorded and never silent
+        self.clear_resolution_env(monkeypatch)
+        monkeypatch.setenv("CODEX_SANDBOX", "seatbelt")
+        monkeypatch.setenv("PI_CODING_AGENT", "true")
+        monkeypatch.setattr(autorun_spawn, "_nearest_ancestor_host", lambda candidates: None)
+        monkeypatch.setattr("shutil.which", lambda name: "/codex" if name == "codex" else None)
+        assert resolve_worker_host(None) == ("codex", "path")
+        err = capsys.readouterr().err
+        assert "falling back to PATH order" in err
+        assert "codex/pi" in err
+
     def test_nothing_available_raises(self, monkeypatch):
         self.clear_resolution_env(monkeypatch)
         monkeypatch.setattr("shutil.which", lambda name: None)
@@ -466,18 +558,44 @@ class TestWindowRecycle:
         assert parse_spawn_result("not-an-int /dev/ttys009") == (None, None)
 
     def test_parse_window_lookup(self):
-        assert parse_window_lookup("7\n") == 7
-        assert parse_window_lookup("") is None
-        assert parse_window_lookup("abc") is None
+        assert parse_window_lookup("7 1 false\n") == (7, 1, False)
+        assert parse_window_lookup("7 3 true") == (7, 3, True)
+        assert parse_window_lookup("") == (None, 0, False)
+        assert parse_window_lookup("7 1") == (None, 0, False)
+        assert parse_window_lookup("7 0 false") == (None, 0, False)
+        assert parse_window_lookup("abc 1 false") == (None, 0, False)
+
+    def test_lookup_applescript_reports_tab_count_and_busy(self):
+        script = autorun_spawn.build_window_lookup_applescript("/dev/ttys009")
+        assert "set matchTabs to (count of tabs of w)" in script
+        assert "set matchBusy to (busy of t)" in script
+        assert 'return match & " " & (matchTabs as string) & " " & (matchBusy as string)' in script
 
     def test_worker_running_on_tty(self, monkeypatch):
-        ps_output = "ttys009  /opt/homebrew/bin/claude\n"
+        # real process shapes: codex is a node shebang script (comm=node), the
+        # pi launcher a /bin/sh shim, claude a native Mach-O binary — the
+        # command line is the only column carrying the host name for all three
+        ps_output = (
+            "ttys009  node /opt/homebrew/bin/codex --cd /tmp -- PROMPT\n"
+            "ttys009  /bin/sh /usr/local/bin/pi --mode text -- PROMPT2\n"
+            "ttys010  /opt/homebrew/bin/claude\n"
+        )
         monkeypatch.setattr(
             subprocess,
             "run",
             lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout=ps_output, stderr=""),
         )
-        assert worker_running_on_tty("claude", "/dev/ttys009") is True
+        assert worker_running_on_tty("codex", "/dev/ttys009") is True
+        assert worker_running_on_tty("pi", "/dev/ttys009") is True
+        assert worker_running_on_tty("claude", "/dev/ttys010") is True
+        assert worker_running_on_tty("claude", "/dev/ttys009") is False
+        assert worker_running_on_tty("codex", "/dev/ttys011") is False
+
+    def test_worker_running_on_tty_survives_ps_failure(self, monkeypatch):
+        def fake_run(*a, **k):
+            raise subprocess.TimeoutExpired(a[0], 5)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
         assert worker_running_on_tty("codex", "/dev/ttys009") is False
 
     def test_close_argv_shape_and_validation(self):
@@ -485,6 +603,10 @@ class TestWindowRecycle:
         assert argv[:2] == ["/bin/sh", "-c"]
         assert argv[2].startswith("sleep 3;")
         assert "close window id 42" in argv[2]
+        # the close helper re-checks both guards before touching the window:
+        # tab count (Terminal cannot close one tab) and a still-running session
+        assert "count of tabs of window id 42" in argv[2]
+        assert "busy of tab 1 of window id 42" in argv[2]
         with pytest.raises(AutorunError):
             build_close_argv(-1, 3)
         with pytest.raises(AutorunError):
@@ -495,13 +617,61 @@ class TestWindowRecycle:
         monkeypatch.setattr(
             subprocess,
             "run",
-            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="7\n", stderr=""),
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="7 1 false\n", stderr=""),
         )
         scheduled: list = []
         monkeypatch.setattr("autorun_spawn.schedule_window_close", lambda wid, delay: scheduled.append((wid, delay)))
         result = recycle_previous_window("/dev/ttys012", 42, "/dev/ttys009", "claude")
         assert result == {"status": "scheduled", "window_id": 7, "delay_seconds": 3}
         assert scheduled == [(7, 3)]
+
+    def test_recycle_skips_busy_window(self, monkeypatch):
+        # a tab whose process still runs cannot be closed without Terminal's
+        # cancel/terminate sheet: fail open with a recorded reason instead
+        monkeypatch.setattr("autorun_spawn.worker_running_on_tty", lambda worker, tty: True)
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="7 1 true\n", stderr=""),
+        )
+        scheduled: list = []
+        monkeypatch.setattr("autorun_spawn.schedule_window_close", lambda wid, delay: scheduled.append(wid))
+        result = recycle_previous_window("/dev/ttys012", 42, "/dev/ttys009", "claude")
+        assert result["status"] == "skipped"
+        assert "still running" in result["reason"]
+        assert scheduled == []
+
+    def test_recycle_skips_multi_tab_window(self, monkeypatch):
+        # Terminal cannot close a single tab, so a window the user merged other
+        # tabs into stays open — and why it stayed open is recorded
+        monkeypatch.setattr("autorun_spawn.worker_running_on_tty", lambda worker, tty: True)
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="7 3 false\n", stderr=""),
+        )
+        scheduled: list = []
+        monkeypatch.setattr("autorun_spawn.schedule_window_close", lambda wid, delay: scheduled.append(wid))
+        result = recycle_previous_window("/dev/ttys012", 42, "/dev/ttys009", "claude")
+        assert result["status"] == "skipped"
+        assert "3 tabs" in result["reason"]
+        assert scheduled == []
+
+    def test_recycle_skips_when_lookup_times_out(self, monkeypatch):
+        monkeypatch.setattr("autorun_spawn.worker_running_on_tty", lambda worker, tty: True)
+
+        def fake_run(argv, *a, **k):
+            if argv[0] == "osascript":
+                raise subprocess.TimeoutExpired(argv, 30)
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        scheduled: list = []
+        monkeypatch.setattr("autorun_spawn.schedule_window_close", lambda wid, delay: scheduled.append(wid))
+        result = recycle_previous_window("/dev/ttys012", 42, "/dev/ttys009", "claude")
+        assert result["status"] == "skipped"
+        assert "did not answer" in result["reason"]
+        assert scheduled == []
 
     def test_recycle_skips_when_worker_not_observed(self, monkeypatch):
         monkeypatch.setattr("autorun_spawn.WORKER_START_TIMEOUT_SECONDS", 0)
@@ -536,7 +706,7 @@ class TestWindowRecycle:
         monkeypatch.setattr(
             subprocess,
             "run",
-            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="42\n", stderr=""),
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="42 1 false\n", stderr=""),
         )
         result = recycle_previous_window("/dev/ttys012", 42, "/dev/ttys009", "claude")
         assert result["status"] == "skipped"
@@ -549,7 +719,7 @@ class TestWindowRecycle:
             calls.append(a[0])
             if a[0][0] == "ps":
                 return subprocess.CompletedProcess(a[0], 0, stdout="", stderr="")
-            return subprocess.CompletedProcess(a[0], 0, stdout="7\n", stderr="")
+            return subprocess.CompletedProcess(a[0], 0, stdout="7 1 false\n", stderr="")
 
         monkeypatch.setattr(subprocess, "run", fake_run)
         scheduled: list = []
@@ -571,7 +741,7 @@ class TestWindowRecycle:
                 return subprocess.CompletedProcess(argv, 0, stdout="ttys009  /usr/local/bin/claude\n", stderr="")
             if argv[0] == "osascript" and "do script" in argv[2]:
                 return subprocess.CompletedProcess(argv, 0, stdout="42 /dev/ttys009\n", stderr="")
-            return subprocess.CompletedProcess(argv, 0, stdout="7\n", stderr="")
+            return subprocess.CompletedProcess(argv, 0, stdout="7 1 false\n", stderr="")
 
         monkeypatch.setattr(subprocess, "run", fake_run)
         scheduled: list = []
@@ -584,6 +754,22 @@ class TestWindowRecycle:
         state = json.loads((tmp_path / ".spec" / "autorun" / "chain.json").read_text(encoding="utf-8"))
         assert state["window_recycle"]["window_id"] == 7
         assert state["prev_tty"] == "/dev/ttys012"
+
+    def test_spawn_osascript_timeout_refuses_without_recording(self, tmp_path, capsys, monkeypatch):
+        write_plan(tmp_path / "PLAN.md", unchecked=1)
+        make_active_package(tmp_path)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+
+        def fake_run(argv, *a, **k):
+            if argv[0] == "osascript":
+                raise subprocess.TimeoutExpired(argv, 30)
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        code = main(["spawn", "--root", str(tmp_path), "--host", "claude"])
+        assert code == 1
+        assert "did not answer" in capsys.readouterr().err
+        assert not (tmp_path / ".spec" / "autorun" / "chain.json").exists()
 
 
 class TestChannelSplit:

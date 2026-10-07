@@ -72,6 +72,7 @@ from autorun_spawn import (  # noqa: E402  # type: ignore
     controlling_tty,
     discover_plan_docs,
     parse_spawn_result,
+    plan_args_for_prompt,
     recycle_previous_window,
     resolve_worker_host,
 )
@@ -187,9 +188,7 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
             raise AutoplanSpawnError(f"pass cap reached: next pass {next_pass} exceeds --max-passes {args.max_passes}")
 
         host, host_source = resolve_worker_host(args.host)
-        plan_args: List[str] = []
-        if args.plan:
-            plan_args.append(f"--plan {args.plan}")
+        plan_args = plan_args_for_prompt(args.plan)
         prompt = build_pass_prompt(host, plan_args, args.max_passes)
         worker_command = build_worker_command(host, root, prompt)
         worker_name = worker_command[0]
@@ -328,7 +327,10 @@ def build_parser() -> argparse.ArgumentParser:
     spawn_parser.add_argument(
         "--host",
         choices=("codex", "pi", "claude"),
-        help="worker host (default: SPEC_AUTORUN_HOST or PATH order codex/pi/claude)",
+        help=(
+            "worker host (default: SPEC_AUTORUN_HOST, else the detected current-session "
+            "host, else PATH order codex/pi/claude)"
+        ),
     )
     spawn_parser.add_argument(
         "--max-passes",

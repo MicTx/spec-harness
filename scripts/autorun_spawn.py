@@ -71,6 +71,8 @@ HOST_ENV_MARKERS: Tuple[Tuple[str, str], ...] = (
 )
 DEFAULT_MAX_ROUNDS = 20
 WORKER_START_TIMEOUT_SECONDS = 60
+OSASCRIPT_TIMEOUT_SECONDS = 30
+PS_TIMEOUT_SECONDS = 5
 CLOSE_DELAY_SECONDS = 3
 CHAIN_DIR_NAME = ".spec/autorun"
 CHAIN_STATE_FILE = "chain.json"
@@ -257,10 +259,15 @@ def _active_package_present(root: Path) -> bool:
     return False
 
 
-def _ancestor_host_tokens() -> List[str]:
-    """Walk the parent-process chain, returning host-name command tokens
-    nearest first (the innermost running CLI comes first)."""
-    found: List[str] = []
+def _nearest_ancestor_host(candidates: Tuple[str, ...]) -> Optional[str]:
+    """Walk the parent-process chain and return the nearest ancestor running
+    one of ``candidates`` (the innermost running CLI comes first).
+
+    The walk stops at the first hit — nearest wins, so there is nothing to
+    gain from climbing further — and returns ``None`` when no ancestor
+    matches or the chain cannot be read. Callers treat ``None`` as "no
+    evidence" and never guess a host from it.
+    """
     pid = os.getpid()
     for _ in range(64):
         try:
@@ -269,7 +276,7 @@ def _ancestor_host_tokens() -> List[str]:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 text=True,
-                timeout=5,
+                timeout=PS_TIMEOUT_SECONDS,
             )
         except (OSError, subprocess.SubprocessError):
             break
@@ -279,18 +286,26 @@ def _ancestor_host_tokens() -> List[str]:
         parts = line.split(None, 1)
         if len(parts) < 2:
             break
+        # Scan this level's command before climbing further: the walk breaks
+        # when the chain reaches launchd, and that outermost command still
+        # counts as evidence.
+        for token in parts[1].split():
+            name = token.rstrip("/").rsplit("/", 1)[-1]
+            if name in candidates:
+                return name
         try:
             pid = int(parts[0])
         except ValueError:
             break
         if pid <= 1:
             break
-        for token in parts[1].split():
-            name = token.rstrip("/").rsplit("/", 1)[-1]
-            if name in WORKER_HOSTS:
-                found.append(name)
-                break
-    return found
+    return None
+
+
+def _marked_hosts(env: Optional[Dict[str, str]] = None) -> List[str]:
+    """Hosts whose env marker is set, in ``HOST_ENV_MARKERS`` order."""
+    env = os.environ if env is None else env
+    return [host for host, marker in HOST_ENV_MARKERS if env.get(marker)]
 
 
 def detect_session_host(env: Optional[Dict[str, str]] = None) -> Optional[str]:
@@ -301,14 +316,11 @@ def detect_session_host(env: Optional[Dict[str, str]] = None) -> Optional[str]:
     Returns ``None`` when nothing identifies a host — callers fall back to
     PATH order instead of guessing.
     """
-    env = os.environ if env is None else env
-    marked = [host for host, marker in HOST_ENV_MARKERS if env.get(marker)]
+    marked = _marked_hosts(env)
     if len(marked) == 1:
         return marked[0]
     if len(marked) > 1:
-        for ancestor in _ancestor_host_tokens():
-            if ancestor in marked:
-                return ancestor
+        return _nearest_ancestor_host(tuple(marked))
     return None
 
 
@@ -325,13 +337,34 @@ def resolve_worker_host(explicit: Optional[str]) -> Tuple[str, str]:
         if host not in WORKER_HOSTS:
             raise AutorunError(f"unknown worker host: {host} (expected one of {WORKER_HOSTS})")
         return host, "flag" if explicit else "env"
+    marked = _marked_hosts()
     detected = detect_session_host()
     if detected and shutil.which(detected):
         return detected, "session"
     for candidate in WORKER_HOSTS:
         if shutil.which(candidate):
+            if marked:
+                # Markers were present but did not resolve to a usable host,
+                # so this spawn continues on a different CLI than the
+                # session's. Recorded as host_source=path, but never silent.
+                print(
+                    "warning: session host markers {} did not resolve to an installed host; "
+                    "falling back to PATH order ({})".format("/".join(marked), candidate),
+                    file=sys.stderr,
+                )
             return candidate, "path"
     raise AutorunError(f"no worker host available on PATH (tried {WORKER_HOSTS})")
+
+
+def plan_args_for_prompt(plan: Optional[str]) -> List[str]:
+    """Forward the ``--plan`` selection into the next round's prompt.
+
+    The prompt is re-parsed as arguments by the next session, so the value is
+    shell-quoted: without it a planning path containing a space arrives as
+    ``--plan docs/plan`` plus a stray word and the next round silently loses
+    the document.
+    """
+    return ["--plan " + shlex.quote(plan)] if plan else []
 
 
 def build_prompt(host: str, plan_args: List[str], max_rounds: int) -> str:
@@ -382,17 +415,24 @@ def escape_applescript(text: str) -> str:
 
 
 def _window_lookup_lines(tty_expression: str) -> List[str]:
-    """AppleScript lines filling ``match`` with the window id hosting the tab
-    whose tty equals ``tty_expression`` (a quoted literal or a variable)."""
+    """AppleScript lines filling the lookup variables for the tab whose tty
+    equals ``tty_expression`` (a quoted literal or a variable): ``match`` is
+    the hosting window id (``""`` when none), ``matchTabs`` its tab count and
+    ``matchBusy`` whether that tab still runs a process other than the shell."""
     return [
         '\tset match to ""',
+        "\tset matchTabs to 0",
+        "\tset matchBusy to false",
         "\trepeat with w in windows",
         "\t\trepeat with t in tabs of w",
         "\t\t\tif tty of t is {} then".format(tty_expression),
         "\t\t\t\tset match to (id of w as string)",
+        "\t\t\t\tset matchTabs to (count of tabs of w)",
+        "\t\t\t\tset matchBusy to (busy of t)",
         "\t\t\t\texit repeat",
         "\t\t\tend if",
         "\t\tend repeat",
+        '\t\tif match is not "" then exit repeat',
         "\tend repeat",
     ]
 
@@ -458,46 +498,104 @@ def controlling_tty() -> Optional[str]:
 
 
 def worker_running_on_tty(worker: str, tty: str) -> bool:
-    """Check whether a ``worker`` process runs on the given Terminal tty."""
-    completed = subprocess.run(
-        ["ps", "-axo", "tty=,comm="],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-    )
+    """Check whether a ``worker`` process runs on the given Terminal tty.
+
+    Matches the command line, not ``comm``: the hosts are interpreter-hosted
+    (codex is a ``#!/usr/bin/env node`` script, the pi launcher a ``#!/bin/sh``
+    shim), so ``comm`` reports ``node`` / ``/bin/sh`` and the host name never
+    appears there — verified 2026-10-07 on a pty, where a node-shebang CLI
+    reads as ``ttysNNN  node`` under ``ps -o tty=,comm=`` and as
+    ``ttysNNN  node /path/to/cli ...`` under ``ps -o tty=,command=``.
+    """
+    try:
+        completed = subprocess.run(
+            ["ps", "-axo", "tty=,command="],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=PS_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
     if completed.returncode != 0:
         return False
     tty_name = tty.rsplit("/", 1)[-1]
     for line in completed.stdout.splitlines():
         fields = line.split(None, 1)
-        if len(fields) != 2:
+        if len(fields) != 2 or fields[0].strip() != tty_name:
             continue
-        if fields[0].strip() == tty_name and os.path.basename(fields[1].strip()) == worker:
-            return True
+        # argv[0] for a native binary, the interpreter's argv[1] for a shebang
+        # launcher — scanning tokens covers both shapes.
+        for token in fields[1].split():
+            if os.path.basename(token.rstrip("/")) == worker:
+                return True
     return False
 
 
 def build_window_lookup_applescript(tty: str) -> str:
-    """Build the AppleScript finding the window id hosting the given tab tty."""
+    """Build the AppleScript reporting the window hosting ``tty``.
+
+    Replies ``"<window id> <tab count> <busy>"`` (``" 0 false"`` when no
+    window hosts the tty), so the caller learns the window and whether closing
+    it would take unrelated tabs — or a still-running session — with it.
+    """
     return "\n".join(
         [
             'tell application "Terminal"',
             *_window_lookup_lines('"{}"'.format(escape_applescript(tty))),
-            "\treturn match",
+            '\treturn match & " " & (matchTabs as string) & " " & (matchBusy as string)',
             "end tell",
         ]
     )
 
 
-def parse_window_lookup(stdout: str) -> Optional[int]:
-    """Parse the window-lookup osascript reply into a window id."""
-    text = stdout.strip()
-    if not text:
-        return None
+def parse_window_lookup(stdout: str) -> Tuple[Optional[int], int, bool]:
+    """Parse the window-lookup reply into ``(window id, tab count, busy)``.
+
+    An empty, malformed, or tab-less reply comes back as ``(None, 0, False)``:
+    no window hosts the tty, so the caller skips the recycling.
+    """
+    parts = stdout.strip().split()
+    if len(parts) != 3:
+        return None, 0, False
     try:
-        return int(text.split()[0])
-    except (ValueError, IndexError):
-        return None
+        window_id = int(parts[0])
+        tab_count = int(parts[1])
+    except ValueError:
+        return None, 0, False
+    busy = parts[2] == "true"
+    if tab_count < 1:
+        return None, 0, False
+    return window_id, tab_count, busy
+
+
+def build_close_applescript(window_id: int) -> str:
+    """Build the AppleScript closing the previous round's Terminal window.
+
+    Two guards, both from real-device findings on 2026-10-07: Terminal's
+    AppleScript cannot close an individual tab (``close`` rejects ``tab``
+    objects in every form tried — loop reference, the object a ``whose``
+    filter resolves, positional specifier; all ``-1708`` — and ``tab`` has no
+    readable ``index``, ``-1728``), and closing a window whose tab still runs
+    a process raises Terminal's cancel/terminate sheet instead of closing.
+    So: close only a one-tab window whose session has already exited; anything
+    else is reported back and left alone.
+    """
+    return "\n".join(
+        [
+            'tell application "Terminal"',
+            "\tset tabCount to 0",
+            "\tset tabBusy to false",
+            f"\tif exists window id {window_id} then set tabCount to (count of tabs of window id {window_id})",
+            f"\tif tabCount is 1 then set tabBusy to (busy of tab 1 of window id {window_id})",
+            '\tif tabCount is 0 then return "window-gone"',
+            '\tif tabCount is not 1 then return "multi-tab"',
+            '\tif tabBusy then return "busy"',
+            f"\tclose window id {window_id}",
+            '\treturn "closed"',
+            "end tell",
+        ]
+    )
 
 
 def build_close_argv(window_id: int, delay_seconds: int) -> List[str]:
@@ -506,10 +604,7 @@ def build_close_argv(window_id: int, delay_seconds: int) -> List[str]:
         raise AutorunError(f"window id must be a positive integer: {window_id!r}")
     if delay_seconds < 0:
         raise AutorunError(f"close delay must be >= 0: {delay_seconds!r}")
-    script = "sleep {}; osascript -e {}".format(
-        delay_seconds,
-        shlex.quote('tell application "Terminal" to close window id {}'.format(window_id)),
-    )
+    script = "sleep {}; osascript -e {}".format(delay_seconds, shlex.quote(build_close_applescript(window_id)))
     return ["/bin/sh", "-c", script]
 
 
@@ -536,6 +631,10 @@ def recycle_previous_window(
 
     Fail-open: any skip condition leaves the previous window open and
     returns the recorded reason; the chain continues in the new window.
+    A window is only closed while it holds just the previous round's tab and
+    that session has already exited (Terminal cannot close one tab of a
+    window, and closing a tab whose process still runs raises its
+    cancel/terminate sheet).
     """
     if timeout_seconds is None:
         timeout_seconds = WORKER_START_TIMEOUT_SECONDS
@@ -556,17 +655,44 @@ def recycle_previous_window(
                 "status": "skipped",
                 "reason": "worker {} not observed on {} within {}s".format(worker_name, new_tty, timeout_seconds),
             }
-    lookup = subprocess.run(
-        ["osascript", "-e", build_window_lookup_applescript(prev_tty)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
+    lookup_argv = ["osascript", "-e", build_window_lookup_applescript(prev_tty)]
+    try:
+        lookup = subprocess.run(
+            lookup_argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=OSASCRIPT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "status": "skipped",
+            "reason": "previous window lookup did not answer within {}s".format(OSASCRIPT_TIMEOUT_SECONDS),
+        }
+    prev_window_id, prev_tab_count, prev_busy = (
+        parse_window_lookup(lookup.stdout) if lookup.returncode == 0 else (None, 0, False)
     )
-    prev_window_id = parse_window_lookup(lookup.stdout) if lookup.returncode == 0 else None
     if prev_window_id is None:
         return {"status": "skipped", "reason": "no Terminal window hosts {}".format(prev_tty)}
     if prev_window_id == new_window_id:
         return {"status": "skipped", "reason": "previous window is the spawned window"}
+    if prev_tab_count > 1:
+        return {
+            "status": "skipped",
+            "reason": (
+                "previous window hosts {} tabs and Terminal cannot close one tab; leaving it open".format(
+                    prev_tab_count
+                )
+            ),
+        }
+    if prev_busy:
+        # Closing a tab whose process still runs raises Terminal's
+        # cancel/terminate sheet, so the session is left alone and the reason
+        # is recorded instead of blocking on a dialog nobody is watching.
+        return {
+            "status": "skipped",
+            "reason": "previous session is still running in {}; close it manually".format(prev_tty),
+        }
     schedule_window_close(prev_window_id, delay_seconds)
     return {"status": "scheduled", "window_id": prev_window_id, "delay_seconds": delay_seconds}
 
@@ -610,9 +736,7 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
             worker_name = ""
         else:
             host, host_source = resolve_worker_host(args.host)
-            plan_args: List[str] = []
-            if args.plan:
-                plan_args.append(f"--plan {args.plan}")
+            plan_args = plan_args_for_prompt(args.plan)
             prompt = build_prompt(host, plan_args, args.max_rounds)
             worker_command = build_worker_command(host, root, prompt)
             worker_name = worker_command[0]
@@ -637,12 +761,18 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
                 **record,
             }
 
-        completed = subprocess.run(
-            osascript_argv,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
+        try:
+            completed = subprocess.run(
+                osascript_argv,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=OSASCRIPT_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise AutorunError(
+                "osascript did not answer within {}s opening the Terminal window".format(OSASCRIPT_TIMEOUT_SECONDS)
+            ) from exc
         if completed.returncode != 0:
             detail = completed.stderr.strip() or completed.stdout.strip()
             raise AutorunError(f"osascript failed to open the Terminal window: {detail}")

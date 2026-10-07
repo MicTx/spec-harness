@@ -18,7 +18,7 @@ from autoplan_spawn import (  # noqa: E402  # type: ignore
     master_doc_path,
     resolve_target,
 )
-from autorun_spawn import AutorunError  # noqa: E402  # type: ignore
+from autorun_spawn import AutorunError, plan_args_for_prompt  # noqa: E402  # type: ignore
 
 
 def seed_master(root: Path, path=".spec/plan.md"):
@@ -62,6 +62,12 @@ class TestPassPrompt:
     def test_prompt_carries_plan_args(self):
         prompt = build_pass_prompt("pi", ["--plan PLAN.md"], 8)
         assert prompt == "$spec autoplan continue --plan PLAN.md --max-passes 8"
+
+    def test_prompt_quotes_spacey_plan_paths(self):
+        # the pass session re-parses the prompt as arguments, so a planning
+        # path with a space must survive the round trip intact
+        prompt = build_pass_prompt("pi", plan_args_for_prompt("docs/plan v2.md"), 8)
+        assert prompt == "$spec autoplan continue --plan 'docs/plan v2.md' --max-passes 8"
 
 
 class TestSpawnCommand:

@@ -4,6 +4,14 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation.
 
+## [0.13.21] - 2026-10-07
+
+### Fixed
+
+- **Long chains recycle their windows again**: the next round's session is confirmed by reading the process command line, so recycling works on every host CLI instead of only the ones whose process image carries their own name; rounds no longer wait out the full confirmation timeout on hosts where the check could never succeed.
+- **A finished window is never closed out from under a live session**: the previous round's window closes only while it holds just that round's tab and the session has already exited; otherwise the window stays open, the chain state records why, and no cancel/terminate prompt interrupts the chain.
+- **Planning paths containing spaces survive the chain**: the next round's prompt keeps `--plan` values quoted, so `docs/plan v2.md` no longer arrives as a truncated argument and the next round keeps planning from the intended document.
+
 ## [0.13.20] - 2026-10-07
 
 ### Changed
