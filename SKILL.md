@@ -53,14 +53,16 @@ Read `references/commands.md` for details if using these:
 
 ## Core capability: single-orchestrator execution
 
-The main session is the orchestrator and owns routing, acceptance, and the `done`/`push` gates. It does the critical path itself — planning, integration, independent verification, acceptance, and all shared glue files. Bounded sidecar work may be delegated to in-process subagents only after a machine route decision (`python3 scripts/route_decision.py --text "<goal>"`) and a written assignment contract (goal / scope / excluded areas / output / verification; see `references/orchestration.md`). Delegation never moves routing, acceptance, or gate authorization out of the main session, and one session still owns one package on one integration branch at a time; two sessions must not write the same package. When the route decision flags `channel_profile.shared_pool` (single gateway/model pool), keep fanning out in parallel — apply the constrained-channel protocol in `references/orchestration.md` (slice minimization + lane-death salvage + burst backoff); never clamp lane count.
+The main session is the orchestrator and owns routing, acceptance, and the `done`/`push` gates. It does the critical path itself — planning, integration, independent verification, acceptance, and all shared glue files. Bounded sidecar work may be delegated to in-process subagents only after a machine route decision (`python3 scripts/route_decision.py --text "<goal>"`) and a written assignment contract (goal / scope / excluded areas / output / verification; see [`references/orchestration.md`](references/orchestration.md)). Delegation never moves routing, acceptance, or gate authorization out of the main session, and one session still owns one package on one integration branch at a time; two sessions must not write the same package. When the route decision flags `channel_profile.shared_pool` (single gateway/model pool), keep fanning out in parallel — apply the constrained-channel protocol in [`references/orchestration.md`](references/orchestration.md) (slice minimization + lane-death salvage + burst backoff); never clamp lane count.
 
 ### Managed paths
 
 - Default: `local` — the main session executes on its own.
-- Sidecar lanes: for `explore` / `build` / `review` routes with clean ownership slices, the main session spawns bounded in-process subagents under the assignment contract in `references/orchestration.md`, then merges results and runs final verification itself. Claude Code publishes installer-owned copies of `agents/orchestrator.md` and `agents/planner.md` into `~/.claude/agents/`; on hosts without those names, read the portable contract and inject it into an available general-purpose agent.
-- Slot protocol: if the task matches a slot's triggers (see Extension slots below, e.g. `team-loop` for agents-team loop-until-converged work), the main session follows that slot's README protocol for the execution segment only; no fake task results.
+- Sidecar lanes: for `explore` / `build` / `review` routes with clean ownership slices, the main session spawns bounded in-process subagents under the assignment contract, then merges results and runs final verification itself. Claude Code publishes installer-owned copies of `agents/orchestrator.md` and `agents/planner.md` into `~/.claude/agents/`; on hosts without those names, read the portable contract and inject it into an available general-purpose agent.
+- Slot protocol: when the task matches a registered slot's triggers, hand the execution segment to that slot's README protocol (see [Extension slots](#extension-slots)); no fake task results.
 - Invariants that never change: task-level `boundary`/`verify` discipline, honest checkbox verification, check gates, and `done`/`push` authorization all stay with the main session. Outsourcing work outside these managed paths remains forbidden.
+
+The full delegation contract — five-route vocabulary, assignment-contract fields, lane ownership, and the `### 5.4 编排策略` section — lives in [`references/orchestration.md`](references/orchestration.md) and is never restated here.
 
 ## Execution loop
 
@@ -110,11 +112,11 @@ The optional Claude Stop hook (`hooks/claude_stop_guard.py`) checks package conv
 
 10. **Distillation destination**: Knowledge distilled at `done`/`goal` lands only in the executing project's own `.spec/docs/` — the `.spec/` tree inside the repository the task package runs in. Never write spec experience, process rules, or any memory into global carriers (`~/.claude/CLAUDE.md`, user-level `AGENTS.md`, or any user-level memory file). Distill only project-specific engineering facts; spec process mechanics live in this skill, not in distillations.
 
-Read `references/commands.md` for stage-specific details. See `references/storage-and-archive.md` for directory structure and archiving.
+Read [`references/commands.md`](references/commands.md) for stage-specific details. See [`references/storage-and-archive.md`](references/storage-and-archive.md) for directory structure and archiving.
 
 ## Extension slots
 
-Pluggable capability mechanism for spec: each `slots/<name>/` is a self-contained directory with a manifest declaration, validated by the registry, and shipped by `install.sh`. The full contract lives in `references/slots.md`.
+Pluggable capability mechanism for spec: each `slots/<name>/` is a self-contained directory with a manifest declaration, validated by the registry, and shipped by `install.sh`. The full contract lives in [`references/slots.md`](references/slots.md).
 
 - Enumerate/validate: `python3 scripts/slot_registry.py list|validate`
 - Hook install/remove: `python3 scripts/install_slot_hooks.py --slot <name> [--remove]`
@@ -124,18 +126,17 @@ Pluggable capability mechanism for spec: each `slots/<name>/` is a self-containe
 
 ## Reference documentation
 
-Read these files only when needed for your current task:
+[`references/00-readme.md`](references/00-readme.md) is the reading index — start there when the current stage's page is unclear. Read these files only when needed for your current task:
 
-- `references/00-readme.md` — reading order guide
-- `references/commands.md` — detailed stage execution (read only your current stage section)
-- `references/output-contracts.md` — required output format per stage
-- `references/templates.md` — task package templates
-- `references/orchestration.md` — multi-agent routing contract (five-route vocabulary, assignment contract, 5.4 section)
-- `references/slots.md` — extension slot contract (manifest/registry/installer)
-- `references/changelog-guide.md` — changelog generation and integration
-- `references/storage-and-archive.md` — directory structure and archiving
-- `references/handoff.md` — session-boundary handoff document (snapshot + append-only entry log, mode-adaptive slots)
-- `references/naming-and-commits.md` — slug naming and commit conventions
-- `references/engineering-philosophy.md` — four core principles
+- [`references/commands.md`](references/commands.md) — detailed stage execution (read only your current stage section)
+- [`references/output-contracts.md`](references/output-contracts.md) — required output format per stage
+- [`references/templates.md`](references/templates.md) — task package templates
+- [`references/orchestration.md`](references/orchestration.md) — multi-agent routing contract (five-route vocabulary, assignment contract, 5.4 section)
+- [`references/slots.md`](references/slots.md) — extension slot contract (manifest/registry/installer)
+- [`references/storage-and-archive.md`](references/storage-and-archive.md) — directory structure and archiving
+- [`references/handoff.md`](references/handoff.md) — session-boundary handoff document (snapshot + append-only entry log, mode-adaptive slots)
+- [`references/naming-and-commits.md`](references/naming-and-commits.md) — slug naming and commit conventions
+- [`references/changelog-guide.md`](references/changelog-guide.md) — changelog generation and integration
+- [`references/engineering-philosophy.md`](references/engineering-philosophy.md) — four core principles
 
 Protocol migrations do not modify historical archives.

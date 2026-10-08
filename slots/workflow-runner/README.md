@@ -29,8 +29,10 @@ If the selected worker CLI is unavailable, use ordinary sidecar orchestration or
 
 ## Hard preconditions (checked in this order, every time)
 
-1. The task's shape matched `slots/workflow-runner/scripts/workflow_route.py` (score ≥ 2): batch fan-out, parallel review,
-   perspective panel, or review-fix loop.
+1. The task's shape matched `slots/workflow-runner/scripts/workflow_route.py` (score ≥ 2 and at
+   least one strong shape signal): batch fan-out, parallel review, perspective panel, or
+   review-fix loop. Bare generic weak signals alone (bare 「批量」, bare convergence markers)
+   do not activate the slot.
 2. The package contains a valid `plan.json` with a self-contained assignment contract for every item.
 3. The selected worker CLI resolves on PATH; the driver records per-item spawn failures instead of
    fabricating a result.
@@ -50,6 +52,13 @@ route. Slot activation is independent of routing, per SKILL.md.
 Use `workflow-runner` when the repository-owned driver and a worker CLI are available; use
 `team-loop` for loop state, retries, heartbeats, or when the driver cannot run. Host identity and
 host-native orchestration APIs never select an execution surface.
+
+Since the 2026-10-08 boundary closure, review-fix composite shapes (review → fix → re-review)
+belong to `workflow-runner` at the routing level: `loop_route.py` explicitly defers those
+shapes (`REVIEW_FIX_DEFER_PATTERNS` → `loopRecommended=false`) instead of recommending
+`team-loop`. Bare convergence markers (loop-until-converged semantics) stay with `team-loop`;
+`batch-fanout` remains available there only as explicit initialization or degradation, not as a
+`loop_route.py` recommendation.
 
 ## Core protocol (the main session must follow this)
 

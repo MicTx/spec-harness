@@ -8,8 +8,12 @@
 判定为启发式评分（可解释、可测试），不做魔法：
 - loop 形状：循环/多轮/迭代直至/直到通过/retry until 等收敛语义
 - 显式团队词：agents-team/spawn_agent/子代理/并行代理
+- 评审-修复让出：带「再审/复审」复合语义的文本先于通用打分让出
 
 批量 fan-out 与评审-修复闭环形态归 workflow-runner（仓库自有执行面裁定）；
+批量让出以删词实现（2026-10-04），评审-修复让出以显式早退实现（2026-10-08 补完，
+词表与 workflow 侧 LOOP 强表行为级镜像、源码级独立——slot 自包含契约不允许跨 slot
+import，两侧一致性由 tests/test_route_cross_consistency.py 行为级钉住）。
 本脚本不再对这两类形态做推荐，避免双 slot 同文本撞车。
 """
 
@@ -48,6 +52,16 @@ TEAM_PATTERNS = [
     r"\bsubagent",
     r"\bteam\b.{0,10}\bmode\b",
 ]
+# 评审-修复复合形态让出（2026-10-04 裁定，2026-10-08 补完显式分支）：
+# 与 workflow 侧 LOOP 强表同语义镜像；收敛词（直到/iterate until…）永不进本表，
+# 裸收敛文本仍由本 slot 承接（until-converged）。
+REVIEW_FIX_DEFER_PATTERNS = [
+    r"评审.{0,8}后.{0,8}(修复|改)",
+    r"(修复|改正).{0,6}(后.{0,4}再|并复)(审|验|测)",
+    r"review.{0,16}fix.{0,25}\b(loop|again|re-?run|converge)\b",
+    r"修复.{0,10}再.{0,6}(评审|验证)",
+    r"(fix|修复|改正).{0,40}(再审|复审|重审|review again|re-?review|re-?check)",
+]
 ROUND_EXPLICIT = re.compile(r"(\d+)\s*(轮|rounds?)", re.IGNORECASE)
 
 
@@ -60,6 +74,17 @@ def route(text: str) -> dict[str, Any]:
     text = (text or "").strip()
     if not text:
         return {"loopRecommended": False, "mode": "none", "score": 0, "reason": "空文本", "suggestedConfig": None}
+
+    # 评审-修复复合形态让出（2026-10-04 裁定）：命中即归 workflow-runner，
+    # 不再进入通用打分——避免双 slot 对同文本双推荐；裸收敛语义不受影响。
+    if _score(text, REVIEW_FIX_DEFER_PATTERNS):
+        return {
+            "loopRecommended": False,
+            "mode": "none",
+            "score": 0,
+            "reason": "评审-修复闭环归 workflow-runner（2026-10-04 裁定）",
+            "suggestedConfig": None,
+        }
 
     loop_hits = _score(text, LOOP_PATTERNS)
     team_hits = _score(text, TEAM_PATTERNS)

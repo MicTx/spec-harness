@@ -1,7 +1,9 @@
 """loop_route 路由判定测试：正例路由、反例不路由、配置生成。
 
 批量 fan-out / 评审-修复形态已让渡给 workflow-runner（2026-10-04_remove-process-bloat
-裁定）：这类文本本路由不再推荐，见 test_fanout_shapes_defer_to_workflow_runner。
+裁定）：批量以删词让出，评审-修复以显式早退让出（F10 补完）——
+见 test_fanout_shapes_defer_to_workflow_runner 与
+ test_review_fix_shapes_defer_to_workflow_runner。
 """
 
 from __future__ import annotations
@@ -56,6 +58,37 @@ def test_fanout_shapes_defer_to_workflow_runner():
         decision = route(text)
         assert decision["loopRecommended"] is False, text
         assert decision["mode"] == "none", f"{text} -> {decision['mode']}"
+
+
+def test_review_fix_shapes_defer_to_workflow_runner():
+    """评审-修复复合形态归 workflow-runner（2026-10-04 裁定，F10 补完显式早退）：
+    让出词表与 workflow 侧 LOOP 强表行为级镜像——命中即不推荐、mode=none、
+    reason 注明归属，不带配置建议。"""
+    for text in (
+        "评审后修复再评审，直到所有审查通过",
+        "修复后再审一次直到评审通过",
+        "fix the lint findings then re-review until converge",
+    ):
+        decision = route(text)
+        assert decision["loopRecommended"] is False, text
+        assert decision["mode"] == "none", f"{text} -> {decision['mode']}"
+        assert "workflow-runner" in decision["reason"], f"{text} 让出 reason 须注明归属"
+        assert decision["suggestedConfig"] is None
+
+
+def test_bare_fix_and_converge_without_re_review_stays_team_loop():
+    """让出词表只认「修复 → 再审/复审」复合语义：无再审语义的修复+收敛文本
+    不命中让出，仍由 team-loop 承接（until-converged）。含 R3 改判（2026-10-07，
+    选项 a）在 loop 侧的承接锚点。"""
+    for text, expected_mode in (
+        ("fix results and iterate until converge", "until-converged"),
+        ("反复修复这个 bug 直到测试通过", "until-converged"),
+        ("修复这个 bug 然后迭代收敛", "until-converged"),
+    ):
+        decision = route(text)
+        assert decision["loopRecommended"] is True, text
+        assert decision["mode"] == expected_mode, f"{text} -> {decision['mode']}"
+        assert decision["suggestedConfig"] is not None
 
 
 def test_explicit_rounds_config():

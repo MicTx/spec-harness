@@ -11,7 +11,7 @@ Task-package workflow for AI coding agents with verifiable scope, evidence, and 
 
 Spec Harness stores cross-session, multi-round engineering work as a recoverable Development Record. It provides task packages, routing, verification, archival, and Git closeout. It does not provide a model or make product decisions for you.
 
-Pick your entry point by what you want to do: to understand the idea first, read the [introduction](docs/introduction.md); to run one end to end, follow the [long-running task tutorial](docs/tutorial.md); to release or roll back, see the [Git workflow](docs/git-workflow.en.md). The [documentation index](docs/README.md) lists every public entry point.
+Pick your entry point by what you want to do: to understand the idea first, read the [introduction](docs/introduction.md); to run one end to end, follow the [long-running task tutorial](docs/tutorial.md); to release or roll back, see the [Git workflow](docs/git-workflow.en.md). The [documentation index](docs/README-en.md) lists every public entry point.
 
 **Table of Contents**
 
@@ -59,7 +59,7 @@ Pick your entry point by what you want to do: to understand the idea first, read
 └── .github/                  # CI and issue/pull-request templates
 ```
 
-Runtime task packages default to `.spec/` in target projects; this source repository does not contain user-project state. Detailed contracts live in [`references/`](references/00-readme.md), and user-facing guides live in [`docs/`](docs/README.md).
+Runtime task packages default to `.spec/` in target projects; this source repository does not contain user-project state. Detailed contracts live in [`references/`](references/00-readme.md), and user-facing guides live in [`docs/README-en.md`](docs/README-en.md).
 
 ## Requirements
 
@@ -87,7 +87,7 @@ bash install.sh
 
 | `INSTALL_HOSTS` | Host | Default directory | Extra behavior |
 | --- | --- | --- | --- |
-| `claude` | Claude Code | `~/.claude/skills` | writes `/spec` and ten stage commands |
+| `claude` | Claude Code | `~/.claude/skills` | writes `/spec` and 12 stage commands |
 | `claude-desktop` | Claude Desktop | `~/.claude-desktop/skills` | Skill only |
 | `codex`, `codex-desktop` | Codex | `~/.codex/skills` | both tokens share the directory |
 | `gemini` | Gemini CLI | `~/.gemini/skills` | |
@@ -133,16 +133,16 @@ The host walks the stages with you: clarify the goal and scope first (`goal`), t
 ```bash
 python3 /tmp/spec-harness/scripts/init_spec_package.py \
   --root /path/to/project \
-  --slug 2026-10-03_payment-recovery \
+  --slug 2026-10-03_add-payment-recovery \
   --title "Payment Recovery"
 ```
 
 After initialization, inspect the stage, status, and package gate:
 
 ```bash
-python3 /tmp/spec-harness/scripts/route_spec_package.py --root /path/to/project --slug 2026-10-03_payment-recovery
-python3 /tmp/spec-harness/scripts/report_spec_package.py --root /path/to/project --slug 2026-10-03_payment-recovery --view status
-python3 /tmp/spec-harness/scripts/check_spec_package.py --root /path/to/project --slug 2026-10-03_payment-recovery
+python3 /tmp/spec-harness/scripts/route_spec_package.py --root /path/to/project --slug 2026-10-03_add-payment-recovery
+python3 /tmp/spec-harness/scripts/report_spec_package.py --root /path/to/project --slug 2026-10-03_add-payment-recovery --view status
+python3 /tmp/spec-harness/scripts/check_spec_package.py --root /path/to/project --slug 2026-10-03_add-payment-recovery
 ```
 
 When the work is verified, `/spec:done` performs the final checks, archives the package, and creates the Git commit. For direct operation, run:
@@ -150,7 +150,7 @@ When the work is verified, `/spec:done` performs the final checks, archives the 
 ```bash
 python3 /tmp/spec-harness/scripts/complete_spec_package.py \
   --root /path/to/project \
-  --slug 2026-10-03_payment-recovery \
+  --slug 2026-10-03_add-payment-recovery \
   --archive
 ```
 
@@ -194,6 +194,8 @@ spec/
 │   ├── autoplan_gate.py
 │   ├── autoplan_spawn.py
 │   ├── autorun_spawn.py
+│   ├── chain_recovery.py
+│   ├── chain_spawn_support.py
 │   ├── check_all_spec_packages.py
 │   ├── check_spec_package.py
 │   ├── complete_spec_package.py

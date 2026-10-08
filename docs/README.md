@@ -2,6 +2,8 @@
 
 先决定你要完成哪件事，再选择一篇文档。这样比从目录第一篇读到最后一篇更快。
 
+[🇬🇧 English index](README-en.md)
+
 ## 我想先理解它
 
 - [Spec Harness 介绍](introduction.md)：从一个长程任务为什么会失控开始，理解任务包、验证和 Git 收尾各自解决什么问题。
@@ -20,5 +22,11 @@
 - [Releases](../RELEASE.md)：版本、归档、校验和回滚。
 - [Security](../SECURITY.md)：漏洞报告和 server-mode 安全边界。
 - [Support](../SUPPORT.md)：安装或运行失败时应提供哪些信息。
+
+## 入口归类
+
+- **public / user entry**：根 [README（中文）](../README.md) 与 [README (English)](../README-en.md)、本索引与[英文索引](README-en.md)、本目录的引导/教程/Git 工作流，以及 [server-mode 部署说明](../server/README.md)。
+- **runtime reference**：[`SKILL.md`](../SKILL.md) 与 [`references/`](../references/00-readme.md)：命令、模板、编排、槽位和归档的运行时契约。
+- **maintainer-only**：[`agent-plugin/README.md`](../agent-plugin/README.md)——源码库独有的插件清单打包模板说明，不进运行时导出树。
 
 命令、任务包三件套和机器门禁的精确契约在 [`references/`](../references/00-readme.md)。它们回答“必须满足什么”；本目录的教程回答“为什么这样安排、下一步怎么走”。

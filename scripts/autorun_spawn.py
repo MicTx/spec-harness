@@ -15,7 +15,11 @@ Subcommands:
                 recycling, fail-open),
                 after enforcing the round cap, the single-chain lock, and
                 the next-round package presence;
-  - ``status``  render the current chain state.
+  - ``status``  render the current chain state: chain fields, the lock probe
+                (free / held by holder / unknown / stale), the most recent
+                spawn refusal from the events tail, and the derived keys
+                (the F4 resume decision from ``chain_recovery.decide``, plus
+                active package progress).
 
 Exit codes are part of the contract:
 
@@ -30,20 +34,23 @@ Exit codes are part of the contract:
 Contract output goes to stdout (text, or JSON with ``--format json``);
 diagnostics go to stderr. ``spawn`` writes only under ``.spec/autorun/``:
 ``chain.json`` (latest chain state), ``spawns.jsonl`` (append-only audit),
-and the transient ``chain.lock``. The Terminal.app automation is
-scope-limited to exactly two spawn steps — this script's autorun round
-spawn and the autoplan pass spawn in ``scripts/autoplan_spawn.py`` (which
-reuses this module's implementation by import) — both inheriting the
-recorded overturn of the 2026-09-03 no-AppleScript policy in the
-``2026-10-06_add-autorun-command`` Development Record; no other caller
-may reuse it.
+``events.jsonl`` (append-only events: ``spawn_refusal`` from this script's
+refusal exit and ``recycle_close`` from the detached close helper), and the
+transient ``chain.lock`` (the flock mutex plus one advisory holder line per
+acquisition).
+
+The chain-state read/write, lock, audit, and Terminal recycle mechanics live
+in ``scripts/chain_spawn_support.py`` (the F5 shared module, imported here by
+name — one implementation, two authorized Terminal-automation callers: this
+script's autorun round spawn and the autoplan pass spawn in
+``scripts/autoplan_spawn.py``, both inheriting the recorded overturn of the
+2026-09-03 no-AppleScript policy in the ``2026-10-06_add-autorun-command``
+Development Record; no other caller may reuse it).
 """
 
 from __future__ import annotations
 
 import argparse
-import datetime as _dt
-import fcntl
 import json
 import os
 import re
@@ -51,9 +58,44 @@ import shlex
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+import chain_spawn_support as chain_support  # noqa: E402  # type: ignore
+
+# F4 recovery semantics: the 13-row resume decision table (the tolerant state
+# read lives in the shared module; chain_recovery imports nothing from here).
+from chain_recovery import decide, read_audit_tail  # noqa: E402  # type: ignore
+from chain_spawn_support import (  # noqa: E402  # type: ignore
+    CHAIN_EVENTS_FILE,
+    CHAIN_LOCK_FILE,
+    CHAIN_SPAWNS_FILE,
+    CHAIN_STATE_FILE,
+    DEFAULT_MAX_ROUNDS,
+    OSASCRIPT_TIMEOUT_SECONDS,
+    WORKER_START_TIMEOUT_SECONDS,
+    ChainSpawnError,
+    append_audit,
+    append_refusal_event,
+    atomic_write,
+    build_terminal_command,
+    build_window_lookup_applescript,  # noqa: F401  # re-export: chain tests use the module attr
+    build_worker_command,  # F14: shared render surface; tests + autoplan still import it from here
+    controlling_tty,
+    model_injection_level,
+    next_index_within_cap,
+    parse_spawn_result,
+    parse_window_lookup,  # noqa: F401  # re-export: chain tests import it from here
+    read_last_refusal,
+    read_state,
+    resolve_root,
+    schedule_window_close,
+    under_root,
+    utc_now,
+    validate_cap,
+    worker_running_on_tty,
+)
+from chain_spawn_support import pid_alive as _pid_alive  # seam binding: tests patch this name
 
 EXIT_OK = 0
 EXIT_FAILURE = 1
@@ -69,61 +111,40 @@ HOST_ENV_MARKERS: Tuple[Tuple[str, str], ...] = (
     ("pi", "PI_CODING_AGENT"),
     ("claude", "CLAUDECODE"),
 )
-DEFAULT_MAX_ROUNDS = 20
-WORKER_START_TIMEOUT_SECONDS = 60
-OSASCRIPT_TIMEOUT_SECONDS = 30
-PS_TIMEOUT_SECONDS = 5
-CLOSE_DELAY_SECONDS = 3
 CHAIN_DIR_NAME = ".spec/autorun"
-CHAIN_STATE_FILE = "chain.json"
-CHAIN_SPAWNS_FILE = "spawns.jsonl"
-CHAIN_LOCK_FILE = "chain.lock"
 
 FEATURE_CHECKBOX = re.compile(r"^\s*[-*]\s+\[( |x|X)\]\s*(\S.*)$")
-PLAN_CANDIDATES: Tuple[str, ...] = (
-    ".spec/plan.md",
-    "PLAN.md",
-    "ROADMAP.md",
-    "PRD.md",
-    "docs/plan.md",
-    "docs/roadmap.md",
-    "docs/prd.md",
-)
-PLAN_CANDIDATE_GLOBS: Tuple[str, ...] = ("docs/plans/*.md", "docs/design/*.md")
+# One canonical planning root: every planning document lives under ``plans/``
+# (master ``plans/README.md``, phase details ``plans/NN-<slug>.md``, plans
+# aligned with a Development Record ``plans/<YYYY-MM-DD>_<verb>-<object>.md``).
+# ``--plan`` stays the explicit escape hatch for a document kept elsewhere.
+PLAN_ROOT = "plans"
+PLAN_CANDIDATE_GLOB = "plans/*.md"
 
 
-class AutorunError(Exception):
-    """Operational refusal or failure with a user-facing message."""
+class AutorunError(ChainSpawnError):
+    """Operational refusal or failure with a user-facing message.
+
+    Subclass of the shared ``ChainSpawnError`` base (both chain scripts
+    re-export that one base) so a single catch handles both chains while
+    this script's audit ``type`` stays ``AutorunError``.
+    """
 
 
 class NoPlanError(AutorunError):
     """No qualifying planning document was found (exit 3)."""
 
 
-def _utc_now() -> str:
-    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 def _resolve_root(raw_root: str) -> Path:
-    root = Path(raw_root).expanduser().resolve()
-    if not root.is_dir():
-        raise AutorunError(f"project root is not a directory: {root}")
-    return root
-
-
-def _under_root(root: Path, path: Path) -> bool:
     try:
-        path.relative_to(root)
-    except ValueError:
-        return False
-    return True
+        return resolve_root(raw_root)
+    except ChainSpawnError as exc:
+        raise AutorunError(str(exc)) from exc
 
 
-def _candidate_paths(root: Path) -> List[Path]:
-    candidates: List[Path] = [root / name for name in PLAN_CANDIDATES]
-    for pattern in PLAN_CANDIDATE_GLOBS:
-        candidates.extend(sorted(root.glob(pattern)))
-    return candidates
+def plan_candidates(root: Path) -> List[Path]:
+    """Canonical ``plans/*.md`` scan (the planning root is a project fact)."""
+    return sorted(root.glob(PLAN_CANDIDATE_GLOB))
 
 
 def count_features(text: str) -> Dict[str, object]:
@@ -152,9 +173,9 @@ def discover_plan_docs(root: Path, explicit: Optional[str]) -> Tuple[List[Path],
     """Return (qualifying docs, scanned candidates) for the planning-document scan.
 
     ``explicit`` is a comma-separated list of paths (relative to root or
-    absolute); each must exist and stay under root. Without it, the
-    conventional candidates are scanned. A candidate qualifies only when
-    it contains at least one feature checkbox.
+    absolute); each must exist and stay under root. Without it, the canonical
+    planning root ``plans/`` is scanned. A candidate qualifies only when it
+    contains at least one feature checkbox.
     """
     scanned: List[str] = []
     qualifying: List[Path] = []
@@ -169,13 +190,13 @@ def discover_plan_docs(root: Path, explicit: Optional[str]) -> Tuple[List[Path],
                 candidate = root / candidate
             candidate = candidate.resolve()
             scanned.append(str(candidate))
-            if not _under_root(root, candidate):
+            if not under_root(root, candidate):
                 raise AutorunError(f"--plan path escapes the project root: {raw}")
             if not candidate.is_file():
                 raise AutorunError(f"--plan path does not exist: {raw}")
             qualifying.append(candidate)
     else:
-        for candidate in _candidate_paths(root):
+        for candidate in plan_candidates(root):
             scanned.append(str(candidate))
             if candidate.is_file():
                 qualifying.append(candidate)
@@ -200,7 +221,7 @@ def plan_payload(root: Path, explicit: Optional[str]) -> Dict[str, object]:
         counts = count_features(doc.read_text(encoding="utf-8"))
         doc_reports.append(
             {
-                "path": str(doc.relative_to(root)) if _under_root(root, doc) else str(doc),
+                "path": str(doc.relative_to(root)) if under_root(root, doc) else str(doc),
                 **counts,
             }
         )
@@ -208,9 +229,10 @@ def plan_payload(root: Path, explicit: Optional[str]) -> Dict[str, object]:
             totals[key] += counts[key]  # type: ignore[operator]
     if not doc_reports:
         raise NoPlanError(
-            "no qualifying planning document found; scanned: "
+            f"no qualifying planning document found under {PLAN_ROOT}/; scanned: "
             + (", ".join(scanned) if scanned else "(none)")
-            + " — write project-level planning (feature checkboxes) before autorun"
+            + f" — write project-level planning (feature checkboxes) in {PLAN_ROOT}/README.md "
+            "or pass --plan <doc>"
         )
     return {
         "project": str(root),
@@ -225,26 +247,11 @@ def _chain_dir(root: Path) -> Path:
 
 
 def _read_chain_state(root: Path) -> Optional[Dict[str, object]]:
-    state_file = _chain_dir(root) / CHAIN_STATE_FILE
-    if not state_file.is_file():
-        return None
-    try:
-        data = json.loads(state_file.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise AutorunError(f"chain state unreadable ({state_file}): {exc}") from exc
-    if not isinstance(data, dict):
-        raise AutorunError(f"chain state is not a JSON object: {state_file}")
-    return data
-
-
-def _atomic_write(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.tmp")
-    with open(tmp, "w", encoding="utf-8") as handle:
-        handle.write(content)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(tmp, path)
+    return chain_support.read_state_file(
+        _chain_dir(root) / CHAIN_STATE_FILE,
+        label="chain state",
+        error=AutorunError,
+    )
 
 
 def _active_package_present(root: Path) -> bool:
@@ -257,6 +264,36 @@ def _active_package_present(root: Path) -> bool:
         if (entry / "spec.md").is_file():
             return True
     return False
+
+
+def _active_package_facts(root: Path) -> Tuple[Optional[Dict[str, object]], List[Dict[str, object]]]:
+    """Active (unarchived) packages with task progress from ``tasks.md``.
+
+    Returns ``(active_package, active_packages)``: the single entry when
+    exactly one package is active (else ``None``), plus the parallel list the
+    multi-package case is rendered from (F4's disambiguation consumes it).
+    """
+    specs_dir = root / ".spec" / "specs"
+    entries: List[Dict[str, object]] = []
+    if specs_dir.is_dir():
+        for entry in sorted(specs_dir.iterdir()):
+            if entry.name == "archive" or not entry.is_dir():
+                continue
+            if not (entry / "spec.md").is_file():
+                continue
+            checked = 0
+            total = 0
+            tasks_file = entry / "tasks.md"
+            if tasks_file.is_file():
+                try:
+                    counts = count_features(tasks_file.read_text(encoding="utf-8", errors="replace"))
+                except OSError:
+                    counts = None
+                if counts:
+                    checked = int(counts["checked"])
+                    total = int(counts["total"])
+            entries.append({"slug": entry.name, "checked": checked, "total": total})
+    return (entries[0] if len(entries) == 1 else None), entries
 
 
 def _nearest_ancestor_host(candidates: Tuple[str, ...]) -> Optional[str]:
@@ -276,7 +313,7 @@ def _nearest_ancestor_host(candidates: Tuple[str, ...]) -> Optional[str]:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 text=True,
-                timeout=PS_TIMEOUT_SECONDS,
+                timeout=chain_support.PS_TIMEOUT_SECONDS,
             )
         except (OSError, subprocess.SubprocessError):
             break
@@ -375,248 +412,49 @@ def build_prompt(host: str, plan_args: List[str], max_rounds: int) -> str:
     return f"$spec autorun {tail}".strip()
 
 
-def build_worker_command(host: str, root: Path, prompt: str) -> List[str]:
-    """Build the interactive worker argv for the next-round session.
-
-    Every host runs its CLI's normal interactive session (visible TUI,
-    session persisted), not a print/exec mode; the prompt is the initial
-    message. Recorded overturn of the headless worker choice in the
-    ``2026-10-06_add-autorun-command`` Development Record.
-    """
-    if host == "codex":
-        # codex >=0.160 seatbelt denies .git writes under workspace-write, so
-        # `git add`/`git commit` die with EPERM at the round's commit stage
-        # (verified 2026-10-07 against codex-cli 0.160.1). Carve the repo's
-        # .git back into the writable roots; everything else stays sandboxed.
-        git_root = json.dumps(str(root / ".git"))
-        return [
-            "codex",
-            "--cd",
-            str(root),
-            "--sandbox",
-            "workspace-write",
-            "-c",
-            "sandbox_workspace_write.network_access=true",
-            "-c",
-            f"sandbox_workspace_write.writable_roots=[{git_root}]",
-            "--",
-            prompt,
-        ]
-    if host == "pi":
-        return ["pi", "--mode", "text", "--", prompt]
-    if host == "claude":
-        return ["claude", "--dangerously-skip-permissions", prompt]
-    raise AutorunError(f"unknown worker host: {host}")
-
-
-def escape_applescript(text: str) -> str:
-    """Escape a string for an AppleScript double-quoted literal."""
-    return text.replace("\\", "\\\\").replace('"', '\\"')
-
-
-def _window_lookup_lines(tty_expression: str) -> List[str]:
-    """AppleScript lines filling the lookup variables for the tab whose tty
-    equals ``tty_expression`` (a quoted literal or a variable): ``match`` is
-    the hosting window id (``""`` when none), ``matchTabs`` its tab count and
-    ``matchBusy`` whether that tab still runs a process other than the shell."""
-    return [
-        '\tset match to ""',
-        "\tset matchTabs to 0",
-        "\tset matchBusy to false",
-        "\trepeat with w in windows",
-        "\t\trepeat with t in tabs of w",
-        "\t\t\tif tty of t is {} then".format(tty_expression),
-        "\t\t\t\tset match to (id of w as string)",
-        "\t\t\t\tset matchTabs to (count of tabs of w)",
-        "\t\t\t\tset matchBusy to (busy of t)",
-        "\t\t\t\texit repeat",
-        "\t\t\tend if",
-        "\t\tend repeat",
-        '\t\tif match is not "" then exit repeat',
-        "\tend repeat",
-    ]
-
-
-def build_terminal_command(
-    root: Path, worker_command: List[str], custom_command: Optional[str] = None
-) -> Tuple[List[str], str]:
-    """Build the osascript argv opening a Terminal window at ``root``.
-
-    Returns ``(osascript argv, shell command)``. The shell command is
-    ``cd <root> && <worker argv>`` — or ``cd <root> && <custom command>``
-    when a raw ``--command`` override is given. The AppleScript runs the
-    command in a new tab and replies ``"<window id> <tab tty>"`` on
-    stdout (the window is found by matching the spawned tab's tty, so no
-    front-window race), so the spawn can verify the next round and
-    recycle windows.
-    """
-    if custom_command is not None:
-        tail = custom_command
-    else:
-        tail = " ".join(shlex.quote(part) for part in worker_command)
-    shell_command = "cd {} && {}".format(shlex.quote(str(root)), tail)
-    applescript = "\n".join(
-        [
-            'tell application "Terminal"',
-            '\tset spawnedTab to do script "{}"'.format(escape_applescript(shell_command)),
-            "\tset spawnedTty to tty of spawnedTab",
-            *_window_lookup_lines("spawnedTty"),
-            '\treturn match & " " & spawnedTty',
-            "end tell",
-        ]
-    )
-    return ["osascript", "-e", applescript], shell_command
-
-
-def parse_spawn_result(stdout: str) -> Tuple[Optional[int], Optional[str]]:
-    """Parse the spawn osascript reply ``"<window id> <tab tty>"``."""
-    parts = stdout.strip().split()
-    if len(parts) != 2:
-        return None, None
-    raw_id, tty = parts
-    try:
-        window_id = int(raw_id)
-    except ValueError:
-        return None, None
-    if not tty.startswith("/dev/"):
-        return None, None
-    return window_id, tty
-
-
-def controlling_tty() -> Optional[str]:
-    """Return the controlling terminal of this process, or ``None``."""
-    try:
-        fd = os.open("/dev/tty", os.O_RDONLY)
-    except OSError:
-        return None
-    try:
-        return os.ttyname(fd)
-    except OSError:
-        return None
-    finally:
-        os.close(fd)
-
-
-def worker_running_on_tty(worker: str, tty: str) -> bool:
-    """Check whether a ``worker`` process runs on the given Terminal tty.
-
-    Matches the command line, not ``comm``: the hosts are interpreter-hosted
-    (codex is a ``#!/usr/bin/env node`` script, the pi launcher a ``#!/bin/sh``
-    shim), so ``comm`` reports ``node`` / ``/bin/sh`` and the host name never
-    appears there — verified 2026-10-07 on a pty, where a node-shebang CLI
-    reads as ``ttysNNN  node`` under ``ps -o tty=,comm=`` and as
-    ``ttysNNN  node /path/to/cli ...`` under ``ps -o tty=,command=``.
-    """
-    try:
-        completed = subprocess.run(
-            ["ps", "-axo", "tty=,command="],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=PS_TIMEOUT_SECONDS,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    if completed.returncode != 0:
-        return False
-    tty_name = tty.rsplit("/", 1)[-1]
-    for line in completed.stdout.splitlines():
-        fields = line.split(None, 1)
-        if len(fields) != 2 or fields[0].strip() != tty_name:
-            continue
-        # argv[0] for a native binary, the interpreter's argv[1] for a shebang
-        # launcher — scanning tokens covers both shapes.
-        for token in fields[1].split():
-            if os.path.basename(token.rstrip("/")) == worker:
-                return True
-    return False
-
-
-def build_window_lookup_applescript(tty: str) -> str:
-    """Build the AppleScript reporting the window hosting ``tty``.
-
-    Replies ``"<window id> <tab count> <busy>"`` (``" 0 false"`` when no
-    window hosts the tty), so the caller learns the window and whether closing
-    it would take unrelated tabs — or a still-running session — with it.
-    """
-    return "\n".join(
-        [
-            'tell application "Terminal"',
-            *_window_lookup_lines('"{}"'.format(escape_applescript(tty))),
-            '\treturn match & " " & (matchTabs as string) & " " & (matchBusy as string)',
-            "end tell",
-        ]
+def build_close_argv(
+    window_id: int,
+    delay_seconds: int,
+    close_wait_seconds: int,
+    *,
+    chain: str,
+    round_index: Optional[int] = None,
+    pass_index: Optional[int] = None,
+    prev_tty: str,
+    events_path: Path,
+) -> List[str]:
+    """Close-helper argv via the shared implementation, raising this
+    script's own class on invalid arguments (the seam the chain tests use)."""
+    return chain_support.build_close_argv(
+        window_id,
+        delay_seconds,
+        close_wait_seconds,
+        chain=chain,
+        round_index=round_index,
+        pass_index=pass_index,
+        prev_tty=prev_tty,
+        events_path=events_path,
+        error=AutorunError,
     )
 
 
-def parse_window_lookup(stdout: str) -> Tuple[Optional[int], int, bool]:
-    """Parse the window-lookup reply into ``(window id, tab count, busy)``.
+def session_tty() -> Optional[str]:
+    """Session tty via the shared resolution, with this module's patch seam.
 
-    An empty, malformed, or tab-less reply comes back as ``(None, 0, False)``:
-    no window hosts the tty, so the caller skips the recycling.
+    The chain test files monkeypatch ``autorun_spawn.controlling_tty``; the
+    wrapper binds that module global at call time, so the seam keeps working
+    while the implementation lives once in the shared module.
     """
-    parts = stdout.strip().split()
-    if len(parts) != 3:
-        return None, 0, False
-    try:
-        window_id = int(parts[0])
-        tab_count = int(parts[1])
-    except ValueError:
-        return None, 0, False
-    busy = parts[2] == "true"
-    if tab_count < 1:
-        return None, 0, False
-    return window_id, tab_count, busy
+    return chain_support.session_tty(controlling=controlling_tty)
 
 
-def build_close_applescript(window_id: int) -> str:
-    """Build the AppleScript closing the previous round's Terminal window.
+def probe_lock(chain_dir: Path) -> Dict[str, object]:
+    """Lock probe via the shared implementation, with this module's seam.
 
-    Two guards, both from real-device findings on 2026-10-07: Terminal's
-    AppleScript cannot close an individual tab (``close`` rejects ``tab``
-    objects in every form tried — loop reference, the object a ``whose``
-    filter resolves, positional specifier; all ``-1708`` — and ``tab`` has no
-    readable ``index``, ``-1728``), and closing a window whose tab still runs
-    a process raises Terminal's cancel/terminate sheet instead of closing.
-    So: close only a one-tab window whose session has already exited; anything
-    else is reported back and left alone.
+    Same patch-seam discipline as ``session_tty``: tests replace
+    ``autorun_spawn._pid_alive``, so the wrapper passes this module's binding.
     """
-    return "\n".join(
-        [
-            'tell application "Terminal"',
-            "\tset tabCount to 0",
-            "\tset tabBusy to false",
-            f"\tif exists window id {window_id} then set tabCount to (count of tabs of window id {window_id})",
-            f"\tif tabCount is 1 then set tabBusy to (busy of tab 1 of window id {window_id})",
-            '\tif tabCount is 0 then return "window-gone"',
-            '\tif tabCount is not 1 then return "multi-tab"',
-            '\tif tabBusy then return "busy"',
-            f"\tclose window id {window_id}",
-            '\treturn "closed"',
-            "end tell",
-        ]
-    )
-
-
-def build_close_argv(window_id: int, delay_seconds: int) -> List[str]:
-    """Build the detached argv closing a Terminal window after a delay."""
-    if isinstance(window_id, bool) or not isinstance(window_id, int) or window_id <= 0:
-        raise AutorunError(f"window id must be a positive integer: {window_id!r}")
-    if delay_seconds < 0:
-        raise AutorunError(f"close delay must be >= 0: {delay_seconds!r}")
-    script = "sleep {}; osascript -e {}".format(delay_seconds, shlex.quote(build_close_applescript(window_id)))
-    return ["/bin/sh", "-c", script]
-
-
-def schedule_window_close(window_id: int, delay_seconds: int) -> None:
-    """Launch the detached close helper; it outlives this process group."""
-    subprocess.Popen(
-        build_close_argv(window_id, delay_seconds),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    return chain_support.lock_holder(chain_dir, pid_alive_check=_pid_alive)
 
 
 def recycle_previous_window(
@@ -624,77 +462,149 @@ def recycle_previous_window(
     new_window_id: Optional[int],
     new_tty: Optional[str],
     worker_name: str,
+    *,
+    chain: str,
+    events_path: Path,
+    round_index: Optional[int] = None,
+    pass_index: Optional[int] = None,
     timeout_seconds: Optional[int] = None,
     delay_seconds: Optional[int] = None,
+    close_wait_seconds: Optional[int] = None,
 ) -> Dict[str, object]:
-    """Confirm the next round and close the previous round's Terminal window.
+    """Window recycle via the shared implementation, with this module's seams.
 
-    Fail-open: any skip condition leaves the previous window open and
-    returns the recorded reason; the chain continues in the new window.
-    A window is only closed while it holds just the previous round's tab and
-    that session has already exited (Terminal cannot close one tab of a
-    window, and closing a tab whose process still runs raises its
-    cancel/terminate sheet).
+    Tests patch ``autorun_spawn.worker_running_on_tty``,
+    ``autorun_spawn.schedule_window_close``, and
+    ``autorun_spawn.WORKER_START_TIMEOUT_SECONDS``; the wrapper binds all
+    three module globals at call time and injects them into the shared
+    implementation.
     """
     if timeout_seconds is None:
         timeout_seconds = WORKER_START_TIMEOUT_SECONDS
-    if delay_seconds is None:
-        delay_seconds = CLOSE_DELAY_SECONDS
-    if prev_tty is None:
-        return {"status": "skipped", "reason": "spawning session has no controlling Terminal"}
-    if new_window_id is None or new_tty is None:
-        return {"status": "skipped", "reason": "spawned window id or tty unavailable from osascript"}
-    if worker_name:
-        deadline = time.monotonic() + timeout_seconds
-        while time.monotonic() < deadline:
-            if worker_running_on_tty(worker_name, new_tty):
-                break
-            time.sleep(1.0)
-        else:
-            return {
-                "status": "skipped",
-                "reason": "worker {} not observed on {} within {}s".format(worker_name, new_tty, timeout_seconds),
-            }
-    lookup_argv = ["osascript", "-e", build_window_lookup_applescript(prev_tty)]
-    try:
-        lookup = subprocess.run(
-            lookup_argv,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=OSASCRIPT_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired:
-        return {
-            "status": "skipped",
-            "reason": "previous window lookup did not answer within {}s".format(OSASCRIPT_TIMEOUT_SECONDS),
-        }
-    prev_window_id, prev_tab_count, prev_busy = (
-        parse_window_lookup(lookup.stdout) if lookup.returncode == 0 else (None, 0, False)
+    return chain_support.recycle_previous_window(
+        prev_tty,
+        new_window_id,
+        new_tty,
+        worker_name,
+        chain=chain,
+        events_path=events_path,
+        round_index=round_index,
+        pass_index=pass_index,
+        timeout_seconds=timeout_seconds,
+        delay_seconds=delay_seconds,
+        close_wait_seconds=close_wait_seconds,
+        worker_check=worker_running_on_tty,
+        schedule_close=schedule_window_close,
     )
-    if prev_window_id is None:
-        return {"status": "skipped", "reason": "no Terminal window hosts {}".format(prev_tty)}
-    if prev_window_id == new_window_id:
-        return {"status": "skipped", "reason": "previous window is the spawned window"}
-    if prev_tab_count > 1:
-        return {
-            "status": "skipped",
-            "reason": (
-                "previous window hosts {} tabs and Terminal cannot close one tab; leaving it open".format(
-                    prev_tab_count
+
+
+# --- F14 model identity: lock resolution --------------------------------------
+#
+# The render surface (worker argv, host flag mapping, injection level) lives
+# in chain_spawn_support; this is the autorun wiring of flags -> lock ->
+# injection. The lock semantics: a chain without a ``model`` key locks on its
+# first F14 spawn (the incoming identity, or null when no flags were given);
+# afterwards the identity is immutable — any component mismatch refuses the
+# spawn through the existing ChainSpawnError rejection path (exit 1 +
+# spawn_refusal event + stderr carrying both the locked and the incoming
+# value), and refusals write no state.
+
+
+def _format_model_identity(identity: Optional[Dict[str, str]]) -> str:
+    """Compact identity render for refusal texts: ``null`` or sorted JSON."""
+    if not identity:
+        return "null"
+    return json.dumps(identity, sort_keys=True)
+
+
+def _render_identity_component(value: object) -> str:
+    """One identity component for a refusal text; ``absent`` when missing."""
+    return "absent" if value is None else repr(value)
+
+
+def _identity_lock_guidance() -> str:
+    """The shared refusal tail: how to legitimately change identity."""
+    return (
+        "the chain model is immutable; finish this chain and start a new one "
+        "(or have the maintainer clear the chain state) to change identity"
+    )
+
+
+def _resolve_model_identity(args: argparse.Namespace, state: Dict[str, object]) -> Optional[Dict[str, str]]:
+    """F14: resolve ``--model``/``--reasoning`` against the chain identity lock.
+
+    Returns the identity this round carries (``None`` = worker default): the
+    incoming identity when flags are given, else the locked value. A chain
+    without a ``model`` key (pre-F14 or fresh) locks on this spawn. Any
+    component mismatch against an existing lock refuses the spawn — the id,
+    the reasoning, or null-then-value. The resolved-host form is judged at
+    the spawn site, where the worker host is known (a bypass has none).
+    """
+    incoming: Optional[Dict[str, str]] = None
+    if args.model is not None or args.reasoning is not None:
+        if args.model is None:
+            raise AutorunError("--reasoning requires --model: the model id is the identity's primary component")
+        if not args.model.strip():
+            raise AutorunError("--model must be a non-empty model id (whitespace-only given) — refusing the spawn")
+        if args.reasoning is not None and not args.reasoning.strip():
+            raise AutorunError(
+                "--reasoning must be a non-empty level when given (whitespace-only given) — refusing the spawn"
+            )
+        incoming = {"id": args.model}
+        if args.reasoning is not None:
+            incoming["reasoning"] = args.reasoning
+
+    if "model" not in state:
+        # No lock yet (pre-F14 chains and fresh chains): this spawn locks —
+        # the incoming identity, or null when no flags were given.
+        return incoming
+
+    locked = state.get("model")
+    if locked is not None and not isinstance(locked, dict):
+        raise AutorunError(
+            "chain state has a malformed model identity lock: {!r} "
+            "(expected {{id, reasoning?}} or null) — refusing the spawn".format(locked)
+        )
+    if incoming is not None:
+        if locked is None:
+            raise AutorunError(
+                "model identity conflict: the chain locked model: null but this spawn carries "
+                f"{_format_model_identity(incoming)} — {_identity_lock_guidance()}"
+            )
+        if incoming.get("id") != locked.get("id"):
+            raise AutorunError(
+                "model identity conflict: locked id {} vs incoming id {} — {}".format(
+                    _render_identity_component(locked.get("id")),
+                    _render_identity_component(incoming.get("id")),
+                    _identity_lock_guidance(),
                 )
-            ),
-        }
-    if prev_busy:
-        # Closing a tab whose process still runs raises Terminal's
-        # cancel/terminate sheet, so the session is left alone and the reason
-        # is recorded instead of blocking on a dialog nobody is watching.
-        return {
-            "status": "skipped",
-            "reason": "previous session is still running in {}; close it manually".format(prev_tty),
-        }
-    schedule_window_close(prev_window_id, delay_seconds)
-    return {"status": "scheduled", "window_id": prev_window_id, "delay_seconds": delay_seconds}
+            )
+        if incoming.get("reasoning") != locked.get("reasoning"):
+            raise AutorunError(
+                "model identity conflict: locked reasoning {} vs incoming reasoning {} — {}".format(
+                    _render_identity_component(locked.get("reasoning")),
+                    _render_identity_component(incoming.get("reasoning")),
+                    _identity_lock_guidance(),
+                )
+            )
+    return locked if isinstance(locked, dict) else None
+
+
+def _render_status_model(model: object) -> str:
+    """The F14 status line: the locked identity plus the latest injection."""
+    if not isinstance(model, dict):
+        return "model: none (worker default)"
+    id_value = model.get("id")
+    if not isinstance(id_value, str) or not id_value:
+        return "model: none (worker default)"
+    line = f"model: {id_value}"
+    reasoning = model.get("reasoning")
+    if isinstance(reasoning, str) and reasoning:
+        line += f" [{reasoning}]"
+    injection = model.get("injection")
+    if isinstance(injection, str) and injection:
+        line += f" (injection: {injection})"
+    return line
 
 
 def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
@@ -708,38 +618,57 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
             "package created by /spec:new first; refusing to spawn"
         )
 
-    chain_dir = _chain_dir(root)
-    chain_dir.mkdir(parents=True, exist_ok=True)
-    lock_path = chain_dir / CHAIN_LOCK_FILE
-    with open(lock_path, "a+", encoding="utf-8") as lock_handle:
-        try:
-            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            raise AutorunError(
-                f"another autorun chain holds {CHAIN_LOCK_FILE} for this project; parallel chains are refused"
-            ) from exc
-
+    with chain_support.single_chain_lock(
+        _chain_dir(root),
+        "autorun",
+        error=AutorunError,
+        busy_message=(f"another autorun chain holds {CHAIN_LOCK_FILE} for this project; parallel chains are refused"),
+    ):
         state = _read_chain_state(root) or {}
-        last_round = state.get("round")
-        try:
-            last_round = int(last_round) if last_round is not None else 0
-        except (TypeError, ValueError) as exc:
-            raise AutorunError(f"chain state has a non-integer round: {last_round!r}") from exc
-        next_round = last_round + 1
-        if next_round > args.max_rounds:
-            raise AutorunError(f"round cap reached: next round {next_round} exceeds --max-rounds {args.max_rounds}")
+        # F12: the cap decision lives in the shared guard helper (strict
+        # int gate, next==cap allowed, verbatim refusal texts).
+        next_round = next_index_within_cap(
+            state.get("round"),
+            args.max_rounds,
+            label="round",
+            option="max-rounds",
+            non_integer_template="chain state has a non-integer round: {!r}",
+            error=AutorunError,
+        )
+
+        # F14: flags -> lock -> injection. The effective identity doubles as
+        # the post-spawn lock value: on every accepted spawn it equals the
+        # existing lock (matched component-wise) or establishes it.
+        effective_identity = _resolve_model_identity(args, state)
 
         if args.command:
             host = "custom"
             host_source = "custom"
             worker_command: List[str] = []
             worker_name = ""
+            # bypass: the caller owns the full command, so the identity is
+            # recorded but never injected (the custom level says exactly that)
+            injection_level = "custom"
         else:
             host, host_source = resolve_worker_host(args.host)
+            # F14: a non-null identity is namespace-bound to its recorded host
+            # (a pi "provider/model" id means nothing to codex), so a resolved
+            # host change refuses the spawn; a bypass has no resolved host and
+            # is exempt (its state host is "custom", which any later host
+            # spawn with an identity then correctly refuses against).
+            state_host = state.get("host")
+            if effective_identity and isinstance(state_host, str) and state_host != host:
+                raise AutorunError(
+                    f"model identity conflict: resolved host {host!r} differs from the chain "
+                    f"host {state_host!r} while the model identity "
+                    f"{_format_model_identity(effective_identity)} is non-null — model ids are "
+                    "host-namespace-specific; refusing the spawn"
+                )
             plan_args = plan_args_for_prompt(args.plan)
             prompt = build_prompt(host, plan_args, args.max_rounds)
-            worker_command = build_worker_command(host, root, prompt)
+            worker_command = build_worker_command(host, root, prompt, effective_identity)
             worker_name = worker_command[0]
+            injection_level = model_injection_level(effective_identity, host)
         osascript_argv, shell_command = build_terminal_command(root, worker_command, args.command)
 
         record = {
@@ -748,9 +677,11 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
             "host_source": host_source,
             "plan_docs": [doc["path"] for doc in plan["docs"]],  # type: ignore[index]
             "max_rounds": args.max_rounds,
-            "spawned_at": _utc_now(),
+            "model": effective_identity,
+            "model_injection": injection_level,
+            "spawned_at": utc_now(),
             "shell_command": shell_command,
-            "prev_tty": controlling_tty(),
+            "prev_tty": session_tty(),
         }
 
         if args.dry_run:
@@ -782,29 +713,80 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
             new_window_id=new_window_id,
             new_tty=new_tty,
             worker_name=worker_name,
+            chain="autorun",
+            round_index=next_round,
+            events_path=_chain_dir(root) / CHAIN_EVENTS_FILE,
         )
 
-        state_file = chain_dir / CHAIN_STATE_FILE
+        state_file = _chain_dir(root) / CHAIN_STATE_FILE
         state = dict(record)
+        # F14: the per-spawn injection level is an audit fact (spawns row
+        # only); the chain state carries the identity lock, which the
+        # effective identity already equals on every accepted spawn.
+        state.pop("model_injection")
         state["updated_at"] = state.pop("spawned_at")
-        _atomic_write(state_file, json.dumps(state, indent=2, sort_keys=True) + "\n")
-        with open(chain_dir / CHAIN_SPAWNS_FILE, "a", encoding="utf-8") as audit:
-            audit.write(json.dumps(record, sort_keys=True) + "\n")
+        atomic_write(state_file, json.dumps(state, indent=2, sort_keys=True) + "\n")
+        append_audit(_chain_dir(root) / CHAIN_SPAWNS_FILE, record)
         return {"dry_run": False, "terminal": completed.stdout.strip(), **record}
 
 
 def status_payload(root: Path) -> Dict[str, object]:
-    state = _read_chain_state(root)
-    payload: Dict[str, object] = {"project": str(root), "chain_state_file": str(_chain_dir(root) / CHAIN_STATE_FILE)}
+    chain_dir = _chain_dir(root)
+    state, read_status = read_state(chain_dir, chain="autorun")
+    payload: Dict[str, object] = {
+        "project": str(root),
+        "chain_state_file": str(chain_dir / CHAIN_STATE_FILE),
+        "state_status": read_status,
+    }
     if state is None:
         payload["started"] = False
     else:
         payload["started"] = True
         payload.update(state)
+    # F14: the derived status model — the identity lock plus the latest
+    # injection level from the audit tail when one exists. The injection
+    # key is conditional, so a lock without spawns rows (old chains, the
+    # F13 unknown-key passthrough sample) keeps its exact shape.
+    audit_tail = read_audit_tail(chain_dir)
+    model_lock = state.get("model") if state is not None else None
+    if isinstance(model_lock, dict) and model_lock:
+        derived_model: Dict[str, object] = dict(model_lock)
+        latest_injection = audit_tail.get("model_injection") if isinstance(audit_tail, dict) else None
+        if isinstance(latest_injection, str) and latest_injection:
+            derived_model["injection"] = latest_injection
+        payload["model"] = derived_model
+    else:
+        payload["model"] = None
+    payload["lock"] = probe_lock(chain_dir)
+    total_refusals, last_refusal = read_last_refusal(chain_dir / CHAIN_EVENTS_FILE)
+    payload["refusals_recorded"] = total_refusals
+    payload["last_refusal"] = last_refusal
+    # Plan counts are tolerant for status (a read-only render): no qualifying
+    # document means (0, 0) and the decision table says nothing to consume.
+    plan_checked = 0
+    plan_unchecked = 0
     try:
-        payload["plan"] = plan_payload(root, None)
+        plan = plan_payload(root, None)
+        payload["plan"] = plan
+        totals = plan["totals"]  # type: ignore[index]
+        plan_checked = int(totals["checked"])  # type: ignore[index]
+        plan_unchecked = int(totals["unchecked"])  # type: ignore[index]
     except NoPlanError as exc:
         payload["plan"] = {"error": str(exc)}
+    active_package, active_packages = _active_package_facts(root)
+    payload["active_package"] = active_package
+    if len(active_packages) > 1:
+        payload["active_packages"] = active_packages
+    decision = decide(
+        "autorun",
+        state,
+        read_status,
+        plan_checked=plan_checked,
+        plan_unchecked=plan_unchecked,
+        audit_tail=audit_tail,
+        active_packages=active_packages,
+    )
+    payload["resume"] = {"action": decision.action, "reason": decision.reason, "detail": decision.detail}
     return payload
 
 
@@ -844,14 +826,83 @@ def _render_spawn(payload: Dict[str, object]) -> str:
     return "\n".join(lines)
 
 
+def render_lock(lock: object) -> str:
+    """Render the lock probe: free / held by pid N (command) since at / unknown."""
+    if not isinstance(lock, dict):
+        return "lock: unknown (probe failed)"
+    if lock.get("status") == "free":
+        return "lock: free"
+    if lock.get("status") == "held":
+        if lock.get("holder") == "pid":
+            return "lock: held by pid {} ({}) since {}".format(
+                lock.get("pid"), lock.get("command", "unknown"), lock.get("since", "unknown")
+            )
+        if lock.get("holder") == "stale":
+            return "lock: held (stale content)"
+        return "lock: held (holder unknown)"
+    return "lock: unknown (probe failed)"
+
+
+def render_last_refusal(last_refusal: object) -> str:
+    if not isinstance(last_refusal, dict) or not last_refusal.get("message"):
+        return "last_refusal: none"
+    return "last_refusal: {} (type={}, at={})".format(
+        last_refusal.get("message"),
+        last_refusal.get("type", "unknown"),
+        last_refusal.get("at", "unknown"),
+    )
+
+
+def render_not_started(label: str, payload: Dict[str, object]) -> str:
+    """``label`` plus the refusal count when failures were recorded before
+    any chain state existed (the refusal-without-chain.json case)."""
+    count = payload.get("refusals_recorded", 0)
+    if not isinstance(count, int) or count <= 0:
+        return label
+    noun = "refusal" if count == 1 else "refusals"
+    last = payload.get("last_refusal")
+    message = ""
+    if isinstance(last, dict) and last.get("message"):
+        message = ": {}".format(last["message"])
+    return "{} ({} {} recorded{})".format(label, count, noun, message)
+
+
+def _render_active_package(payload: Dict[str, object]) -> str:
+    packages = payload.get("active_packages")
+    if isinstance(packages, list) and len(packages) > 1:
+        return "active packages: " + ", ".join(
+            "{} ({}/{} tasks)".format(item.get("slug"), item.get("checked"), item.get("total")) for item in packages
+        )
+    active = payload.get("active_package")
+    if isinstance(active, dict):
+        return "active package: {} ({}/{} tasks)".format(active.get("slug"), active.get("checked"), active.get("total"))
+    return "active package: none"
+
+
+def render_resume(resume: object) -> str:
+    """One resume line from the F4 decision: ``resume: <action> (<reason>)``."""
+    if not isinstance(resume, dict) or not resume.get("action"):
+        return "resume: none"
+    return "resume: {} ({})".format(resume.get("action"), resume.get("reason", ""))
+
+
 def _render_status(payload: Dict[str, object]) -> str:
-    lines = [f"project: {payload['project']}"]
+    lines = [f"project: {payload['project']}", render_lock(payload.get("lock"))]
     if not payload.get("started"):
-        lines.append("chain: not started")
+        if payload.get("state_status") == "corrupt":
+            lines.append("chain: state unreadable (corrupt; see resume)")
+        else:
+            lines.append(render_not_started("chain: not started", payload))
     else:
         lines.append("round: {}".format(payload.get("round")))
         lines.append("host: {}".format(payload.get("host")))
+        lines.append(_render_status_model(payload.get("model")))
         lines.append("updated_at: {}".format(payload.get("updated_at")))
+        if payload.get("recovered_from"):
+            lines.append("state: recovered from {}".format(payload["recovered_from"]))
+    lines.append(render_last_refusal(payload.get("last_refusal")))
+    lines.append(render_resume(payload.get("resume")))
+    lines.append(_render_active_package(payload))
     plan = payload.get("plan")
     if isinstance(plan, dict):
         if "error" in plan:
@@ -878,7 +929,7 @@ def _add_plan_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--root", default=".", help="project root (default: current directory)")
     parser.add_argument(
         "--plan",
-        help="comma-separated planning document paths (default: scan conventional candidates)",
+        help="comma-separated planning document paths (default: scan the canonical plans/ root)",
     )
     parser.add_argument("--format", choices=("text", "json"), default="text", help="output format (default: text)")
 
@@ -905,6 +956,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="raw shell command override run in the window after cd <root> (host recorded as custom)",
     )
     spawn_parser.add_argument(
+        "--model",
+        help=(
+            "model identity for the chain: the full model id (multi-provider hosts embed the "
+            "provider in the id); the source is only this flag and the chain state — no env "
+            "fallback"
+        ),
+    )
+    spawn_parser.add_argument(
+        "--reasoning",
+        help=(
+            "reasoning/thinking level of the model identity, passed through to the worker CLI "
+            "as-is (requires --model; no cross-host vocabulary normalization)"
+        ),
+    )
+    spawn_parser.add_argument(
         "--max-rounds",
         type=int,
         default=DEFAULT_MAX_ROUNDS,
@@ -928,21 +994,25 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    root: Optional[Path] = None
     try:
         root = _resolve_root(args.root)
         if args.subcommand == "plan":
             _emit(plan_payload(root, args.plan), _render_plan, args.format == "json")
         elif args.subcommand == "spawn":
-            if args.max_rounds < 1:
-                raise AutorunError("--max-rounds must be >= 1")
+            validate_cap(args.max_rounds, "max-rounds")
             _emit(spawn_payload(root, args), _render_spawn, args.format == "json")
         else:
             _emit(status_payload(root), _render_status, args.format == "json")
     except NoPlanError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        if args.subcommand == "spawn" and root is not None:
+            append_refusal_event(_chain_dir(root), "autorun", exc)
         return EXIT_NO_PLAN
-    except AutorunError as exc:
+    except ChainSpawnError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        if args.subcommand == "spawn" and root is not None:
+            append_refusal_event(_chain_dir(root), "autorun", exc)
         return EXIT_FAILURE
     return EXIT_OK
 

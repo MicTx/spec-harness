@@ -44,7 +44,7 @@ EXIT_OK = 0
 EXIT_FAILURE = 1
 EXIT_NOT_READY = 3
 
-DETAIL_DIRS: Tuple[str, ...] = ("docs/plans", "docs/design")
+DETAIL_DIRS: Tuple[str, ...] = ("plans",)
 MD_LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 ANY_HEADING = re.compile(r"^#{1,6}\s")
 GOAL_HEADING = re.compile(r"^#{1,6}\s*[^\n]*(?:goal|目标)", re.IGNORECASE)
@@ -284,7 +284,7 @@ def _add_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--root", default=".", help="project root (default: current directory)")
     parser.add_argument(
         "--plan",
-        help="comma-separated planning document paths (default: scan conventional candidates)",
+        help="comma-separated planning document paths (default: scan the canonical plans/ root)",
     )
     parser.add_argument("--format", choices=("text", "json"), default="text", help="output format (default: text)")
 

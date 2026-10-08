@@ -2,6 +2,8 @@
 
 本目录回答一个发布问题：怎样把 Agent 插件的清单元数据打包，而不把源码仓库的维护文件一并带进用户包？模板由打包脚本消费，字段名和占位符必须保持可解析。
 
+> 入口归类：**maintainer-only** —— 本目录只在源码库存在，不进运行时导出树；公开入口索引见 [`../docs/README.md`](../docs/README.md) 与 [`../docs/README-en.md`](../docs/README-en.md)。
+
 本目录是 `scripts/package_agent_plugin.py` 的打包模板：脚本读取这里的清单模板，
 渲染占位符、校验字段合法性，再组装本仓运行时 skill 载荷并产出可分发的插件 zip。
 

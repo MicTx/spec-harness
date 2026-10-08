@@ -43,7 +43,7 @@ Heuristic scoring is explicit and testable; it is not a substitute for the main 
 6. Merge and verify in the main session
 7. Escalate to `external` only when isolation or long-running execution is actually needed; if no external backend is installed, downgrade to in-process or serial handoff — never invent a control plane mid-task
 
-The `team-loop` slot remains the managed protocol for loop-until-converged / batch fan-out / review-fix loops. Orchestration routing and the team-loop protocol are complementary: routing chooses topology; the slot owns disk-truth loop state when its triggers hit. When the same-shape batch fan-out / review-fix-loop triggers hit both slots, use the repository-owned `workflow-runner` driver when a worker CLI is available; otherwise use `team-loop` (agents-team tool surface) — `slots/workflow-runner/README.md` holds the authoritative disambiguation.
+The `team-loop` slot remains the managed protocol for loop-until-converged / batch fan-out / review-fix loops. Orchestration routing and the team-loop protocol are complementary: routing chooses topology; the slot owns disk-truth loop state when its triggers hit. Routing-level triggering of batch fan-out and review-fix-loop shapes belongs to `workflow-runner` (`workflow_route.py`): `loop_route.py` explicitly defers those shapes instead of recommending them, so same-shape triggers no longer hit both slots. The team-loop state machine still supports `batch-fanout` as explicit initialization (`loop_state.py init --mode batch-fanout`), and it remains the degradation face for batch fan-out / review-fix loops when `workflow-runner` is unavailable (worker CLI missing or driver unusable) — `slots/workflow-runner/README.md` holds the authoritative disambiguation.
 
 ## Assignment contract
 
@@ -71,7 +71,7 @@ Host registration: hosts do not discover named subagents from a skill's own `age
 | 局部 | `local` | `scripts/route_decision.py --text` | 小而耦合、单文件、无并行收益；启发式弱信号不构成升级理由 | 误判可用 `--route` 显式覆盖回正确 token |
 | 探索 | `explore` + 2-3 条定向探察 sidecar | `scripts/route_decision.py --text` | 理解缺失/结构不清，且 assignment contract 五字段可写清 | 契约写不清就收回主线程串行探察 |
 | 并行扇出 | `explore` / `build` / `review` × workflow-runner（`batch-fanout` / `parallel-review` / `perspective-panel` / `review-fix-loop`） | `slots/workflow-runner/scripts/workflow_route.py --text`，且 `route_decision.py` 判定 ∈ `explore` / `build` / `review` | route ∈ `explore` / `build` / `review`（README 书面激活域）；仓库驱动可读且选定 worker CLI 在 PATH | 前置不满足即降级为普通 sidecar 或 team-loop（workflow-runner README Hard preconditions），不静默伪造结果 |
-| 循环收敛 | 任意 route × team-loop（`until-converged` / `fixed-rounds` / `batch-fanout`） | `slots/team-loop/scripts/loop_route.py --text` | `loopRecommended=true`（命中即移交执行段）；agents-team 工具面已加载 | 工具面缺失时显式报错，不静默降级为单会话循环 |
+| 循环收敛 | 任意 route × team-loop（`until-converged` / `fixed-rounds`）；评审-修复组合形态由 workflow-runner 承接（loop_route 显式让出） | `slots/team-loop/scripts/loop_route.py --text` | `loopRecommended=true`（命中即移交执行段）；agents-team 工具面已加载 | 工具面缺失时显式报错，不静默降级为单会话循环 |
 | 外部隔离 | `external` | `scripts/route_decision.py --text` | 实际需要隔离 git 状态/长时运行/多终端；本轮无外部后端 | 无外部后端时降级为 in-process 或串行交接，绝不中途发明控制面 |
 
 共存合法性：`loopRecommended=true` 与 `route=local` 共存是合法语义，不是矛盾——

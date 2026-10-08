@@ -42,6 +42,11 @@ in-session, then drive the loop per this README's protocol.
 | Code decision | Any session runs `loop_route.py --text "<goal>"` directly | Emits a JSON decision + suggested configuration, programmatically consumable |
 | Explicit request | The user names a loop / iterative advance / multi-round convergence | Enter initialization directly |
 
+`loop_route.py` defers review-fix composite shapes (`REVIEW_FIX_DEFER_PATTERNS` →
+`loopRecommended=false`): those shapes belong to `workflow-runner` at the routing level.
+`batch-fanout` remains a state-machine mode you can still pick with explicit
+`init --mode batch-fanout`; `loop_route.py` does not recommend it.
+
 ## Core protocol (the main session must follow this)
 
 Commands are relative to the slot root (`slots/team-loop/`):

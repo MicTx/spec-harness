@@ -11,7 +11,7 @@
 
 Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 Development Record。它提供任务包、路由、验证、归档和 Git 收尾，不提供模型，也不替用户做产品决策。
 
-按你要做的事选入口：想先理解它，读[项目介绍](docs/introduction.md)；想动手跑通一次，跟[长程任务教程](docs/tutorial.md)；要发布或回滚，看 [Git 工作流](docs/git-workflow.md)。全部公开入口见[文档索引](docs/README.md)。
+按你要做的事选入口：想先理解它，读[项目介绍](docs/introduction.md)；想动手跑通一次，跟[长程任务教程](docs/tutorial.md)；要发布或回滚，看 [Git 工作流](docs/git-workflow.md)。全部公开入口见[文档索引](docs/README.md)，英文读者见 [English index](docs/README-en.md)。
 
 **目录**
 
@@ -87,7 +87,7 @@ bash install.sh
 
 | `INSTALL_HOSTS` | 宿主 | 默认目录 | 额外行为 |
 | --- | --- | --- | --- |
-| `claude` | Claude Code | `~/.claude/skills` | 生成 `/spec` 与十个阶段命令 |
+| `claude` | Claude Code | `~/.claude/skills` | 生成 `/spec` 与 12 个阶段命令 |
 | `claude-desktop` | Claude Desktop | `~/.claude-desktop/skills` | 只安装 Skill |
 | `codex`、`codex-desktop` | Codex | `~/.codex/skills` | 两个 token 共用目录 |
 | `gemini` | Gemini CLI | `~/.gemini/skills` | |
@@ -133,16 +133,16 @@ spec:goal add payment recovery with tests
 ```bash
 python3 /tmp/spec-harness/scripts/init_spec_package.py \
   --root /path/to/project \
-  --slug 2026-10-03_payment-recovery \
+  --slug 2026-10-03_add-payment-recovery \
   --title "Payment Recovery"
 ```
 
 初始化后，按顺序查看阶段、状态和门禁：
 
 ```bash
-python3 /tmp/spec-harness/scripts/route_spec_package.py --root /path/to/project --slug 2026-10-03_payment-recovery
-python3 /tmp/spec-harness/scripts/report_spec_package.py --root /path/to/project --slug 2026-10-03_payment-recovery --view status
-python3 /tmp/spec-harness/scripts/check_spec_package.py --root /path/to/project --slug 2026-10-03_payment-recovery
+python3 /tmp/spec-harness/scripts/route_spec_package.py --root /path/to/project --slug 2026-10-03_add-payment-recovery
+python3 /tmp/spec-harness/scripts/report_spec_package.py --root /path/to/project --slug 2026-10-03_add-payment-recovery --view status
+python3 /tmp/spec-harness/scripts/check_spec_package.py --root /path/to/project --slug 2026-10-03_add-payment-recovery
 ```
 
 任务完成后可由 `/spec:done` 完成复核、归档和 Git 提交。直接操作时，先运行：
@@ -150,7 +150,7 @@ python3 /tmp/spec-harness/scripts/check_spec_package.py --root /path/to/project 
 ```bash
 python3 /tmp/spec-harness/scripts/complete_spec_package.py \
   --root /path/to/project \
-  --slug 2026-10-03_payment-recovery \
+  --slug 2026-10-03_add-payment-recovery \
   --archive
 ```
 
@@ -194,6 +194,8 @@ spec/
 │   ├── autoplan_gate.py
 │   ├── autoplan_spawn.py
 │   ├── autorun_spawn.py
+│   ├── chain_recovery.py
+│   ├── chain_spawn_support.py
 │   ├── check_all_spec_packages.py
 │   ├── check_spec_package.py
 │   ├── complete_spec_package.py

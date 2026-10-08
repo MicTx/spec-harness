@@ -1,4 +1,12 @@
-"""workflow_route 路由判定测试：正例路由、反例不路由、配置生成、评审回补盲区。"""
+"""workflow_route 路由判定测试：正例路由、反例不路由、配置生成、评审回补盲区。
+
+F9 强弱分权收口：泛化「批量」降为弱信号（单独不推荐、共现补分），
+四条实测过触发文本进 NEGATIVES，另钉弱+强共现、score==1 与 explicit-only 遗留兼容。
+F10 循环收敛拆分：LOOP 形态拆强（评审-修复复合）/弱（裸收敛标记）两表，
+`iterate until all tests pass` 等裸收敛文本不再推荐 workflow（归 team-loop），
+R3 改判 `fix results and iterate until converge` 入 NEGATIVES，另钉弱收敛+强 fanout
+共现时 mode 仍由强信号决定。
+"""
 
 from __future__ import annotations
 
@@ -22,7 +30,7 @@ REVIEWER_REPRO_CASES = [
     ("对这个 PR 评审后修复", "review-fix-loop"),
     ("评审-修复-再验证闭环", "review-fix-loop"),
     ("review it, fix it, then review again", "review-fix-loop"),
-    ("fix results and iterate until converge", "review-fix-loop"),
+    ("review the code then fix then review again until converge", "review-fix-loop"),
     ("修复并复审，直到审查无问题", "review-fix-loop"),
     ("出多个独立方案对比评分", "perspective-panel"),
     ("judge panel 评一下三个方案", "perspective-panel"),
@@ -41,6 +49,18 @@ NEGATIVES = [
     # 评审回补：loop/review 词不构成形态时不误触发
     "帮我修复这个 bug",
     "fix resource leak in worker",
+    # F9 收口：四条实测过触发文本（2026-10-08 @ 5de8944 旧「任一命中 ×2 过阈」下 route=local + wf=True）
+    "批量",
+    "批量改个错别字",
+    "批量更新这 3 个配置文件的版本号",
+    "先批量看一眼再说",
+    # F10 收口：裸收敛标记归弱表，单独不推荐（team-loop until-converged 承接）；
+    # `fix results and iterate until converge` 系 R3 裁定（2026-10-07）改判 team-loop
+    "iterate until all tests pass",
+    "循环执行直到所有测试通过",
+    "fix results and iterate until converge",
+    "反复修复这个 bug 直到测试通过",
+    "修复这个 bug 然后迭代收敛",
 ]
 
 
@@ -123,3 +143,53 @@ def test_panel_with_review_co_occurrence_stays_panel():
     """panel+review 共存时保持 panel——评审第 3 条：panel 显式信号优先。"""
     decision = route("出 3 个独立方案对比评分择优，再对胜者做多维度评审")
     assert decision["mode"] == "perspective-panel"
+
+
+def test_weak_signal_alone_scores_one_and_never_recommends():
+    """F9 强弱分权：泛化「批量」单弱信号只计 1 分，不过阈、不推荐（近阈值 reason 可读）。"""
+    decision = route("批量更新这 3 个配置文件的版本号")
+    assert decision["score"] == 1
+    assert decision["workflowRecommended"] is False
+    assert decision["mode"] == "none"
+    assert decision["suggestedConfig"] is None
+    assert "泛化批量(弱)" in decision["reason"]
+
+
+def test_weak_and_strong_co_occurrence_still_recommends():
+    """F9 弱+强共现：弱信号补分但不主导，mode 由强信号决定。"""
+    decision = route("批量更新版本号，并对所有页面都做并行评审")
+    assert decision["workflowRecommended"] is True
+    assert decision["mode"] == "parallel-review"
+    assert decision["score"] == 5
+    assert "泛化批量(弱)" in decision["reason"]
+
+
+def test_explicit_only_request_keeps_legacy_batch_fanout_compat():
+    """F9 遗留兼容：仅显式 workflow 词命中时沿用 batch-fanout mode，不新增 explicit mode，reason 标显式请求。"""
+    decision = route("用 workflow 编排跑这个任务")
+    assert decision["workflowRecommended"] is True
+    assert decision["mode"] == "batch-fanout"
+    assert "显式" in decision["reason"]
+    assert decision["suggestedConfig"] is not None
+    assert decision["suggestedConfig"]["mode"] == "batch-fanout"
+
+
+def test_bare_convergence_weak_signal_alone_never_recommends():
+    """F10 弱收敛拆分：裸收敛标记归弱表，单独只计 1 分不过阈，不推荐（交界归 team-loop）。"""
+    decision = route("iterate until all tests pass")
+    assert decision["score"] == 1
+    assert decision["workflowRecommended"] is False
+    assert decision["mode"] == "none"
+    assert decision["suggestedConfig"] is None
+    assert "裸收敛(弱)" in decision["reason"]
+
+
+def test_bare_convergence_with_strong_fanout_keeps_fanout_mode():
+    """F10 弱收敛+强 fanout 共现：弱信号补分但不抢 mode，mode 仍由强信号决定。"""
+    decision = route("批量处理这 40 个条目，每个都独立完成，直到全部通过")
+    assert decision["workflowRecommended"] is True
+    assert decision["mode"] == "batch-fanout"
+    assert decision["score"] >= 2
+    assert "裸收敛(弱)" in decision["reason"]
+    assert decision["suggestedConfig"] is not None
+    assert decision["suggestedConfig"]["mode"] == "batch-fanout"

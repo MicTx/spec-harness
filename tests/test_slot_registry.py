@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location("slot_registry", REPO_ROOT / "scripts" / "slot_registry.py")
@@ -130,3 +133,29 @@ def test_external_asset_symlink_is_rejected(tmp_path):
     (slot_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     problems = slot_registry.validate_slot(slot_dir)
     assert any("符号链接" in problem or "逃逸" in problem for problem in problems)
+
+
+MANIFEST_FENCE = re.compile(r"```json\n(.*?)```", re.DOTALL)
+
+
+def _doc_manifest_example() -> str:
+    doc = (REPO_ROOT / "references" / "slots.md").read_text(encoding="utf-8")
+    match = MANIFEST_FENCE.search(doc)
+    assert match, "references/slots.md must carry a ```json manifest example"
+    return match.group(1)
+
+
+def test_slots_doc_manifest_example_is_standard_json():
+    payload = json.loads(_doc_manifest_example())
+    assert {"name", "version", "summary", "scripts", "hooks"} <= set(payload)
+    assert isinstance(payload["hooks"], dict)
+    assert json.loads(json.dumps(payload)) == payload, "the shipped example must round-trip"
+
+
+def test_slots_doc_json_check_rejects_comment_carrying_example():
+    """Negative sample: the pre-fix `// 无 hook 的 slot 用空对象 {}` fence must fail the same check."""
+    drifted = '```json\n{\n  "hooks": {},  // 无 hook 的 slot 用空对象 {}\n}\n```\n'
+    match = MANIFEST_FENCE.search(drifted)
+    assert match
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(match.group(1))

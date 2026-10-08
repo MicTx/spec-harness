@@ -1,3 +1,4 @@
+import ast
 import json
 import os
 import shutil
@@ -11,6 +12,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from doctor_spec_environment import (  # noqa: E402  # type: ignore
+    CHANNEL_PROBE_TIMEOUT_SECONDS,
+    CHANNEL_SPOT_CHECK_SCRIPTS,
+    PROBE_IDS,
     REQUIRED_RUNTIME_FILES,
     Doctor,
     claude_commands_dir,
@@ -79,6 +83,50 @@ def run_doctor_cli(*args: str) -> subprocess.CompletedProcess:
     )
 
 
+def test_probe_ids_registry_is_ordered_complete_and_unique():
+    """PROBE_IDS is the declared truth source for the check catalog.
+
+    Bidirectional consistency against every ``self.record("...")`` site in
+    the doctor source, no duplicates, skill.channels included, and pinned to
+    run() execution order (skill.drift right after skill.marker because its
+    branch lives inside check_skill_marker).
+    """
+    source = (ROOT / "scripts" / "doctor_spec_environment.py").read_text(encoding="utf-8")
+    recorded = set()
+    for node in ast.walk(ast.parse(source)):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "record"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            recorded.add(node.args[0].value)
+
+    assert len(PROBE_IDS) == len(set(PROBE_IDS)), "PROBE_IDS must not repeat an id"
+    assert set(PROBE_IDS) == recorded, (
+        f"PROBE_IDS and self.record() sites drifted apart: {sorted(set(PROBE_IDS) ^ recorded)}"
+    )
+    assert "skill.channels" in PROBE_IDS, "F6 probe must be in the registry"
+    assert PROBE_IDS == (
+        "python.runtime",
+        "git.available",
+        "skill.layout",
+        "skill.scripts",
+        "skill.channels",
+        "skill.marker",
+        "skill.drift",
+        "hosts.installed",
+        "claude.commands",
+        "claude.agents",
+        "zcode.symlink",
+        "project.git",
+        "project.spec",
+        "project.hooks",
+    ), "PROBE_IDS must follow run() execution order"
+
+
 def test_check_catalog_is_stable_on_repo_root(tmp_path, isolated_home):
     doctor = Doctor(skill_root=ROOT, project_root=ROOT)
     exit_code = doctor.run()
@@ -95,7 +143,7 @@ def test_check_catalog_is_stable_on_repo_root(tmp_path, isolated_home):
         "project.hooks",
     }
     assert guaranteed <= ids
-    optional = {"claude.commands", "claude.agents", "zcode.symlink"}
+    optional = {"claude.commands", "claude.agents", "zcode.symlink", "skill.channels"}
     assert ids <= guaranteed | optional
     assert check_by_id(doctor, "python.runtime").status == "ok"
     assert check_by_id(doctor, "skill.layout").status == "ok"
@@ -136,6 +184,125 @@ def test_scripts_check_compiles_nested_slot_scripts(tmp_path):
     check = check_by_id(doctor, "skill.scripts")
     assert check.status == "fail"
     assert "bad.py" in check.detail
+
+
+CHANNEL_OK_BODY = 'print("usage: spec fake")\n'
+
+
+def write_channel_samples(skill_root: Path, bodies: dict) -> None:
+    """Write channel-probe sample scripts; keys are CHANNEL_SPOT_CHECK_SCRIPTS members."""
+    for name, body in bodies.items():
+        path = skill_root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+
+
+def all_clean_bodies() -> dict:
+    return {name: CHANNEL_OK_BODY for name in CHANNEL_SPOT_CHECK_SCRIPTS}
+
+
+def test_channels_probe_ok_when_samples_are_clean(tmp_path):
+    skill = tmp_path / "skill"
+    write_channel_samples(skill, all_clean_bodies())
+    doctor = Doctor(skill_root=skill, project_root=tmp_path)
+    doctor.check_skill_channels()
+    check = check_by_id(doctor, "skill.channels")
+    assert check.status == "ok"
+    assert "5/5" in check.detail
+    assert "stderr 干净" in check.detail
+
+
+def test_channels_probe_fails_when_help_prints_only_stderr(tmp_path):
+    skill = tmp_path / "skill"
+    bodies = all_clean_bodies()
+    bodies["scripts/route_spec_package.py"] = 'import sys\nsys.stderr.write("usage\\n")\n'
+    write_channel_samples(skill, bodies)
+    doctor = Doctor(skill_root=skill, project_root=tmp_path)
+    doctor.check_skill_channels()
+    check = check_by_id(doctor, "skill.channels")
+    assert check.status == "fail"
+    assert "route_spec_package.py" in check.detail
+    assert "stdout 为空" in check.detail
+    assert "通道契约" in check.fix_note
+
+
+def test_channels_probe_fails_on_silent_success(tmp_path):
+    skill = tmp_path / "skill"
+    bodies = all_clean_bodies()
+    bodies["scripts/check_spec_package.py"] = "pass\n"
+    write_channel_samples(skill, bodies)
+    doctor = Doctor(skill_root=skill, project_root=tmp_path)
+    doctor.check_skill_channels()
+    check = check_by_id(doctor, "skill.channels")
+    assert check.status == "fail"
+    assert "check_spec_package.py" in check.detail
+    assert "契约输出缺位" in check.detail
+
+
+def test_channels_probe_warns_on_stderr_bleed_during_success(tmp_path):
+    skill = tmp_path / "skill"
+    bodies = all_clean_bodies()
+    bodies["scripts/slot_registry.py"] = 'import sys\nprint("usage: spec fake")\nsys.stderr.write("note\\n")\n'
+    write_channel_samples(skill, bodies)
+    doctor = Doctor(skill_root=skill, project_root=tmp_path)
+    doctor.check_skill_channels()
+    check = check_by_id(doctor, "skill.channels")
+    assert check.status == "warn"
+    assert "slot_registry.py" in check.detail
+    assert "stderr 非空" in check.detail
+
+
+def test_channels_probe_warns_on_abnormal_exit_with_stderr_line(tmp_path):
+    skill = tmp_path / "skill"
+    bodies = all_clean_bodies()
+    bodies["scripts/generate_changelog.py"] = 'import sys\nsys.stderr.write("boom\\n")\nsys.exit(3)\n'
+    write_channel_samples(skill, bodies)
+    doctor = Doctor(skill_root=skill, project_root=tmp_path)
+    doctor.check_skill_channels()
+    check = check_by_id(doctor, "skill.channels")
+    assert check.status == "warn"
+    assert "退出码 3" in check.detail
+    assert "boom" in check.detail
+
+
+def test_channels_probe_warns_on_timeout(tmp_path, monkeypatch):
+    skill = tmp_path / "skill"
+    write_channel_samples(skill, all_clean_bodies())
+
+    def raise_timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(
+            cmd=args[0] if args else "sample",
+            timeout=CHANNEL_PROBE_TIMEOUT_SECONDS,
+        )
+
+    monkeypatch.setattr(subprocess, "run", raise_timeout)
+    doctor = Doctor(skill_root=skill, project_root=tmp_path)
+    doctor.check_skill_channels()
+    check = check_by_id(doctor, "skill.channels")
+    assert check.status == "warn"
+    assert "超时" in check.detail
+
+
+def test_channels_probe_skips_single_missing_sample(tmp_path):
+    skill = tmp_path / "skill"
+    bodies = all_clean_bodies()
+    del bodies["scripts/generate_changelog.py"]
+    write_channel_samples(skill, bodies)
+    doctor = Doctor(skill_root=skill, project_root=tmp_path)
+    doctor.check_skill_channels()
+    check = check_by_id(doctor, "skill.channels")
+    assert check.status == "ok"
+    assert "4/5" in check.detail
+
+
+def test_channels_probe_reports_info_when_all_samples_missing(tmp_path):
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    doctor = Doctor(skill_root=skill, project_root=tmp_path)
+    doctor.check_skill_channels()
+    check = check_by_id(doctor, "skill.channels")
+    assert check.status == "info"
+    assert "skill.layout" in check.detail
 
 
 def test_layout_rejects_invalid_slot_manifest(tmp_path):
@@ -198,6 +365,15 @@ def test_hosts_installed_warns_when_no_host_has_the_skill(isolated_home):
 def test_claude_commands_skipped_when_host_unused(isolated_home):
     doctor = Doctor(skill_root=ROOT, project_root=ROOT)
     assert doctor.check_claude_commands() is True
+    assert doctor.checks == []
+
+
+def test_claude_commands_skipped_when_host_filter_excludes_claude(isolated_home):
+    # Same scoping rule as check_claude_agents: a --host that excludes claude
+    # must not scan (or fail on) the claude side, even when it is installed.
+    install_fake_skill(isolated_home / ".claude" / "skills" / "spec")
+    doctor = Doctor(skill_root=ROOT, project_root=ROOT, host_filter=["codex"])
+    assert doctor.check_claude_commands() is None
     assert doctor.checks == []
 
 

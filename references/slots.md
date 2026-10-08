@@ -35,11 +35,13 @@ slots/<name>/
   "triggers": ["what task shapes should activate this slot"],
   "requires": ["external dependencies, e.g. the agents-team skill tool surface"],
   "scripts": ["scripts/relative/path.py"],
-  "hooks": {"<ClaudeCodeEvent>": ["hooks/relative/path.py"]},  // 无 hook 的 slot 用空对象 {}
+  "hooks": {"<ClaudeCodeEvent>": ["hooks/relative/path.py"]},
   "tests": "tests",
   "docs": ["README.md", "references/xxx.md"]
 }
 ```
+
+A scripts+docs-only slot declares no hook: write `"hooks": {}`. The fence stays standard JSON — parser-rejected syntax such as `//` comments belongs in the prose around it, never inside the block.
 
 Hard rules (enforced by the registry):
 - Required fields: `name / version / summary / scripts / hooks`（`hooks` 允许为空对象——纯 scripts+docs 型 slot）

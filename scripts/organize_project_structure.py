@@ -123,6 +123,8 @@ PROTOCOL_ARTIFACT_NAMES = frozenset(
 CLASS_UNREFERENCED_FILE = "unreferenced-file"
 CLASS_UNREFERENCED_CODE = "unreferenced-code"
 CLASS_DANGLING_DOC = "dangling-doc-path"
+CLASS_EXAMPLE_DOC = "example-doc-path"
+PLAN_ARCHIVE_PREFIX = "plans/archive/"
 ARCHIVE_ACTION = "archive"
 CODE_SUFFIXES = {".cjs", ".js", ".jsx", ".mjs", ".py", ".sh", ".ts", ".tsx"}
 ENTRY_BASENAMES = {"SKILL.md", "__init__.py", "__main__.py", "install.sh", "pyproject.toml"}
@@ -296,6 +298,7 @@ class AuditReport:
     unreferenced_files: list[str] = field(default_factory=list)
     unreferenced_code: list[str] = field(default_factory=list)
     dangling_doc_groups: dict[str, list[str]] = field(default_factory=dict)
+    example_doc_groups: dict[str, list[str]] = field(default_factory=dict)
     declared_paths: list[str] = field(default_factory=list)
     missing_primary_files: list[str] = field(default_factory=list)
     dag_md_missing: bool = False
@@ -337,6 +340,9 @@ class AuditReport:
                 CLASS_DANGLING_DOC: [
                     {"missing": missing, "docs": docs} for missing, docs in sorted(self.dangling_doc_groups.items())
                 ],
+                CLASS_EXAMPLE_DOC: [
+                    {"missing": missing, "docs": docs} for missing, docs in sorted(self.example_doc_groups.items())
+                ],
             },
             "architecture": {
                 "declared_paths": self.declared_paths,
@@ -374,6 +380,10 @@ def is_historical_path(rel: str, specs_dir_name: str) -> bool:
     """Governance records and changelog history are evidence, not live consumers."""
     if rel == "CHANGELOG.md":
         return True
+    if rel.startswith(PLAN_ARCHIVE_PREFIX):
+        # Delivered/retired plan records under ``plans/archive/`` describe the
+        # repository as it was; their paths are history, like ``.spec/`` records.
+        return True
     top = rel.split("/", 1)[0]
     if top == specs_dir_name or top == ".spec":
         return True
@@ -401,6 +411,19 @@ def export_script_whitelist(root: Path) -> set[str]:
             continue
         names.add(f"scripts/{path.name}")
     return names
+
+
+def is_planning_record(rel: str) -> bool:
+    """Live planning records under ``plans/`` describe future (or past) state.
+
+    Their prose names deliverables that may not exist yet and existing files
+    by basename; those mentions are planning evidence, not live wiring, so
+    they never become dangling/example findings. Archived records were
+    already historical via ``is_historical_path``; this extends the same
+    ruling to live plans. Mentions from these docs still count toward the
+    reference graph, so retirement detection keeps its inputs.
+    """
+    return rel.startswith("plans/")
 
 
 def is_retired_candidate_excluded(rel: str, declared: set[str], whitelist: set[str]) -> bool:
@@ -828,8 +851,14 @@ JSON_PATH_VALUE = re.compile(
 )
 
 
-def mentioned_paths(doc_rel: str, content: str, root: Optional[Path] = None) -> set[str]:
-    found: set[str] = set()
+def mentioned_path_occurrences(doc_rel: str, content: str, root: Optional[Path] = None) -> list[tuple[str, int, int]]:
+    """Yield (normalized path, start, end) for every path mention in ``content``.
+
+    Positions stay in the coordinate space of the supplied text so callers can
+    classify each mention by its surrounding prose (see
+    ``classify_example_mention``).
+    """
+    found: list[tuple[str, int, int]] = []
     for match in PATH_MENTION.finditer(content):
         if content[max(0, match.start() - 3) : match.start()].endswith("://"):
             continue
@@ -841,26 +870,85 @@ def mentioned_paths(doc_rel: str, content: str, root: Optional[Path] = None) -> 
                 continue
         normalized = normalize_mentioned_path(doc_rel, raw, root)
         if normalized and normalized != doc_rel:
-            found.add(normalized)
+            found.append((normalized, match.start(), match.end()))
     for match in MD_LINK.finditer(content):
         normalized = normalize_mentioned_path(doc_rel, match.group(1), root)
         if normalized and normalized != doc_rel:
-            found.add(normalized)
+            found.append((normalized, match.start(), match.end()))
     suffix = Path(doc_rel).suffix.lower()
     if suffix in (".html", ".htm"):
         # <script src> / <link href> / <img src> are live wiring, not prose.
         for match in HTML_WIRED_ATTR.finditer(content):
             normalized = normalize_mentioned_path(doc_rel, match.group(1), root)
             if normalized and normalized != doc_rel:
-                found.add(normalized)
+                found.append((normalized, match.start(), match.end()))
     elif suffix == ".json":
         # Manifest docs arrays, hook event tables, and build configs wire
         # files through string values; treat path-shaped values as live.
         for match in JSON_PATH_VALUE.finditer(content):
             normalized = normalize_mentioned_path(doc_rel, match.group(1), root)
             if normalized and normalized != doc_rel:
-                found.add(normalized)
+                found.append((normalized, match.start(), match.end()))
     return found
+
+
+def mentioned_paths(doc_rel: str, content: str, root: Optional[Path] = None) -> set[str]:
+    return {normalized for normalized, _, _ in mentioned_path_occurrences(doc_rel, content, root)}
+
+
+# Mentions in clearly illustrative prose are candidates and examples, not broken
+# references: a path-with-spaces inside a quoted run (`docs/plan v2.md`), a
+# parenthesized enumeration of candidate locations (two or more path-shaped tokens plus 等/etc.), or a
+# mention carrying an explicit example marker next to it. Classification is
+# reported (``example-doc-path``), never silently dropped, so a misclassification
+# stays visible in the audit output.
+EXAMPLE_MARKERS = ("示例", "例子", "例如", "候选", "e.g.", "for example", "example", "placeholder")
+ENUMERATION_MARKERS = ("等", "etc")
+MARKER_WINDOW = 20
+PAREN_SPAN = re.compile(r"[（(][^（()）]*[）)]")
+
+
+def _enclosing_quote_span(line: str, start: int, end: int) -> Optional[tuple[str, int, int]]:
+    """Return ``(content, content_start, content_end)`` for the quoted run around a mention."""
+    for opener, closer in (("`", "`"), ("'", "'"), ('"', '"')):
+        open_index = line.rfind(opener, 0, start)
+        close_index = line.find(closer, end)
+        if 0 <= open_index < start and close_index >= end:
+            return line[open_index + 1 : close_index], open_index + 1, close_index
+    return None
+
+
+def classify_example_mention(text: str, start: int, end: int) -> bool:
+    """True when a dangling mention is illustrative prose rather than a broken path."""
+    line_start = text.rfind("\n", 0, start) + 1
+    line_end = text.find("\n", end)
+    if line_end < 0:
+        line_end = len(text)
+    line = text[line_start:line_end]
+    local_start, local_end = start - line_start, end - line_start
+
+    # 1. A quoted run that contains whitespace and starts with a path-shaped
+    #    token: the mention is part of a "path with spaces" sample, not a repo path.
+    quoted = _enclosing_quote_span(line, local_start, local_end)
+    if quoted is not None:
+        span, span_start, _span_end = quoted
+        tokens = span.split()
+        first_token = tokens[0] if tokens else ""
+        if len(tokens) > 1 and "/" in first_token and local_start - span_start >= len(first_token):
+            return True
+
+    # 2. A parenthesized enumeration of two or more path-shaped tokens with an
+    #    enumeration marker: a list of candidate locations, not existing files.
+    for match in PAREN_SPAN.finditer(line):
+        if match.start() <= local_start < match.end():
+            body = match.group(0)
+            if len(PATH_MENTION.findall(body)) >= 2 and any(marker in body for marker in ENUMERATION_MARKERS):
+                return True
+
+    # 3. An explicit example/candidate marker sits next to the mention.
+    before = line[max(0, local_start - MARKER_WINDOW) : local_start]
+    after = line[local_end : local_end + MARKER_WINDOW]
+    return any(marker in before or marker in after for marker in EXAMPLE_MARKERS)
 
 
 def find_retired_candidates(
@@ -877,6 +965,7 @@ def find_retired_candidates(
     referenced: set[str] = set()
     imported: set[str] = set()
     dangling: dict[str, list[str]] = {}
+    example: dict[str, list[str]] = {}
     for rel in tracked:
         if is_historical_path(rel, specs_dir_name):
             continue
@@ -914,10 +1003,27 @@ def find_retired_candidates(
         referenced.update(mentioned_paths(rel, mention_text, root))
         if suffix != ".md" or is_retired_candidate_excluded(rel, declared, whitelist):
             continue
-        for missing in sorted(mentioned_paths(rel, FENCED_BLOCK.sub("\n", content), root)):
+        if is_planning_record(rel):
+            # Planning records name future deliverables and basenames by
+            # design; classifying those mentions as drift findings contradicts
+            # the document class (see is_planning_record).
+            continue
+        prose = FENCED_BLOCK.sub("\n", content)
+        real_references: set[str] = set()
+        illustrative: set[str] = set()
+        for missing, start, end in mentioned_path_occurrences(rel, prose, root):
             if (root / missing).exists():
                 continue
+            if classify_example_mention(prose, start, end):
+                illustrative.add(missing)
+            else:
+                real_references.add(missing)
+        # A path mentioned both as a real reference and as an example stays a
+        # real reference: classification is fail-open only for pure examples.
+        for missing in sorted(real_references):
             dangling.setdefault(missing, []).append(rel)
+        for missing in sorted(illustrative - real_references):
+            example.setdefault(missing, []).append(rel)
     unreferenced_files: list[str] = []
     unreferenced_code: list[str] = []
     for rel in sorted(tracked):
@@ -948,7 +1054,8 @@ def find_retired_candidates(
             continue
         unreferenced_files.append(rel)
     grouped = {missing: sorted(docs) for missing, docs in sorted(dangling.items())}
-    return unreferenced_files, unreferenced_code, grouped
+    example_grouped = {missing: sorted(docs) for missing, docs in sorted(example.items())}
+    return unreferenced_files, unreferenced_code, grouped, example_grouped
 
 
 @dataclass(frozen=True)
@@ -1234,10 +1341,13 @@ def collect_facts(root: Path, specs_dir_name: str, stale_days: int, large_bytes:
         print(f"error: {error}", file=sys.stderr)
         raise SystemExit(1)
     check_architecture(root, specs_root, report)
-    files, code, groups = find_retired_candidates(root, tracked, specs_dir_name, set(report.declared_paths))
+    files, code, groups, example_groups = find_retired_candidates(
+        root, tracked, specs_dir_name, set(report.declared_paths)
+    )
     report.unreferenced_files = files
     report.unreferenced_code = code
     report.dangling_doc_groups = groups
+    report.example_doc_groups = example_groups
     return report
 
 
@@ -1316,6 +1426,9 @@ def render_markdown(report: AuditReport, check: bool) -> str:
             lines.append(f"- {CLASS_DANGLING_DOC} `{missing}`: {joined}")
     else:
         lines.append(f"- {CLASS_DANGLING_DOC}: none")
+    for missing, docs in report.example_doc_groups.items():
+        joined = ", ".join(f"`{path}`" for path in docs)
+        lines.append(f"- {CLASS_EXAMPLE_DOC} `{missing}`: {joined}")
     lines.append("")
     lines.append("## Architecture consistency")
     lines.append("")

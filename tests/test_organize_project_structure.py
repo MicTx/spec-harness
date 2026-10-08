@@ -17,6 +17,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 from organize_project_structure import (  # noqa: E402
     build_archive_plan,
+    classify_example_mention,
     collect_facts,
     is_historical_path,
     normalize_mentioned_path,
@@ -114,6 +115,46 @@ def test_is_historical_path_classifies_governance_text():
     assert is_historical_path(".spec/specs/2026-01-01_x/spec.md", ".spec")
     assert not is_historical_path("README.md", ".spec")
     assert not is_historical_path("scripts/tool.py", ".spec")
+
+
+def test_is_historical_path_classifies_archived_plan_records():
+    assert is_historical_path("plans/archive/2026-10-06_add-autorun-command.md", ".spec")
+    assert not is_historical_path("plans/README.md", ".spec")
+    assert not is_historical_path("plans/01-core.md", ".spec")
+
+
+def test_archived_plan_paths_do_not_become_dangling(tmp_path):
+    """``plans/`` records are planning evidence: their path mentions are not gaps."""
+    root = make_sweep_repo(tmp_path)
+    plan = root / "plans" / "archive" / "2026-01-01_add-demo.md"
+    plan.parent.mkdir(parents=True, exist_ok=True)
+    plan.write_text("原文路径：`scripts/gone.py`、`PLAN.md`、`autorun_chain.py`。\n", encoding="utf-8")
+    report = collect_facts(root, ".spec", stale_days=90, large_bytes=512 * 1024)
+    archived_doc = "plans/archive/2026-01-01_add-demo.md"
+    assert archived_doc not in report.dangling_doc_groups.get("scripts/gone.py", [])
+    assert "PLAN.md" not in report.dangling_doc_groups
+    assert "autorun_chain.py" not in report.dangling_doc_groups
+
+    # Live planning records describe FUTURE state too: naming a deliverable
+    # that does not exist yet (or an existing file by basename) is the
+    # document class's job, not drift evidence. The mention still counts as
+    # a reference in the graph — only the dangling classification is skipped.
+    live = root / "plans" / "01-live.md"
+    live.write_text(
+        "See `scripts/gone.py` for the live plan; F4 adds `scripts/future_probe.py`.\n",
+        encoding="utf-8",
+    )
+    report = collect_facts(root, ".spec", stale_days=90, large_bytes=512 * 1024)
+    assert "plans/01-live.md" not in report.dangling_doc_groups.get("scripts/gone.py", [])
+    assert "scripts/future_probe.py" not in report.dangling_doc_groups
+
+    # Non-planning docs keep the strict contract: a missing path in live
+    # product documentation is still a dangling finding.
+    doc = root / "docs" / "guide.md"
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("See `scripts/gone.py` in the guide.\n", encoding="utf-8")
+    report = collect_facts(root, ".spec", stale_days=90, large_bytes=512 * 1024)
+    assert "docs/guide.md" in report.dangling_doc_groups.get("scripts/gone.py", [])
 
 
 def test_parse_module_index_extracts_modules_and_declared_paths():
@@ -536,6 +577,77 @@ def test_protocol_artifact_labels_do_not_become_dangling_paths(tmp_path):
     doc.write_text("Use `plan.json`, `runs.md`, and `workflow_fanout.py` as protocol artifacts.\n", encoding="utf-8")
     report = collect_facts(root, ".spec", stale_days=90, large_bytes=512 * 1024)
     assert not any(name in report.dangling_doc_groups for name in ("plan.json", "runs.md", "workflow_fanout.py"))
+
+
+# -- Illustrative mentions: candidate/example paths stay classified, not dangling.
+
+
+def test_candidate_location_enumeration_is_classified_as_example(tmp_path):
+    """A parenthesized list of conventional locations names candidates, not files."""
+    root = make_sweep_repo(tmp_path)
+    doc = root / "guide" / "c.md"
+    doc.write_text(
+        "Put the plan at a conventional location (`PLAN.md`, `docs/plan*.md`, `PRD.md` etc.) or pass `--plan`.\n",
+        encoding="utf-8",
+    )
+    report = collect_facts(root, ".spec", stale_days=90, large_bytes=512 * 1024)
+    assert "PLAN.md" in report.example_doc_groups
+    assert "PRD.md" in report.example_doc_groups
+    assert "PLAN.md" not in report.dangling_doc_groups
+    assert "PRD.md" not in report.dangling_doc_groups
+
+
+def test_space_quoted_path_sample_is_classified_as_example(tmp_path):
+    """`docs/plan v2.md` is a quoting sample for paths with spaces, not a repo path."""
+    root = make_sweep_repo(tmp_path)
+    doc = root / "guide" / "c.md"
+    doc.write_text(
+        "Quoted values survive, so `docs/plan v2.md` no longer arrives truncated.\n",
+        encoding="utf-8",
+    )
+    report = collect_facts(root, ".spec", stale_days=90, large_bytes=512 * 1024)
+    assert "v2.md" in report.example_doc_groups
+    assert "v2.md" not in report.dangling_doc_groups
+
+
+def test_marker_adjacent_mention_is_classified_as_example(tmp_path):
+    """A bare protocol name introduced as an example stays out of the dangling class."""
+    root = make_sweep_repo(tmp_path)
+    doc = root / "guide" / "c.md"
+    doc.write_text("Validate the `manifest.json` example with a JSON parser.\n", encoding="utf-8")
+    report = collect_facts(root, ".spec", stale_days=90, large_bytes=512 * 1024)
+    assert "manifest.json" in report.example_doc_groups
+    assert "manifest.json" not in report.dangling_doc_groups
+
+
+def test_real_reference_next_to_examples_stays_dangling(tmp_path):
+    """Classification never shields a real broken reference on the same line."""
+    root = make_sweep_repo(tmp_path)
+    doc = root / "guide" / "c.md"
+    doc.write_text(
+        "See `scripts/gone.py` for the example wiring and `PLAN.md` for candidates.\n",
+        encoding="utf-8",
+    )
+    report = collect_facts(root, ".spec", stale_days=90, large_bytes=512 * 1024)
+    assert "PLAN.md" in report.example_doc_groups
+    assert "scripts/gone.py" in report.dangling_doc_groups, "a real missing reference must stay fail-closed"
+
+
+def test_classify_example_mention_direct_rules():
+    text = "Put it at (`PLAN.md`, `docs/plan*.md`, `PRD.md` etc.) or pass a path."
+    start = text.index("`PLAN.md`") + 1
+    assert classify_example_mention(text, start, start + len("PLAN.md"))
+    plain = "See `totally-gone.md` before changing this."
+    start = plain.index("`totally-gone.md`") + 1
+    assert not classify_example_mention(plain, start, start + len("totally-gone.md"))
+
+
+def test_repo_documentation_has_no_unclassified_dangling_findings():
+    """The repository's own docs keep every illustrative mention classified."""
+    report = collect_facts(ROOT, ".spec", stale_days=90, large_bytes=512 * 1024)
+    assert report.dangling_doc_groups == {}, (
+        f"unclassified dangling doc paths: { {missing: docs for missing, docs in report.dangling_doc_groups.items()} }"
+    )
 
 
 # -- Import resolution: package-rooted Python, extensionless JS/TS specifiers, .tsx.

@@ -8,6 +8,13 @@
 - 视角形状：judge panel / 多视角独立分析
 - 收敛形状：评审-修复-再验证闭环
 
+形态信号分强弱：强信号是自带可并行/可托管形态语义的组合形态（单个即过阈）；
+弱信号是泛化词——裸「批量」与裸收敛标记（如 iterate until converge、直到通过），
+只有与其他形态信号共现才有判读价值，单独不推荐。
+score = 2 × 强信号命中数 + 1 × 弱信号命中数；推荐须 score >= 2 且强信号命中数 >= 1。
+mode 推导只看强信号（loop > panel > review > fanout），未推荐时 mode=none；
+仅 WORKFLOW_EXPLICIT 命中时沿用 batch-fanout 兼容 mode，不新增 explicit mode。
+
 永不抛错，永远返回结构化结果。激活只是建议：最终执行仍由主会话依据
 仓库自有驱动与 team-loop 契约决定，后端不可用时显式降级为普通 sidecar 编排。
 """
@@ -22,8 +29,8 @@ from typing import Any, Optional
 
 MODES = ("batch-fanout", "parallel-review", "perspective-panel", "review-fix-loop", "none")
 
-FANOUT_PATTERNS = [
-    r"批量",
+FANOUT_STRONG_PATTERNS = [
+    # 组合形态信号：自带可并行/可托管语义，单个即过门禁。
     r"所有.{0,8}(章节|文件|模块|项目|条目|页面)都",
     r"每个.{0,8}(逐一|分别|独立)",
     r"\d+\s*(个|篇|章|项|条).{0,10}(独立|不同|分别)",
@@ -31,6 +38,12 @@ FANOUT_PATTERNS = [
     r"\bpipeline\b.{0,20}\b(over|each|items)\b",
     r"逐(个|条|项)处理",
     r"\bfor each\b.{0,20}\b(spawn|run|review|handle|process)\b",
+    # 「批量 + 实质工作动词」：可托管 fan-out 形态；动词表是语料驱动的显式常量，扩表走代码评审。
+    r"批量.{0,12}(梳理|评审|审查|审阅|实现|重构|处理|分析|翻译|校验|测试|迁移|抽取|盘点)",
+]
+# 泛化弱信号：单独出现（如「批量更新版本号」「先批量看一眼」）不推荐，仅共现补分。
+FANOUT_WEAK_PATTERNS = [
+    r"批量",
 ]
 REVIEW_PATTERNS = [
     r"(多维度|多个维度|多角度).{0,8}(评审|审查|审阅)",
@@ -52,13 +65,20 @@ PANEL_PATTERNS = [
     r"perspective.{0,10}(sweep|panel)",
     r"(方案|设计).{0,6}(竞赛|打分|择优)",
 ]
-LOOP_PATTERNS = [
+# 评审-修复复合形态：自带「评审 -> 修复 -> 再收敛」闭环语义，单个即过门禁（强信号）。
+# R3 收窄裁定（plans/03 F10）：收敛词（直到/iterate until…）永不单独进强表。
+LOOP_STRONG_PATTERNS = [
     r"评审.{0,8}后.{0,8}(修复|改)",
     r"(修复|改正).{0,6}(后.{0,4}再|并复)(审|验|测)",
-    r"review.{0,10}fix.{0,25}\b(loop|again|re-?run|converge)\b",
+    r"review.{0,16}fix.{0,25}\b(loop|again|re-?run|converge)\b",
     r"修复.{0,10}再.{0,6}(评审|验证)",
-    r"直到.{0,10}(评审|审查|所有).{0,8}(通过|无问题|收敛)",
+    r"(fix|修复|改正).{0,40}(再审|复审|重审|review again|re-?review|re-?check)",
+]
+# 裸收敛标记：仅表「循环到通过/收敛」意图，不带评审-修复复合语义，单独不推荐（弱信号）。
+LOOP_WEAK_PATTERNS = [
+    r"直到.{0,10}(通过|收敛|完成|达标)",
     r"\biterate\b.{0,20}\buntil\b.{0,12}\b(converge|pass|green|done)\b",
+    r"\bretry\b.{0,30}\buntil\b",
 ]
 WORKFLOW_EXPLICIT = [
     r"\bworkflow\b.{0,20}(工具|编排|run)",
@@ -84,18 +104,27 @@ def route(text: str) -> dict[str, Any]:
             "suggestedSurface": None,
         }
 
-    fanout_hits = _score(text, FANOUT_PATTERNS)
+    fanout_strong_hits = _score(text, FANOUT_STRONG_PATTERNS)
+    fanout_weak_hits = _score(text, FANOUT_WEAK_PATTERNS)
     review_hits = _score(text, REVIEW_PATTERNS)
     panel_hits = _score(text, PANEL_PATTERNS)
-    loop_hits = _score(text, LOOP_PATTERNS)
+    loop_strong_hits = _score(text, LOOP_STRONG_PATTERNS)
+    loop_weak_hits = _score(text, LOOP_WEAK_PATTERNS)
     explicit_hits = _score(text, WORKFLOW_EXPLICIT)
 
-    # 五类形态同权 2x：任一形态的单个典型信号都应能过门禁（与 loop_route.py 的 loop_hits*2 对齐）
-    total = (fanout_hits + review_hits + panel_hits + loop_hits + explicit_hits) * 2
-    recommended = total >= 2
+    # 强弱分权：review/panel/explicit 词表本身即组合形态语义，全部为强信号；
+    # fan-out 与 loop 各拆强弱两表——loop 强表是评审-修复复合形态，loop 弱表是裸收敛标记
+    # （iterate until…/直到通过/直到收敛）。任一强信号单命中即过门禁（与 loop_route.py
+    # 的 loop_hits*2 对齐），弱信号单独计 1 分不过阈，仅在共现时补足加权分。
+    strong_hits = fanout_strong_hits + review_hits + panel_hits + loop_strong_hits + explicit_hits
+    weak_hits = fanout_weak_hits + loop_weak_hits
+    total = strong_hits * 2 + weak_hits
+    recommended = total >= 2 and strong_hits >= 1
 
+    # mode 推导只看强信号（loop > panel > review > fanout）；弱信号不参与 mode 选择。
+    # 仅 WORKFLOW_EXPLICIT 命中时沿用 batch-fanout 兼容 mode（不新增 explicit mode）。
     mode = "batch-fanout"
-    if loop_hits:
+    if loop_strong_hits:
         mode = "review-fix-loop"
     elif panel_hits:
         # panel 的显式「对比/评分/择优」信号优先于泛化 fan-out/review 信号
@@ -133,16 +162,20 @@ def route(text: str) -> dict[str, Any]:
         ]
 
     reasons: list[str] = []
-    if fanout_hits:
-        reasons.append(f"批量独立目标 x{fanout_hits}")
+    if fanout_strong_hits:
+        reasons.append(f"批量独立目标 x{fanout_strong_hits}")
     if review_hits:
         reasons.append(f"多维并行评审 x{review_hits}")
     if panel_hits:
         reasons.append(f"独立视角/裁判组 x{panel_hits}")
-    if loop_hits:
-        reasons.append(f"评审-修复闭环 x{loop_hits}")
+    if loop_strong_hits:
+        reasons.append(f"评审-修复闭环 x{loop_strong_hits}")
     if explicit_hits:
         reasons.append(f"显式 workflow 词 x{explicit_hits}")
+    if fanout_weak_hits:
+        reasons.append(f"泛化批量(弱) x{fanout_weak_hits}")
+    if loop_weak_hits:
+        reasons.append(f"裸收敛(弱) x{loop_weak_hits}")
 
     return {
         "workflowRecommended": recommended,

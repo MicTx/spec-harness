@@ -109,6 +109,45 @@ REQUIRED_RUNTIME_FILES: Tuple[str, ...] = (
     "server/server.py",
 )
 
+# Bounded stdout/stderr channel-contract spot-check sample (skill.channels).
+# Invariant: every member is a REQUIRED_RUNTIME_FILES entry (pinned by Gate E
+# in tests/test_truth_source_gates.py). The probe runs on installed copies,
+# where only REQUIRED_RUNTIME_FILES members are guaranteed present once
+# skill.layout passes; a script joins this sample only after joining the
+# runtime manifest first (R9 ruling, plans/02 §F6).
+CHANNEL_SPOT_CHECK_SCRIPTS: Tuple[str, ...] = (
+    "scripts/doctor_spec_environment.py",
+    "scripts/route_spec_package.py",
+    "scripts/check_spec_package.py",
+    "scripts/slot_registry.py",
+    "scripts/generate_changelog.py",
+)
+CHANNEL_PROBE_TIMEOUT_SECONDS = 15
+
+# Ordered registry of every probe id the doctor can record — the single
+# truth source for the /spec:doctor check catalog in references/commands.md
+# and the machine anchor for the truth-source gates (Gate A/B, F8). Order is
+# run() execution order, with skill.drift immediately after skill.marker
+# because its branch lives inside check_skill_marker. Declarative only:
+# probes still self-record; nothing at runtime consumes this constant —
+# consistency is pinned by tests and the gates, not by lookup.
+PROBE_IDS: Tuple[str, ...] = (
+    "python.runtime",
+    "git.available",
+    "skill.layout",
+    "skill.scripts",
+    "skill.channels",
+    "skill.marker",
+    "skill.drift",
+    "hosts.installed",
+    "claude.commands",
+    "claude.agents",
+    "zcode.symlink",
+    "project.git",
+    "project.spec",
+    "project.hooks",
+)
+
 # Host matrix mirrors install.sh: the same env override names and the same
 # default directories, so doctor finds exactly what the installer writes.
 # (host_id, label, env_var, default_dir_resolver)
@@ -413,6 +452,86 @@ class Doctor:
             script_count = len(script_paths)
             self.record("skill.scripts", "脚本可编译", "ok", f"{script_count} 个脚本全部编译通过")
 
+    def check_skill_channels(self) -> None:
+        """Spot-check the stdout/stderr channel contract on a bounded sample.
+
+        The output-channel contract (references/commands.md) promises contract
+        output on stdout and diagnostics on stderr. This probe turns that
+        wording into periodic behavioral evidence: every sample script runs
+        ``--help`` as a subprocess (clean env, cwd=skill_root, bounded by
+        CHANNEL_PROBE_TIMEOUT_SECONDS) and the observed channel shape maps
+        onto the decision table: exit 0 + stdout + clean stderr = ok; exit 0
+        with empty stdout = deterministic contract defect (fail); stderr
+        bleed on a successful run, non-zero exit, or timeout = warn
+        (environment-shaped, not conclusive). Missing sample files are
+        skill.layout's verdict, never this probe's.
+        """
+        statuses: List[str] = []
+        findings: List[str] = []  # per-sample observations, non-ok samples only
+        present = 0
+        for name in CHANNEL_SPOT_CHECK_SCRIPTS:
+            script = self.skill_root / name
+            if not script.is_file():
+                continue
+            present += 1
+            try:
+                completed = subprocess.run(
+                    [sys.executable, str(script), "--help"],
+                    capture_output=True,
+                    text=True,
+                    timeout=CHANNEL_PROBE_TIMEOUT_SECONDS,
+                    cwd=str(self.skill_root),
+                    env=self.clean_env(),
+                )
+            except subprocess.TimeoutExpired:
+                statuses.append("warn")
+                findings.append(f"{name}: --help 超时（>{CHANNEL_PROBE_TIMEOUT_SECONDS}s）")
+                continue
+            if completed.returncode != 0:
+                first_stderr_line = next((line for line in completed.stderr.strip().splitlines() if line.strip()), "")
+                note = f"（{first_stderr_line}）" if first_stderr_line else ""
+                statuses.append("warn")
+                findings.append(f"{name}: 退出码 {completed.returncode}{note}")
+            elif not completed.stdout.strip():
+                statuses.append("fail")
+                findings.append(f"{name}: --help 成功但 stdout 为空（契约输出缺位）")
+            elif completed.stderr.strip():
+                statuses.append("warn")
+                findings.append(f"{name}: 成功路径 stderr 非空（疑似诊断泄漏）")
+            else:
+                statuses.append("ok")
+        if present == 0:
+            self.record(
+                "skill.channels",
+                "输出通道契约抽查",
+                "info",
+                "样本脚本全部缺失，由 skill.layout 判定",
+            )
+            return
+        summary = f"{present}/{len(CHANNEL_SPOT_CHECK_SCRIPTS)} 个样本在位"
+        if "fail" in statuses:
+            self.record(
+                "skill.channels",
+                "输出通道契约抽查",
+                "fail",
+                summary + "；" + "；".join(findings),
+                "对照 references/commands.md 的输出通道契约修复（契约输出走 stdout、诊断走 stderr）后重跑 doctor",
+            )
+        elif "warn" in statuses:
+            self.record(
+                "skill.channels",
+                "输出通道契约抽查",
+                "warn",
+                summary + "；" + "；".join(findings),
+            )
+        else:
+            self.record(
+                "skill.channels",
+                "输出通道契约抽查",
+                "ok",
+                summary + f"：--help 全部 stdout 非空、stderr 干净（单样本 {CHANNEL_PROBE_TIMEOUT_SECONDS}s 上限）",
+            )
+
     def check_skill_marker(self) -> None:
         marker = self.read_marker(self.skill_root)
         if not marker:
@@ -514,6 +633,10 @@ class Doctor:
         self.record("hosts.installed", "宿主安装面", status, detail, fix_note)
 
     def check_claude_commands(self) -> bool:
+        # A --host that excludes claude must scope this probe away, same rule
+        # as check_claude_agents: never scan (or fail on) a host out of scope.
+        if self.host_filter is not None and "claude" not in {name.strip() for name in self.host_filter}:
+            return None
         claude_dir = self.host_skill_dir(self._find_host("claude"))
         commands_dir = claude_commands_dir()
         has_skill = claude_dir.exists() or claude_dir.is_symlink()
@@ -937,6 +1060,9 @@ class Doctor:
         self.check_git_available()
         layout_ok = self.check_skill_layout()
         self.check_skill_scripts()
+        # Not gated by layout_ok: missing sample files are absorbed by the
+        # per-sample skip rule (all missing -> info), never re-reported here.
+        self.check_skill_channels()
         self.check_skill_marker()
         self.check_hosts_installed()
         if layout_ok:

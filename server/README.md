@@ -2,6 +2,8 @@
 
 By default spec ships as a **local skill**: installed into `~/.claude/skills` (or Codex/other skill-aware CLIs), triggered by the host via `$spec`, reading and writing `.spec/` inside the caller's local Git repository. This local form is the reference behavior.
 
+> Entry class: **public / user entry** — this page is the deployment guide for the optional self-hosted server-mode form. The runtime contracts it consumes live in [`../references/`](../references) and [`../SKILL.md`](../SKILL.md); the public documentation index is [`../docs/README-en.md`](../docs/README-en.md).
+
 `server/` is spec's **second form**: it exposes task-package initialization and status projection over three HTTP endpoints for an asynchronous task-workflow platform to call remotely. It does not replace server-side `run`, `check`, or `done` operations and creates no second state machine; the `.spec` Development Record stays the single source of truth. Both forms share the same [`../scripts/`](../scripts) and [`../references/`](../references) sources — only the entry point differs.
 
 ## Three-endpoint contract
