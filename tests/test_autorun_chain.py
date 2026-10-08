@@ -33,6 +33,7 @@ from autorun_spawn import (  # noqa: E402  # type: ignore
     probe_lock,
     recycle_previous_window,
     resolve_worker_host,
+    verify_worker_start,
     worker_running_on_tty,
 )
 
@@ -313,8 +314,9 @@ class TestSpawnCommand:
         monkeypatch.setattr(
             subprocess,
             "run",
-            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="tab 1 of window 1", stderr=""),
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="4421 /dev/ttys042", stderr=""),
         )
+        monkeypatch.setattr("autorun_spawn.worker_running_on_tty", lambda worker, tty: True)
         code = main(["spawn", "--root", str(tmp_path), "--host", "claude", "--format", "json"])
         assert code == 0
         payload = json.loads(capsys.readouterr().out)
@@ -1361,15 +1363,19 @@ class TestWindowRecycle:
         assert argv[:2] == ["/bin/sh", "-c"]
         script = argv[2]
         assert "sleep 3" in script
-        # bounded wait: poll on a delay, close only when free, give up
-        # reporting busy-timeout, map anything unexpected to osascript-error
+        # F17 three-phase escalation: natural-exit grace, then SIGTERM, then
+        # SIGKILL — each phase polls on a delay, closes only when free, and
+        # maps anything unexpected to osascript-error; without session pids
+        # (the bypass) no kill segment is generated
         assert "repeat" in script
         assert "delay 2" in script
-        # matrix row "busy-timeout 结果词": the result vocabulary is a closed
-        # set — a bounded wait reports busy-timeout, everything else maps to
-        # osascript-error
+        assert 'if waited >= 10 then return "busy-timeout"' in script
+        assert 'if waited >= 15 then return "busy-timeout"' in script
+        assert 'if waited >= 95 then return "busy-timeout"' in script
+        assert "kill -TERM" not in script
+        assert "kill -KILL" not in script
+        assert 'closed|multi-tab|window-gone) result="$out" ;;' in script
         assert 'closed|multi-tab|window-gone|busy-timeout) result="$out" ;;' in script
-        assert 'if waited >= 120 then return "busy-timeout"' in script
         assert "osascript-error" in script
         # the close helper re-checks both guards before touching the window:
         # tab count (Terminal cannot close one tab) and a still-running session
@@ -1377,6 +1383,20 @@ class TestWindowRecycle:
         assert "busy of tab 1 of window id 42" in script
         assert "close window id 42" in script
         assert f">> {EVENTS_PATH}" in script
+        # with session pids + worker name: both escalation kills target their
+        # process groups behind the F19 identity interlock (a reused pid whose
+        # command line does not name the worker never matches)
+        argv = build_close_argv(
+            42, 3, 120, prev_tty="/dev/ttys012", session_pids=[4321, 4321, 99], worker_name="claude", **chain_context()
+        )
+        script = argv[2]
+        assert "for pid in 99 4321; do" in script
+        assert 'case "$cmd" in *"claude "*|*/claude)' in script
+        assert 'kill -TERM -"$pgid"' in script
+        assert 'kill -KILL -"$pgid"' in script
+        # without a worker name the interlock withholds the escalation entirely
+        argv = build_close_argv(42, 3, 120, prev_tty="/dev/ttys012", session_pids=[4321], **chain_context())
+        assert "kill -TERM" not in argv[2]
         with pytest.raises(AutorunError):
             build_close_argv(-1, 3, 120, prev_tty="/dev/ttys012", **chain_context())
         with pytest.raises(AutorunError):
@@ -1395,6 +1415,10 @@ class TestWindowRecycle:
             build_close_argv(42, 3, 120, prev_tty="", **chain_context())
         with pytest.raises(AutorunError):
             build_close_argv(42, 3, 120, prev_tty="/dev/ttys012", **chain_context(events_path=Path("rel.jsonl")))
+        with pytest.raises(AutorunError):
+            build_close_argv(42, 3, 120, prev_tty="/dev/ttys012", session_pids=[0], **chain_context())
+        with pytest.raises(AutorunError):
+            build_close_argv(42, 3, 120, prev_tty="/dev/ttys012", session_pids=["99"], **chain_context())
 
     def test_close_argv_event_line_is_parseable_json(self):
         argv = build_close_argv(42, 3, 120, prev_tty="/dev/ttys012", **chain_context())
@@ -1432,7 +1456,7 @@ class TestWindowRecycle:
         assert "round" not in payload
 
     def test_recycle_schedules_close(self, monkeypatch):
-        monkeypatch.setattr("autorun_spawn.worker_running_on_tty", lambda worker, tty: True)
+        monkeypatch.setattr("autorun_spawn.worker_pids_on_tty", lambda worker, tty: [4321])
         monkeypatch.setattr(
             subprocess,
             "run",
@@ -1450,6 +1474,7 @@ class TestWindowRecycle:
             "delay_seconds": 3,
             "close_wait_seconds": 120,
         }
+        # F17: the lingering session's pids ride along to the close helper
         assert scheduled == [
             (
                 7,
@@ -1461,6 +1486,8 @@ class TestWindowRecycle:
                     "pass_index": None,
                     "prev_tty": "/dev/ttys012",
                     "events_path": EVENTS_PATH,
+                    "session_pids": [4321],
+                    "worker_name": "claude",
                 },
             )
         ]
@@ -1521,17 +1548,38 @@ class TestWindowRecycle:
         assert result["status"] == "skipped"
         assert "did not answer" in result["reason"]
         # matrix row "lookup 超时": the reason names the osascript bound
-        assert f"within {autorun_spawn.OSASCRIPT_TIMEOUT_SECONDS}s" in result["reason"]
+        assert f"within {chain_support.OSASCRIPT_TIMEOUT_SECONDS}s" in result["reason"]
         assert scheduled == []
 
-    def test_recycle_skips_when_worker_not_observed(self, monkeypatch):
+    def test_verify_worker_start_split_from_recycle(self, monkeypatch):
+        # F17: the worker-observation poll moved out of recycle into the
+        # verify gate — recycle no longer skips on an unobserved worker
         monkeypatch.setattr("autorun_spawn.WORKER_START_TIMEOUT_SECONDS", 0)
         monkeypatch.setattr("autorun_spawn.worker_running_on_tty", lambda worker, tty: False)
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="42 1 false\n", stderr=""),
+        )
+        verdict = verify_worker_start("claude", 42, "/dev/ttys009")
+        assert verdict["status"] == "dead-tab"  # tab idle — the worker died
+        assert "never started on /dev/ttys009 within 0s (tab idle)" in verdict["reason"]
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="42 1 true\n", stderr=""),
+        )
+        verdict = verify_worker_start("claude", 42, "/dev/ttys009")
+        assert verdict["status"] == "late-start"  # busy tab — something runs
+        monkeypatch.setattr("autorun_spawn.worker_running_on_tty", lambda worker, tty: True)
+        monkeypatch.setattr("autorun_spawn.WORKER_START_TIMEOUT_SECONDS", 1)
+        verdict = verify_worker_start("claude", 42, "/dev/ttys009")
+        assert verdict["status"] == "running"
+        verdict = verify_worker_start("", 42, "/dev/ttys009")  # bypass trusts
+        assert verdict["status"] == "running"
+        # and recycle itself proceeds regardless of the worker observation
         result = recycle_previous_window("/dev/ttys012", 42, "/dev/ttys009", "claude", **chain_context())
-        assert result["status"] == "skipped"
-        # matrix row "worker 未就绪": the reason names the timeout bound
-        assert "not observed" in result["reason"]
-        assert "within 0s" in result["reason"]
+        assert result["status"] != "skipped" or "not observed" not in result.get("reason", "")
 
     def test_recycle_skips_without_prev_tty(self):
         result = recycle_previous_window(None, 42, "/dev/ttys009", "claude", **chain_context())
@@ -1614,6 +1662,9 @@ class TestWindowRecycle:
             "delay_seconds": 3,
             "close_wait_seconds": 120,
         }
+        # the fake ps output carries no pid column, so the escalation target
+        # set is empty (the helper still runs its natural-exit grace phase)
+        assert scheduled[0][3]["session_pids"] == []
         assert scheduled == [
             (
                 7,
@@ -1625,6 +1676,8 @@ class TestWindowRecycle:
                     "pass_index": None,
                     "prev_tty": "/dev/ttys012",
                     "events_path": tmp_path / ".spec" / "autorun" / "events.jsonl",
+                    "session_pids": [],
+                    "worker_name": "claude",
                 },
             )
         ]
@@ -1633,9 +1686,11 @@ class TestWindowRecycle:
         assert state["window_recycle"]["close_wait_seconds"] == 120
         assert state["prev_tty"] == "/dev/ttys012"
 
-    def test_spawn_continues_when_recycle_skips_and_records_skip(self, tmp_path, capsys, monkeypatch):
-        # matrix row "worker 未就绪": the skip is fail-open — the spawn itself
-        # succeeds, and chain.json records the skipped recycle with its reason
+    def test_spawn_refuses_when_worker_never_starts(self, tmp_path, capsys, monkeypatch):
+        # F17 "dead tab": the window opened but the worker died instantly
+        # (codex's probabilistic startup failure) — the dead window is closed
+        # quietly and the round is refused with zero state written, so a
+        # re-run resumes exactly here instead of stranding the chain.
         write_plan(tmp_path / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
@@ -1647,19 +1702,55 @@ class TestWindowRecycle:
             argv = a[0]
             if argv[0] == "osascript" and "do script" in argv[2]:
                 return subprocess.CompletedProcess(argv, 0, stdout="42 /dev/ttys009\n", stderr="")
+            # every other osascript (window lookups, quiet close) answers empty
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        code = main(["spawn", "--root", str(tmp_path), "--host", "claude", "--format", "json"])
+        captured = capsys.readouterr()
+        assert code == 1
+        assert "never started on /dev/ttys009 within 0s (tab idle)" in captured.err
+        assert "refusing to record the round" in captured.err
+        assert not (tmp_path / ".spec" / "autorun" / "chain.json").exists()
+        assert not (tmp_path / ".spec" / "autorun" / "spawns.jsonl").exists()
+        events = (tmp_path / ".spec" / "autorun" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        event = json.loads(events[-1])
+        assert event["kind"] == "spawn_refusal"
+        assert "never started" in event["message"]
+
+    def test_spawn_continues_when_worker_is_late_start(self, tmp_path, capsys, monkeypatch):
+        # F17 "late start": the worker was not observed within the bound but
+        # the new tab is busy — something is running, so the spawn proceeds
+        # fail-open exactly as before.
+        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        make_active_package(tmp_path)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr("autorun_spawn.controlling_tty", lambda: "/dev/ttys012")
+        monkeypatch.setattr("autorun_spawn.worker_running_on_tty", lambda worker, tty: False)
+        monkeypatch.setattr("autorun_spawn.WORKER_START_TIMEOUT_SECONDS", 0)
+
+        def fake_run(*a, **k):
+            argv = a[0]
+            if argv[0] == "osascript" and "do script" in argv[2]:
+                return subprocess.CompletedProcess(argv, 0, stdout="42 /dev/ttys009\n", stderr="")
+            if argv[0] == "osascript":
+                # the verify lookup (new tty ttys009) reports a busy tab — the
+                # late-start signal; the prev-window lookup (ttys012) finds none
+                if "ttys009" in argv[2]:
+                    return subprocess.CompletedProcess(argv, 0, stdout="42 1 true\n", stderr="")
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
             return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
         monkeypatch.setattr(subprocess, "run", fake_run)
         code = main(["spawn", "--root", str(tmp_path), "--host", "claude", "--format", "json"])
         assert code == 0
         payload = json.loads(capsys.readouterr().out)
+        # the recycle still ran: the prev-window lookup answered empty, so the
+        # skip records "no Terminal window hosts" (not the worker reason)
         assert payload["window_recycle"]["status"] == "skipped"
-        assert "not observed" in payload["window_recycle"]["reason"]
+        assert "no Terminal window hosts" in payload["window_recycle"]["reason"]
         state = json.loads((tmp_path / ".spec" / "autorun" / "chain.json").read_text(encoding="utf-8"))
-        assert state["window_recycle"]["status"] == "skipped"
-        assert "within 0s" in state["window_recycle"]["reason"]
-        spawns = (tmp_path / ".spec" / "autorun" / "spawns.jsonl").read_text(encoding="utf-8").splitlines()
-        assert json.loads(spawns[0])["window_recycle"]["status"] == "skipped"
+        assert state["round"] == 1
 
     def test_spawn_osascript_timeout_refuses_without_recording(self, tmp_path, capsys, monkeypatch):
         write_plan(tmp_path / "plans" / "README.md", unchecked=1)
@@ -2033,14 +2124,15 @@ class TestAuditFieldContract:
         monkeypatch.setattr(
             subprocess,
             "run",
-            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="tab 1 of window 1", stderr=""),
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="4421 /dev/ttys042", stderr=""),
         )
+        monkeypatch.setattr("autorun_spawn.worker_running_on_tty", lambda worker, tty: True)
         assert main(["spawn", "--root", str(tmp_path), "--host", "claude", "--format", "json"]) == 0
         payload = json.loads(capsys.readouterr().out)
         contract = AUDIT_FIELD_CONTRACT
         assert set(payload) == contract["spawns_row_required"] | contract["payload_mode_extra"]["real"]
         assert payload["dry_run"] is False
-        assert payload["terminal"] == "tab 1 of window 1"
+        assert payload["terminal"] == "4421 /dev/ttys042"
         assert ISO_Z_PATTERN.fullmatch(payload["spawned_at"])
         assert payload["host_source"] in contract["host_source_domain"]
 
@@ -2320,8 +2412,9 @@ class TestModelIdentity:
         monkeypatch.setattr(
             subprocess,
             "run",
-            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="tab 1 of window 1", stderr=""),
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="4421 /dev/ttys042", stderr=""),
         )
+        monkeypatch.setattr("autorun_spawn.worker_running_on_tty", lambda worker, tty: True)
         argv = ["spawn", "--root", str(tmp_path), "--host", "pi", "--format", "json"] + [
             "--model",
             "anthropic/opus-5.5",
@@ -2347,8 +2440,9 @@ class TestModelIdentity:
         monkeypatch.setattr(
             subprocess,
             "run",
-            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="tab 1 of window 1", stderr=""),
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="4421 /dev/ttys042", stderr=""),
         )
+        monkeypatch.setattr("autorun_spawn.worker_running_on_tty", lambda worker, tty: True)
         assert main(["spawn", "--root", str(tmp_path), "--host", "pi", "--format", "json"]) == 0
         json.loads(capsys.readouterr().out)
         state = json.loads((tmp_path / ".spec" / "autorun" / "chain.json").read_text(encoding="utf-8"))
@@ -2390,8 +2484,9 @@ class TestModelIdentity:
         monkeypatch.setattr(
             subprocess,
             "run",
-            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="tab 1 of window 1", stderr=""),
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="4421 /dev/ttys042", stderr=""),
         )
+        monkeypatch.setattr("autorun_spawn.worker_running_on_tty", lambda worker, tty: True)
         assert main(["spawn", "--root", str(tmp_path), "--host", "pi", "--format", "json"]) == 0
         json.loads(capsys.readouterr().out)
         state = json.loads((tmp_path / ".spec" / "autorun" / "chain.json").read_text(encoding="utf-8"))
@@ -2552,8 +2647,9 @@ class TestModelIdentity:
         monkeypatch.setattr(
             subprocess,
             "run",
-            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="tab 1 of window 1", stderr=""),
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="4421 /dev/ttys042", stderr=""),
         )
+        monkeypatch.setattr("autorun_spawn.worker_running_on_tty", lambda worker, tty: True)
         argv = [
             "spawn",
             "--root",
@@ -2630,8 +2726,9 @@ class TestModelIdentity:
         monkeypatch.setattr(
             subprocess,
             "run",
-            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="tab 1 of window 1", stderr=""),
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="4421 /dev/ttys042", stderr=""),
         )
+        monkeypatch.setattr("autorun_spawn.worker_running_on_tty", lambda worker, tty: True)
         bypass_argv = [
             "spawn",
             "--root",
@@ -2750,8 +2847,9 @@ class TestModelIdentity:
         monkeypatch.setattr(
             subprocess,
             "run",
-            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="tab 1 of window 1", stderr=""),
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="4421 /dev/ttys042", stderr=""),
         )
+        monkeypatch.setattr("autorun_spawn.worker_running_on_tty", lambda worker, tty: True)
         argv = [
             "spawn",
             "--root",
@@ -2947,3 +3045,42 @@ class TestLegacyStateSamples:
         assert (chain_dir / "chain.json").read_bytes() == corrupt_bytes
         assert not (chain_dir / "events.jsonl").exists()
         assert not (chain_dir / "spawns.jsonl").exists()
+
+
+class TestAdaptiveRoundCap:
+    """F17: without an explicit flag the round cap follows the plan size."""
+
+    def test_no_flag_adapts_to_unchecked_features(self, tmp_path, capsys, monkeypatch):
+        write_plan(tmp_path / "plans" / "README.md", unchecked=30)
+        make_active_package(tmp_path)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
+        assert main(["spawn", "--root", str(tmp_path), "--host", "pi", "--format", "json", "--dry-run"]) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["max_rounds"] == 40  # 30 + 25% + 3
+        assert "--max-rounds 40" in payload["shell_command"]
+        assert "--max-rounds 40" in payload["osascript"][2]
+
+    def test_explicit_flag_wins_exactly(self, tmp_path, capsys, monkeypatch):
+        write_plan(tmp_path / "plans" / "README.md", unchecked=30)
+        make_active_package(tmp_path)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
+        argv = ["spawn", "--root", str(tmp_path), "--host", "pi", "--format", "json", "--dry-run", "--max-rounds", "5"]
+        assert main(argv) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["max_rounds"] == 5
+        assert "--max-rounds 5" in payload["shell_command"]
+
+    def test_recorded_cap_floors_the_adaptive_estimate(self, tmp_path, capsys, monkeypatch):
+        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        make_active_package(tmp_path)
+        state_file = tmp_path / ".spec" / "autorun" / "chain.json"
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(json.dumps({"round": 3, "max_rounds": 50}) + "\n", encoding="utf-8")
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
+        argv = ["spawn", "--root", str(tmp_path), "--host", "pi", "--format", "json", "--dry-run"]
+        assert main(argv) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["max_rounds"] == 50  # never refuses on the way down

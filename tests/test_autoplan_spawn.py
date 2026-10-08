@@ -330,8 +330,9 @@ class TestSpawnCommand:
         monkeypatch.setattr(
             subprocess,
             "run",
-            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="tab 1 of window 1", stderr=""),
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="4421 /dev/ttys042", stderr=""),
         )
+        monkeypatch.setattr("autoplan_spawn.worker_running_on_tty", lambda worker, tty: True)
         code = main(
             [
                 "spawn",
@@ -1340,8 +1341,9 @@ class TestAuditFieldContract:
         monkeypatch.setattr(
             subprocess,
             "run",
-            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="tab 1 of window 1", stderr=""),
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="4421 /dev/ttys042", stderr=""),
         )
+        monkeypatch.setattr("autoplan_spawn.worker_running_on_tty", lambda worker, tty: True)
         argv = [
             "spawn",
             "--root",
@@ -1360,7 +1362,7 @@ class TestAuditFieldContract:
         contract = AUDIT_FIELD_CONTRACT
         assert set(payload) == contract["spawns_row_required"] | contract["payload_mode_extra"]["real"]
         assert payload["dry_run"] is False
-        assert payload["terminal"] == "tab 1 of window 1"
+        assert payload["terminal"] == "4421 /dev/ttys042"
         assert payload["kind"] == "detail"
         assert payload["target"] == "plans/01-auth.md"
         assert payload["pass"] == 1
@@ -1514,8 +1516,9 @@ class TestAuditFieldContract:
     def test_window_recycle_shapes_cover_the_status_domain(self, tmp_path, capsys, monkeypatch):
         contract = AUDIT_FIELD_CONTRACT
         observed = set()
-        # scheduled: one-tab previous window, worker already on the new tty;
-        # worker_check/schedule_close are the injectable caller seams
+        # scheduled: one-tab previous window; pid_lookup/schedule_close are
+        # the injectable caller seams (the worker poll moved to the F17
+        # verify gate)
         monkeypatch.setattr(
             subprocess,
             "run",
@@ -1526,7 +1529,7 @@ class TestAuditFieldContract:
             42,
             "/dev/ttys009",
             "pi",
-            worker_check=lambda worker, tty: True,
+            pid_lookup=lambda worker, tty: [],
             schedule_close=lambda window_id, delay, wait, **kwargs: None,
             chain="autoplan",
             pass_index=1,
@@ -1703,8 +1706,9 @@ class TestModelIdentity:
         monkeypatch.setattr(
             subprocess,
             "run",
-            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="tab 1 of window 1", stderr=""),
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="4421 /dev/ttys042", stderr=""),
         )
+        monkeypatch.setattr("autoplan_spawn.worker_running_on_tty", lambda worker, tty: True)
         argv = [
             "spawn",
             "--root",
@@ -1738,8 +1742,9 @@ class TestModelIdentity:
         monkeypatch.setattr(
             subprocess,
             "run",
-            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="tab 1 of window 1", stderr=""),
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="4421 /dev/ttys042", stderr=""),
         )
+        monkeypatch.setattr("autoplan_spawn.worker_running_on_tty", lambda worker, tty: True)
         argv = ["spawn", "--root", str(tmp_path), "--next", "review", "--host", "pi", "--format", "json"]
         assert main(argv) == 0
         json.loads(capsys.readouterr().out)
@@ -1784,8 +1789,9 @@ class TestModelIdentity:
         monkeypatch.setattr(
             subprocess,
             "run",
-            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="tab 1 of window 1", stderr=""),
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="4421 /dev/ttys042", stderr=""),
         )
+        monkeypatch.setattr("autoplan_spawn.worker_running_on_tty", lambda worker, tty: True)
         argv = ["spawn", "--root", str(tmp_path), "--next", "review", "--host", "pi", "--format", "json"]
         assert main(argv) == 0
         json.loads(capsys.readouterr().out)
@@ -1981,8 +1987,9 @@ class TestModelIdentity:
         monkeypatch.setattr(
             subprocess,
             "run",
-            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="tab 1 of window 1", stderr=""),
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="4421 /dev/ttys042", stderr=""),
         )
+        monkeypatch.setattr("autoplan_spawn.worker_running_on_tty", lambda worker, tty: True)
         argv = [
             "spawn",
             "--root",
@@ -2136,8 +2143,9 @@ class TestModelIdentity:
         monkeypatch.setattr(
             subprocess,
             "run",
-            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="tab 1 of window 1", stderr=""),
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="4421 /dev/ttys042", stderr=""),
         )
+        monkeypatch.setattr("autoplan_spawn.worker_running_on_tty", lambda worker, tty: True)
         argv = [
             "spawn",
             "--root",
@@ -2346,3 +2354,63 @@ class TestLegacyStateSamples:
         assert (chain_dir / "chain.json").read_bytes() == corrupt_bytes
         assert not (chain_dir / "events.jsonl").exists()
         assert not (chain_dir / "spawns.jsonl").exists()
+
+
+class TestAdaptivePassCap:
+    """F17: without an explicit flag the pass cap follows the cluster size."""
+
+    @staticmethod
+    def seed_master_with_details(root, detail_count):
+        master = seed_master(root)
+        links = "\n".join(f"- [phase {i + 1}]({i + 1:02d}-phase.md)" for i in range(detail_count))
+        master.write_text(
+            "# plan\n\n## confirmed facts\n- fact A\n\n## phases\n\n{links}\n\n- [ ] open feature 1\n".format(
+                links=links
+            ),
+            encoding="utf-8",
+        )
+        return master
+
+    def test_no_flag_adapts_to_detail_links(self, tmp_path, capsys, monkeypatch):
+        self.seed_master_with_details(tmp_path, 4)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr("autoplan_spawn.session_tty", lambda: "/dev/ttys012")
+        argv = ["spawn", "--root", str(tmp_path), "--next", "review", "--host", "pi", "--format", "json", "--dry-run"]
+        assert main(argv) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["max_passes"] == 14  # 2 + 3 * 4 — the calibration shape
+        assert "--max-passes 14" in payload["shell_command"]
+
+    def test_explicit_flag_wins_exactly(self, tmp_path, capsys, monkeypatch):
+        self.seed_master_with_details(tmp_path, 4)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr("autoplan_spawn.session_tty", lambda: "/dev/ttys012")
+        argv = [
+            "spawn",
+            "--root",
+            str(tmp_path),
+            "--next",
+            "review",
+            "--host",
+            "pi",
+            "--format",
+            "json",
+            "--dry-run",
+            "--max-passes",
+            "6",
+        ]
+        assert main(argv) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["max_passes"] == 6
+
+    def test_recorded_cap_floors_the_adaptive_estimate(self, tmp_path, capsys, monkeypatch):
+        seed_master(tmp_path)
+        state_file = tmp_path / ".spec" / "autoplan" / "chain.json"
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(json.dumps({"pass": 3, "max_passes": 30}) + "\n", encoding="utf-8")
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr("autoplan_spawn.session_tty", lambda: "/dev/ttys012")
+        argv = ["spawn", "--root", str(tmp_path), "--next", "review", "--host", "pi", "--format", "json", "--dry-run"]
+        assert main(argv) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["max_passes"] == 30

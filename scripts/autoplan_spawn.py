@@ -50,11 +50,13 @@ The chain-state mechanics — constants, the state read/write, the lock, the
 audit streams, and the Terminal.app window open/lookup/close automation —
 live in ``scripts/chain_spawn_support.py`` (the F5 shared module), imported
 here by name. The two spawn steps — the autorun round spawn in
-``scripts/autorun_spawn.py`` and this autoplan pass spawn — are the only
-two callers authorized to automate Terminal.app (both inherit the recorded
-overturn of the 2026-09-03 no-AppleScript policy in the
-``2026-10-06_add-autorun-command`` Development Record; no other caller may
-reuse it). This module still imports the planning-document and worker-host
+``scripts/autorun_spawn.py`` and this autoplan pass spawn — plus the dead
+chain-window sweep (``scripts/sweep_chain_windows.py``, F18) are the only
+three callers authorized to automate Terminal.app (the spawns inherit the
+recorded overturn of the 2026-09-03 no-AppleScript policy in the
+``2026-10-06_add-autorun-command`` Development Record; the sweep extends
+that authorization in the ``2026-10-08_sweep-dead-chain-windows``
+Development Record; no other caller may reuse it). This module still imports the planning-document and worker-host
 helpers from ``autorun_spawn`` — that surface is public and single-sourced
 there (F5's boundary: shared mechanics in the support module, domain
 helpers in the script that owns them; the F14 worker-argv render moved to
@@ -66,7 +68,6 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import subprocess
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -100,24 +101,31 @@ from chain_spawn_support import (  # noqa: E402  # type: ignore
     CHAIN_SPAWNS_FILE,
     CHAIN_STATE_FILE,
     DEFAULT_MAX_PASSES,
-    OSASCRIPT_TIMEOUT_SECONDS,
+    WORKER_START_TIMEOUT_SECONDS,
     ChainSpawnError,
+    adaptive_max_passes,
     append_audit,
     append_refusal_event,
+    apply_window_geometry,
     atomic_write,
     build_terminal_command,
     build_worker_command,  # F14: shared render surface lives in the support module
+    close_spawned_window_quietly,
+    effective_max_cap,
     model_injection_level,
     next_index_within_cap,
     parse_spawn_result,
     read_last_refusal,
     read_state,
     read_state_file,
+    read_window_geometry,
+    run_terminal_open,
     session_tty,
     single_chain_lock,
     under_root,
     utc_now,
     validate_cap,
+    worker_running_on_tty,
 )
 
 MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
@@ -345,6 +353,28 @@ def _resolve_model_identity(args: argparse.Namespace, state: Dict[str, object]) 
     return locked if isinstance(locked, dict) else None
 
 
+def _verify_worker_start(
+    worker_name: str,
+    new_window_id: Optional[int],
+    new_tty: Optional[str],
+    *,
+    timeout_seconds: Optional[int] = None,
+) -> Dict[str, object]:
+    """F17 worker-start gate via the shared implementation, with this
+    module's seams: tests patch ``autoplan_spawn.worker_running_on_tty`` and
+    ``autoplan_spawn.WORKER_START_TIMEOUT_SECONDS``; the wrapper binds both
+    module globals at call time."""
+    if timeout_seconds is None:
+        timeout_seconds = WORKER_START_TIMEOUT_SECONDS
+    return chain_support.verify_worker_start(
+        worker_name,
+        new_window_id,
+        new_tty,
+        timeout_seconds=timeout_seconds,
+        worker_check=worker_running_on_tty,
+    )
+
+
 def _render_status_model(model: object) -> str:
     """The F14 status line: the locked identity plus the latest injection."""
     if not isinstance(model, dict):
@@ -390,11 +420,17 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
         busy_message=(f"another autoplan pass chain holds {CHAIN_LOCK_FILE}; parallel chains are refused"),
     ):
         state = _read_chain_state(root) or {}
-        # F12: the cap decision lives in the shared guard helper (strict
-        # int gate, next==cap allowed, verbatim refusal texts).
+        # F17 adaptive cap: an explicit flag wins exactly; without one the cap
+        # follows the cluster size (framework + review + per-detail estimate,
+        # calibrated on this repository's 14-pass / 4-detail run), floored by
+        # the recorded cap. The strict int gate and next==cap boundary stay in
+        # the shared guard helper (F12).
+        detail_docs = _master_link_docs(root, master_doc_path(root, args.plan))
+        max_passes = effective_max_cap(args.max_passes, state.get("max_passes"), adaptive_max_passes(len(detail_docs)))
+        validate_cap(max_passes, "max-passes")
         next_pass = next_index_within_cap(
             state.get("pass"),
-            args.max_passes,
+            max_passes,
             label="pass",
             option="max-passes",
             non_integer_template="pass-chain state has a non-integer pass index: {!r}",
@@ -421,10 +457,12 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
                 "host-namespace-specific; refusing the spawn"
             )
         plan_args = plan_args_for_prompt(args.plan)
-        prompt = build_pass_prompt(host, plan_args, args.max_passes)
+        prompt = build_pass_prompt(host, plan_args, max_passes)
         worker_command = build_worker_command(host, root, prompt, effective_identity)
         worker_name = worker_command[0]
         injection_level = model_injection_level(effective_identity, host)
+        # F17 geometry: the new window inherits this session's window place
+        parent_tty = session_tty()
         osascript_argv, shell_command = build_terminal_command(root, worker_command)
 
         record = {
@@ -434,12 +472,12 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
             "host": host,
             "host_source": host_source,
             "plan_docs": doc_paths,
-            "max_passes": args.max_passes,
+            "max_passes": max_passes,
             "model": effective_identity,
             "model_injection": injection_level,
             "spawned_at": utc_now(),
             "shell_command": shell_command,
-            "prev_tty": session_tty(),
+            "prev_tty": parent_tty,
         }
 
         if args.dry_run:
@@ -450,22 +488,35 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
                 **record,
             }
 
-        try:
-            completed = subprocess.run(
-                osascript_argv,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=OSASCRIPT_TIMEOUT_SECONDS,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise AutoplanSpawnError(
-                "osascript did not answer within {}s opening the pass Terminal window".format(OSASCRIPT_TIMEOUT_SECONDS)
-            ) from exc
-        if completed.returncode != 0:
-            detail = completed.stderr.strip() or completed.stdout.strip()
-            raise AutoplanSpawnError(f"osascript failed to open the pass Terminal window: {detail}")
+        # F17: one bounded retry on a transiently busy Terminal, then the
+        # existing refusal path (message texts preserved verbatim).
+        completed = run_terminal_open(osascript_argv, error=AutoplanSpawnError, label="the pass Terminal window")
         new_window_id, new_tty = parse_spawn_result(completed.stdout)
+        if new_window_id is None or new_tty is None:
+            # An unconfirmable handoff must not strand the chain: the pass is
+            # not recorded, so a re-run resumes exactly here.
+            raise AutoplanSpawnError(
+                "osascript reply missing the window id or tty: {!r} — cannot confirm the handoff; "
+                "refusing to record the pass".format(completed.stdout.strip())
+            )
+        if parent_tty is not None:
+            # F17 geometry: stack the new window where this session's window
+            # sits (no parent window / failed read simply keeps the default)
+            parent_geometry = read_window_geometry(parent_tty)
+            if parent_geometry is not None:
+                apply_window_geometry(new_window_id, parent_geometry)
+        # F17 spawn gate: a window whose worker died instantly is closed
+        # quietly and refused with zero state written — instead of silently
+        # recording a pass that never runs. A busy-but-unobserved tab is a
+        # late start: proceed.
+        start_verdict = _verify_worker_start(worker_name, new_window_id, new_tty)
+        if start_verdict["status"] == "dead-tab":
+            close_spawned_window_quietly(new_window_id)
+            raise AutoplanSpawnError(
+                "next-pass {} — the spawned Terminal window was closed; refusing to record the pass".format(
+                    start_verdict["reason"]
+                )
+            )
         record["window_recycle"] = chain_support.recycle_previous_window(
             prev_tty=record["prev_tty"],
             new_window_id=new_window_id,
@@ -680,8 +731,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-passes",
         dest="max_passes",
         type=int,
-        default=DEFAULT_MAX_PASSES,
-        help=f"pass cap (default: {DEFAULT_MAX_PASSES})",
+        default=None,
+        help=(
+            "pass cap (default: adaptive — at least {}, grows with the master document's "
+            "detail links: 2 + 3 per detail)".format(DEFAULT_MAX_PASSES)
+        ),
     )
     spawn_parser.add_argument(
         "--dry-run",
@@ -709,7 +763,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         root = _resolve_root(args.root)
         if args.subcommand == "spawn":
-            validate_cap(args.max_passes, "max-passes")
+            if args.max_passes is not None:
+                # F17: the adaptive default resolves inside the spawn (it needs
+                # the master's detail links and the recorded cap); an explicit
+                # flag is validated here exactly as before.
+                validate_cap(args.max_passes, "max-passes")
             _emit(spawn_payload(root, args), _render_spawn, args.format == "json")
         else:
             _emit(status_payload(root), _render_status, args.format == "json")

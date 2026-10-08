@@ -72,27 +72,34 @@ from chain_spawn_support import (  # noqa: E402  # type: ignore
     CHAIN_SPAWNS_FILE,
     CHAIN_STATE_FILE,
     DEFAULT_MAX_ROUNDS,
-    OSASCRIPT_TIMEOUT_SECONDS,
+    OSASCRIPT_TIMEOUT_SECONDS,  # noqa: F401  # re-export: autoplan tests import it from here
     WORKER_START_TIMEOUT_SECONDS,
     ChainSpawnError,
+    adaptive_max_rounds,
     append_audit,
     append_refusal_event,
+    apply_window_geometry,
     atomic_write,
     build_terminal_command,
     build_window_lookup_applescript,  # noqa: F401  # re-export: chain tests use the module attr
     build_worker_command,  # F14: shared render surface; tests + autoplan still import it from here
+    close_spawned_window_quietly,
     controlling_tty,
+    effective_max_cap,
     model_injection_level,
     next_index_within_cap,
     parse_spawn_result,
     parse_window_lookup,  # noqa: F401  # re-export: chain tests import it from here
     read_last_refusal,
     read_state,
+    read_window_geometry,  # noqa: F401  # re-export: chain tests import it from here
     resolve_root,
+    run_terminal_open,
     schedule_window_close,
     under_root,
     utc_now,
     validate_cap,
+    worker_pids_on_tty,
     worker_running_on_tty,
 )
 from chain_spawn_support import pid_alive as _pid_alive  # seam binding: tests patch this name
@@ -422,6 +429,8 @@ def build_close_argv(
     pass_index: Optional[int] = None,
     prev_tty: str,
     events_path: Path,
+    session_pids: Optional[List[int]] = None,
+    worker_name: str = "",
 ) -> List[str]:
     """Close-helper argv via the shared implementation, raising this
     script's own class on invalid arguments (the seam the chain tests use)."""
@@ -434,6 +443,8 @@ def build_close_argv(
         pass_index=pass_index,
         prev_tty=prev_tty,
         events_path=events_path,
+        session_pids=session_pids,
+        worker_name=worker_name,
         error=AutorunError,
     )
 
@@ -457,6 +468,28 @@ def probe_lock(chain_dir: Path) -> Dict[str, object]:
     return chain_support.lock_holder(chain_dir, pid_alive_check=_pid_alive)
 
 
+def verify_worker_start(
+    worker_name: str,
+    new_window_id: Optional[int],
+    new_tty: Optional[str],
+    *,
+    timeout_seconds: Optional[int] = None,
+) -> Dict[str, object]:
+    """F17 worker-start gate via the shared implementation, with this module's
+    seam: tests patch ``autorun_spawn.worker_running_on_tty`` and
+    ``autorun_spawn.WORKER_START_TIMEOUT_SECONDS``; the wrapper binds both
+    module globals at call time."""
+    if timeout_seconds is None:
+        timeout_seconds = WORKER_START_TIMEOUT_SECONDS
+    return chain_support.verify_worker_start(
+        worker_name,
+        new_window_id,
+        new_tty,
+        timeout_seconds=timeout_seconds,
+        worker_check=worker_running_on_tty,
+    )
+
+
 def recycle_previous_window(
     prev_tty: Optional[str],
     new_window_id: Optional[int],
@@ -467,20 +500,15 @@ def recycle_previous_window(
     events_path: Path,
     round_index: Optional[int] = None,
     pass_index: Optional[int] = None,
-    timeout_seconds: Optional[int] = None,
     delay_seconds: Optional[int] = None,
     close_wait_seconds: Optional[int] = None,
 ) -> Dict[str, object]:
     """Window recycle via the shared implementation, with this module's seams.
 
-    Tests patch ``autorun_spawn.worker_running_on_tty``,
-    ``autorun_spawn.schedule_window_close``, and
-    ``autorun_spawn.WORKER_START_TIMEOUT_SECONDS``; the wrapper binds all
-    three module globals at call time and injects them into the shared
-    implementation.
+    Tests patch ``autorun_spawn.worker_pids_on_tty`` and
+    ``autorun_spawn.schedule_window_close``; the wrapper binds both module
+    globals at call time and injects them into the shared implementation.
     """
-    if timeout_seconds is None:
-        timeout_seconds = WORKER_START_TIMEOUT_SECONDS
     return chain_support.recycle_previous_window(
         prev_tty,
         new_window_id,
@@ -490,10 +518,9 @@ def recycle_previous_window(
         events_path=events_path,
         round_index=round_index,
         pass_index=pass_index,
-        timeout_seconds=timeout_seconds,
         delay_seconds=delay_seconds,
         close_wait_seconds=close_wait_seconds,
-        worker_check=worker_running_on_tty,
+        pid_lookup=worker_pids_on_tty,
         schedule_close=schedule_window_close,
     )
 
@@ -625,11 +652,18 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
         busy_message=(f"another autorun chain holds {CHAIN_LOCK_FILE} for this project; parallel chains are refused"),
     ):
         state = _read_chain_state(root) or {}
-        # F12: the cap decision lives in the shared guard helper (strict
-        # int gate, next==cap allowed, verbatim refusal texts).
+        # F17 adaptive cap: an explicit flag wins exactly; without one the cap
+        # follows the workload — recorded cap floors the adaptive estimate
+        # (features + rework headroom), so the chain never dies at the cap
+        # with features remaining and a manual continuation never refuses on
+        # the way down. The strict int gate and the next==cap boundary stay
+        # in the shared guard helper (F12).
+        unchecked = int(plan["totals"]["unchecked"])  # type: ignore[index]
+        max_rounds = effective_max_cap(args.max_rounds, state.get("max_rounds"), adaptive_max_rounds(unchecked))
+        validate_cap(max_rounds, "max-rounds")
         next_round = next_index_within_cap(
             state.get("round"),
-            args.max_rounds,
+            max_rounds,
             label="round",
             option="max-rounds",
             non_integer_template="chain state has a non-integer round: {!r}",
@@ -665,10 +699,12 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
                     "host-namespace-specific; refusing the spawn"
                 )
             plan_args = plan_args_for_prompt(args.plan)
-            prompt = build_prompt(host, plan_args, args.max_rounds)
+            prompt = build_prompt(host, plan_args, max_rounds)
             worker_command = build_worker_command(host, root, prompt, effective_identity)
             worker_name = worker_command[0]
             injection_level = model_injection_level(effective_identity, host)
+        # F17 geometry: the new window inherits this session's window place
+        parent_tty = session_tty()
         osascript_argv, shell_command = build_terminal_command(root, worker_command, args.command)
 
         record = {
@@ -676,12 +712,12 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
             "host": host,
             "host_source": host_source,
             "plan_docs": [doc["path"] for doc in plan["docs"]],  # type: ignore[index]
-            "max_rounds": args.max_rounds,
+            "max_rounds": max_rounds,
             "model": effective_identity,
             "model_injection": injection_level,
             "spawned_at": utc_now(),
             "shell_command": shell_command,
-            "prev_tty": session_tty(),
+            "prev_tty": parent_tty,
         }
 
         if args.dry_run:
@@ -692,22 +728,35 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
                 **record,
             }
 
-        try:
-            completed = subprocess.run(
-                osascript_argv,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=OSASCRIPT_TIMEOUT_SECONDS,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise AutorunError(
-                "osascript did not answer within {}s opening the Terminal window".format(OSASCRIPT_TIMEOUT_SECONDS)
-            ) from exc
-        if completed.returncode != 0:
-            detail = completed.stderr.strip() or completed.stdout.strip()
-            raise AutorunError(f"osascript failed to open the Terminal window: {detail}")
+        # F17: one bounded retry on a transiently busy Terminal, then the
+        # existing refusal path (message texts preserved verbatim).
+        completed = run_terminal_open(osascript_argv, error=AutorunError, label="the Terminal window")
         new_window_id, new_tty = parse_spawn_result(completed.stdout)
+        if new_window_id is None or new_tty is None:
+            # An unconfirmable handoff must not strand the chain: the round
+            # is not recorded, so a re-run resumes exactly here.
+            raise AutorunError(
+                "osascript reply missing the window id or tty: {!r} — cannot confirm the handoff; "
+                "refusing to record the round".format(completed.stdout.strip())
+            )
+        if parent_tty is not None:
+            # F17 geometry: stack the new window where this session's window
+            # sits (no parent window / failed read simply keeps the default)
+            parent_geometry = read_window_geometry(parent_tty)
+            if parent_geometry is not None:
+                apply_window_geometry(new_window_id, parent_geometry)
+        # F17 spawn gate: a window whose worker died instantly (codex's
+        # probabilistic startup failure) is closed quietly and refused with
+        # zero state written — instead of silently recording a round that
+        # never runs. A busy-but-unobserved tab is a late start: proceed.
+        start_verdict = verify_worker_start(worker_name, new_window_id, new_tty)
+        if start_verdict["status"] == "dead-tab":
+            close_spawned_window_quietly(new_window_id)
+            raise AutorunError(
+                "next-round {} — the spawned Terminal window was closed; refusing to record the round".format(
+                    start_verdict["reason"]
+                )
+            )
         record["window_recycle"] = recycle_previous_window(
             prev_tty=record["prev_tty"],
             new_window_id=new_window_id,
@@ -973,8 +1022,11 @@ def build_parser() -> argparse.ArgumentParser:
     spawn_parser.add_argument(
         "--max-rounds",
         type=int,
-        default=DEFAULT_MAX_ROUNDS,
-        help=f"round cap (default: {DEFAULT_MAX_ROUNDS})",
+        default=None,
+        help=(
+            "round cap (default: adaptive — at least {}, grows with the unchecked feature count "
+            "to features + 25% + 3)".format(DEFAULT_MAX_ROUNDS)
+        ),
     )
     spawn_parser.add_argument(
         "--dry-run",
@@ -1000,7 +1052,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args.subcommand == "plan":
             _emit(plan_payload(root, args.plan), _render_plan, args.format == "json")
         elif args.subcommand == "spawn":
-            validate_cap(args.max_rounds, "max-rounds")
+            if args.max_rounds is not None:
+                # F17: the adaptive default resolves inside the spawn (it needs
+                # the plan totals and the recorded cap); an explicit flag is
+                # validated here exactly as before.
+                validate_cap(args.max_rounds, "max-rounds")
             _emit(spawn_payload(root, args), _render_spawn, args.format == "json")
         else:
             _emit(status_payload(root), _render_status, args.format == "json")

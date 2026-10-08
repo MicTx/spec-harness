@@ -4,6 +4,24 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation.
 
+## [0.14.0] - 2026-10-08
+
+### Added
+
+- **Recursive chains keep their model identity**: `spawn` accepts optional `--model <id>` / `--reasoning <level>` flags, and the first spawn locks that identity into the chain state — later rounds without flags inject the locked value into the worker command line (pi `--model/--thinking`, codex `--model` plus `-c model_reasoning_effort=`, claude `--model/--effort`), so every round of a long chain runs on the same provider-model-reasoning combination instead of silently falling back to the worker CLI default. A mismatch against the lock (different id, different reasoning level, or a host change while an identity is set) refuses the spawn with both values reported and nothing written; `status` shows a `model:` line with the locked identity and the latest injection level.
+- **Dead chain windows can be swept**: `python3 scripts/sweep_chain_windows.py [--dry-run]` closes Terminal windows a chain spawned whose session ended without a recycle (a crashed round, a refused spawn). Membership is proven by the ttys recorded in the chains' spawn audit — live sessions, multi-tab windows, and the user's own windows are never touched by construction.
+
+### Changed
+
+- **Round and pass caps adapt to the workload**: without an explicit flag, the autorun round cap grows with the unchecked feature count (features + 25% + 3, floored at 20) and the autoplan pass cap with the master document's detail links (2 + 3 per detail, floored at 12), so a chain no longer dies at the cap with work remaining; explicit `--max-rounds`/`--max-passes` still win exactly and are recorded and forwarded.
+- **Spawned windows inherit the parent window's place**: each new round's Terminal window takes over the spawning session's window position and size, so recursive chains stack in place instead of cascading across the screen.
+- **A crashed worker no longer strands the chain**: the window-open osascript gets one bounded retry on a transient Terminal hiccup, and a spawned worker that dies instantly is detected — the dead window is closed quietly and the spawn refuses with zero state written, so re-running the chain resumes exactly there instead of recording a round that never runs.
+
+### Fixed
+
+- **Finished sessions are recycled deterministically**: the previous round's window now closes through a three-phase escalation — a natural-exit grace, then SIGTERM, then SIGKILL to the lingering session's process groups — instead of waiting out a timeout while an idle interactive session held the window open (the dominant accumulated-window case). The signal targets are identity-checked against the worker command line first, and an idle single-tab window closes without ever raising Terminal's cancel/terminate prompt.
+- **Empty or whitespace-only `--model`/`--reasoning` values are refused** at the door: a degenerate identity can no longer lock a chain into a state no real model id can ever match.
+
 ## [0.13.21] - 2026-10-07
 
 ### Fixed

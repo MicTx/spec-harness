@@ -32,12 +32,14 @@ duplicated (plans/01 F5 inventory):
   - error base: ``ChainSpawnError`` — both chain scripts' operational error
     classes derive from (and re-export) this one class.
 
-The Terminal.app automation pieces here are scope-limited to exactly two
-spawn steps — the autorun round spawn (``scripts/autorun_spawn.py``) and the
-autoplan pass spawn (``scripts/autoplan_spawn.py``) — both inheriting the
-recorded overturn of the 2026-09-03 no-AppleScript policy in the
-``2026-10-06_add-autorun-command`` Development Record; no other caller may
-reuse them.
+The Terminal.app automation pieces here are scope-limited to exactly three
+authorized steps — the autorun round spawn (``scripts/autorun_spawn.py``),
+the autoplan pass spawn (``scripts/autoplan_spawn.py``), and the dead
+chain-window sweep (``scripts/sweep_chain_windows.py``, F18) — the first
+two inheriting the recorded overturn of the 2026-09-03 no-AppleScript policy
+in the ``2026-10-06_add-autorun-command`` Development Record, the sweep
+extending that authorization in the ``2026-10-08_sweep-dead-chain-windows``
+Development Record; no other caller may reuse them.
 
 Collaborator seams: several functions accept injectable collaborators
 (``controlling``, ``worker_check``, ``schedule_close``, ``pid_alive``,
@@ -52,6 +54,7 @@ import datetime as _dt
 import fcntl
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -69,8 +72,26 @@ WORKER_START_POLL_SECONDS = 1.0
 CLOSE_DELAY_SECONDS = 3
 CLOSE_POLL_INTERVAL_SECONDS = 2
 CLOSE_WAIT_EXIT_SECONDS = 120
+# F17 session-recycle escalation: after the handoff is confirmed and the
+# delay has let the round summary land, a lingering interactive session is
+# abandoned — natural-exit grace first, then SIGTERM, then SIGKILL.
+CLOSE_NATURAL_GRACE_SECONDS = 10
+CLOSE_TERM_WAIT_SECONDS = 15
+# F17 spawn robustness: one bounded retry when the Terminal open osascript
+# fails transiently (Terminal busy mid-animation), and its backoff.
+TERMINAL_OPEN_ATTEMPTS = 2
+TERMINAL_OPEN_RETRY_BACKOFF_SECONDS = 2
 DEFAULT_MAX_ROUNDS = 20
 DEFAULT_MAX_PASSES = 12
+# F17 adaptive caps: without an explicit flag the cap follows the planning
+# workload — rounds get features + ~25% rework headroom (+3 floor), passes
+# get framework+review (2) plus three passes per detail document (one base
+# pass and two fix-review rounds, calibrated on this repository's own
+# 14-pass / 4-detail planning cluster run).
+AUTORUN_ADAPTIVE_MARGIN_BASE = 3
+AUTORUN_ADAPTIVE_MARGIN_QUARTER = 4
+AUTOPLAN_PASSES_BASE = 2
+AUTOPLAN_PASSES_PER_DETAIL = 3
 
 AUTORUN_CHAIN_DIR = ".spec/autorun"
 AUTOPLAN_CHAIN_DIR = ".spec/autoplan"
@@ -153,6 +174,37 @@ def next_index_within_cap(
 def utc_now() -> str:
     """One clock shape for every chain timestamp (ISO-8601Z)."""
     return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# --- F17 adaptive caps -------------------------------------------------------
+
+
+def adaptive_max_rounds(unchecked: int) -> int:
+    """Round cap for a plan with ``unchecked`` remaining features.
+
+    Features plus rework headroom (a failed or re-opened round consumes a
+    round without checking a feature), floored at the default — the chain
+    must not die at the cap while work remains.
+    """
+    return max(
+        DEFAULT_MAX_ROUNDS,
+        unchecked + AUTORUN_ADAPTIVE_MARGIN_BASE + unchecked // AUTORUN_ADAPTIVE_MARGIN_QUARTER,
+    )
+
+
+def adaptive_max_passes(detail_docs: int) -> int:
+    """Pass cap for a cluster with ``detail_docs`` phase documents."""
+    return max(DEFAULT_MAX_PASSES, AUTOPLAN_PASSES_BASE + AUTOPLAN_PASSES_PER_DETAIL * detail_docs)
+
+
+def effective_max_cap(explicit, recorded, adaptive_value: int) -> int:
+    """Resolve the spawn's cap: an explicit flag wins exactly; otherwise the
+    recorded cap floors the adaptive estimate (a manual no-flag continuation
+    of a chain that ran with a larger cap must not refuse on the way down)."""
+    if explicit is not None:
+        return explicit
+    floor = recorded if isinstance(recorded, int) and not isinstance(recorded, bool) and recorded > 0 else 0
+    return max(floor, adaptive_value)
 
 
 # --- paths and state -------------------------------------------------------
@@ -849,6 +901,48 @@ def worker_running_on_tty(worker: str, tty: str) -> bool:
     return False
 
 
+def worker_pids_on_tty(worker: str, tty: str) -> List[int]:
+    """Pids of the ``worker`` processes running on the given Terminal tty.
+
+    Same token matching as :func:`worker_running_on_tty` (which stays
+    untouched — its tests pin the ``tty=,command=`` call shape), but with the
+    pid column: the session-recycle escalation targets exactly these
+    processes by pid, never by tty (the close helper and the spawning
+    python both hang off the same tty and must survive the kill).
+    """
+    try:
+        completed = subprocess.run(
+            ["ps", "-axo", "tty=,pid=,command="],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=PS_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if completed.returncode != 0:
+        return []
+    tty_name = tty.rsplit("/", 1)[-1]
+    pids: List[int] = []
+    for line in completed.stdout.splitlines():
+        fields = line.split(None, 2)
+        if len(fields) != 3 or fields[0].strip() != tty_name:
+            continue
+        tokens = fields[2].split()
+        if not tokens:
+            continue
+        if os.path.basename(tokens[0].rstrip("/")) == worker or (
+            len(tokens) > 1 and "/" in tokens[1] and os.path.basename(tokens[1].rstrip("/")) == worker
+        ):
+            try:
+                pid = int(fields[1])
+            except ValueError:
+                continue
+            if pid > 0 and pid not in pids:
+                pids.append(pid)
+    return pids
+
+
 def escape_applescript(text: str) -> str:
     """Escape a string for an AppleScript double-quoted literal."""
     return text.replace("\\", "\\\\").replace('"', '\\"')
@@ -861,12 +955,14 @@ def _window_lookup_lines(tty_expression: str) -> List[str]:
     ``matchBusy`` whether that tab still runs a process other than the shell."""
     return [
         '\tset match to ""',
+        "\tset matchRef to missing value",
         "\tset matchTabs to 0",
         "\tset matchBusy to false",
         "\trepeat with w in windows",
         "\t\trepeat with t in tabs of w",
         "\t\t\tif tty of t is {} then".format(tty_expression),
         "\t\t\t\tset match to (id of w as string)",
+        "\t\t\t\tset matchRef to w",
         "\t\t\t\tset matchTabs to (count of tabs of w)",
         "\t\t\t\tset matchBusy to (busy of t)",
         "\t\t\t\texit repeat",
@@ -878,7 +974,9 @@ def _window_lookup_lines(tty_expression: str) -> List[str]:
 
 
 def build_terminal_command(
-    root: Path, worker_command: List[str], custom_command: Optional[str] = None
+    root: Path,
+    worker_command: List[str],
+    custom_command: Optional[str] = None,
 ) -> Tuple[List[str], str]:
     """Build the osascript argv opening a Terminal window at ``root``.
 
@@ -888,7 +986,12 @@ def build_terminal_command(
     command in a new tab and replies ``"<window id> <tab tty>"`` on
     stdout (the window is found by matching the spawned tab's tty, so no
     front-window race), so the spawn can verify the next round and
-    recycle windows.
+    recycle windows. F17 geometry inheritance (the spawned window taking
+    the parent's place) is applied from Python after this reply — see
+    :func:`read_window_geometry` / :func:`apply_window_geometry` (an
+    in-script ``set`` races Terminal's own cascade placement, and
+    Terminal's ``bounds`` get/set pair is Y-asymmetric; setting by window
+    id from a second call sticks).
     """
     if custom_command is not None:
         tail = custom_command
@@ -906,6 +1009,223 @@ def build_terminal_command(
         ]
     )
     return ["osascript", "-e", applescript], shell_command
+
+
+def read_window_geometry(tty: str) -> Optional[Tuple[int, int, int, int]]:
+    """The ``(x, y, width, height)`` of the Terminal window hosting ``tty``.
+
+    ``None`` when no Terminal window hosts the tty (headless host,
+    non-Terminal parent) — the caller then skips geometry inheritance.
+    Uses the symmetric ``position``/``size`` pair; Terminal's ``bounds``
+    get/set pair drifts a constant on Y (verified on-device).
+    """
+    lines = [
+        'tell application "Terminal"',
+        *_window_lookup_lines('"{}"'.format(escape_applescript(tty))),
+        '\tif match is not "" then',
+        "\t\tset {x, y} to position of matchRef",
+        "\t\tset {w, h} to size of matchRef",
+        '\t\treturn (x as string) & "," & (y as string) & "," & (w as string) & "," & (h as string)',
+        "\tend if",
+        '\treturn ""',
+        "end tell",
+    ]
+    try:
+        completed = subprocess.run(
+            ["osascript", "-e", "\n".join(lines)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=OSASCRIPT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    parts = completed.stdout.strip().split(",")
+    if len(parts) != 4:
+        return None
+    try:
+        values = tuple(int(part.strip()) for part in parts)
+    except ValueError:
+        return None
+    return values  # type: ignore[return-value]
+
+
+def apply_window_geometry(window_id: int, geometry: Tuple[int, int, int, int]) -> None:
+    """Place ``window_id`` at ``geometry`` — best effort, errors swallowed.
+
+    Terminal applies its own cascade placement asynchronously after
+    ``do script``, so a single early set can be overwritten; the set runs
+    twice with a short gap (verified on-device: setting by window id from
+    a second call sticks).
+    """
+    if isinstance(window_id, bool) or not isinstance(window_id, int) or window_id <= 0:
+        return
+    x, y, width, height = geometry
+    script = (
+        'tell application "Terminal"\n'
+        "\tset position of window id {id} to {{{x}, {y}}}\n"
+        "\tset size of window id {id} to {{{w}, {h}}}\n"
+        "end tell"
+    ).format(id=window_id, x=x, y=y, w=width, h=height)
+    for _attempt in (0, 1):
+        try:
+            subprocess.run(
+                ["osascript", "-e", script],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=OSASCRIPT_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return
+        time.sleep(0.2)
+
+
+# --- F18: dead chain-window sweep ---------------------------------------------
+#
+# Chain membership is proven by recorded ttys, not by screen scraping: a
+# do-script tab returns to an interactive shell prompt once its command
+# finishes (the ``[Process completed]`` marker only appears when the login
+# shell itself exits), so a dead chain window is visually indistinguishable
+# from the user's own idle prompt. Every window the chains spawned is,
+# however, recorded as ``prev_tty`` in a spawns row — the sweep closes
+# single-tab idle windows whose tty is in that recorded set (minus the
+# session running the sweep). The one window never recorded is the
+# chain's last spawn (its tty lands in the next row only); that is the
+# window the user most recently touched, so leaving it is the safe side.
+
+
+def recorded_chain_ttys(chain_dirs: List[Path]) -> List[str]:
+    """Every tty the chains' spawns rows recorded (``prev_tty`` values).
+
+    Each row's ``prev_tty`` is the tty of the window that spawned — i.e.,
+    every chain window except the newest spawn. Tolerant: missing or
+    unparseable rows contribute nothing.
+    """
+    ttys: List[str] = []
+    for chain_dir in chain_dirs:
+        spawns_file = chain_dir / CHAIN_SPAWNS_FILE
+        if not spawns_file.is_file():
+            continue
+        try:
+            lines = spawns_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                row = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict):
+                tty = row.get("prev_tty")
+                if isinstance(tty, str) and tty.startswith("/dev/ttys") and tty not in ttys:
+                    ttys.append(tty)
+    return ttys
+
+
+def find_dead_chain_windows(recorded_ttys: List[str], *, exclude_tty: Optional[str] = None) -> List[Dict[str, object]]:
+    """Idle single-tab Terminal windows whose tty the chains recorded.
+
+    Qualification is conjunctive: exactly one tab (Terminal cannot close one
+    tab of a multi-tab window), no tab busy (no live process — the crashed
+    round's session ended), and the tab's tty is in ``recorded_ttys``
+    (chain-owned by record, never the user's own window). ``exclude_tty``
+    protects the session running the sweep from closing its own window.
+    One bounded osascript enumerates ``id|tabCount|tty|anyBusy`` lines; any
+    failure returns ``[]`` (fail-open: report nothing rather than guess).
+    """
+    if not recorded_ttys:
+        return []
+    script = "\n".join(
+        [
+            'tell application "Terminal"',
+            '\tset out to ""',
+            "\trepeat with w in windows",
+            "\t\tset tid to id of w as string",
+            "\t\tset tc to count of tabs of w",
+            "\t\tif tc is 0 then",
+            '\t\t\tset out to out & tid & "|0||true" & linefeed',
+            "\t\telse",
+            "\t\t\tset anyBusy to false",
+            "\t\t\tset wTty to tty of (tab 1 of w)",
+            "\t\t\trepeat with t in tabs of w",
+            "\t\t\t\tif (busy of t) then set anyBusy to true",
+            "\t\t\tend repeat",
+            '\t\t\tset out to out & tid & "|" & (tc as string) & "|" & wTty & "|" & (anyBusy as string) & linefeed',
+            "\t\tend if",
+            "\tend repeat",
+            "\treturn out",
+            "end tell",
+        ]
+    )
+    try:
+        completed = subprocess.run(
+            ["osascript", "-e", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=OSASCRIPT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if completed.returncode != 0:
+        return []
+    recorded_set = set(recorded_ttys)
+    dead: List[Dict[str, object]] = []
+    for line in completed.stdout.splitlines():
+        parts = line.strip().split("|")
+        if len(parts) != 4:
+            continue
+        window_id_s, tab_count_s, tty_s, busy_s = parts
+        try:
+            window_id = int(window_id_s)
+            tabs = int(tab_count_s)
+        except ValueError:
+            continue
+        if window_id <= 0 or tabs != 1 or busy_s != "false":
+            continue
+        if tty_s not in recorded_set or tty_s == exclude_tty:
+            continue
+        dead.append({"window_id": window_id, "tty": tty_s})
+    return dead
+
+
+def close_terminal_windows(window_ids: List[int]) -> Dict[str, List[int]]:
+    """Close Terminal windows by id, tolerating per-window failures.
+
+    An idle single-tab window closes silently (no confirmation sheet — the
+    sweep only passes ids :func:`find_dead_chain_windows` qualified). A
+    window that vanished or refused lands in ``skipped``; the sweep never
+    aborts on one window.
+    """
+    closed: List[int] = []
+    skipped: List[int] = []
+    for window_id in window_ids:
+        # Guarded close, never a bare one: a window that turned busy after
+        # the enumeration (TOCTOU) must never raise Terminal's
+        # cancel/terminate sheet — the zero-wait guard closes only a window
+        # that still exists, holds one tab, and is free; every other
+        # outcome is a conservative skip (F19).
+        try:
+            result = subprocess.run(
+                ["osascript", "-e", build_close_applescript(window_id, 0)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=OSASCRIPT_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.SubprocessError):
+            skipped.append(window_id)
+            continue
+        if result.returncode == 0 and result.stdout.strip() == "closed":
+            closed.append(window_id)
+        else:
+            skipped.append(window_id)
+    return {"closed": closed, "skipped": skipped}
 
 
 def parse_spawn_result(stdout: str) -> Tuple[Optional[int], Optional[str]]:
@@ -960,6 +1280,112 @@ def parse_window_lookup(stdout: str) -> Tuple[Optional[int], int, bool]:
     return window_id, tab_count, busy
 
 
+# --- F17 spawn robustness ----------------------------------------------------
+
+
+def run_terminal_open(osascript_argv: List[str], *, error: Callable[[str], Exception], label: str):
+    """Run the window-open osascript with one bounded retry.
+
+    A transiently busy Terminal (mid-animation, mid-close) must not kill the
+    round: one retry after a short backoff, then the existing refusal. The
+    per-chain message texts are preserved verbatim through ``label`` ("the
+    Terminal window" / "the pass Terminal window").
+    """
+    last_detail = ""
+    for attempt in range(TERMINAL_OPEN_ATTEMPTS):
+        try:
+            completed = subprocess.run(
+                osascript_argv,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=OSASCRIPT_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            last_detail = "osascript did not answer within {}s opening {}".format(OSASCRIPT_TIMEOUT_SECONDS, label)
+        else:
+            if completed.returncode == 0:
+                return completed
+            last_detail = completed.stderr.strip() or completed.stdout.strip()
+        if attempt + 1 < TERMINAL_OPEN_ATTEMPTS:
+            time.sleep(TERMINAL_OPEN_RETRY_BACKOFF_SECONDS)
+    raise error(f"osascript failed to open {label}: {last_detail}")
+
+
+def verify_worker_start(
+    worker_name: str,
+    new_window_id: Optional[int],
+    new_tty: Optional[str],
+    *,
+    timeout_seconds: Optional[int] = None,
+    poll_seconds: float = WORKER_START_POLL_SECONDS,
+    worker_check: Optional[Callable[[str, str], bool]] = None,
+) -> Dict[str, object]:
+    """F17: confirm the next-round session actually started.
+
+    Verdicts: ``running`` (worker observed on the new tty), ``late-start``
+    (not observed within the bound but the new tab is busy — something is
+    running, keep today's fail-open), ``dead-tab`` (not observed and the tab
+    is idle — the worker died instantly; the caller closes the dead window
+    and refuses without recording state). An empty ``worker_name`` (the
+    ``--command`` bypass) is trusted without verification.
+    """
+    if worker_check is None:
+        worker_check = worker_running_on_tty
+    if timeout_seconds is None:
+        timeout_seconds = WORKER_START_TIMEOUT_SECONDS
+    if not worker_name:
+        return {"status": "running", "reason": "raw command bypass trusted without worker verification"}
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if worker_check(worker_name, new_tty or ""):
+            return {"status": "running"}
+        time.sleep(poll_seconds)
+    # Not observed: discriminate a dead tab (idle) from a late start (busy)
+    lookup_argv = ["osascript", "-e", build_window_lookup_applescript(new_tty or "")]
+    try:
+        lookup = subprocess.run(
+            lookup_argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=OSASCRIPT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return {"status": "late-start", "reason": "window lookup did not answer"}
+    _window_id, _tab_count, busy = parse_window_lookup(lookup.stdout) if lookup.returncode == 0 else (None, 0, False)
+    if busy:
+        return {
+            "status": "late-start",
+            "reason": "worker {} not observed on {} within {}s but the tab is busy".format(
+                worker_name, new_tty, timeout_seconds
+            ),
+        }
+    return {
+        "status": "dead-tab",
+        "reason": "worker {} never started on {} within {}s (tab idle)".format(worker_name, new_tty, timeout_seconds),
+    }
+
+
+def close_spawned_window_quietly(window_id: Optional[int]) -> None:
+    """Best-effort cleanup of a spawned window whose session died.
+
+    The zero-wait close AppleScript closes an idle single-tab window
+    silently and reports busy for anything still running — fire-and-forget,
+    outcome ignored (the accompanying refusal event is the audit record)."""
+    if isinstance(window_id, bool) or not isinstance(window_id, int) or window_id <= 0:
+        return
+    try:
+        subprocess.run(
+            ["osascript", "-e", build_close_applescript(window_id, 0)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=OSASCRIPT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+
+
 def build_close_applescript(
     window_id: int,
     close_wait_seconds: int,
@@ -1000,6 +1426,38 @@ def build_close_applescript(
     )
 
 
+_WORKER_NAME_TOKEN = re.compile(r"^[A-Za-z0-9._+-]+$")
+
+
+def _session_kill_lines(session_pids: List[int], signal_name: str, worker_name: str) -> str:
+    """Best-effort sh lines signaling the lingering session's process groups.
+
+    Targets the pgid of each recorded worker pid — never the tty (the close
+    helper and the spawning python both hang off it and must survive). Each
+    pid is identity-checked first (F19): the pid was captured ~13s before
+    the signal fires, and a reused pid must never pass — the ps command
+    line has to name the worker with a token boundary (``*codex *`` or
+    ``*/codex`` — ``pip3``-style substrings do not match). A worker name
+    that is not a plain token (never the case for the three hosts; the
+    bypass carries no name) skips the escalation entirely — conservative.
+    """
+    if not session_pids or not worker_name or not _WORKER_NAME_TOKEN.match(worker_name):
+        return ""
+    pid_list = " ".join(str(pid) for pid in session_pids)
+    return (
+        "for pid in {pids}; do "
+        'cmd=$(ps -o command= -p "$pid" 2>/dev/null); '
+        # the space-bearing alternative must stay quoted: macOS /bin/sh is
+        # bash 3.2, whose case parser rejects an unquoted ``*w *`` pattern
+        # outright (verified on-device — the whole helper would die at parse)
+        'case "$cmd" in *"{worker} "*|*/{worker}) '
+        'pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d " "); '
+        '[ -n "$pgid" ] && kill -{signal} -"$pgid" 2>/dev/null || true ;; '
+        "esac; "
+        "done\n"
+    ).format(pids=pid_list, signal=signal_name, worker=worker_name)
+
+
 def build_close_argv(
     window_id: int,
     delay_seconds: int,
@@ -1011,19 +1469,24 @@ def build_close_argv(
     prev_tty: str,
     events_path: Path,
     poll_seconds: float = CLOSE_POLL_INTERVAL_SECONDS,
+    session_pids: Optional[List[int]] = None,
+    worker_name: str = "",
     error: Callable[..., Exception] = ChainSpawnError,
 ) -> List[str]:
-    """Build the detached argv closing a Terminal window after a delay.
+    """Build the detached argv recycling a Terminal window after a handoff.
 
-    The helper sleeps ``delay_seconds``, runs the bounded close AppleScript,
-    and appends one ``recycle_close`` JSON line to ``events_path`` — result
-    from the fixed vocabulary (``closed`` / ``multi-tab`` / ``window-gone`` /
-    ``busy-timeout``; anything else, including an osascript failure, records
-    ``osascript-error``) plus the chain context (``chain`` and ``round`` or
-    ``pass``, ``window_id``, ``prev_tty``, ``waited_ms``) so attempts and
-    outcomes can be joined per window. The append is fire-and-forget: a
-    failure to write never blocks or re-raises (stdout/stderr are discarded
-    by the caller).
+    F17 three-phase escalation (the interactive worker TUI finishes its
+    turn and then idles forever, so waiting for a natural exit alone left
+    every window open — 10 busy-timeout vs 1 closed in the live events
+    stream): (1) natural-exit grace; (2) SIGTERM to the recorded session
+    process groups; (3) SIGKILL, then the remaining wait budget. Each phase
+    runs the bounded close AppleScript — it closes only a window that still
+    exists, holds exactly one tab, and whose session has exited, so the
+    cancel/terminate sheet never appears. The helper appends one
+    ``recycle_close`` JSON line to ``events_path`` — result from the fixed
+    vocabulary (``closed`` / ``multi-tab`` / ``window-gone`` / ``busy-timeout``;
+    anything else records ``osascript-error``) plus the chain context. The
+    append is fire-and-forget: a failure to write never blocks or re-raises.
     """
     if isinstance(window_id, bool) or not isinstance(window_id, int) or window_id <= 0:
         raise error(f"window id must be a positive integer: {window_id!r}")
@@ -1041,9 +1504,19 @@ def build_close_argv(
         raise error(f"{context_name} index must be a positive integer: {context_value!r}")
     if not isinstance(prev_tty, str) or not prev_tty:
         raise error(f"prev_tty is required: {prev_tty!r}")
+    clean_pids: List[int] = []
+    for pid in session_pids or []:
+        if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+            raise error(f"session pids must be positive integers: {pid!r}")
+        if pid not in clean_pids:
+            clean_pids.append(pid)
+    clean_pids.sort()
     events_path = Path(events_path)
     if not events_path.is_absolute():
         raise error(f"events path must be absolute: {events_path}")
+    grace_wait = min(CLOSE_NATURAL_GRACE_SECONDS, close_wait_seconds)
+    term_wait = min(CLOSE_TERM_WAIT_SECONDS, max(0, close_wait_seconds - grace_wait))
+    final_wait = max(0, close_wait_seconds - grace_wait - term_wait)
     literal = json.dumps(
         {
             "kind": "recycle_close",
@@ -1060,11 +1533,20 @@ def build_close_argv(
     script = (
         "start=$(date +%s)\n"
         "sleep {delay}\n"
-        'out=$(osascript -e {applescript} 2>/dev/null) || out=""\n'
-        'case "$out" in\n'
-        '  closed|multi-tab|window-gone|busy-timeout) result="$out" ;;\n'
-        '  *) result="osascript-error" ;;\n'
-        "esac\n"
+        # phase 1: natural-exit grace (a bypass `sleep N` command closes here)
+        'out=$(osascript -e {grace_as} 2>/dev/null) || out=""\n'
+        'case "$out" in closed|multi-tab|window-gone) result="$out" ;; *)\n'
+        # phase 2: the session lingers past the grace — SIGTERM its groups
+        "{term_kill}"
+        'out=$(osascript -e {term_as} 2>/dev/null) || out=""\n'
+        'case "$out" in closed|multi-tab|window-gone) result="$out" ;; *)\n'
+        # phase 3: SIGKILL, then the remaining wait budget
+        "{final_kill}"
+        'out=$(osascript -e {final_as} 2>/dev/null) || out=""\n'
+        'case "$out" in closed|multi-tab|window-gone|busy-timeout) result="$out" ;; *) '
+        'result="osascript-error" ;; esac\n'
+        " ;; esac\n"
+        " ;; esac\n"
         "end=$(date +%s)\n"
         "now=$(date -u +%Y-%m-%dT%H:%M:%SZ)\n"
         "waited_ms=$(( (end - start) * 1000 ))\n"
@@ -1074,7 +1556,11 @@ def build_close_argv(
         'printf \'{template}\\n\' "$now" "$result" "$waited_ms" >> {events} 2>/dev/null'
     ).format(
         delay=delay_seconds,
-        applescript=shlex.quote(build_close_applescript(window_id, close_wait_seconds, poll_seconds=poll_seconds)),
+        grace_as=shlex.quote(build_close_applescript(window_id, grace_wait, poll_seconds=poll_seconds)),
+        term_kill=_session_kill_lines(clean_pids, "TERM", worker_name),
+        term_as=shlex.quote(build_close_applescript(window_id, term_wait, poll_seconds=poll_seconds)),
+        final_kill=_session_kill_lines(clean_pids, "KILL", worker_name),
+        final_as=shlex.quote(build_close_applescript(window_id, final_wait, poll_seconds=poll_seconds)),
         template=line_template,
         events=shlex.quote(str(events_path)),
     )
@@ -1092,6 +1578,8 @@ def schedule_window_close(
     prev_tty: str,
     events_path: Path,
     poll_seconds: float = CLOSE_POLL_INTERVAL_SECONDS,
+    session_pids: Optional[List[int]] = None,
+    worker_name: str = "",
 ) -> None:
     """Launch the detached close helper; it outlives this process group."""
     subprocess.Popen(
@@ -1105,6 +1593,8 @@ def schedule_window_close(
             prev_tty=prev_tty,
             events_path=events_path,
             poll_seconds=poll_seconds,
+            session_pids=session_pids,
+            worker_name=worker_name,
         ),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
@@ -1123,34 +1613,31 @@ def recycle_previous_window(
     events_path: Path,
     round_index: Optional[int] = None,
     pass_index: Optional[int] = None,
-    timeout_seconds: Optional[int] = None,
     delay_seconds: Optional[int] = None,
     close_wait_seconds: Optional[int] = None,
-    worker_check: Optional[Callable[[str, str], bool]] = None,
+    pid_lookup: Optional[Callable[[str, str], List[int]]] = None,
     schedule_close: Optional[Callable[..., None]] = None,
 ) -> Dict[str, object]:
-    """Confirm the next round and schedule the previous window's close.
+    """Recycle the previous round's window: confirm the new window is distinct,
+    then schedule the escalated close for the previous one.
 
-    Fail-open: any skip condition leaves the previous window open and
-    returns the recorded reason; the chain continues in the new window.
-    A one-tab previous window is scheduled for the detached close helper,
-    which waits (bounded by ``close_wait_seconds``) for the previous session
-    to exit before closing: Terminal cannot close one tab of a window, and
-    closing a tab whose process still runs raises its cancel/terminate
-    sheet — so the helper polls instead of giving up on the first busy
-    observation. The helper appends its outcome to ``events_path``
-    (fire-and-forget, append failures are ignored).
+    The next-round worker verification moved to :func:`verify_worker_start`
+    (F17): it is a spawn gate, not a recycle concern. Fail-open: any skip
+    condition leaves the previous window open and returns the recorded
+    reason. A one-tab previous window is scheduled for the detached close
+    helper with the session pids recorded now (the lingering interactive
+    session is SIGTERM/SIGKILL-escalated there — see ``build_close_argv``).
+    Multi-tab windows stay untouched: Terminal cannot close one tab, and the
+    escalation must not kill a session in a window it cannot close.
 
-    ``worker_check`` / ``schedule_close`` inject the caller's patchable
+    ``pid_lookup`` / ``schedule_close`` inject the caller's patchable
     collaborators (the chain scripts bind them to their own module globals
     so their test seams keep working).
     """
-    if worker_check is None:
-        worker_check = worker_running_on_tty
+    if pid_lookup is None:
+        pid_lookup = worker_pids_on_tty
     if schedule_close is None:
         schedule_close = schedule_window_close
-    if timeout_seconds is None:
-        timeout_seconds = WORKER_START_TIMEOUT_SECONDS
     if delay_seconds is None:
         delay_seconds = CLOSE_DELAY_SECONDS
     if close_wait_seconds is None:
@@ -1159,17 +1646,6 @@ def recycle_previous_window(
         return {"status": "skipped", "reason": "spawning session has no controlling Terminal"}
     if new_window_id is None or new_tty is None:
         return {"status": "skipped", "reason": "spawned window id or tty unavailable from osascript"}
-    if worker_name:
-        deadline = time.monotonic() + timeout_seconds
-        while time.monotonic() < deadline:
-            if worker_check(worker_name, new_tty):
-                break
-            time.sleep(WORKER_START_POLL_SECONDS)
-        else:
-            return {
-                "status": "skipped",
-                "reason": "worker {} not observed on {} within {}s".format(worker_name, new_tty, timeout_seconds),
-            }
     lookup_argv = ["osascript", "-e", build_window_lookup_applescript(prev_tty)]
     try:
         lookup = subprocess.run(
@@ -1200,9 +1676,7 @@ def recycle_previous_window(
                 )
             ),
         }
-    # A still-running session no longer skips the recycle: the close helper
-    # waits (bounded) for it to exit — the normal case, since the spawning
-    # session is almost always still finishing its round summary right now.
+    session_pids = pid_lookup(worker_name, prev_tty) if worker_name else []
     schedule_close(
         prev_window_id,
         delay_seconds,
@@ -1212,6 +1686,8 @@ def recycle_previous_window(
         pass_index=pass_index,
         prev_tty=prev_tty,
         events_path=events_path,
+        session_pids=session_pids,
+        worker_name=worker_name,
     )
     return {
         "status": "scheduled",

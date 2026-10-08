@@ -99,6 +99,11 @@ GUARD_TABLE = {
     "CLOSE_DELAY_SECONDS": 3,
     "CLOSE_POLL_INTERVAL_SECONDS": 2,
     "CLOSE_WAIT_EXIT_SECONDS": 120,
+    # F17 add-only: the recycle escalation phases and the open retry
+    "CLOSE_NATURAL_GRACE_SECONDS": 10,
+    "CLOSE_TERM_WAIT_SECONDS": 15,
+    "TERMINAL_OPEN_ATTEMPTS": 2,
+    "TERMINAL_OPEN_RETRY_BACKOFF_SECONDS": 2,
     "DEFAULT_MAX_ROUNDS": 20,
     "DEFAULT_MAX_PASSES": 12,
 }
@@ -513,3 +518,312 @@ class TestSessionTty:
         result = support.nearest_ancestor_tty()
         if result is not None:
             assert result.startswith("/dev/ttys")
+
+
+# --- F17: adaptive caps, session pids, geometry inheritance -------------------
+
+
+class TestAdaptiveCaps:
+    def test_adaptive_max_rounds_formula(self):
+        # features + 25% + 3, floored at the default 20
+        assert support.adaptive_max_rounds(0) == 20
+        assert support.adaptive_max_rounds(1) == 20  # 1 + 3 + 0
+        assert support.adaptive_max_rounds(14) == 20  # 14 + 3 + 3
+        assert support.adaptive_max_rounds(30) == 40  # 30 + 3 + 7
+        assert support.adaptive_max_rounds(100) == 128  # 100 + 3 + 25
+
+    def test_adaptive_max_passes_formula(self):
+        # 2 (framework + review) + 3 per detail doc, floored at the default 12
+        assert support.adaptive_max_passes(0) == 12
+        assert support.adaptive_max_passes(2) == 12
+        assert support.adaptive_max_passes(4) == 14  # the calibration run
+        assert support.adaptive_max_passes(10) == 32
+
+    def test_effective_max_cap_explicit_wins_and_recorded_floors(self):
+        # an explicit flag wins exactly — even lower than any estimate
+        assert support.effective_max_cap(5, 40, support.adaptive_max_rounds(30)) == 5
+        # no flag: recorded cap floors the adaptive estimate (never refuses
+        # on the way down for a manual continuation)
+        assert support.effective_max_cap(None, 40, support.adaptive_max_rounds(30)) == 40
+        assert support.effective_max_cap(None, 8, support.adaptive_max_rounds(30)) == 40
+        assert support.effective_max_cap(None, "garbage", support.adaptive_max_rounds(30)) == 40
+        assert support.effective_max_cap(None, None, support.adaptive_max_passes(4)) == 14
+
+
+class TestWorkerPidsOnTty:
+    def test_matches_native_and_interpreter_shapes_with_pids(self, monkeypatch):
+        ps_output = (
+            "ttys009   4321 node /opt/homebrew/bin/codex --cd /tmp -- PROMPT\n"
+            "ttys009   5002 /bin/sh /usr/local/bin/pi --mode text -- PROMPT2\n"
+            "ttys010   6003 /usr/local/bin/claude\n"
+            "ttys011   7004 tail -f logs/pi\n"
+        )
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout=ps_output, stderr=""),
+        )
+        assert support.worker_pids_on_tty("codex", "/dev/ttys009") == [4321]
+        assert support.worker_pids_on_tty("pi", "/dev/ttys009") == [5002]
+        assert support.worker_pids_on_tty("claude", "/dev/ttys010") == [6003]
+        # a bare word further right in an unrelated command is not the worker
+        assert support.worker_pids_on_tty("pi", "/dev/ttys011") == []
+
+    def test_ps_failure_returns_empty(self, monkeypatch):
+        def failed(*a, **k):
+            raise subprocess.SubprocessError("ps gone")
+
+        monkeypatch.setattr(subprocess, "run", failed)
+        assert support.worker_pids_on_tty("codex", "/dev/ttys009") == []
+
+
+class TestTerminalGeometryInheritance:
+    def test_spawn_script_keeps_the_plain_open_form(self, tmp_path):
+        argv, shell = support.build_terminal_command(tmp_path, ["pi", "--mode", "text", "--", "PROMPT"])
+        script = argv[2]
+        assert "parentPos" not in script
+        assert "set position of" not in script
+        assert "do script" in script
+        assert 'return match & " " & spawnedTty' in script
+        assert shell.startswith("cd ")
+
+    def test_read_window_geometry_script_shape(self):
+        # the lookup goes through the tty literal and reports position/size
+        argv = None
+        from unittest.mock import patch
+
+        def fake_run(args, **kwargs):
+            nonlocal argv
+            argv = args
+            return subprocess.CompletedProcess(args, 0, stdout="10, 20, 597, 432\n", stderr="")
+
+        with patch.object(support.subprocess, "run", fake_run):
+            assert support.read_window_geometry("/dev/ttys012") == (10, 20, 597, 432)
+        assert argv[0] == "osascript"
+        assert 'if tty of t is "/dev/ttys012"' in argv[2]
+        assert "set {x, y} to position of matchRef" in argv[2]
+        assert "set {w, h} to size of matchRef" in argv[2]
+
+    def test_read_window_geometry_tolerant(self, monkeypatch):
+        # no hosting window -> None; garbage -> None; failure -> None
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="\n", stderr=""),
+        )
+        assert support.read_window_geometry("/dev/ttys012") is None
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="not,numbers\n", stderr=""),
+        )
+        assert support.read_window_geometry("/dev/ttys012") is None
+
+        def failed(*a, **k):
+            raise subprocess.SubprocessError("gone")
+
+        monkeypatch.setattr(subprocess, "run", failed)
+        assert support.read_window_geometry("/dev/ttys012") is None
+
+    def test_apply_window_geometry_sets_twice_and_ignores_invalid(self, monkeypatch):
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(args[2])
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(support.time, "sleep", lambda s: None)
+        support.apply_window_geometry(42, (10, 20, 597, 432))
+        assert len(calls) == 2  # the double-set beats the cascade race
+        assert "set position of window id 42 to {10, 20}" in calls[0]
+        assert "set size of window id 42 to {597, 432}" in calls[0]
+        calls.clear()
+        support.apply_window_geometry(-1, (10, 20, 597, 432))  # invalid id: no-op
+        support.apply_window_geometry(True, (10, 20, 597, 432))  # bool is not an id
+        assert calls == []
+
+
+# --- F18: dead chain-window sweep -----------------------------------------------
+
+
+class TestRecordedChainTtys:
+    def test_collects_prev_tty_from_both_chains(self, tmp_path):
+        autorun = tmp_path / ".spec" / "autorun"
+        autoplan = tmp_path / ".spec" / "autoplan"
+        autorun.mkdir(parents=True)
+        autoplan.mkdir(parents=True)
+        (autorun / "spawns.jsonl").write_text(
+            json.dumps({"round": 1, "prev_tty": "/dev/ttys001"})
+            + "\n"
+            + json.dumps({"round": 2, "prev_tty": "/dev/ttys002"})
+            + "\n",
+            encoding="utf-8",
+        )
+        (autoplan / "spawns.jsonl").write_text(
+            json.dumps({"pass": 1, "prev_tty": "/dev/ttys001"}) + "\n",  # duplicate dedupes
+            encoding="utf-8",
+        )
+        assert support.recorded_chain_ttys([autorun, autoplan]) == ["/dev/ttys001", "/dev/ttys002"]
+
+    def test_tolerant_to_missing_and_garbage(self, tmp_path):
+        chain_dir = tmp_path / ".spec" / "autorun"
+        chain_dir.mkdir(parents=True)
+        assert support.recorded_chain_ttys([chain_dir]) == []  # no spawns file
+        (chain_dir / "spawns.jsonl").write_text(
+            "not json\n" + json.dumps({"prev_tty": None}) + "\n" + json.dumps({"prev_tty": "/dev/console"}) + "\n",
+            encoding="utf-8",
+        )
+        assert support.recorded_chain_ttys([chain_dir]) == []
+
+
+class TestFindDeadChainWindows:
+    @staticmethod
+    def _fake_enum(monkeypatch, stdout):
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout=stdout, stderr=""),
+        )
+
+    def test_qualifying_window_is_returned(self, monkeypatch):
+        self._fake_enum(monkeypatch, "47171|1|/dev/ttys009|false\n")
+        dead = support.find_dead_chain_windows(["/dev/ttys009"])
+        assert dead == [{"window_id": 47171, "tty": "/dev/ttys009"}]
+
+    def test_each_condition_excludes(self, monkeypatch):
+        recorded = ["/dev/ttys009"]
+        # busy (a live session) — never touched
+        self._fake_enum(monkeypatch, "1|1|/dev/ttys009|true\n")
+        assert support.find_dead_chain_windows(recorded) == []
+        # multi-tab — Terminal cannot close one tab
+        self._fake_enum(monkeypatch, "2|2|/dev/ttys009|false\n")
+        assert support.find_dead_chain_windows(recorded) == []
+        # tty not recorded — the user's own window
+        self._fake_enum(monkeypatch, "3|1|/dev/ttys777|false\n")
+        assert support.find_dead_chain_windows(recorded) == []
+        # the sweep's own session — excluded even when recorded
+        self._fake_enum(monkeypatch, "4|1|/dev/ttys009|false\n")
+        assert support.find_dead_chain_windows(recorded, exclude_tty="/dev/ttys009") == []
+        # zero-tab ghost window (enumerated as busy by construction)
+        self._fake_enum(monkeypatch, "5|0||true\n")
+        assert support.find_dead_chain_windows(recorded) == []
+        # empty recorded set short-circuits without touching osascript
+        self._fake_enum(monkeypatch, "6|1|/dev/ttys009|false\n")
+        assert support.find_dead_chain_windows([]) == []
+
+    def test_malformed_lines_and_failures_are_tolerated(self, monkeypatch):
+        self._fake_enum(monkeypatch, "garbage\n7|1|/dev/ttys009|false\nx|y|z\n")
+        assert support.find_dead_chain_windows(["/dev/ttys009"]) == [{"window_id": 7, "tty": "/dev/ttys009"}]
+
+        def failed(*a, **k):
+            raise subprocess.SubprocessError("osascript gone")
+
+        monkeypatch.setattr(subprocess, "run", failed)
+        assert support.find_dead_chain_windows(["/dev/ttys009"]) == []
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 1, stdout="", stderr="denied"),
+        )
+        assert support.find_dead_chain_windows(["/dev/ttys009"]) == []
+
+
+class TestCloseTerminalWindows:
+    def test_closed_and_skipped_split(self, monkeypatch):
+        """F19: the close is the guarded form — only a ``closed`` outcome word
+        counts as closed; busy/multi-tab/gone (the TOCTOU cases) and rc!=0
+        are conservative skips, never a bare close."""
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(args[2])
+            if "window id 7" in args[2]:
+                return subprocess.CompletedProcess(args, 0, stdout="closed\n", stderr="")
+            if "window id 9" in args[2]:
+                return subprocess.CompletedProcess(args, 0, stdout="busy-timeout\n", stderr="")
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="not authorized")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        result = support.close_terminal_windows([7, 9, 8, 7])
+        assert result == {"closed": [7, 7], "skipped": [9, 8]}
+        # the guarded close script re-checks existence, tab count, and busy
+        assert all("busy of tab 1 of window id" in script for script in calls)
+
+    def test_timeout_is_tolerated(self, monkeypatch):
+        def failed(*a, **k):
+            raise subprocess.TimeoutExpired(a[0], 30)
+
+        monkeypatch.setattr(subprocess, "run", failed)
+        assert support.close_terminal_windows([5]) == {"closed": [], "skipped": [5]}
+
+
+# --- F19: kill interlock -------------------------------------------------------
+
+
+class TestSessionKillInterlock:
+    @staticmethod
+    def _script_for(worker_name, pids=(99, 4321)):
+        argv = support.build_close_argv(
+            42,
+            3,
+            120,
+            prev_tty="/dev/ttys012",
+            session_pids=list(pids),
+            worker_name=worker_name,
+            chain="autorun",
+            round_index=1,
+            events_path=Path("/tmp/spec-test-events.jsonl"),
+        )
+        return argv[2]
+
+    def test_guard_matches_both_boundary_forms(self):
+        script = self._script_for("claude")
+        assert 'case "$cmd" in *"claude "*|*/claude)' in script
+        assert 'kill -TERM -"$pgid"' in script
+        assert 'kill -KILL -"$pgid"' in script
+
+    def test_no_worker_name_means_no_kill_segment(self):
+        assert support._session_kill_lines([99], "TERM", "") == ""
+
+    def test_non_token_worker_name_is_refused_conservatively(self):
+        # a worker name with shell metacharacters never reaches the case pattern
+        assert support._session_kill_lines([99], "TERM", "x; rm -rf") == ""
+        assert support._session_kill_lines([99], "TERM", "a b") == ""
+
+    def test_boundary_forms_exclude_substrings(self):
+        guarded = support._session_kill_lines([99], "TERM", "pi")
+        assert 'case "$cmd" in *"pi "*|*/pi)' in guarded
+        # pip3-style substrings do not satisfy either boundary form
+        assert "pip3" not in guarded
+
+    def test_generated_helper_script_parses_under_sh(self):
+        """The helper runs under macOS /bin/sh (bash 3.2): the whole script
+        must parse. Found in review: an unquoted space-bearing case pattern
+        (``*w *``) is a bash-3.2 parse error that string assertions missed
+        because they never executed the script."""
+        argv = support.build_close_argv(
+            42,
+            3,
+            120,
+            prev_tty="/dev/ttys012",
+            session_pids=[4321, 99],
+            worker_name="claude",
+            chain="autorun",
+            round_index=1,
+            events_path=Path("/tmp/spec-test-events.jsonl"),
+        )
+        parsed = subprocess.run(["/bin/sh", "-n"], input=argv[2], text=True, capture_output=True, timeout=10)
+        assert parsed.returncode == 0, parsed.stderr
+        # and the no-kill (bypass) shape parses too
+        argv = support.build_close_argv(
+            42,
+            3,
+            120,
+            prev_tty="/dev/ttys012",
+            chain="autoplan",
+            pass_index=2,
+            events_path=Path("/tmp/spec-test-events.jsonl"),
+        )
+        parsed = subprocess.run(["/bin/sh", "-n"], input=argv[2], text=True, capture_output=True, timeout=10)
+        assert parsed.returncode == 0, parsed.stderr
