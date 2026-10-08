@@ -9,7 +9,7 @@
     git clone https://github.com/MicTx/spec-harness.git
     cd spec-harness
     git fetch --tags origin
-    git checkout v0.14.0
+    git checkout v0.14.1
 
 贡献者通常从 fork 克隆，并把官方仓库保留为 `upstream`：
 

@@ -342,6 +342,12 @@ def clean_git_env() -> dict[str, str]:
     return {**env, "PATH": safe_subprocess_path()}
 
 
+# F21: every git/subprocess call in this gate is bounded — a stalled
+# network operation (fetch/push/ls-remote) must fail diagnosably inside the
+# bound instead of hanging the push gate forever.
+SUBPROCESS_NETWORK_TIMEOUT_SECONDS = 300
+
+
 def git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
@@ -351,9 +357,16 @@ def git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProce
             check=check,
             capture_output=True,
             text=True,
+            timeout=SUBPROCESS_NETWORK_TIMEOUT_SECONDS,
         )
     except FileNotFoundError as exc:
         raise PushError("git is not available on the sanitized PATH") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise PushError(
+            "git {} timed out within {}s (stalled network or repository?)".format(
+                " ".join(args[:3]), SUBPROCESS_NETWORK_TIMEOUT_SECONDS
+            )
+        ) from exc
 
 
 def git_stdout(root: Path, *args: str) -> str:
@@ -769,13 +782,19 @@ def run_checked(
     command: list[str],
     repair: GiteaRepairSettings | None = None,
 ) -> None:
-    completed = subprocess.run(
-        command,
-        cwd=root,
-        env=clean_git_env(),
-        capture_output=True,
-        text=True,
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=root,
+            env=clean_git_env(),
+            capture_output=True,
+            text=True,
+            timeout=SUBPROCESS_NETWORK_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise PushError(
+            "command timed out within {}s: {}".format(SUBPROCESS_NETWORK_TIMEOUT_SECONDS, render_command(command))
+        ) from exc
     combined_output = combined_process_output(completed)
     ensure_no_broken_git_hooks_warning(command, combined_output, repair)
     if completed.returncode != 0:
@@ -786,13 +805,19 @@ def run_checked(
 
 
 def run_best_effort(root: Path, command: list[str]) -> None:
-    subprocess.run(
-        command,
-        cwd=root,
-        env=clean_git_env(),
-        capture_output=True,
-        text=True,
-    )
+    try:
+        subprocess.run(
+            command,
+            cwd=root,
+            env=clean_git_env(),
+            capture_output=True,
+            text=True,
+            timeout=SUBPROCESS_NETWORK_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        # best-effort by contract: a stalled command is skipped, not fatal —
+        # bounded so it cannot hang the gate either way
+        return
 
 
 def run_spec_gate(

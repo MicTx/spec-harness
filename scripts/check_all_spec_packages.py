@@ -99,6 +99,11 @@ def clean_git_env(*, index_file: Path | None = None) -> dict[str, str]:
     return environment
 
 
+# F21: git reads in this gate are bounded — a stalled repository
+# operation fails inside the bound instead of hanging pre-commit.
+SUBPROCESS_LOCAL_TIMEOUT_SECONDS = 60
+
+
 def trusted_git() -> str:
     path = clean_git_env().get("PATH", "")
     candidate = shutil.which("git", path=path)
@@ -345,6 +350,7 @@ def legacy_archive_hashes(
             env=clean_git_env(),
             capture_output=True,
             text=True,
+            timeout=SUBPROCESS_LOCAL_TIMEOUT_SECONDS,
         )
         if checked.returncode == 0:
             baseline = checked.stdout.strip()
@@ -359,13 +365,17 @@ def legacy_archive_hashes(
     cached = _load_legacy_cache(root, cache_key)
     if cached is not None:
         return cached
-    listed = subprocess.run(
-        [git_bin, "ls-tree", "-r", "--name-only", baseline],
-        cwd=root,
-        env=clean_git_env(),
-        capture_output=True,
-        text=True,
-    )
+    try:
+        listed = subprocess.run(
+            [git_bin, "ls-tree", "-r", "--name-only", baseline],
+            cwd=root,
+            env=clean_git_env(),
+            capture_output=True,
+            text=True,
+            timeout=SUBPROCESS_LOCAL_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return {}
     if listed.returncode != 0:
         return {}
     bundles: dict[tuple[str, str], dict[str, str]] = {}
@@ -608,13 +618,17 @@ def check_git_index(
 ) -> list[CheckFailure]:
     with tempfile.TemporaryDirectory(prefix="spec-index-") as temp_dir:
         snapshot = Path(temp_dir)
-        completed = subprocess.run(
-            [trusted_git(), "checkout-index", "--all", f"--prefix={snapshot}{os.sep}"],
-            cwd=root,
-            env=clean_git_env(),
-            capture_output=True,
-            text=True,
-        )
+        try:
+            completed = subprocess.run(
+                [trusted_git(), "checkout-index", "--all", f"--prefix={snapshot}{os.sep}"],
+                cwd=root,
+                env=clean_git_env(),
+                capture_output=True,
+                text=True,
+                timeout=SUBPROCESS_LOCAL_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            return [CheckFailure(root, "<git-index>", "checkout-index timed out within 60s")]
         if completed.returncode != 0:
             detail = completed.stderr.strip() or completed.stdout.strip()
             return [CheckFailure(root, "<git-index>", detail or "checkout-index failed")]
@@ -629,13 +643,17 @@ def check_git_index(
 @contextmanager
 def git_revision_snapshot(root: Path, revision: str):
     git_bin = trusted_git()
-    resolved = subprocess.run(
-        [git_bin, "rev-parse", "--verify", f"{revision}^{{tree}}"],
-        cwd=root,
-        env=clean_git_env(),
-        capture_output=True,
-        text=True,
-    )
+    try:
+        resolved = subprocess.run(
+            [git_bin, "rev-parse", "--verify", f"{revision}^{{tree}}"],
+            cwd=root,
+            env=clean_git_env(),
+            capture_output=True,
+            text=True,
+            timeout=SUBPROCESS_LOCAL_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError(f"git rev-parse timed out within {SUBPROCESS_LOCAL_TIMEOUT_SECONDS}s") from exc
     if resolved.returncode != 0:
         detail = resolved.stderr.strip() or resolved.stdout.strip()
         raise ValueError(detail or f"invalid revision: {revision}")
@@ -645,13 +663,17 @@ def git_revision_snapshot(root: Path, revision: str):
         snapshot = temporary / "snapshot"
         snapshot.mkdir()
         environment = clean_git_env(index_file=temporary / "index")
-        read_tree = subprocess.run(
-            [git_bin, "read-tree", tree_sha],
-            cwd=root,
-            env=environment,
-            capture_output=True,
-            text=True,
-        )
+        try:
+            read_tree = subprocess.run(
+                [git_bin, "read-tree", tree_sha],
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=SUBPROCESS_LOCAL_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            raise ValueError(f"git read-tree timed out within {SUBPROCESS_LOCAL_TIMEOUT_SECONDS}s")
         if read_tree.returncode != 0:
             detail = read_tree.stderr.strip() or read_tree.stdout.strip()
             raise ValueError(detail or f"cannot read revision: {revision}")

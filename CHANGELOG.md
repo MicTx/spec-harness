@@ -4,6 +4,12 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation.
 
+## [0.14.1] - 2026-10-08
+
+### Fixed
+
+- **The push gate can no longer hang on a stalled network operation**: every git/subprocess call in the commit/push gate, the disk-truth pre-commit check, the changelog generator, and the structure auditor now runs with a bounded timeout (300s for network operations, 60s for local git). A stalled fetch/push/ls-remote fails inside the bound with a diagnosable error (`timed out within Ns` plus the rendered command) instead of blocking the whole workflow forever; best-effort steps time out silently, and the disk-truth gate degrades to its existing failure path.
+
 ## [0.14.0] - 2026-10-08
 
 ### Added

@@ -18,12 +18,16 @@ from pathlib import Path
 
 def git_stdout(root: Path, *args: str) -> str:
     """Run git command and return stdout."""
-    result = subprocess.run(
-        ["git", "-C", str(root), *args],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), *args],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise SystemExit(f"error: git {' '.join(args)} timed out within 60s") from exc
     return result.stdout.strip()
 
 
@@ -140,12 +144,16 @@ def generate_changelog(
     # Get commit list with messages. Read raw output: str.strip() would eat
     # the \x1e record separators (Python classifies them as whitespace).
     log_format = "%H%x1e%s%x1e%b%x1e"
-    completed = subprocess.run(
-        ["git", "-C", str(root), "log", revision_range, f"--format={log_format}"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(root), "log", revision_range, f"--format={log_format}"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise SystemExit("error: git log timed out within 60s") from exc
     commits_text = completed.stdout
 
     # Parse commits: fields arrive as (sha, subject, body) triplets. Drop only
@@ -171,12 +179,16 @@ def generate_changelog(
         # Filter by branch if requested
         if filter_spec_prefix:
             # Check if commit is in a spec/* branch
-            branches_output = subprocess.run(
-                ["git", "-C", str(root), "branch", "--contains", commit_sha, "--format=%(refname:short)"],
-                capture_output=True,
-                text=True,
-            )
-            if branches_output.returncode == 0:
+            try:
+                branches_output = subprocess.run(
+                    ["git", "-C", str(root), "branch", "--contains", commit_sha, "--format=%(refname:short)"],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+            except subprocess.TimeoutExpired:
+                branches_output = None
+            if branches_output is not None and branches_output.returncode == 0:
                 branches = branches_output.stdout.strip().split("\n")
                 has_spec_branch = any(b.startswith("spec/") for b in branches if b)
                 if not has_spec_branch:

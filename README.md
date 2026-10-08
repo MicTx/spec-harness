@@ -77,7 +77,7 @@ Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.14.0
+git checkout v0.14.1
 bash install.sh
 ```
 

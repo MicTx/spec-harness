@@ -208,6 +208,7 @@ def run_git(root: Path, *args: str) -> Optional[str]:
             encoding="utf-8",
             errors="replace",
             check=False,
+            timeout=60,
         )
     except OSError:
         return None

@@ -176,13 +176,17 @@ def clean_git_env() -> dict[str, str]:
 
 def git_alias_value(root: Path, subcommand: str) -> str | None:
     project_root = find_project_root(root)
-    completed = subprocess.run(
-        ["git", "config", "--get", f"alias.{subcommand}"],
-        cwd=project_root,
-        env=clean_git_env(),
-        capture_output=True,
-        text=True,
-    )
+    try:
+        completed = subprocess.run(
+            ["git", "config", "--get", f"alias.{subcommand}"],
+            cwd=project_root,
+            env=clean_git_env(),
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
     if completed.returncode == 0:
         return completed.stdout.strip()
     return None
@@ -233,13 +237,19 @@ def touched_spec_slugs(root: Path) -> list[str] | None:
     env = clean_git_env()
 
     def run(*args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            ["git", *args],
-            cwd=project_root,
-            env=env,
-            capture_output=True,
-            text=True,
-        )
+        try:
+            return subprocess.run(
+                ["git", *args],
+                cwd=project_root,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+        except subprocess.TimeoutExpired:
+            # a stalled git read must not hang the hook: report as a failed
+            # probe (empty stdout shape) so callers take the safe path
+            return subprocess.CompletedProcess(["git", *args], 124, stdout="", stderr="timed out")
 
     branch = run("branch", "--show-current")
     if branch.returncode != 0 or not branch.stdout.strip():

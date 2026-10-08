@@ -1000,3 +1000,44 @@ def test_push_local_only_plan_keeps_legacy_branch_note(tmp_path):
     assert "mode: local-only" in result.stdout
     assert "legacy branch feature/legacy-work predates" in result.stdout
     assert "rename recommended" in result.stdout
+
+
+class TestSubprocessBoundedness:
+    """F21: every git/subprocess call in the push gate is bounded — a stalled
+    network operation fails diagnosably instead of hanging the gate."""
+
+    @pytest.fixture(autouse=True)
+    def _module(self):
+        sys.path.insert(0, str(ROOT / "scripts"))
+        try:
+            import push_spec_package
+
+            self.module = push_spec_package
+            yield
+        finally:
+            sys.path.pop(0)
+
+    def test_git_timeout_maps_to_push_error(self, tmp_path, monkeypatch):
+        def hung(args, **kwargs):
+            assert "timeout" in kwargs, "git() must pass a timeout"
+            raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+
+        monkeypatch.setattr(self.module.subprocess, "run", hung)
+        with pytest.raises(self.module.PushError, match="timed out within 300s"):
+            self.module.git(tmp_path, "fetch", "origin")
+
+    def test_run_checked_timeout_maps_to_push_error(self, tmp_path, monkeypatch):
+        def hung(command, **kwargs):
+            assert "timeout" in kwargs
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+        monkeypatch.setattr(self.module.subprocess, "run", hung)
+        with pytest.raises(self.module.PushError, match="timed out within 300s"):
+            self.module.run_checked(tmp_path, ["git", "push", "origin", "main"])
+
+    def test_run_best_effort_timeout_is_swallowed(self, tmp_path, monkeypatch):
+        def hung(command, **kwargs):
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+        monkeypatch.setattr(self.module.subprocess, "run", hung)
+        self.module.run_best_effort(tmp_path, ["git", "push", "--delete", "origin", "x"])  # no raise
