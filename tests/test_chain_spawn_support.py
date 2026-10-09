@@ -104,8 +104,6 @@ GUARD_TABLE = {
     "CLOSE_TERM_WAIT_SECONDS": 15,
     "TERMINAL_OPEN_ATTEMPTS": 2,
     "TERMINAL_OPEN_RETRY_BACKOFF_SECONDS": 2,
-    "DEFAULT_MAX_ROUNDS": 20,
-    "DEFAULT_MAX_PASSES": 12,
 }
 
 
@@ -116,15 +114,18 @@ class TestGuardTable:
             assert actual == expected, name
             assert type(actual) is type(expected), name  # 1.0 stays float, not 1
 
-    def test_cap_reexport_identity_across_every_import_site(self):
-        import autoplan_spawn
-        import autorun_spawn
-        import chain_recovery
-
-        assert autorun_spawn.DEFAULT_MAX_ROUNDS is support.DEFAULT_MAX_ROUNDS
-        assert autoplan_spawn.DEFAULT_MAX_PASSES is support.DEFAULT_MAX_PASSES
-        assert chain_recovery.DEFAULT_MAX_ROUNDS is support.DEFAULT_MAX_ROUNDS
-        assert chain_recovery.DEFAULT_MAX_PASSES is support.DEFAULT_MAX_PASSES
+    def test_the_adaptive_cap_machinery_is_gone(self):
+        # chains are unbounded without an explicit flag: the F17 adaptive
+        # default caps (and their constants) must stay removed so no code
+        # path ever computes a cap the user did not pass
+        for gone in (
+            "DEFAULT_MAX_ROUNDS",
+            "DEFAULT_MAX_PASSES",
+            "adaptive_max_rounds",
+            "adaptive_max_passes",
+            "effective_max_cap",
+        ):
+            assert not hasattr(support, gone), gone
 
 
 # --- F12 boundedness invariant (test-file internal helpers) -----------------
@@ -520,34 +521,53 @@ class TestSessionTty:
             assert result.startswith("/dev/ttys")
 
 
-# --- F17: adaptive caps, session pids, geometry inheritance -------------------
+# --- opt-in chain caps (F12 guard helpers; F17 adaptive defaults removed) ------
 
 
-class TestAdaptiveCaps:
-    def test_adaptive_max_rounds_formula(self):
-        # features + 25% + 3, floored at the default 20
-        assert support.adaptive_max_rounds(0) == 20
-        assert support.adaptive_max_rounds(1) == 20  # 1 + 3 + 0
-        assert support.adaptive_max_rounds(14) == 20  # 14 + 3 + 3
-        assert support.adaptive_max_rounds(30) == 40  # 30 + 3 + 7
-        assert support.adaptive_max_rounds(100) == 128  # 100 + 3 + 25
+def _next_pass(state_value, cap):
+    """One next_index_within_cap call with the pass chain's frozen wording."""
+    return support.next_index_within_cap(
+        state_value,
+        cap,
+        label="pass",
+        option="max-passes",
+        non_integer_template="pass-chain state has a non-integer pass index: {!r}",
+    )
 
-    def test_adaptive_max_passes_formula(self):
-        # 2 (framework + review) + 3 per detail doc, floored at the default 12
-        assert support.adaptive_max_passes(0) == 12
-        assert support.adaptive_max_passes(2) == 12
-        assert support.adaptive_max_passes(4) == 14  # the calibration run
-        assert support.adaptive_max_passes(10) == 32
 
-    def test_effective_max_cap_explicit_wins_and_recorded_floors(self):
-        # an explicit flag wins exactly — even lower than any estimate
-        assert support.effective_max_cap(5, 40, support.adaptive_max_rounds(30)) == 5
-        # no flag: recorded cap floors the adaptive estimate (never refuses
-        # on the way down for a manual continuation)
-        assert support.effective_max_cap(None, 40, support.adaptive_max_rounds(30)) == 40
-        assert support.effective_max_cap(None, 8, support.adaptive_max_rounds(30)) == 40
-        assert support.effective_max_cap(None, "garbage", support.adaptive_max_rounds(30)) == 40
-        assert support.effective_max_cap(None, None, support.adaptive_max_passes(4)) == 14
+class TestOptInCaps:
+    def test_validate_cap_refuses_non_positive(self):
+        with pytest.raises(ChainSpawnError, match="--max-rounds must be >= 1"):
+            support.validate_cap(0, "max-rounds")
+        with pytest.raises(ChainSpawnError, match="--max-passes must be >= 1"):
+            support.validate_cap(-3, "max-passes")
+        assert support.validate_cap(1, "max-rounds") == 1
+
+    def test_next_index_with_none_cap_is_unbounded(self):
+        # no cap (the no-flag default): the counter advances past any
+        # boundary without ever refusing
+        for state_value in (None, 0, 7, 30, 10000):
+            assert _next_pass(state_value, None) == (state_value or 0) + 1
+
+    def test_next_index_with_explicit_cap_keeps_the_f12_boundary(self):
+        # next == cap allows the last spawn; next > cap refuses with the
+        # verbatim frozen text
+        assert _next_pass(11, 12) == 12
+        with pytest.raises(ChainSpawnError, match="pass cap reached: next pass 13 exceeds --max-passes 12"):
+            _next_pass(12, 12)
+
+    def test_next_index_non_integer_state_refuses(self):
+        for bad in (True, 1.0, "4"):
+            with pytest.raises(ChainSpawnError, match="non-integer"):
+                _next_pass(bad, 12)
+
+    def test_format_chain_counter(self):
+        assert support.format_chain_counter(5, 20) == "5/20"
+        assert support.format_chain_counter(5, None) == "5 (no cap)"
+        assert support.format_chain_counter(31, None) == "31 (no cap)"
+        # a non-int cap value (corrupt state) renders unbounded, never crashes
+        assert support.format_chain_counter(5, "garbage") == "5 (no cap)"
+        assert support.format_chain_counter(5, True) == "5 (no cap)"
 
 
 class TestWorkerPidsOnTty:

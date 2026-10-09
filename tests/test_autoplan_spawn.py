@@ -67,6 +67,12 @@ class TestPassPrompt:
         assert build_pass_prompt("codex", [], 12) == "$spec autoplan continue --max-passes 12"
         assert build_pass_prompt("claude", [], 5) == "/spec:autoplan continue --max-passes 5"
 
+    def test_prompt_without_cap_carries_no_flag(self):
+        # unbounded chains forward no cap flag — nothing to hit mid-cluster
+        assert build_pass_prompt("codex", [], None) == "$spec autoplan continue"
+        assert build_pass_prompt("claude", [], None) == "/spec:autoplan continue"
+        assert build_pass_prompt("pi", ["--plan PLAN.md"], None) == "$spec autoplan continue --plan PLAN.md"
+
     def test_prompt_carries_plan_args(self):
         prompt = build_pass_prompt("pi", ["--plan PLAN.md"], 8)
         assert prompt == "$spec autoplan continue --plan PLAN.md --max-passes 8"
@@ -199,14 +205,34 @@ class TestSpawnCommand:
         assert payload["pass"] == 5
 
     def test_refuses_at_pass_cap(self, tmp_path, capsys, monkeypatch):
+        # the cap is opt-in: refusal happens only when the flag was passed
         seed_master(tmp_path)
         state = tmp_path / ".spec" / "autoplan" / "chain.json"
         state.parent.mkdir(parents=True, exist_ok=True)
         state.write_text(json.dumps({"pass": 12}), encoding="utf-8")
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
-        code = main(["spawn", "--root", str(tmp_path), "--next", "review", "--dry-run"])
+        code = main(["spawn", "--root", str(tmp_path), "--next", "review", "--max-passes", "12", "--dry-run"])
         assert code == 1
         assert "pass cap reached" in capsys.readouterr().err
+
+    def test_uncapped_state_spawns_past_any_count(self, tmp_path, capsys, monkeypatch):
+        # no flag = no cap: a chain at pass 12 continues past the count that
+        # used to stop it — the recorded cap becomes null and the prompt
+        # carries no cap flag
+        seed_master(tmp_path)
+        state = tmp_path / ".spec" / "autoplan" / "chain.json"
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text(json.dumps({"pass": 12, "max_passes": 12}), encoding="utf-8")
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr("autoplan_spawn.session_tty", lambda: "/dev/ttys012")
+        code = main(
+            ["spawn", "--root", str(tmp_path), "--next", "review", "--host", "pi", "--format", "json", "--dry-run"]
+        )
+        assert code == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["pass"] == 13
+        assert payload["max_passes"] is None
+        assert "--max-passes" not in payload["shell_command"]
 
     def test_pass_equal_to_cap_is_allowed(self, tmp_path, capsys, monkeypatch):
         # matrix row "round/pass cap" boundary (symmetric with autorun):
@@ -265,13 +291,14 @@ class TestSpawnCommand:
 
     def test_state_at_cap_refusal_text_is_verbatim(self, tmp_path, capsys, monkeypatch):
         # F12 boundary matrix: next > cap refuses with the exact frozen text
-        # and leaves no audit record behind (the fixture state file stays)
+        # and leaves no audit record behind (the fixture state file stays);
+        # the cap is opt-in, so the refusal needs the explicit flag
         seed_master(tmp_path)
         state = tmp_path / ".spec" / "autoplan" / "chain.json"
         state.parent.mkdir(parents=True, exist_ok=True)
         state.write_text(json.dumps({"pass": 12}), encoding="utf-8")
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
-        code = main(["spawn", "--root", str(tmp_path), "--next", "review", "--dry-run"])
+        code = main(["spawn", "--root", str(tmp_path), "--next", "review", "--max-passes", "12", "--dry-run"])
         assert code == 1
         captured = capsys.readouterr()
         assert captured.out == ""
@@ -1317,8 +1344,8 @@ class TestAuditFieldContract:
         assert payload["kind"] in contract["plan_kind_domain"]
         assert payload["kind"] == "framework"
         assert payload["target"] is None
-        assert payload["max_passes"] == 12
-        assert isinstance(payload["max_passes"], int) and not isinstance(payload["max_passes"], bool)
+        # the cap is opt-in: the no-flag spawn records null and forwards none
+        assert payload["max_passes"] is None
         assert ISO_Z_PATTERN.fullmatch(payload["spawned_at"])
         assert payload["host"] == "pi"
         assert payload["host_source"] in contract["host_source_domain"]
@@ -2040,9 +2067,7 @@ class TestModelIdentity:
         payload = json.loads(capsys.readouterr().out)
         assert payload["model"] is None
         assert payload["model_injection"] == "none"
-        assert (
-            payload["shell_command"] == f"cd {tmp_path} && pi --mode text -- '$spec autoplan continue --max-passes 12'"
-        )
+        assert payload["shell_command"] == f"cd {tmp_path} && pi --mode text -- '$spec autoplan continue'"
 
     # --- partial injection ------------------------------------------------------
 
@@ -2074,7 +2099,7 @@ class TestModelIdentity:
         shell = payload["shell_command"]
         assert self.model_flag_segment("claude", "id", "claude-opus-4-6") in shell
         # the reasoning level never reaches the worker argv
-        assert " max" not in shell.replace("--max-passes 12", "")
+        assert " max" not in shell
 
     def test_none_injection_for_null_identity(self, tmp_path, capsys, monkeypatch):
         seed_master(tmp_path)
@@ -2356,8 +2381,10 @@ class TestLegacyStateSamples:
         assert not (chain_dir / "spawns.jsonl").exists()
 
 
-class TestAdaptivePassCap:
-    """F17: without an explicit flag the pass cap follows the cluster size."""
+class TestOptInPassCap:
+    """The pass cap is opt-in (the F17 adaptive default was removed): without
+    an explicit flag the chain is unbounded — max_passes records as null and
+    the continuation prompt carries no cap flag."""
 
     @staticmethod
     def seed_master_with_details(root, detail_count):
@@ -2371,15 +2398,16 @@ class TestAdaptivePassCap:
         )
         return master
 
-    def test_no_flag_adapts_to_detail_links(self, tmp_path, capsys, monkeypatch):
+    def test_no_flag_means_unbounded(self, tmp_path, capsys, monkeypatch):
         self.seed_master_with_details(tmp_path, 4)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autoplan_spawn.session_tty", lambda: "/dev/ttys012")
         argv = ["spawn", "--root", str(tmp_path), "--next", "review", "--host", "pi", "--format", "json", "--dry-run"]
         assert main(argv) == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["max_passes"] == 14  # 2 + 3 * 4 — the calibration shape
-        assert "--max-passes 14" in payload["shell_command"]
+        assert payload["max_passes"] is None
+        assert "--max-passes" not in payload["shell_command"]
+        assert "--max-passes" not in payload["osascript"][2]
 
     def test_explicit_flag_wins_exactly(self, tmp_path, capsys, monkeypatch):
         self.seed_master_with_details(tmp_path, 4)
@@ -2402,8 +2430,11 @@ class TestAdaptivePassCap:
         assert main(argv) == 0
         payload = json.loads(capsys.readouterr().out)
         assert payload["max_passes"] == 6
+        assert "--max-passes 6" in payload["shell_command"]
 
-    def test_recorded_cap_floors_the_adaptive_estimate(self, tmp_path, capsys, monkeypatch):
+    def test_recorded_cap_is_not_sticky(self, tmp_path, capsys, monkeypatch):
+        # a cap recorded by an earlier spawn no longer binds later spawns:
+        # the flag alone decides, so a no-flag continuation goes unbounded
         seed_master(tmp_path)
         state_file = tmp_path / ".spec" / "autoplan" / "chain.json"
         state_file.parent.mkdir(parents=True, exist_ok=True)
@@ -2413,4 +2444,5 @@ class TestAdaptivePassCap:
         argv = ["spawn", "--root", str(tmp_path), "--next", "review", "--host", "pi", "--format", "json", "--dry-run"]
         assert main(argv) == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["max_passes"] == 30
+        assert payload["max_passes"] is None
+        assert "--max-passes" not in payload["shell_command"]

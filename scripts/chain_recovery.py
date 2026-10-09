@@ -25,9 +25,10 @@ surfaces, both consumed by the two chain scripts' ``status`` render:
     audit) belongs to the shared ``read_state`` / the caller.
 
 The action vocabulary is fixed at twelve words (plans/01 table); a new action
-word requires a plans/01 table change first. ``DEFAULT_MAX_ROUNDS`` /
-``DEFAULT_MAX_PASSES`` are re-exported from ``chain_spawn_support`` (the F12
-unified guard-table home, not a mirror); the section-title and
+word requires a plans/01 table change first. Chain caps are opt-in only
+(explicit ``--max-rounds`` / ``--max-passes``): a missing or null cap means
+the chain is unbounded, and ``cap_reached`` is reachable only for a chain
+whose last spawn carried an explicit cap. The section-title and
 feature-checkbox patterns mirror ``autorun_spawn`` (F5 owns the
 shared-layer extraction).
 
@@ -49,8 +50,6 @@ from chain_spawn_support import (  # noqa: F401  # re-exports
     CHAIN_EVENTS_FILE,
     CHAIN_SPAWNS_FILE,
     CHAIN_STATE_FILE,
-    DEFAULT_MAX_PASSES,
-    DEFAULT_MAX_ROUNDS,
     READ_CORRUPT,
     READ_MISSING,
     READ_OK,
@@ -167,7 +166,8 @@ def decide(
     complete → fresh → per-chain rows. ``plan_checked``/``plan_unchecked``
     come from the planning-document counts (a tolerant ``(0, 0)`` when the
     caller found no qualifying document); ``cap`` falls back to the state's
-    ``max_rounds``/``max_passes`` and then to the chain default. Pure: no I/O,
+    ``max_rounds``/``max_passes`` and then to no cap at all — chains are
+    unbounded unless a spawn carried an explicit cap. Pure: no I/O,
     no clock — the caller owns every recovery side effect.
     """
     counter_key = COUNTER_KEY.get(chain, "round")
@@ -200,15 +200,14 @@ def decide(
     effective_cap = cap
     if effective_cap is None and state is not None:
         effective_cap = _as_int(state.get(CAP_KEY.get(chain, "max_rounds")))
-    if effective_cap is None:
-        effective_cap = DEFAULT_MAX_ROUNDS if chain == "autorun" else DEFAULT_MAX_PASSES
 
     counter = _as_int(state.get(counter_key)) if state is not None else None
     counter = counter if counter is not None else 0
 
     # Row 2: cap — next = last + 1; next == cap still runs, next > cap stops.
+    # An unbounded chain (no explicit cap anywhere) never takes this row.
     next_index = counter + 1
-    if next_index > effective_cap:
+    if effective_cap is not None and next_index > effective_cap:
         if recovered_state:
             detail["recovered_state"] = True
         return RecoveryDecision(

@@ -4,6 +4,12 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation.
 
+## [0.15.0] - 2026-10-09
+
+### Changed
+
+- **Round and pass caps are opt-in with no default ceiling**: without an explicit `--max-rounds`/`--max-passes`, an autorun or autoplan chain now runs unbounded — no cap is computed, recorded, or forwarded (`max_rounds`/`max_passes` record as `null`, the next round's prompt carries no cap flag), and a cap recorded by an earlier spawn no longer binds later ones, so a large planning cluster or a long repair chain is never cut off mid-flight by a guessed number (the 0.14.0 adaptive default caps are removed). An explicit flag still bounds the chain exactly as before: the final spawn at the cap is allowed, only the one beyond it is refused with the same message, and the cap is validated, recorded, and forwarded; the chain line and `status` render an uncapped chain as `n (no cap)` and show the cap only when one is explicitly set.
+
 ## [0.14.1] - 2026-10-08
 
 ### Fixed

@@ -100,10 +100,8 @@ from chain_spawn_support import (  # noqa: E402  # type: ignore
     CHAIN_LOCK_FILE,
     CHAIN_SPAWNS_FILE,
     CHAIN_STATE_FILE,
-    DEFAULT_MAX_PASSES,
     WORKER_START_TIMEOUT_SECONDS,
     ChainSpawnError,
-    adaptive_max_passes,
     append_audit,
     append_refusal_event,
     apply_window_geometry,
@@ -111,7 +109,7 @@ from chain_spawn_support import (  # noqa: E402  # type: ignore
     build_terminal_command,
     build_worker_command,  # F14: shared render surface lives in the support module
     close_spawned_window_quietly,
-    effective_max_cap,
+    format_chain_counter,
     model_injection_level,
     next_index_within_cap,
     parse_spawn_result,
@@ -251,9 +249,15 @@ def resolve_target(root: Path, target: Optional[str], kind: str) -> Optional[str
     return str(candidate.relative_to(root)) if under_root(root, candidate) else str(candidate)
 
 
-def build_pass_prompt(host: str, plan_args: List[str], max_passes: int) -> str:
-    """Build the autoplan continuation prompt injected into the pass session."""
-    tail = " ".join(["continue"] + plan_args + [f"--max-passes {max_passes}"])
+def build_pass_prompt(host: str, plan_args: List[str], max_passes: Optional[int]) -> str:
+    """Build the autoplan continuation prompt injected into the pass session.
+
+    The pass cap is opt-in: an explicit ``--max-passes`` is forwarded to the
+    next pass's prompt so a capped chain keeps its bound; an unbounded chain
+    carries no cap flag (nothing to hit mid-cluster).
+    """
+    tail_parts = ["continue"] + plan_args + ([f"--max-passes {max_passes}"] if max_passes is not None else [])
+    tail = " ".join(tail_parts)
     if host == "claude":
         return f"/spec:autoplan {tail}".strip()
     return f"$spec autoplan {tail}".strip()
@@ -420,14 +424,15 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
         busy_message=(f"another autoplan pass chain holds {CHAIN_LOCK_FILE}; parallel chains are refused"),
     ):
         state = _read_chain_state(root) or {}
-        # F17 adaptive cap: an explicit flag wins exactly; without one the cap
-        # follows the cluster size (framework + review + per-detail estimate,
-        # calibrated on this repository's 14-pass / 4-detail run), floored by
-        # the recorded cap. The strict int gate and next==cap boundary stay in
-        # the shared guard helper (F12).
-        detail_docs = _master_link_docs(root, master_doc_path(root, args.plan))
-        max_passes = effective_max_cap(args.max_passes, state.get("max_passes"), adaptive_max_passes(len(detail_docs)))
-        validate_cap(max_passes, "max-passes")
+        # The pass cap is opt-in: an explicit --max-passes bounds the chain
+        # exactly (validated and forwarded to the next pass's prompt);
+        # without the flag the chain is unbounded and max_passes records as
+        # null — the F17 adaptive default cap was removed (2026-10-09). The
+        # strict int gate and the next==cap boundary stay in the shared
+        # guard helper (F12).
+        max_passes = args.max_passes
+        if max_passes is not None:
+            validate_cap(max_passes, "max-passes")
         next_pass = next_index_within_cap(
             state.get("pass"),
             max_passes,
@@ -620,7 +625,7 @@ def status_payload(root: Path) -> Dict[str, object]:
 
 def _render_spawn(payload: Dict[str, object]) -> str:
     lines = [
-        "pass: {}/{}".format(payload["pass"], payload["max_passes"]),
+        "pass: {}".format(format_chain_counter(payload["pass"], payload.get("max_passes"))),
         "kind: {}".format(payload["kind"]),
         "host: {}".format(payload["host"]),
     ]
@@ -733,8 +738,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            "pass cap (default: adaptive — at least {}, grows with the master document's "
-            "detail links: 2 + 3 per detail)".format(DEFAULT_MAX_PASSES)
+            "pass cap for this chain (opt-in); when omitted the chain is unbounded — no cap "
+            "is computed, recorded, or forwarded"
         ),
     )
     spawn_parser.add_argument(
@@ -764,9 +769,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         root = _resolve_root(args.root)
         if args.subcommand == "spawn":
             if args.max_passes is not None:
-                # F17: the adaptive default resolves inside the spawn (it needs
-                # the master's detail links and the recorded cap); an explicit
-                # flag is validated here exactly as before.
+                # the cap is opt-in: only an explicit flag is validated here,
+                # before any lock/state touch
                 validate_cap(args.max_passes, "max-passes")
             _emit(spawn_payload(root, args), _render_spawn, args.format == "json")
         else:

@@ -9,9 +9,9 @@ renders; this module is the one implementation of the pieces both chains
 duplicated (plans/01 F5 inventory):
 
   - constants and time: the chain guard table (F12 single home) — the
-    round/pass caps, the osascript/ps timeouts, the worker-confirmation
-    bound and poll, the close delay/poll/wait bounds, the chain file names,
-    ``utc_now``;
+    opt-in round/pass cap helpers, the osascript/ps timeouts, the
+    worker-confirmation bound and poll, the close delay/poll/wait bounds,
+    the chain file names, ``utc_now``;
   - paths and state: ``chain_dir`` / ``resolve_root`` / ``under_root`` /
     ``atomic_write``, the strict state read mechanism, and the tolerant
     ``read_state`` (the F4 four-status read with the corrupt-state rebuild —
@@ -81,17 +81,13 @@ CLOSE_TERM_WAIT_SECONDS = 15
 # fails transiently (Terminal busy mid-animation), and its backoff.
 TERMINAL_OPEN_ATTEMPTS = 2
 TERMINAL_OPEN_RETRY_BACKOFF_SECONDS = 2
-DEFAULT_MAX_ROUNDS = 20
-DEFAULT_MAX_PASSES = 12
-# F17 adaptive caps: without an explicit flag the cap follows the planning
-# workload — rounds get features + ~25% rework headroom (+3 floor), passes
-# get framework+review (2) plus three passes per detail document (one base
-# pass and two fix-review rounds, calibrated on this repository's own
-# 14-pass / 4-detail planning cluster run).
-AUTORUN_ADAPTIVE_MARGIN_BASE = 3
-AUTORUN_ADAPTIVE_MARGIN_QUARTER = 4
-AUTOPLAN_PASSES_BASE = 2
-AUTOPLAN_PASSES_PER_DETAIL = 3
+# Chain caps are opt-in only: an explicit ``--max-rounds`` / ``--max-passes``
+# bounds the chain exactly; without the flag the chain is unbounded (no cap
+# is computed, ``max_rounds``/``max_passes`` record as null, and the
+# continuation prompt carries no cap flag). The 2026-10-09 removal of the
+# F17 adaptive default caps is recorded in the Development Record; only the
+# validation and the boundary judgment of an explicitly given cap remain
+# here (F12).
 
 AUTORUN_CHAIN_DIR = ".spec/autorun"
 AUTOPLAN_CHAIN_DIR = ".spec/autoplan"
@@ -151,8 +147,11 @@ def next_index_within_cap(
       refused as non-integer — the old ``int()`` casts silently accepted
       ``"4"`` / ``4.0`` / ``True`` and truncated ``4.5``; the strict gate
       keeps chain counters honest in state files a human may have edited;
+    - ``cap is None`` → the chain is unbounded: the counter advances with no
+      refusal ever (the no-flag default since the F17 adaptive caps were
+      removed);
     - ``next == cap`` allows the last spawn; only ``next > cap`` refuses —
-      a new chain always gets its full cap;
+      a capped chain always gets its full cap;
     - negative ints keep the pre-F12 behavior (no extra validation): the
       arithmetic stands, the spawn proceeds with the derived index.
 
@@ -166,45 +165,26 @@ def next_index_within_cap(
     if isinstance(state_value, bool) or not isinstance(state_value, int):
         raise error(non_integer_template.format(state_value))
     next_index = state_value + 1
-    if next_index > cap:
+    if cap is not None and next_index > cap:
         raise error(f"{label} cap reached: next {label} {next_index} exceeds --{option} {cap}")
     return next_index
+
+
+def format_chain_counter(counter: object, cap: object) -> str:
+    """Render one chain counter for the spawn text output.
+
+    ``n/cap`` when the chain carries an explicit cap, ``n (no cap)`` when it
+    is unbounded (``cap`` absent or null). The JSON payload keeps the raw
+    ``max_rounds``/``max_passes`` value; this is the human-facing render.
+    """
+    if isinstance(cap, int) and not isinstance(cap, bool):
+        return f"{counter}/{cap}"
+    return f"{counter} (no cap)"
 
 
 def utc_now() -> str:
     """One clock shape for every chain timestamp (ISO-8601Z)."""
     return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-# --- F17 adaptive caps -------------------------------------------------------
-
-
-def adaptive_max_rounds(unchecked: int) -> int:
-    """Round cap for a plan with ``unchecked`` remaining features.
-
-    Features plus rework headroom (a failed or re-opened round consumes a
-    round without checking a feature), floored at the default — the chain
-    must not die at the cap while work remains.
-    """
-    return max(
-        DEFAULT_MAX_ROUNDS,
-        unchecked + AUTORUN_ADAPTIVE_MARGIN_BASE + unchecked // AUTORUN_ADAPTIVE_MARGIN_QUARTER,
-    )
-
-
-def adaptive_max_passes(detail_docs: int) -> int:
-    """Pass cap for a cluster with ``detail_docs`` phase documents."""
-    return max(DEFAULT_MAX_PASSES, AUTOPLAN_PASSES_BASE + AUTOPLAN_PASSES_PER_DETAIL * detail_docs)
-
-
-def effective_max_cap(explicit, recorded, adaptive_value: int) -> int:
-    """Resolve the spawn's cap: an explicit flag wins exactly; otherwise the
-    recorded cap floors the adaptive estimate (a manual no-flag continuation
-    of a chain that ran with a larger cap must not refuse on the way down)."""
-    if explicit is not None:
-        return explicit
-    floor = recorded if isinstance(recorded, int) and not isinstance(recorded, bool) and recorded > 0 else 0
-    return max(floor, adaptive_value)
 
 
 # --- paths and state -------------------------------------------------------

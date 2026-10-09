@@ -201,15 +201,34 @@ class TestSpawnCommand:
         assert payload["round"] == 5
 
     def test_refuses_at_round_cap(self, tmp_path, capsys, monkeypatch):
+        # the cap is opt-in: refusal happens only when the flag was passed
         write_plan(tmp_path / "plans" / "README.md", unchecked=2)
         make_active_package(tmp_path)
         state = tmp_path / ".spec" / "autorun" / "chain.json"
         state.parent.mkdir(parents=True, exist_ok=True)
         state.write_text(json.dumps({"round": 20}), encoding="utf-8")
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
-        code = main(["spawn", "--root", str(tmp_path), "--dry-run"])
+        code = main(["spawn", "--root", str(tmp_path), "--max-rounds", "20", "--dry-run"])
         assert code == 1
         assert "round cap" in capsys.readouterr().err
+
+    def test_uncapped_state_spawns_past_any_count(self, tmp_path, capsys, monkeypatch):
+        # no flag = no cap: a chain at round 20 continues past the count that
+        # used to stop it — the recorded cap becomes null and the prompt
+        # carries no cap flag
+        write_plan(tmp_path / "plans" / "README.md", unchecked=2)
+        make_active_package(tmp_path)
+        state = tmp_path / ".spec" / "autorun" / "chain.json"
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text(json.dumps({"round": 20, "max_rounds": 20}), encoding="utf-8")
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
+        code = main(["spawn", "--root", str(tmp_path), "--host", "pi", "--format", "json", "--dry-run"])
+        assert code == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["round"] == 21
+        assert payload["max_rounds"] is None
+        assert "--max-rounds" not in payload["shell_command"]
 
     def test_round_equal_to_cap_is_allowed(self, tmp_path, capsys, monkeypatch):
         # matrix row "round/pass cap" boundary: next == cap passes (only
@@ -244,14 +263,15 @@ class TestSpawnCommand:
 
     def test_state_at_cap_refusal_text_is_verbatim(self, tmp_path, capsys, monkeypatch):
         # F12 boundary matrix: next > cap refuses with the exact frozen text
-        # and leaves no audit record behind (the fixture state file stays)
+        # and leaves no audit record behind (the fixture state file stays);
+        # the cap is opt-in, so the refusal needs the explicit flag
         write_plan(tmp_path / "plans" / "README.md", unchecked=2)
         make_active_package(tmp_path)
         state = tmp_path / ".spec" / "autorun" / "chain.json"
         state.parent.mkdir(parents=True, exist_ok=True)
         state.write_text(json.dumps({"round": 20}), encoding="utf-8")
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
-        code = main(["spawn", "--root", str(tmp_path), "--dry-run"])
+        code = main(["spawn", "--root", str(tmp_path), "--max-rounds", "20", "--dry-run"])
         assert code == 1
         captured = capsys.readouterr()
         assert captured.out == ""
@@ -999,6 +1019,11 @@ class TestCommandBuilders:
         assert build_prompt("claude", ["--plan a.md"], 5) == "/spec:autorun --plan a.md --max-rounds 5"
         assert build_prompt("codex", [], 5) == "$spec autorun --max-rounds 5"
         assert build_prompt("pi", ["--plan a.md,b.md"], 5) == "$spec autorun --plan a.md,b.md --max-rounds 5"
+
+    def test_prompt_without_cap_carries_no_flag(self):
+        # unbounded chains forward no cap flag — nothing to hit mid-chain
+        assert build_prompt("codex", [], None) == "$spec autorun"
+        assert build_prompt("claude", ["--plan a.md"], None) == "/spec:autorun --plan a.md"
 
     def test_plan_args_quote_spacey_paths(self):
         # the prompt is re-parsed as arguments by the next session, so a path
@@ -2101,8 +2126,8 @@ class TestAuditFieldContract:
         assert payload["dry_run"] is True
         assert payload["round"] == 1
         assert isinstance(payload["round"], int) and not isinstance(payload["round"], bool)
-        assert payload["max_rounds"] == 20
-        assert isinstance(payload["max_rounds"], int) and not isinstance(payload["max_rounds"], bool)
+        # the cap is opt-in: the no-flag spawn records null and forwards none
+        assert payload["max_rounds"] is None
         assert ISO_Z_PATTERN.fullmatch(payload["spawned_at"])
         assert payload["host"] == "claude"
         assert payload["host_source"] in contract["host_source_domain"]
@@ -2471,7 +2496,7 @@ class TestModelIdentity:
         assert self.model_flag_segment(host, "reasoning", "high") in shell
         # both segments sit between the worker binary and the prompt
         worker_at = shell.index(" ")
-        prompt_at = shell.index("'$spec autorun") if host != "claude" else shell.index("'/spec:autorun")
+        prompt_at = shell.index("'$spec autorun") if host != "claude" else shell.index("/spec:autorun")
         assert shell.index(self.model_flag_segment(host, "id", "anthropic/opus-5.5")) > worker_at
         assert shell.index(self.model_flag_segment(host, "id", "anthropic/opus-5.5")) < prompt_at
 
@@ -2689,7 +2714,7 @@ class TestModelIdentity:
         # the pre-F14 literal form: nothing between the worker binary and the prompt
         assert payload["model"] is None
         assert payload["model_injection"] == "none"
-        assert payload["shell_command"] == f"cd {tmp_path} && pi --mode text -- '$spec autorun --max-rounds 20'"
+        assert payload["shell_command"] == f"cd {tmp_path} && pi --mode text -- '$spec autorun'"
 
     # --- the --command bypass ---------------------------------------------------
 
@@ -2788,7 +2813,7 @@ class TestModelIdentity:
         shell = payload["shell_command"]
         assert self.model_flag_segment("claude", "id", "claude-opus-4-6") in shell
         # the reasoning level never reaches the worker argv
-        assert " max" not in shell.replace("--max-rounds 20", "")
+        assert " max" not in shell
 
     def test_none_injection_for_null_identity(self, tmp_path, capsys, monkeypatch):
         write_plan(tmp_path / "plans" / "README.md", unchecked=1)
@@ -3047,19 +3072,21 @@ class TestLegacyStateSamples:
         assert not (chain_dir / "spawns.jsonl").exists()
 
 
-class TestAdaptiveRoundCap:
-    """F17: without an explicit flag the round cap follows the plan size."""
+class TestOptInRoundCap:
+    """The round cap is opt-in (the F17 adaptive default was removed): without
+    an explicit flag the chain is unbounded — max_rounds records as null and
+    the next round's prompt carries no cap flag."""
 
-    def test_no_flag_adapts_to_unchecked_features(self, tmp_path, capsys, monkeypatch):
+    def test_no_flag_means_unbounded(self, tmp_path, capsys, monkeypatch):
         write_plan(tmp_path / "plans" / "README.md", unchecked=30)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
         assert main(["spawn", "--root", str(tmp_path), "--host", "pi", "--format", "json", "--dry-run"]) == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["max_rounds"] == 40  # 30 + 25% + 3
-        assert "--max-rounds 40" in payload["shell_command"]
-        assert "--max-rounds 40" in payload["osascript"][2]
+        assert payload["max_rounds"] is None
+        assert "--max-rounds" not in payload["shell_command"]
+        assert "--max-rounds" not in payload["osascript"][2]
 
     def test_explicit_flag_wins_exactly(self, tmp_path, capsys, monkeypatch):
         write_plan(tmp_path / "plans" / "README.md", unchecked=30)
@@ -3072,7 +3099,9 @@ class TestAdaptiveRoundCap:
         assert payload["max_rounds"] == 5
         assert "--max-rounds 5" in payload["shell_command"]
 
-    def test_recorded_cap_floors_the_adaptive_estimate(self, tmp_path, capsys, monkeypatch):
+    def test_recorded_cap_is_not_sticky(self, tmp_path, capsys, monkeypatch):
+        # a cap recorded by an earlier spawn no longer binds later spawns:
+        # the flag alone decides, so a no-flag continuation goes unbounded
         write_plan(tmp_path / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         state_file = tmp_path / ".spec" / "autorun" / "chain.json"
@@ -3083,4 +3112,5 @@ class TestAdaptiveRoundCap:
         argv = ["spawn", "--root", str(tmp_path), "--host", "pi", "--format", "json", "--dry-run"]
         assert main(argv) == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["max_rounds"] == 50  # never refuses on the way down
+        assert payload["max_rounds"] is None
+        assert "--max-rounds" not in payload["shell_command"]

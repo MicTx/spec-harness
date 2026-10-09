@@ -34,7 +34,7 @@ Pick your entry point by what you want to do: to understand the idea first, read
 - **Recoverable state**: reports, failures, completion summaries, and archives come from files on disk, so another session can continue.
 - **Session-boundary handoff**: packages may carry an optional `handoff.md` — a generated snapshot head plus an append-only entry log whose required slots adapt to the collaboration mode (solo / team / agent / cluster); maintained by `spec_handoff.py`, validated by the check gate, and frozen by a terminal entry at archive time.
 - **Interactive recursive planning**: `autoplan` interrogates the user in themed rounds at project start or a phase boundary, then hands framework planning, per-phase detail planning, and the consistency review to fresh full sessions chained serially with the same spawn discipline as `autorun` (never in-process subagents), down to autorun granularity; it stops at the readiness report once the structural gate and an independent review pass — it never starts the chain itself.
-- **Recursive autorun chain**: `autorun` terminates on the feature checkboxes of the project planning documents — after this round is pushed to main, it plans the next round and opens a fresh Terminal window in the same path with the prompt injected (keeping the host CLI that started the chain; override with `--host` or `SPEC_AUTORUN_HOST`), recursing until every planned feature is checked; each round is a full interactive session you can watch and step into at any time, the previous window recycles once the next session is running, and a round cap, a single-chain lock, and a refuse-to-start-without-planning guard keep the recursion bounded.
+- **Recursive autorun chain**: `autorun` terminates on the feature checkboxes of the project planning documents — after this round is pushed to main, it plans the next round and opens a fresh Terminal window in the same path with the prompt injected (keeping the host CLI that started the chain; override with `--host` or `SPEC_AUTORUN_HOST`), recursing until every planned feature is checked; each round is a full interactive session you can watch and step into at any time, the previous window recycles once the next session is running; a single-chain lock and a refuse-to-start-without-planning guard keep the recursion sane, and the round cap is opt-in (bounded only with an explicit `--max-rounds`; unbounded by default).
 - **Stable task identity**: tasks can declare an `id:` and explicit `depends-on`; protocol migrations never rewrite historical archives.
 - **Controlled execution**: the main session keeps routing, integration, acceptance, and done/push gates; `workflow-runner` and other slots only execute bounded work.
 - **Two runtime forms**: the local Skill is the reference implementation; the optional `server/` adapter projects remote task-package start/result/health operations.
@@ -77,7 +77,7 @@ Run the installer from a checked-out source or release tree:
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.14.1
+git checkout v0.15.0
 bash install.sh
 ```
 

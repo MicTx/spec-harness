@@ -71,11 +71,9 @@ from chain_spawn_support import (  # noqa: E402  # type: ignore
     CHAIN_LOCK_FILE,
     CHAIN_SPAWNS_FILE,
     CHAIN_STATE_FILE,
-    DEFAULT_MAX_ROUNDS,
     OSASCRIPT_TIMEOUT_SECONDS,  # noqa: F401  # re-export: autoplan tests import it from here
     WORKER_START_TIMEOUT_SECONDS,
     ChainSpawnError,
-    adaptive_max_rounds,
     append_audit,
     append_refusal_event,
     apply_window_geometry,
@@ -85,7 +83,7 @@ from chain_spawn_support import (  # noqa: E402  # type: ignore
     build_worker_command,  # F14: shared render surface; tests + autoplan still import it from here
     close_spawned_window_quietly,
     controlling_tty,
-    effective_max_cap,
+    format_chain_counter,
     model_injection_level,
     next_index_within_cap,
     parse_spawn_result,
@@ -411,9 +409,15 @@ def plan_args_for_prompt(plan: Optional[str]) -> List[str]:
     return ["--plan " + shlex.quote(plan)] if plan else []
 
 
-def build_prompt(host: str, plan_args: List[str], max_rounds: int) -> str:
-    """Build the autorun prompt injected into the next-round session."""
-    tail = " ".join(plan_args + [f"--max-rounds {max_rounds}"])
+def build_prompt(host: str, plan_args: List[str], max_rounds: Optional[int]) -> str:
+    """Build the autorun prompt injected into the next-round session.
+
+    The round cap is opt-in: an explicit ``--max-rounds`` is forwarded to the
+    next round's prompt so a capped chain keeps its bound; an unbounded
+    chain carries no cap flag (nothing to hit mid-chain).
+    """
+    tail_parts = plan_args + ([f"--max-rounds {max_rounds}"] if max_rounds is not None else [])
+    tail = " ".join(tail_parts)
     if host == "claude":
         return f"/spec:autorun {tail}".strip()
     return f"$spec autorun {tail}".strip()
@@ -652,15 +656,15 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
         busy_message=(f"another autorun chain holds {CHAIN_LOCK_FILE} for this project; parallel chains are refused"),
     ):
         state = _read_chain_state(root) or {}
-        # F17 adaptive cap: an explicit flag wins exactly; without one the cap
-        # follows the workload — recorded cap floors the adaptive estimate
-        # (features + rework headroom), so the chain never dies at the cap
-        # with features remaining and a manual continuation never refuses on
-        # the way down. The strict int gate and the next==cap boundary stay
-        # in the shared guard helper (F12).
-        unchecked = int(plan["totals"]["unchecked"])  # type: ignore[index]
-        max_rounds = effective_max_cap(args.max_rounds, state.get("max_rounds"), adaptive_max_rounds(unchecked))
-        validate_cap(max_rounds, "max-rounds")
+        # The round cap is opt-in: an explicit --max-rounds bounds the chain
+        # exactly (validated and forwarded to the next round's prompt);
+        # without the flag the chain is unbounded and max_rounds records as
+        # null — the F17 adaptive default caps were removed (2026-10-09).
+        # The strict int gate and the next==cap boundary stay in the shared
+        # guard helper (F12).
+        max_rounds = args.max_rounds
+        if max_rounds is not None:
+            validate_cap(max_rounds, "max-rounds")
         next_round = next_index_within_cap(
             state.get("round"),
             max_rounds,
@@ -858,7 +862,10 @@ def _render_plan(payload: Dict[str, object]) -> str:
 
 
 def _render_spawn(payload: Dict[str, object]) -> str:
-    lines = ["round: {}/{}".format(payload["round"], payload["max_rounds"]), "host: {}".format(payload["host"])]
+    lines = [
+        "round: {}".format(format_chain_counter(payload["round"], payload.get("max_rounds"))),
+        "host: {}".format(payload["host"]),
+    ]
     lines.append("shell_command: {}".format(payload["shell_command"]))
     recycle = payload.get("window_recycle")
     if isinstance(recycle, dict):
@@ -1024,8 +1031,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            "round cap (default: adaptive — at least {}, grows with the unchecked feature count "
-            "to features + 25% + 3)".format(DEFAULT_MAX_ROUNDS)
+            "round cap for this chain (opt-in); when omitted the chain is unbounded — no "
+            "cap is computed, recorded, or forwarded"
         ),
     )
     spawn_parser.add_argument(
@@ -1053,9 +1060,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             _emit(plan_payload(root, args.plan), _render_plan, args.format == "json")
         elif args.subcommand == "spawn":
             if args.max_rounds is not None:
-                # F17: the adaptive default resolves inside the spawn (it needs
-                # the plan totals and the recorded cap); an explicit flag is
-                # validated here exactly as before.
+                # the cap is opt-in: only an explicit flag is validated here,
+                # before any lock/state touch
                 validate_cap(args.max_rounds, "max-rounds")
             _emit(spawn_payload(root, args), _render_spawn, args.format == "json")
         else:

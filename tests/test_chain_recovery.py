@@ -258,10 +258,20 @@ class TestDecideTableAutorun:
         assert stopped.action == "cap_reached"
         assert stopped.detail["next"] == 21 and stopped.detail["cap"] == 20
 
-    def test_row2_cap_falls_back_to_default_when_state_lacks_max(self):
-        decision = decide("autorun", {"round": 20}, "ok", plan_unchecked=1)
+    def test_row2_state_without_cap_is_unbounded(self):
+        # chains are unbounded without an explicit cap: a state without
+        # max_rounds (the no-flag spawn shape) never takes the cap row —
+        # judgment falls through to the package rows
+        decision = decide("autorun", {"round": 20}, "ok", plan_unchecked=1, active_packages=self.PACKAGE)
+        assert decision.action == "continue_package"
+        decision = decide("autorun", {"round": 20, "max_rounds": None}, "ok", plan_unchecked=1)
+        assert decision.action == "await_new_package"
+
+    def test_row2_explicit_cap_argument_still_stops_the_chain(self):
+        # an explicit cap (the flag-driven path) keeps the boundary semantics
+        decision = decide("autorun", {"round": 20}, "ok", plan_unchecked=1, active_packages=self.PACKAGE, cap=20)
         assert decision.action == "cap_reached"
-        assert decision.detail["cap"] == 20  # DEFAULT_MAX_ROUNDS
+        assert decision.detail["next"] == 21 and decision.detail["cap"] == 20
 
     def test_row3_chain_complete_when_every_feature_checked(self):
         decision = decide(
