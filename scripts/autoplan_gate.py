@@ -38,13 +38,18 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-from autorun_spawn import AutorunError, NoPlanError, count_features, discover_plan_docs
+from autorun_spawn import (
+    PLAN_ARCHIVE_DIR_NAME,
+    PLAN_ROOT,
+    AutorunError,
+    NoPlanError,
+    count_features,
+    discover_plan_docs,
+)
 
 EXIT_OK = 0
 EXIT_FAILURE = 1
 EXIT_NOT_READY = 3
-
-DETAIL_DIRS: Tuple[str, ...] = ("plans",)
 MD_LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 ANY_HEADING = re.compile(r"^#{1,6}\s")
 GOAL_HEADING = re.compile(r"^#{1,6}\s*[^\n]*(?:goal|目标)", re.IGNORECASE)
@@ -142,14 +147,29 @@ def _reference_facts(root: Path, docs: List[Path]) -> Tuple[List[Dict[str, str]]
 
 
 def _orphan_details(root: Path, docs: List[Path], referenced: Set[str]) -> List[str]:
+    """Live detail documents under the planning root that no payload doc links.
+
+    Candidates are every markdown file under ``.spec/plans/`` except the
+    index seed (``README.md``): cluster members (``<slug>/NN-<slug>.md``)
+    and top-level single-round plans alike. The archive directory is
+    history, not detail, and is skipped wholesale.
+    """
     orphans: List[str] = []
-    for dir_name in DETAIL_DIRS:
-        for path in sorted((root / dir_name).glob("*.md")):
-            if path in docs:
-                continue
-            rel_path = path.relative_to(root).as_posix()
-            if rel_path not in referenced:
-                orphans.append(rel_path)
+    plan_root = root / PLAN_ROOT
+    if not plan_root.is_dir():
+        return orphans
+    for path in sorted(plan_root.rglob("*.md")):
+        rel_path = path.relative_to(root).as_posix()
+        below_root = rel_path[len(PLAN_ROOT) + 1 :]
+        segments = below_root.split("/")
+        if PLAN_ARCHIVE_DIR_NAME in segments[:-1]:
+            continue
+        if below_root == "README.md":
+            continue
+        if path in docs:
+            continue
+        if rel_path not in referenced:
+            orphans.append(rel_path)
     return orphans
 
 
@@ -284,7 +304,7 @@ def _add_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--root", default=".", help="project root (default: current directory)")
     parser.add_argument(
         "--plan",
-        help="comma-separated planning document paths (default: scan the canonical plans/ root)",
+        help="comma-separated planning document paths (default: scan the canonical .spec/plans/ root)",
     )
     parser.add_argument("--format", choices=("text", "json"), default="text", help="output format (default: text)")
 

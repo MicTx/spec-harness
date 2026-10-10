@@ -81,6 +81,12 @@ CLOSE_TERM_WAIT_SECONDS = 15
 # fails transiently (Terminal busy mid-animation), and its backoff.
 TERMINAL_OPEN_ATTEMPTS = 2
 TERMINAL_OPEN_RETRY_BACKOFF_SECONDS = 2
+# 2026-10-09 refusal close: a spawn refused after its window opened closes
+# that window synchronously (交接未确认 = 不留进程). The budget reuses the
+# F19 escalated close argv with no scheduling delay; the outer bound covers
+# the helper's waits plus its osascript calls.
+REFUSAL_CLOSE_WAIT_SECONDS = 30
+REFUSAL_CLOSE_HELPER_TIMEOUT_SECONDS = 100
 # Chain caps are opt-in only: an explicit ``--max-rounds`` / ``--max-passes``
 # bounds the chain exactly; without the flag the chain is unbounded (no cap
 # is computed, ``max_rounds``/``max_passes`` record as null, and the
@@ -1451,6 +1457,7 @@ def build_close_argv(
     poll_seconds: float = CLOSE_POLL_INTERVAL_SECONDS,
     session_pids: Optional[List[int]] = None,
     worker_name: str = "",
+    event_kind: str = "recycle_close",
     error: Callable[..., Exception] = ChainSpawnError,
 ) -> List[str]:
     """Build the detached argv recycling a Terminal window after a handoff.
@@ -1462,8 +1469,10 @@ def build_close_argv(
     process groups; (3) SIGKILL, then the remaining wait budget. Each phase
     runs the bounded close AppleScript — it closes only a window that still
     exists, holds exactly one tab, and whose session has exited, so the
-    cancel/terminate sheet never appears. The helper appends one
-    ``recycle_close`` JSON line to ``events_path`` — result from the fixed
+    cancel/terminate sheet never appears. The helper appends one JSON line
+    of ``event_kind`` (``recycle_close`` for the previous window after a
+    confirmed handoff, ``refusal_close`` for the just-opened window of a
+    refused spawn — 2026-10-09) to ``events_path`` — result from the fixed
     vocabulary (``closed`` / ``multi-tab`` / ``window-gone`` / ``busy-timeout``;
     anything else records ``osascript-error``) plus the chain context. The
     append is fire-and-forget: a failure to write never blocks or re-raises.
@@ -1476,6 +1485,8 @@ def build_close_argv(
         raise error(f"close wait must be >= 0: {close_wait_seconds!r}")
     if chain not in ("autorun", "autoplan"):
         raise error(f"chain must be 'autorun' or 'autoplan': {chain!r}")
+    if event_kind not in ("recycle_close", "refusal_close"):
+        raise error(f"event kind must be 'recycle_close' or 'refusal_close': {event_kind!r}")
     if (round_index is None) == (pass_index is None):
         raise error("exactly one of round_index / pass_index is required")
     context_name = "round" if round_index is not None else "pass"
@@ -1499,7 +1510,7 @@ def build_close_argv(
     final_wait = max(0, close_wait_seconds - grace_wait - term_wait)
     literal = json.dumps(
         {
-            "kind": "recycle_close",
+            "kind": event_kind,
             "at": "__AT__",
             "chain": chain,
             context_name: context_value,
@@ -1560,6 +1571,7 @@ def schedule_window_close(
     poll_seconds: float = CLOSE_POLL_INTERVAL_SECONDS,
     session_pids: Optional[List[int]] = None,
     worker_name: str = "",
+    event_kind: str = "recycle_close",
 ) -> None:
     """Launch the detached close helper; it outlives this process group."""
     subprocess.Popen(
@@ -1575,12 +1587,130 @@ def schedule_window_close(
             poll_seconds=poll_seconds,
             session_pids=session_pids,
             worker_name=worker_name,
+            event_kind=event_kind,
         ),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
+
+
+def recover_front_worker_window(
+    worker_name: str,
+    *,
+    worker_check: Optional[Callable[[str, str], bool]] = None,
+) -> Tuple[Optional[int], Optional[str]]:
+    """Best-effort identity for a spawned window whose open reply was unparseable.
+
+    The just-opened window is Terminal's front window by construction, but a
+    race (the user switching windows inside the spawn) could surface any
+    window — so the recovery is only accepted when the front window's
+    selected tab verifiably runs OUR worker (identity interlock via
+    ``worker_check``). A user's window, or any other command, never matches
+    and the recovery returns nothing; the caller then refuses without a
+    close target (honest limitation, recorded as a skipped close).
+    """
+    if worker_check is None:
+        worker_check = worker_running_on_tty
+    if not worker_name:
+        return None, None
+    script = (
+        'tell application "Terminal"\n'
+        "\ttry\n"
+        "\t\tset w to front window\n"
+        '\t\treturn (id of w as text) & " " & (tty of selected tab of w)\n'
+        "\ton error\n"
+        '\t\treturn ""\n'
+        "\tend try\n"
+        "end tell"
+    )
+    try:
+        completed = subprocess.run(
+            ["osascript", "-e", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=OSASCRIPT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None, None
+    if completed.returncode != 0:
+        return None, None
+    parts = completed.stdout.strip().split()
+    if len(parts) != 2 or not parts[0].isdigit() or not parts[1].startswith("/dev/"):
+        return None, None
+    window_id, tty = int(parts[0]), parts[1]
+    if not worker_check(worker_name, tty):
+        return None, None
+    return window_id, tty
+
+
+def close_refused_window(
+    new_window_id: Optional[int],
+    new_tty: Optional[str],
+    worker_name: str,
+    *,
+    chain: str,
+    events_path: Path,
+    round_index: Optional[int] = None,
+    pass_index: Optional[int] = None,
+    pid_lookup: Optional[Callable[[str, str], List[int]]] = None,
+    run_helper: Optional[Callable[[List[str]], None]] = None,
+) -> Dict[str, object]:
+    """Synchronously close the window a refused spawn just opened.
+
+    交接未确认 = 不留进程 (2026-10-09): a refusal after the window opened
+    leaves an alive worker running the injected next-round prompt while the
+    round itself is never recorded — a duplicate executor on re-run. This
+    helper closes that window before the refusal propagates: the F19
+    escalated close argv (natural-exit grace, then SIGTERM, then SIGKILL to
+    the identity-checked session process groups, then the guard-shaped
+    window close) runs synchronously and bounded, with no scheduling delay,
+    and appends one ``refusal_close`` event (fire-and-forget). A ``--command``
+    bypass carries no worker name, so nothing is identity-killable — the
+    close then only reaps a naturally-exited tab and otherwise times out
+    fail-open, exactly like the recycle path for unnamed sessions. A close
+    failure never masks the refusal it serves.
+    """
+    if pid_lookup is None:
+        pid_lookup = worker_pids_on_tty
+    if run_helper is None:
+
+        def _run_helper(argv: List[str]) -> None:
+            try:
+                subprocess.run(
+                    argv,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=REFUSAL_CLOSE_HELPER_TIMEOUT_SECONDS,
+                )
+            except (OSError, subprocess.SubprocessError):
+                return
+
+        run_helper = _run_helper
+    if new_window_id is None or new_tty is None:
+        return {"status": "skipped", "reason": "spawned window id or tty unavailable from osascript"}
+    session_pids = pid_lookup(worker_name, new_tty) if worker_name else []
+    try:
+        argv = build_close_argv(
+            new_window_id,
+            0,
+            REFUSAL_CLOSE_WAIT_SECONDS,
+            chain=chain,
+            round_index=round_index,
+            pass_index=pass_index,
+            prev_tty=new_tty,
+            events_path=events_path,
+            session_pids=session_pids,
+            worker_name=worker_name,
+            event_kind="refusal_close",
+        )
+    except ChainSpawnError:
+        return {"status": "skipped", "reason": "close argv validation refused the parameters"}
+    run_helper(argv)
+    return {"status": "close-command-sent", "window_id": new_window_id, "session_pids": session_pids}
 
 
 def recycle_previous_window(

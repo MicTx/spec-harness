@@ -19,7 +19,7 @@ from autoplan_gate import (  # noqa: E402  # type: ignore
 
 def write_master(tmp_path: Path, text: str) -> Path:
     """Seed the canonical planning master (``plans/README.md``)."""
-    root = tmp_path / "plans"
+    root = tmp_path / ".spec" / "plans"
     root.mkdir(parents=True, exist_ok=True)
     master = root / "README.md"
     master.write_text(text, encoding="utf-8")
@@ -27,9 +27,9 @@ def write_master(tmp_path: Path, text: str) -> Path:
 
 
 def write_good_cluster(tmp_path: Path):
-    plan = tmp_path / "plans" / "README.md"
+    plan = tmp_path / ".spec" / "plans" / "README.md"
     plan.parent.mkdir(parents=True, exist_ok=True)
-    detail = tmp_path / "plans" / "01-core.md"
+    detail = tmp_path / ".spec" / "plans" / "01-core.md"
     detail.write_text("# Core phase\n\n## Sign In\n\nbusiness logic, data model, flows\n", encoding="utf-8")
     plan.write_text(
         "# Project plan\n\n## Goal\n\nBuild a small demo product.\n\n## Phases\n\n"
@@ -45,7 +45,7 @@ class TestDiscoverCommand:
         write_good_cluster(tmp_path)
         payload = discover_payload(tmp_path, None)
         assert payload["run_mode"] == "phase-boundary"
-        assert [doc["path"] for doc in payload["docs"]] == ["plans/README.md"]
+        assert [doc["path"] for doc in payload["docs"]] == [".spec/plans/README.md"]
         assert payload["totals"] == {"checked": 1, "unchecked": 1, "total": 2}
 
     def test_reports_project_start_without_cluster(self, tmp_path, capsys):
@@ -55,11 +55,11 @@ class TestDiscoverCommand:
         assert payload["docs"] == []
 
     def test_plans_root_master_qualifies(self, tmp_path):
-        (tmp_path / "plans").mkdir()
+        (tmp_path / ".spec" / "plans").mkdir(parents=True)
         write_master(tmp_path, "# plan\n\n- [ ] first feature\n")
         (tmp_path / "PRD.md").write_text("# PRD\n\n- [ ] legacy feature\n", encoding="utf-8")
         payload = discover_payload(tmp_path, None)
-        assert [doc["path"] for doc in payload["docs"]] == ["plans/README.md"]
+        assert [doc["path"] for doc in payload["docs"]] == [".spec/plans/README.md"]
 
     def test_explicit_path_must_exist(self, tmp_path, capsys):
         assert main(["discover", "--root", str(tmp_path), "--plan", "missing.md"]) == 1
@@ -100,7 +100,7 @@ class TestGateInvariants:
         assert payload["ready"] is False
 
     def test_missing_detail_file_fails(self, tmp_path):
-        (tmp_path / "plans").mkdir()
+        (tmp_path / ".spec" / "plans").mkdir(parents=True)
         write_master(tmp_path, "# plan\n\n## Goal\n\ndemo\n\n- [ ] feature ([design](01-gone.md))\n")
         payload = gate_payload(tmp_path, None)
         failed = {check["id"] for check in payload["checks"] if check["status"] == "fail"}
@@ -108,7 +108,7 @@ class TestGateInvariants:
         assert "target file does not exist" in payload["checks"][2]["detail"]
 
     def test_broken_anchor_fails(self, tmp_path):
-        detail = tmp_path / "plans" / "01.md"
+        detail = tmp_path / ".spec" / "plans" / "01.md"
         detail.parent.mkdir(parents=True, exist_ok=True)
         detail.write_text("# phase\n\n## Real Heading\n\ncontent\n", encoding="utf-8")
         write_master(tmp_path, "# plan\n\n## Goal\n\ndemo\n\n- [ ] feature ([design](01.md#no-such-heading))\n")
@@ -147,15 +147,15 @@ class TestGateInvariants:
 
     def test_orphan_detail_doc_is_warning_only(self, tmp_path):
         write_good_cluster(tmp_path)
-        orphan = tmp_path / "plans" / "99-old.md"
+        orphan = tmp_path / ".spec" / "plans" / "99-old.md"
         orphan.write_text("# old\n\n## Legacy\n\nlegacy design\n")
         payload = gate_payload(tmp_path, None)
         assert payload["ready"] is True
-        assert [warning["path"] for warning in payload["warnings"]] == ["plans/99-old.md"]
+        assert [warning["path"] for warning in payload["warnings"]] == [".spec/plans/99-old.md"]
 
     def test_qualifying_detail_doc_is_not_orphan(self, tmp_path):
         write_good_cluster(tmp_path)
-        detail = tmp_path / "plans" / "02-schema.md"
+        detail = tmp_path / ".spec" / "plans" / "02-schema.md"
         detail.parent.mkdir(parents=True, exist_ok=True)
         detail.write_text("# schema\n\n- [ ] define tables\n", encoding="utf-8")
         payload = gate_payload(tmp_path, None)

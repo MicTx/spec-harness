@@ -97,7 +97,7 @@ SECTION_TITLES: Tuple[Tuple[str, ...], ...] = (
 # The planning index and the master document itself are maintained by other
 # passes (gate/organize/framework), never by a detail pass, so they stay out
 # of the advance_detail candidates.
-PLANNING_INDEX_DOC = "plans/README.md"
+PLANNING_INDEX_DOC = ".spec/plans/README.md"
 
 
 @dataclass

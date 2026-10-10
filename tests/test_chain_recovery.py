@@ -57,12 +57,12 @@ def autorun_state(round_index=3, max_rounds=20, **extra):
     return {"round": round_index, "max_rounds": max_rounds, "host": "pi", **extra}
 
 
-def autoplan_state(pass_index=3, kind="detail", target="plans/01-a.md", **extra):
+def autoplan_state(pass_index=3, kind="detail", target=".spec/plans/01-a.md", **extra):
     return {"pass": pass_index, "max_passes": 12, "kind": kind, "target": target, **extra}
 
 
-LINKS = ["plans/00-master.md", "plans/01-a.md", "plans/02-b.md", "plans/README.md"]
-MASTER = "plans/00-master.md"
+LINKS = [".spec/plans/00-master.md", ".spec/plans/01-a.md", ".spec/plans/02-b.md", ".spec/plans/README.md"]
+MASTER = ".spec/plans/00-master.md"
 
 
 def docs(*incomplete):
@@ -148,7 +148,7 @@ class TestReadState:
         events = tmp_path / "events.jsonl"
         events.parent.mkdir(parents=True, exist_ok=True)
         events.write_text(json.dumps({"kind": "recycle_close", "result": "closed"}), encoding="utf-8")
-        append_recovery_event(tmp_path, "autoplan", "state_diverged", {"target": "plans/09-x.md"})
+        append_recovery_event(tmp_path, "autoplan", "state_diverged", {"target": ".spec/plans/09-x.md"})
         lines = events.read_text(encoding="utf-8").splitlines()
         assert len(lines) == 2
         assert json.loads(lines[0])["kind"] == "recycle_close"
@@ -171,10 +171,10 @@ class TestAuditTail:
 class TestRecoveryEventRecorded:
     def test_matches_action_and_target(self, tmp_path):
         events = tmp_path / "events.jsonl"
-        append_recovery_event(tmp_path, "autoplan", "state_diverged", {"target": "plans/09-x.md"})
-        assert recovery_event_recorded(events, "state_diverged", "plans/09-x.md")
-        assert not recovery_event_recorded(events, "state_diverged", "plans/08-y.md")
-        assert not recovery_event_recorded(events, "recovered_state", "plans/09-x.md")
+        append_recovery_event(tmp_path, "autoplan", "state_diverged", {"target": ".spec/plans/09-x.md"})
+        assert recovery_event_recorded(events, "state_diverged", ".spec/plans/09-x.md")
+        assert not recovery_event_recorded(events, "state_diverged", ".spec/plans/08-y.md")
+        assert not recovery_event_recorded(events, "recovered_state", ".spec/plans/09-x.md")
 
     def test_missing_events_file_is_not_recorded(self, tmp_path):
         assert not recovery_event_recorded(tmp_path / "events.jsonl", "state_diverged", None)
@@ -183,7 +183,7 @@ class TestRecoveryEventRecorded:
         events = tmp_path / "events.jsonl"
         events.parent.mkdir(parents=True, exist_ok=True)
         events.write_text('{"kind": "recovery", "action": "state_diverged", "detail": {"target"', encoding="utf-8")
-        assert not recovery_event_recorded(events, "state_diverged", "plans/09-x.md")
+        assert not recovery_event_recorded(events, "state_diverged", ".spec/plans/09-x.md")
 
 
 class TestDetailDocComplete:
@@ -193,14 +193,14 @@ class TestDetailDocComplete:
     )
 
     def _write(self, root: Path, name: str, text: str):
-        doc = root / "plans" / name
+        doc = root / ".spec" / "plans" / name
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text(text, encoding="utf-8")
         return doc
 
     def test_complete_document_with_five_sections(self, tmp_path):
         self._write(tmp_path, "01-ok.md", self.COMPLETE)
-        assert detail_doc_complete(tmp_path, "plans/01-ok.md")
+        assert detail_doc_complete(tmp_path, ".spec/plans/01-ok.md")
 
     def test_english_equivalent_sections_accepted(self, tmp_path):
         self._write(
@@ -209,7 +209,7 @@ class TestDetailDocComplete:
             "# detail\n## Business Logic\n## Data Model\n## Data Flow and Control Flow\n"
             "## Interfaces and Boundaries\n## Acceptance Hooks\n",
         )
-        assert detail_doc_complete(tmp_path, "plans/02-en.md")
+        assert detail_doc_complete(tmp_path, ".spec/plans/02-en.md")
 
     @pytest.mark.parametrize(
         "mutate",
@@ -221,10 +221,10 @@ class TestDetailDocComplete:
     )
     def test_incomplete_variants(self, tmp_path, mutate):
         self._write(tmp_path, "03-bad.md", mutate(self.COMPLETE))
-        assert not detail_doc_complete(tmp_path, "plans/03-bad.md")
+        assert not detail_doc_complete(tmp_path, ".spec/plans/03-bad.md")
 
     def test_missing_document_is_incomplete(self, tmp_path):
-        assert not detail_doc_complete(tmp_path, "plans/04-absent.md")
+        assert not detail_doc_complete(tmp_path, ".spec/plans/04-absent.md")
 
 
 class TestDecideTableAutorun:
@@ -366,10 +366,14 @@ class TestDecideTableAutoplan:
 
     def test_row8_resume_pass_assignment_when_target_incomplete(self):
         decision = decide(
-            "autoplan", autoplan_state(target="plans/01-a.md"), "ok", detail_docs=docs("plans/01-a.md"), **self.BASE
+            "autoplan",
+            autoplan_state(target=".spec/plans/01-a.md"),
+            "ok",
+            detail_docs=docs(".spec/plans/01-a.md"),
+            **self.BASE,
         )
         assert decision.action == "resume_pass_assignment"
-        assert decision.detail["target"] == "plans/01-a.md"
+        assert decision.detail["target"] == ".spec/plans/01-a.md"
 
     def test_row8_framework_pass_resumes_the_master_document(self):
         decision = decide(
@@ -384,31 +388,39 @@ class TestDecideTableAutoplan:
 
     def test_row10_advance_detail_names_next_pending_document(self):
         decision = decide(
-            "autoplan", autoplan_state(target="plans/01-a.md"), "ok", detail_docs=docs("plans/02-b.md"), **self.BASE
+            "autoplan",
+            autoplan_state(target=".spec/plans/01-a.md"),
+            "ok",
+            detail_docs=docs(".spec/plans/02-b.md"),
+            **self.BASE,
         )
         assert decision.action == "advance_detail"
-        assert decision.detail["target"] == "plans/02-b.md"
+        assert decision.detail["target"] == ".spec/plans/02-b.md"
 
     def test_row10_index_and_master_are_never_advance_candidates(self):
         # README.md and the master itself are linked but not detail-pass material
         decision = decide(
             "autoplan",
-            autoplan_state(target="plans/01-a.md"),
+            autoplan_state(target=".spec/plans/01-a.md"),
             "ok",
-            detail_docs=docs("plans/README.md", MASTER),
+            detail_docs=docs(".spec/plans/README.md", MASTER),
             **self.BASE,
         )
         assert decision.action == "advance_review"
 
     def test_row11_advance_review_when_all_detail_documents_complete(self):
-        decision = decide("autoplan", autoplan_state(target="plans/01-a.md"), "ok", detail_docs=docs(), **self.BASE)
+        decision = decide(
+            "autoplan", autoplan_state(target=".spec/plans/01-a.md"), "ok", detail_docs=docs(), **self.BASE
+        )
         assert decision.action == "advance_review"
         assert decision.detail["detail_docs"] == 2  # 01-a + 02-b, master/index excluded
 
     def test_row12_state_diverged_master_index_wins(self):
-        decision = decide("autoplan", autoplan_state(target="plans/99-ghost.md"), "ok", detail_docs=docs(), **self.BASE)
+        decision = decide(
+            "autoplan", autoplan_state(target=".spec/plans/99-ghost.md"), "ok", detail_docs=docs(), **self.BASE
+        )
         assert decision.action == "state_diverged"
-        assert decision.detail["target"] == "plans/99-ghost.md"
+        assert decision.detail["target"] == ".spec/plans/99-ghost.md"
         assert decision.detail["master_links"] == LINKS
 
     def test_row12_divergence_outranks_resuming_the_stale_target(self):
@@ -416,15 +428,15 @@ class TestDecideTableAutoplan:
         # the master no longer links is exactly what the row exists to stop
         decision = decide(
             "autoplan",
-            autoplan_state(target="plans/99-ghost.md"),
+            autoplan_state(target=".spec/plans/99-ghost.md"),
             "ok",
-            detail_docs=docs("plans/99-ghost.md"),
+            detail_docs=docs(".spec/plans/99-ghost.md"),
             **self.BASE,
         )
         assert decision.action == "state_diverged"
 
     def test_unscored_paths_are_conservatively_incomplete(self):
-        decision = decide("autoplan", autoplan_state(target="plans/01-a.md"), "ok", detail_docs=[], **self.BASE)
+        decision = decide("autoplan", autoplan_state(target=".spec/plans/01-a.md"), "ok", detail_docs=[], **self.BASE)
         assert decision.action == "resume_pass_assignment"
 
     def test_cap_boundary_next_equals_cap_still_runs(self):
@@ -453,7 +465,7 @@ class TestActionVocabulary:
             ).action,
             decide(
                 "autoplan",
-                autoplan_state(target="plans/zz.md"),
+                autoplan_state(target=".spec/plans/zz.md"),
                 "ok",
                 plan_unchecked=1,
                 master_links=LINKS,

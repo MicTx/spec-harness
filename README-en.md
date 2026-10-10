@@ -77,7 +77,7 @@ Run the installer from a checked-out source or release tree:
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.15.0
+git checkout v0.16.0
 bash install.sh
 ```
 

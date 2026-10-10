@@ -71,7 +71,7 @@ Git 记录文件，测试记录命令，聊天记录保存讨论。它们都是�
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.15.0
+git checkout v0.16.0
 bash install.sh
 ```
 

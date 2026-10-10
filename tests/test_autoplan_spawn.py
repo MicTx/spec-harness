@@ -29,7 +29,7 @@ from autorun_spawn import (  # noqa: E402  # type: ignore
 )
 
 
-def seed_master(root: Path, path="plans/README.md"):
+def seed_master(root: Path, path=".spec/plans/README.md"):
     doc = root / path
     doc.parent.mkdir(parents=True, exist_ok=True)
     doc.write_text("# plan\n\n## confirmed facts\n- fact A\n\n- [ ] open feature 1\n", encoding="utf-8")
@@ -38,7 +38,7 @@ def seed_master(root: Path, path="plans/README.md"):
 
 class TestMasterDocPath:
     def test_default_master_doc(self, tmp_path):
-        assert master_doc_path(tmp_path, None) == (tmp_path / "plans" / "README.md").resolve()
+        assert master_doc_path(tmp_path, None) == (tmp_path / ".spec" / "plans" / "README.md").resolve()
 
     def test_first_explicit_plan_entry_wins(self, tmp_path):
         resolved = master_doc_path(tmp_path, "PLAN.md,plans/01-a.md")
@@ -51,7 +51,7 @@ class TestResolveTarget:
             resolve_target(tmp_path, None, "detail")
 
     def test_target_may_be_new_file_under_root(self, tmp_path):
-        assert resolve_target(tmp_path, "plans/01-auth.md", "detail") == "plans/01-auth.md"
+        assert resolve_target(tmp_path, ".spec/plans/01-auth.md", "detail") == ".spec/plans/01-auth.md"
 
     def test_target_must_stay_under_root(self, tmp_path):
         with pytest.raises(AutoplanSpawnError, match="escapes the project root"):
@@ -176,7 +176,7 @@ class TestSpawnCommand:
                 "--next",
                 "detail",
                 "--target",
-                "plans/01-auth.md",
+                ".spec/plans/01-auth.md",
                 "--host",
                 "pi",
                 "--dry-run",
@@ -187,8 +187,8 @@ class TestSpawnCommand:
         assert code == 0
         payload = json.loads(capsys.readouterr().out)
         assert payload["kind"] == "detail"
-        assert payload["target"] == "plans/01-auth.md"
-        assert not (tmp_path / "docs" / "plans" / "01-auth.md").exists()
+        assert payload["target"] == ".spec/plans/01-auth.md"
+        assert not (tmp_path / "docs" / ".spec" / "plans" / "01-auth.md").exists()
 
     def test_pass_increments_from_chain_state(self, tmp_path, capsys, monkeypatch):
         seed_master(tmp_path)
@@ -368,7 +368,7 @@ class TestSpawnCommand:
                 "--next",
                 "detail",
                 "--target",
-                "plans/01-auth.md",
+                ".spec/plans/01-auth.md",
                 "--host",
                 "claude",
                 "--format",
@@ -382,7 +382,7 @@ class TestSpawnCommand:
         state = json.loads((tmp_path / ".spec" / "autoplan" / "chain.json").read_text(encoding="utf-8"))
         assert state["pass"] == 1
         assert state["kind"] == "detail"
-        assert state["target"] == "plans/01-auth.md"
+        assert state["target"] == ".spec/plans/01-auth.md"
         assert state["host"] == "claude"
         assert "updated_at" in state and "spawned_at" not in state
         spawns = (tmp_path / ".spec" / "autoplan" / "spawns.jsonl").read_text(encoding="utf-8").splitlines()
@@ -575,11 +575,13 @@ class TestSpawnCommand:
         # matrix row "plan 路径不存在": exit + stderr reason + audited refusal
         seed_master(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
-        code = main(["spawn", "--root", str(tmp_path), "--next", "review", "--plan", "plans/absent.md", "--dry-run"])
+        code = main(
+            ["spawn", "--root", str(tmp_path), "--next", "review", "--plan", ".spec/plans/absent.md", "--dry-run"]
+        )
         assert code == 1
         captured = capsys.readouterr()
         assert "--plan path does not exist" in captured.err
-        assert "plans/absent.md" in captured.err
+        assert ".spec/plans/absent.md" in captured.err
         assert captured.out == ""
         events = (tmp_path / ".spec" / "autoplan" / "events.jsonl").read_text(encoding="utf-8").splitlines()
         assert len(events) == 1
@@ -600,7 +602,9 @@ class TestStatusCommand:
         state = tmp_path / ".spec" / "autoplan" / "chain.json"
         state.parent.mkdir(parents=True, exist_ok=True)
         state.write_text(
-            json.dumps({"pass": 3, "kind": "detail", "target": "plans/02-api.md", "host": "pi", "updated_at": "t"}),
+            json.dumps(
+                {"pass": 3, "kind": "detail", "target": ".spec/plans/02-api.md", "host": "pi", "updated_at": "t"}
+            ),
             encoding="utf-8",
         )
         code = main(["status", "--root", str(tmp_path), "--format", "json"])
@@ -609,7 +613,7 @@ class TestStatusCommand:
         assert payload["started"] is True
         assert payload["pass"] == 3
         assert payload["kind"] == "detail"
-        assert payload["target"] == "plans/02-api.md"
+        assert payload["target"] == ".spec/plans/02-api.md"
 
 
 class TestAutorunReuseContract:
@@ -640,7 +644,7 @@ class TestChannelSplit:
         refusals = [
             (["spawn", "--root", str(tmp_path), "--next", "detail", "--dry-run"], "--next detail requires --target"),
             (
-                ["spawn", "--root", str(tmp_path), "--next", "review", "--plan", "plans/absent.md", "--dry-run"],
+                ["spawn", "--root", str(tmp_path), "--next", "review", "--plan", ".spec/plans/absent.md", "--dry-run"],
                 "--plan path does not exist",
             ),
             (
@@ -821,7 +825,7 @@ class TestStatusResumeDecision:
 
     def seed_cluster(self, root: Path, complete_01: bool, complete_02: bool):
         """A master linking two detail docs plus a checkbox to keep the plan unfinished."""
-        plans = root / "plans"
+        plans = root / ".spec" / "plans"
         plans.mkdir(parents=True, exist_ok=True)
         (plans / "00-master.md").write_text(
             "# master\n\n索引：[README](README.md) · 细节：[01](01-a.md) · [02](02-b.md)\n\n- [ ] open feature\n",
@@ -836,7 +840,7 @@ class TestStatusResumeDecision:
     def write_state(self, root: Path, state):
         target = root / ".spec" / "autoplan" / "chain.json"
         target.parent.mkdir(parents=True, exist_ok=True)
-        base = {"max_passes": 12, "plan_docs": ["plans/00-master.md"], "updated_at": "t"}
+        base = {"max_passes": 12, "plan_docs": [".spec/plans/00-master.md"], "updated_at": "t"}
         target.write_text(json.dumps({**base, **state}) + "\n", encoding="utf-8")
 
     def status_json(self, tmp_path, capsys):
@@ -872,10 +876,10 @@ class TestStatusResumeDecision:
 
     def test_resume_pass_assignment_render(self, tmp_path, capsys):
         self.seed_cluster(tmp_path, complete_01=False, complete_02=True)
-        self.write_state(tmp_path, {"pass": 2, "kind": "detail", "target": "plans/01-a.md"})
+        self.write_state(tmp_path, {"pass": 2, "kind": "detail", "target": ".spec/plans/01-a.md"})
         payload = self.status_json(tmp_path, capsys)
         assert payload["resume"]["action"] == "resume_pass_assignment"
-        assert payload["resume"]["detail"]["target"] == "plans/01-a.md"
+        assert payload["resume"]["detail"]["target"] == ".spec/plans/01-a.md"
         assert "resume: resume_pass_assignment (" in self.status_text(tmp_path, capsys)
 
     def test_resume_review_render(self, tmp_path, capsys):
@@ -887,15 +891,15 @@ class TestStatusResumeDecision:
 
     def test_advance_detail_render(self, tmp_path, capsys):
         self.seed_cluster(tmp_path, complete_01=True, complete_02=False)
-        self.write_state(tmp_path, {"pass": 3, "kind": "detail", "target": "plans/01-a.md"})
+        self.write_state(tmp_path, {"pass": 3, "kind": "detail", "target": ".spec/plans/01-a.md"})
         payload = self.status_json(tmp_path, capsys)
         assert payload["resume"]["action"] == "advance_detail"
-        assert payload["resume"]["detail"]["target"] == "plans/02-b.md"
+        assert payload["resume"]["detail"]["target"] == ".spec/plans/02-b.md"
         assert "resume: advance_detail (" in self.status_text(tmp_path, capsys)
 
     def test_advance_review_render(self, tmp_path, capsys):
         self.seed_cluster(tmp_path, complete_01=True, complete_02=True)
-        self.write_state(tmp_path, {"pass": 3, "kind": "detail", "target": "plans/01-a.md"})
+        self.write_state(tmp_path, {"pass": 3, "kind": "detail", "target": ".spec/plans/01-a.md"})
         payload = self.status_json(tmp_path, capsys)
         assert payload["resume"]["action"] == "advance_review"
         assert payload["resume"]["detail"]["detail_docs"] == 2
@@ -903,10 +907,10 @@ class TestStatusResumeDecision:
 
     def test_state_diverged_render_audits_once(self, tmp_path, capsys):
         self.seed_cluster(tmp_path, complete_01=True, complete_02=True)
-        self.write_state(tmp_path, {"pass": 2, "kind": "detail", "target": "plans/99-ghost.md"})
+        self.write_state(tmp_path, {"pass": 2, "kind": "detail", "target": ".spec/plans/99-ghost.md"})
         payload = self.status_json(tmp_path, capsys)
         assert payload["resume"]["action"] == "state_diverged"
-        assert payload["resume"]["detail"]["target"] == "plans/99-ghost.md"
+        assert payload["resume"]["detail"]["target"] == ".spec/plans/99-ghost.md"
         assert "resume: state_diverged (" in self.status_text(tmp_path, capsys)
         # the divergence is audited exactly once until the state changes
         events_path = tmp_path / ".spec" / "autoplan" / "events.jsonl"
@@ -914,7 +918,7 @@ class TestStatusResumeDecision:
         diverged = [e for e in events if e.get("kind") == "recovery" and e.get("action") == "state_diverged"]
         assert len(diverged) == 1
         assert diverged[0]["chain"] == "autoplan"
-        assert diverged[0]["detail"]["target"] == "plans/99-ghost.md"
+        assert diverged[0]["detail"]["target"] == ".spec/plans/99-ghost.md"
         assert main(["status", "--root", str(tmp_path), "--format", "json"]) == 0
         events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
         assert len([e for e in events if e.get("action") == "state_diverged"]) == 1
@@ -929,9 +933,9 @@ class TestStatusResumeDecision:
                 {
                     "pass": 2,
                     "kind": "detail",
-                    "target": "plans/01-a.md",
+                    "target": ".spec/plans/01-a.md",
                     "max_passes": 12,
-                    "plan_docs": ["plans/00-master.md"],
+                    "plan_docs": [".spec/plans/00-master.md"],
                 }
             )
             + "\n",
@@ -946,7 +950,7 @@ class TestStatusResumeDecision:
         assert "state: recovered from spawns.jsonl line 1" in out
 
     def test_chain_complete_render(self, tmp_path, capsys):
-        plans = tmp_path / "plans"
+        plans = tmp_path / ".spec" / "plans"
         plans.mkdir(parents=True, exist_ok=True)
         (plans / "00-master.md").write_text("# master\n\n细节：[01](01-a.md)\n\n- [x] done feature\n", encoding="utf-8")
         (plans / "01-a.md").write_text(self.SECTIONS, encoding="utf-8")
@@ -967,7 +971,7 @@ class TestStatusDetailDocs:
 
     def test_from_recorded_plan_docs(self, tmp_path, capsys):
         seed_master(tmp_path)
-        (tmp_path / "plans" / "01-auth.md").write_text("# auth\n", encoding="utf-8")
+        (tmp_path / ".spec" / "plans" / "01-auth.md").write_text("# auth\n", encoding="utf-8")
         state = tmp_path / ".spec" / "autoplan" / "chain.json"
         state.parent.mkdir(parents=True, exist_ok=True)
         state.write_text(
@@ -975,8 +979,8 @@ class TestStatusDetailDocs:
                 {
                     "pass": 2,
                     "kind": "detail",
-                    "target": "plans/01-auth.md",
-                    "plan_docs": ["plans/README.md", "plans/01-auth.md", "plans/02-api.md"],
+                    "target": ".spec/plans/01-auth.md",
+                    "plan_docs": [".spec/plans/README.md", ".spec/plans/01-auth.md", ".spec/plans/02-api.md"],
                     "updated_at": "t",
                 }
             ),
@@ -985,16 +989,19 @@ class TestStatusDetailDocs:
         assert main(["status", "--root", str(tmp_path), "--format", "json"]) == 0
         payload = json.loads(capsys.readouterr().out)
         assert payload["detail_docs"] == [
-            {"path": "plans/README.md", "exists": True, "complete": False},
-            {"path": "plans/01-auth.md", "exists": True, "complete": False},
-            {"path": "plans/02-api.md", "exists": False, "complete": False},
+            {"path": ".spec/plans/README.md", "exists": True, "complete": False},
+            {"path": ".spec/plans/01-auth.md", "exists": True, "complete": False},
+            {"path": ".spec/plans/02-api.md", "exists": False, "complete": False},
         ]
         assert main(["status", "--root", str(tmp_path)]) == 0
         out = capsys.readouterr().out
-        assert "detail docs: plans/README.md (exists), plans/01-auth.md (exists), plans/02-api.md (missing)" in out
+        assert (
+            "detail docs: .spec/plans/README.md (exists), .spec/plans/01-auth.md (exists),"
+            " .spec/plans/02-api.md (missing)" in out
+        )
 
     def test_includes_master_plan_links(self, tmp_path, capsys):
-        master = tmp_path / "plans" / "00-master-plan.md"
+        master = tmp_path / ".spec" / "plans" / "00-master-plan.md"
         master.parent.mkdir(parents=True, exist_ok=True)
         master.write_text(
             "# master\n\n"
@@ -1002,12 +1009,14 @@ class TestStatusDetailDocs:
             "归档：[old](archive/2026-01-01_old.md) · 外链：[x](https://example.com/y.md)\n",
             encoding="utf-8",
         )
-        (tmp_path / "plans" / "README.md").write_text("# index\n", encoding="utf-8")
-        (tmp_path / "plans" / "01-a.md").write_text("# a\n", encoding="utf-8")
+        (tmp_path / ".spec" / "plans" / "README.md").write_text("# index\n", encoding="utf-8")
+        (tmp_path / ".spec" / "plans" / "01-a.md").write_text("# a\n", encoding="utf-8")
         state = tmp_path / ".spec" / "autoplan" / "chain.json"
         state.parent.mkdir(parents=True, exist_ok=True)
         state.write_text(
-            json.dumps({"pass": 5, "kind": "review", "plan_docs": ["plans/00-master-plan.md"], "updated_at": "t"}),
+            json.dumps(
+                {"pass": 5, "kind": "review", "plan_docs": [".spec/plans/00-master-plan.md"], "updated_at": "t"}
+            ),
             encoding="utf-8",
         )
         assert main(["status", "--root", str(tmp_path), "--format", "json"]) == 0
@@ -1015,25 +1024,25 @@ class TestStatusDetailDocs:
         # recorded docs first, then the master's sibling detail links; archive
         # and external links stay out
         assert payload["detail_docs"] == [
-            {"path": "plans/00-master-plan.md", "exists": True, "complete": False},
-            {"path": "plans/README.md", "exists": True, "complete": False},
-            {"path": "plans/01-a.md", "exists": True, "complete": False},
-            {"path": "plans/02-b.md", "exists": False, "complete": False},
+            {"path": ".spec/plans/00-master-plan.md", "exists": True, "complete": False},
+            {"path": ".spec/plans/README.md", "exists": True, "complete": False},
+            {"path": ".spec/plans/01-a.md", "exists": True, "complete": False},
+            {"path": ".spec/plans/02-b.md", "exists": False, "complete": False},
         ]
 
     def test_falls_back_to_canonical_scan(self, tmp_path, capsys):
         seed_master(tmp_path)
-        (tmp_path / "plans" / "01-auth.md").write_text("# auth\n", encoding="utf-8")
+        (tmp_path / ".spec" / "plans" / "01-auth.md").write_text("# auth\n", encoding="utf-8")
         assert main(["status", "--root", str(tmp_path), "--format", "json"]) == 0
         payload = json.loads(capsys.readouterr().out)
         assert payload["detail_docs"] == [
-            {"path": "plans/01-auth.md", "exists": True, "complete": False},
-            {"path": "plans/README.md", "exists": True, "complete": False},
+            {"path": ".spec/plans/01-auth.md", "exists": True, "complete": False},
+            {"path": ".spec/plans/README.md", "exists": True, "complete": False},
         ]
 
     def test_empty_without_plans_or_state(self, tmp_path, capsys):
         seed_master(tmp_path)
-        (tmp_path / "plans" / "README.md").unlink()
+        (tmp_path / ".spec" / "plans" / "README.md").unlink()
         assert main(["status", "--root", str(tmp_path), "--format", "json"]) == 0
         payload = json.loads(capsys.readouterr().out)
         assert payload["detail_docs"] == []
@@ -1112,10 +1121,11 @@ AUDIT_FIELD_CONTRACT = {
         "skipped": frozenset({"status", "reason"}),
         "planned": frozenset({"status"}),
     },
-    "event_kind_domain": frozenset({"spawn_refusal", "recycle_close", "recovery"}),
+    "event_kind_domain": frozenset({"spawn_refusal", "recycle_close", "refusal_close", "recovery"}),
     "event_keys": {
         "spawn_refusal": frozenset({"kind", "at", "chain", "type", "message"}),
         "recycle_close": frozenset({"kind", "at", "chain", "pass", "window_id", "prev_tty", "result", "waited_ms"}),
+        "refusal_close": frozenset({"kind", "at", "chain", "pass", "window_id", "prev_tty", "result", "waited_ms"}),
         "recovery": frozenset({"kind", "at", "chain", "action", "detail"}),
     },
     "recycle_close_result_domain": frozenset({"closed", "multi-tab", "window-gone", "busy-timeout", "osascript-error"}),
@@ -1176,7 +1186,7 @@ AUDIT_FIELD_CONTRACT = {
 LEGACY_AUTOPLAN_STATE_BYTES = (
     b'{\n  "host": "pi",\n  "host_source": "session",\n  "kind": "review",\n'
     b'  "max_passes": 14,\n  "pass": 14,\n  "plan_docs": [\n'
-    b'    "plans/00-master-plan.md"\n  ],\n  "prev_tty": null,\n'
+    b'    ".spec/plans/00-master-plan.md"\n  ],\n  "prev_tty": null,\n'
     b'  "shell_command": "cd ~/dev/spec && pi --mode text -- \'$spec autoplan continue'
     b" --plan plans/00-master-plan.md --max-passes 14'\",\n"
     b'  "target": null,\n  "updated_at": "2026-10-07T13:06:41Z",\n'
@@ -1263,7 +1273,7 @@ AUTOPLAN_TEST_EVENTS_PATH = Path("/tmp/spec-autoplan-test-events.jsonl")
 
 
 class TestAuditFieldContract:
-    """plans/04 §F13: the frozen pass-chain audit field contract, driven
+    """.spec/plans/04 §F13: the frozen pass-chain audit field contract, driven
     through every writer face (payload, state, audit row, events, lock, status
     derivation)."""
 
@@ -1378,7 +1388,7 @@ class TestAuditFieldContract:
             "--next",
             "detail",
             "--target",
-            "plans/01-auth.md",
+            ".spec/plans/01-auth.md",
             "--host",
             "pi",
             "--format",
@@ -1391,7 +1401,7 @@ class TestAuditFieldContract:
         assert payload["dry_run"] is False
         assert payload["terminal"] == "4421 /dev/ttys042"
         assert payload["kind"] == "detail"
-        assert payload["target"] == "plans/01-auth.md"
+        assert payload["target"] == ".spec/plans/01-auth.md"
         assert payload["pass"] == 1
         assert ISO_Z_PATTERN.fullmatch(payload["spawned_at"])
         assert payload["host_source"] in contract["host_source_domain"]
@@ -1467,7 +1477,7 @@ class TestAuditFieldContract:
         assert event["detail"] == {"source": "spawns.jsonl line 1", "state_file": "chain.json"}
 
     def test_state_diverged_audit_writes_contract_shaped_recovery_event(self, tmp_path, capsys):
-        plans = tmp_path / "plans"
+        plans = tmp_path / ".spec" / "plans"
         plans.mkdir(parents=True, exist_ok=True)
         (plans / "00-master.md").write_text(
             "# master\n\n索引：[README](README.md) · 细节：[01](01-a.md) · [02](02-b.md)\n\n- [ ] open feature\n",
@@ -1487,9 +1497,9 @@ class TestAuditFieldContract:
                 {
                     "pass": 2,
                     "kind": "detail",
-                    "target": "plans/99-ghost.md",
+                    "target": ".spec/plans/99-ghost.md",
                     "max_passes": 12,
-                    "plan_docs": ["plans/00-master.md"],
+                    "plan_docs": [".spec/plans/00-master.md"],
                     "updated_at": "2026-10-07T10:00:00Z",
                 }
             )
@@ -1508,7 +1518,7 @@ class TestAuditFieldContract:
         assert event["action"] == "state_diverged"
         assert event["action"] in contract["recovery_action_domain"]
         assert set(event["detail"]) == contract["recovery_detail_keys"]["state_diverged"]
-        assert event["detail"]["target"] == "plans/99-ghost.md"
+        assert event["detail"]["target"] == ".spec/plans/99-ghost.md"
         assert isinstance(event["detail"]["master_links"], list)
 
     def test_close_argv_produces_contract_recycle_close_lines(self):
@@ -1539,6 +1549,146 @@ class TestAuditFieldContract:
             assert event["window_id"] == 42
             assert event["prev_tty"] == "/dev/ttys012"
             assert event["waited_ms"] == 3000
+
+    def test_refusal_close_template_renders_contract_lines(self):
+        contract = AUDIT_FIELD_CONTRACT
+        argv = build_close_argv(
+            88,
+            0,
+            chain_support.REFUSAL_CLOSE_WAIT_SECONDS,
+            prev_tty="/dev/ttys055",
+            session_pids=[5151],
+            worker_name="pi",
+            chain="autoplan",
+            pass_index=4,
+            events_path=AUTOPLAN_TEST_EVENTS_PATH,
+            event_kind="refusal_close",
+        )
+        match = re.search(r"printf '(.+)' \"\$now\" \"\$result\" \"\$waited_ms\"", argv[2])
+        assert match is not None
+        template = match.group(1)
+        assert template.endswith("\\n")
+        for result in sorted(contract["recycle_close_result_domain"]):
+            event = json.loads((template[:-2] % ("2026-10-09T12:00:00Z", result, "3000")) + "\n")
+            assert set(event) == contract["event_keys"]["refusal_close"]
+            assert event["kind"] == "refusal_close"
+            assert event["chain"] == "autoplan"
+            assert event["pass"] == 4
+            assert event["window_id"] == 88
+            assert event["prev_tty"] == "/dev/ttys055"
+            assert event["result"] == result
+
+
+class TestRefusalClosesSpawnedWindow:
+    """2026-10-09 交接未确认 = 不留进程, autoplan 链: a refused pass spawn
+    closes the window it just opened (A2 recovers it behind the identity
+    interlock; A5 closes the confirmed window; A6 after the state write
+    stays outside the guard — the handoff is confirmed there)."""
+
+    @staticmethod
+    def _probe(monkeypatch, open_reply, front_reply, worker_runs, pids):
+        close_argv = []
+
+        def fake_run(argv, *a, **k):
+            if argv[0] == "/bin/sh":
+                close_argv.append(argv)
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            if argv[0] == "osascript" and "do script" in argv[2]:
+                return subprocess.CompletedProcess(argv, 0, stdout=open_reply, stderr="")
+            if argv[0] == "osascript" and "front window" in argv[2]:
+                return subprocess.CompletedProcess(argv, 0, stdout=front_reply, stderr="")
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr("autoplan_spawn.worker_running_on_tty", lambda worker, tty: worker_runs)
+        monkeypatch.setattr("autoplan_spawn.worker_pids_on_tty", lambda worker, tty: list(pids))
+        return close_argv
+
+    def test_unparseable_reply_closes_the_recovered_window(self, tmp_path, capsys, monkeypatch):
+        # A2: the pass open reply carries no id/tty — the front window is
+        # recovered (accepted only because it verifiably runs OUR worker)
+        # and closed synchronously before the refusal raises.
+        seed_master(tmp_path)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr("autoplan_spawn.session_tty", lambda: "/dev/ttys012")
+        close_argv = self._probe(monkeypatch, "front window opened\n", "88 /dev/ttys055\n", True, [5151])
+        code = main(["spawn", "--root", str(tmp_path), "--next", "framework", "--host", "pi", "--format", "json"])
+        captured = capsys.readouterr()
+        assert code == 1
+        assert "cannot confirm the handoff" in captured.err  # refusal text frozen verbatim
+        assert captured.out == ""
+        assert not (tmp_path / ".spec" / "autoplan" / "chain.json").exists()
+        assert not (tmp_path / ".spec" / "autoplan" / "spawns.jsonl").exists()
+        assert len(close_argv) == 1
+        script = close_argv[0][2]
+        assert "sleep 0" in script
+        assert '"kind": "refusal_close"' in script
+        assert '"pass": 1' in script
+        assert '"window_id": 88' in script
+        assert '"prev_tty": "/dev/ttys055"' in script
+        assert 'case "$cmd" in *"pi "*|*/pi)' in script
+        events = (tmp_path / ".spec" / "autoplan" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        event = json.loads(events[-1])
+        assert event["kind"] == "spawn_refusal"
+        assert "cannot confirm the handoff" in event["message"]
+
+    def test_unparseable_reply_without_recovery_skips_the_close(self, tmp_path, capsys, monkeypatch):
+        # A2 fail-open: the front window is not OUR worker — no close target,
+        # the refusal proceeds verbatim, nothing is force-closed
+        seed_master(tmp_path)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr("autoplan_spawn.session_tty", lambda: "/dev/ttys012")
+        close_argv = self._probe(monkeypatch, "front window opened\n", "", False, [5151])
+        code = main(["spawn", "--root", str(tmp_path), "--next", "framework", "--host", "pi"])
+        captured = capsys.readouterr()
+        assert code == 1
+        assert "cannot confirm the handoff" in captured.err
+        assert close_argv == []
+        assert not (tmp_path / ".spec" / "autoplan" / "chain.json").exists()
+
+    def test_failure_between_open_and_state_closes_the_window(self, tmp_path, capsys, monkeypatch):
+        # A5: the open reply parsed fine but the guarded stretch fails
+        # before the pass state is written — the confirmed window closes
+        # before the failure propagates
+        seed_master(tmp_path)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr("autoplan_spawn.session_tty", lambda: "/dev/ttys012")
+        close_argv = self._probe(monkeypatch, "42 /dev/ttys009\n", "", True, [991])
+        monkeypatch.setattr("autoplan_spawn.read_window_geometry", lambda tty: (10, 20, 30, 40))
+
+        def broken_geometry(window_id, geometry):
+            raise AutoplanSpawnError("geometry boom")
+
+        monkeypatch.setattr("autoplan_spawn.apply_window_geometry", broken_geometry)
+        code = main(["spawn", "--root", str(tmp_path), "--next", "framework", "--host", "pi", "--format", "json"])
+        captured = capsys.readouterr()
+        assert code == 1
+        assert "geometry boom" in captured.err
+        assert len(close_argv) == 1
+        script = close_argv[0][2]
+        assert '"kind": "refusal_close"' in script
+        assert '"window_id": 42' in script
+        assert '"prev_tty": "/dev/ttys009"' in script
+        assert not (tmp_path / ".spec" / "autoplan" / "chain.json").exists()
+        assert not (tmp_path / ".spec" / "autoplan" / "spawns.jsonl").exists()
+
+    def test_state_written_then_audit_failure_keeps_the_window(self, tmp_path, capsys, monkeypatch):
+        # A6 (裁定不修): the state write confirms the handoff — the window
+        # stays open even when the audit append fails afterwards
+        seed_master(tmp_path)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr("autoplan_spawn.session_tty", lambda: "/dev/ttys012")
+        close_argv = self._probe(monkeypatch, "42 /dev/ttys009\n", "", True, [991])
+
+        def broken_append(path, record):
+            raise RuntimeError("audit disk full")
+
+        monkeypatch.setattr("autoplan_spawn.append_audit", broken_append)
+        with pytest.raises(RuntimeError, match="audit disk full"):
+            main(["spawn", "--root", str(tmp_path), "--next", "framework", "--host", "pi"])
+        assert close_argv == []  # confirmed handoff → never closed
+        assert (tmp_path / ".spec" / "autoplan" / "chain.json").exists()
+        assert not (tmp_path / ".spec" / "autoplan" / "spawns.jsonl").exists()
 
     def test_window_recycle_shapes_cover_the_status_domain(self, tmp_path, capsys, monkeypatch):
         contract = AUDIT_FIELD_CONTRACT
@@ -1662,7 +1812,7 @@ class TestAuditFieldContract:
 
 
 class TestModelIdentity:
-    """plans/04 §F14 mirrored on the pass chain: lock, propagation, the four
+    """.spec/plans/04 §F14 mirrored on the pass chain: lock, propagation, the four
     conflict refusals, injection levels, and status visibility. No bypass
     exists here, so every spawn resolves a worker host. Flag literals render
     through chain_support.HOST_MODEL_FLAGS, never hardcoded."""
@@ -1684,7 +1834,7 @@ class TestModelIdentity:
             "target": None,
             "host": host,
             "host_source": "flag",
-            "plan_docs": ["plans/00-master-plan.md"],
+            "plan_docs": [".spec/plans/00-master-plan.md"],
             "max_passes": 12,
             "updated_at": "2026-10-08T00:00:00Z",
             "shell_command": "cd /p && pi --mode text -- '$spec autoplan continue'",

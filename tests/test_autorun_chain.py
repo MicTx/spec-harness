@@ -80,11 +80,11 @@ class TestCountFeatures:
 
 class TestDiscoverPlanDocs:
     def test_canonical_plans_root_qualifies(self, tmp_path):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=2)
-        write_plan(tmp_path / "plans" / "01-core.md", checked=1)
-        (tmp_path / "plans" / "notes.md").write_text("# no boxes\n", encoding="utf-8")
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=2)
+        write_plan(tmp_path / ".spec" / "plans" / "01-core.md", checked=1)
+        (tmp_path / ".spec" / "plans" / "notes.md").write_text("# no boxes\n", encoding="utf-8")
         docs, scanned = discover_plan_docs(tmp_path, None)
-        assert {str(doc.relative_to(tmp_path)) for doc in docs} == {"plans/README.md", "plans/01-core.md"}
+        assert {str(doc.relative_to(tmp_path)) for doc in docs} == {".spec/plans/README.md", ".spec/plans/01-core.md"}
         assert any("notes.md" in item for item in scanned)
         assert all(doc.name != "notes.md" for doc in docs)
 
@@ -93,9 +93,25 @@ class TestDiscoverPlanDocs:
         write_plan(tmp_path / "ROADMAP.md", checked=1)
         write_plan(tmp_path / "docs" / "plans" / "b.md", unchecked=1)
         write_plan(tmp_path / "docs" / "design" / "schema.md", unchecked=1)
+        # The pre-migration repo-root ``plans/`` tree is a legacy location too:
+        # after the planning root moved under ``.spec/plans/`` an unupgraded
+        # tree is not silently discovered — ``--plan`` names it explicitly.
+        write_plan(tmp_path / "plans" / "README.md", unchecked=3)
         docs, scanned = discover_plan_docs(tmp_path, None)
         assert docs == []
         assert scanned == []
+
+    def test_cluster_master_qualifies_and_archive_is_skipped(self, tmp_path):
+        cluster = tmp_path / ".spec" / "plans" / "2026-01-01_add-demo"
+        write_plan(cluster / "master.md", unchecked=2, checked=1)
+        (cluster / "01-detail.md").write_text("# phase detail, no checkboxes\n", encoding="utf-8")
+        archived = tmp_path / ".spec" / "plans" / "archive" / "2026-01-02_fix-demo"
+        write_plan(archived / "master.md", unchecked=5)
+        docs, scanned = discover_plan_docs(tmp_path, None)
+        assert [doc.relative_to(tmp_path).as_posix() for doc in docs] == [".spec/plans/2026-01-01_add-demo/master.md"]
+        # phase details are not candidate surfaces at all; the archive is never scanned
+        assert not any("01-detail.md" in item for item in scanned)
+        assert all("archive" not in item for item in scanned)
 
     def test_explicit_paths_resolve_under_root(self, tmp_path):
         """``--plan`` is the escape hatch for a document kept outside the canonical root."""
@@ -123,43 +139,43 @@ class TestPlanCommand:
         assert "planning" in captured.err
 
     def test_candidate_without_checkboxes_does_not_qualify(self, tmp_path, capsys):
-        (tmp_path / "plans").mkdir()
-        (tmp_path / "plans" / "README.md").write_text("# just prose\n", encoding="utf-8")
+        (tmp_path / ".spec" / "plans").mkdir(parents=True)
+        (tmp_path / ".spec" / "plans" / "README.md").write_text("# just prose\n", encoding="utf-8")
         (tmp_path / "PLAN.md").write_text("- [x] legacy box\n", encoding="utf-8")
         assert main(["plan", "--root", str(tmp_path)]) == 3
 
     def test_json_payload_aggregates_docs(self, tmp_path, capsys):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=2, checked=1)
-        write_plan(tmp_path / "plans" / "01-core.md", unchecked=0, checked=2)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=2, checked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "01-core.md", unchecked=0, checked=2)
         assert main(["plan", "--root", str(tmp_path), "--format", "json"]) == 0
         payload = json.loads(capsys.readouterr().out)
         assert payload["totals"] == {"checked": 3, "unchecked": 2, "total": 5}
         assert payload["complete"] is False
-        assert [doc["path"] for doc in payload["docs"]] == ["plans/01-core.md", "plans/README.md"]
+        assert [doc["path"] for doc in payload["docs"]] == [".spec/plans/01-core.md", ".spec/plans/README.md"]
 
     def test_complete_when_all_checked(self, tmp_path):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=0, checked=3)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=0, checked=3)
         payload = plan_payload(tmp_path, None)
         assert payload["complete"] is True
 
 
 class TestSpawnCommand:
     def test_refuses_without_active_package(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         code = main(["spawn", "--root", str(tmp_path), "--dry-run"])
         assert code == 1
         assert "no active task package" in capsys.readouterr().err
 
     def test_refuses_when_plan_complete(self, tmp_path, capsys):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=0, checked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=0, checked=1)
         make_active_package(tmp_path)
         code = main(["spawn", "--root", str(tmp_path), "--dry-run"])
         assert code == 1
         assert "complete" in capsys.readouterr().err
 
     def test_dry_run_prints_osascript_without_side_effects(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=2)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=2)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
@@ -188,7 +204,7 @@ class TestSpawnCommand:
         assert not (tmp_path / ".spec" / "autorun" / "chain.json").exists()
 
     def test_round_increments_from_chain_state(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=2)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=2)
         make_active_package(tmp_path)
         state = tmp_path / ".spec" / "autorun" / "chain.json"
         state.parent.mkdir(parents=True, exist_ok=True)
@@ -202,7 +218,7 @@ class TestSpawnCommand:
 
     def test_refuses_at_round_cap(self, tmp_path, capsys, monkeypatch):
         # the cap is opt-in: refusal happens only when the flag was passed
-        write_plan(tmp_path / "plans" / "README.md", unchecked=2)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=2)
         make_active_package(tmp_path)
         state = tmp_path / ".spec" / "autorun" / "chain.json"
         state.parent.mkdir(parents=True, exist_ok=True)
@@ -216,7 +232,7 @@ class TestSpawnCommand:
         # no flag = no cap: a chain at round 20 continues past the count that
         # used to stop it — the recorded cap becomes null and the prompt
         # carries no cap flag
-        write_plan(tmp_path / "plans" / "README.md", unchecked=2)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=2)
         make_active_package(tmp_path)
         state = tmp_path / ".spec" / "autorun" / "chain.json"
         state.parent.mkdir(parents=True, exist_ok=True)
@@ -233,7 +249,7 @@ class TestSpawnCommand:
     def test_round_equal_to_cap_is_allowed(self, tmp_path, capsys, monkeypatch):
         # matrix row "round/pass cap" boundary: next == cap passes (only
         # next > cap refuses), so the final round within the cap still spawns
-        write_plan(tmp_path / "plans" / "README.md", unchecked=2)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=2)
         make_active_package(tmp_path)
         state = tmp_path / ".spec" / "autorun" / "chain.json"
         state.parent.mkdir(parents=True, exist_ok=True)
@@ -250,7 +266,7 @@ class TestSpawnCommand:
     def test_cap_one_new_chain_starts_at_one(self, tmp_path, capsys, monkeypatch):
         # F12 boundary matrix: a fresh chain (no state) starts at 1 — even
         # cap=1 allows the chain's first (and final) spawn
-        write_plan(tmp_path / "plans" / "README.md", unchecked=2)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=2)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
@@ -265,7 +281,7 @@ class TestSpawnCommand:
         # F12 boundary matrix: next > cap refuses with the exact frozen text
         # and leaves no audit record behind (the fixture state file stays);
         # the cap is opt-in, so the refusal needs the explicit flag
-        write_plan(tmp_path / "plans" / "README.md", unchecked=2)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=2)
         make_active_package(tmp_path)
         state = tmp_path / ".spec" / "autorun" / "chain.json"
         state.parent.mkdir(parents=True, exist_ok=True)
@@ -282,7 +298,7 @@ class TestSpawnCommand:
         # F12 strict int gate: bool/float/string values are refused like any
         # non-int — the old lenient int() cast silently accepted True / 1.0
         # and truncated 4.5, so a hand-edited state file could lie
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         state = tmp_path / ".spec" / "autorun" / "chain.json"
         state.parent.mkdir(parents=True, exist_ok=True)
@@ -300,7 +316,7 @@ class TestSpawnCommand:
     def test_max_rounds_zero_refuses_without_chain_writes(self, tmp_path, capsys, monkeypatch):
         # F12 boundary matrix: --max-rounds 0 fails fast in main (validate_cap)
         # before any lock/state touch — no chain.json, no spawns.jsonl
-        write_plan(tmp_path / "plans" / "README.md", unchecked=2)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=2)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         code = main(["spawn", "--root", str(tmp_path), "--max-rounds", "0", "--dry-run"])
@@ -312,7 +328,7 @@ class TestSpawnCommand:
         assert not (tmp_path / ".spec" / "autorun" / "spawns.jsonl").exists()
 
     def test_refuses_when_lock_held(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         lock = tmp_path / ".spec" / "autorun" / "chain.lock"
         lock.parent.mkdir(parents=True, exist_ok=True)
@@ -327,7 +343,7 @@ class TestSpawnCommand:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def test_records_state_after_successful_spawn(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
@@ -351,7 +367,7 @@ class TestSpawnCommand:
         assert json.loads(spawns[0])["round"] == 1
 
     def test_osascript_failure_refuses_without_recording(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr(
@@ -379,7 +395,7 @@ class TestSpawnCommand:
     def test_non_integer_round_refuses_and_records(self, tmp_path, capsys, monkeypatch):
         # matrix row "chain 状态不可读 / 非对象 / round|pass 非整数": F3 owns the
         # non-integer round refusal (spawns rebuild / recovered_state is F4's)
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         state = tmp_path / ".spec" / "autorun" / "chain.json"
         state.parent.mkdir(parents=True, exist_ok=True)
@@ -400,7 +416,7 @@ class TestSpawnCommand:
         assert "non-integer round" in event["message"]
 
     def test_unknown_env_host_refuses(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setenv("SPEC_AUTORUN_HOST", "zcode")
         code = main(["spawn", "--root", str(tmp_path), "--dry-run"])
@@ -408,7 +424,7 @@ class TestSpawnCommand:
         assert "unknown worker host" in capsys.readouterr().err
 
     def test_env_host_selected(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setenv("SPEC_AUTORUN_HOST", "pi")
         monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
@@ -419,7 +435,7 @@ class TestSpawnCommand:
         assert payload["host_source"] == "env"
 
     def test_session_detection_selects_running_host(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.delenv("SPEC_AUTORUN_HOST", raising=False)
         monkeypatch.setenv("PI_CODING_AGENT", "true")
@@ -435,7 +451,7 @@ class TestSpawnCommand:
         assert payload["host_source"] == "session"
 
     def test_command_override_skips_host_resolution(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: None)
         monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
@@ -459,14 +475,14 @@ class TestSpawnCommand:
 
 class TestStatusCommand:
     def test_not_started(self, tmp_path, capsys):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         code = main(["status", "--root", str(tmp_path), "--format", "json"])
         assert code == 0
         payload = json.loads(capsys.readouterr().out)
         assert payload["started"] is False
 
     def test_with_chain_state(self, tmp_path, capsys):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         state = tmp_path / ".spec" / "autorun" / "chain.json"
         state.parent.mkdir(parents=True, exist_ok=True)
         state.write_text(json.dumps({"round": 2, "host": "codex", "updated_at": "t"}), encoding="utf-8")
@@ -491,7 +507,7 @@ class TestLockObservability:
         return handle
 
     def test_spawn_writes_holder_content(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
@@ -615,7 +631,7 @@ class TestLockObservability:
         assert autorun_spawn._pid_alive(4242) is None
 
     def test_status_renders_lock_states(self, tmp_path, capsys):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         assert main(["status", "--root", str(tmp_path)]) == 0
         assert "lock: free" in capsys.readouterr().out
         chain_dir = tmp_path / ".spec" / "autorun"
@@ -629,7 +645,7 @@ class TestLockObservability:
             handle.close()
 
     def test_status_json_lock_key(self, tmp_path, capsys):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         assert main(["status", "--root", str(tmp_path), "--format", "json"]) == 0
         payload = json.loads(capsys.readouterr().out)
         assert payload["lock"] == {"status": "free"}
@@ -641,7 +657,7 @@ class TestRefusalAudit:
     """spawn_refusal events plus the status last_refusal render (F2 task-refusal-audit)."""
 
     def test_lock_refusal_records_event(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         lock_file = tmp_path / ".spec" / "autorun" / "chain.lock"
         lock_file.parent.mkdir(parents=True, exist_ok=True)
@@ -677,7 +693,7 @@ class TestRefusalAudit:
         assert not (tmp_path / ".spec" / "autorun" / "events.jsonl").exists()
 
     def test_refusal_records_do_not_write_chain_state(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         lock_file = tmp_path / ".spec" / "autorun" / "chain.lock"
         lock_file.parent.mkdir(parents=True, exist_ok=True)
@@ -692,7 +708,7 @@ class TestRefusalAudit:
         assert not (tmp_path / ".spec" / "autorun" / "spawns.jsonl").exists()
 
     def test_status_last_refusal_ignores_recycle_close(self, tmp_path, capsys):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         events = tmp_path / ".spec" / "autorun" / "events.jsonl"
         events.parent.mkdir(parents=True, exist_ok=True)
         events.write_text(
@@ -718,7 +734,7 @@ class TestRefusalAudit:
         assert "last_refusal: first (type=AutorunError, at=t1)" in capsys.readouterr().out
 
     def test_status_tolerates_partial_tail_line(self, tmp_path, capsys):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         events = tmp_path / ".spec" / "autorun" / "events.jsonl"
         events.parent.mkdir(parents=True, exist_ok=True)
         good = json.dumps(
@@ -732,7 +748,7 @@ class TestRefusalAudit:
         assert "skipping unparseable events line" in captured.err
 
     def test_status_reports_refusals_without_chain_state(self, tmp_path, capsys):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         events = tmp_path / ".spec" / "autorun" / "events.jsonl"
         events.parent.mkdir(parents=True, exist_ok=True)
         events.write_text(
@@ -768,7 +784,7 @@ class TestRefusalAudit:
         assert payload["last_refusal"]["message"] == "second failure"
 
     def test_last_refusal_window_ignores_older_refusals(self, tmp_path, capsys):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         events = tmp_path / ".spec" / "autorun" / "events.jsonl"
         events.parent.mkdir(parents=True, exist_ok=True)
         lines = [
@@ -804,7 +820,7 @@ class TestRefusalAudit:
         assert last["message"] == "locked"
 
     def test_refusal_append_failure_does_not_mask_error(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=0, checked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=0, checked=1)
         make_active_package(tmp_path)
         # events.jsonl as a directory makes the append fail
         (tmp_path / ".spec" / "autorun" / "events.jsonl").mkdir(parents=True)
@@ -835,7 +851,7 @@ class TestStatusResumeDecision:
         return capsys.readouterr().out
 
     def test_fresh_chain_render(self, tmp_path, capsys):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         payload = self.status_json(tmp_path, capsys)
         assert payload["resume"]["action"] == "fresh_chain"
         assert payload["state_status"] == "missing"
@@ -844,7 +860,7 @@ class TestStatusResumeDecision:
         assert "resume: none" not in out
 
     def test_continue_package_render(self, tmp_path, capsys):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         package = make_active_package(tmp_path)
         (package / "tasks.md").write_text("- [x] a\n- [ ] b\n- [ ] c\n", encoding="utf-8")
         self.write_chain_state(tmp_path, {"round": 2, "max_rounds": 20, "host": "pi"})
@@ -857,14 +873,14 @@ class TestStatusResumeDecision:
         assert "2026-01-01_demo-feature (1/3 tasks)" in out
 
     def test_await_new_package_render(self, tmp_path, capsys):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=2)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=2)
         self.write_chain_state(tmp_path, {"round": 3, "max_rounds": 20, "host": "pi"})
         payload = self.status_json(tmp_path, capsys)
         assert payload["resume"]["action"] == "await_new_package"
         assert "resume: await_new_package (" in self.status_text(tmp_path, capsys)
 
     def test_disambiguate_multiple_packages_render(self, tmp_path, capsys):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path, "2026-01-01_alpha")
         make_active_package(tmp_path, "2026-01-02_beta")
         self.write_chain_state(tmp_path, {"round": 2, "max_rounds": 20, "host": "pi"})
@@ -874,7 +890,7 @@ class TestStatusResumeDecision:
         assert "resume: disambiguate_multiple_packages (" in self.status_text(tmp_path, capsys)
 
     def test_cap_reached_render(self, tmp_path, capsys):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)  # the cap row outranks the package resume
         self.write_chain_state(tmp_path, {"round": 20, "max_rounds": 20, "host": "pi"})
         payload = self.status_json(tmp_path, capsys)
@@ -883,7 +899,7 @@ class TestStatusResumeDecision:
         assert "resume: cap_reached (" in self.status_text(tmp_path, capsys)
 
     def test_chain_complete_render(self, tmp_path, capsys):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=0, checked=3)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=0, checked=3)
         self.write_chain_state(tmp_path, {"round": 2, "max_rounds": 20, "host": "pi"})
         payload = self.status_json(tmp_path, capsys)
         assert payload["resume"]["action"] == "chain_complete"
@@ -896,7 +912,7 @@ class TestStatusResumeDecision:
         assert "no qualifying planning document" in payload["resume"]["reason"]
 
     def test_state_corrupt_render(self, tmp_path, capsys):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         state = tmp_path / ".spec" / "autorun" / "chain.json"
         state.parent.mkdir(parents=True, exist_ok=True)
         state.write_text("{half-written", encoding="utf-8")
@@ -911,7 +927,7 @@ class TestStatusResumeDecision:
     def test_recovered_state_render(self, tmp_path, capsys):
         # half-written chain.json rebuilt from the audit tail: correct action,
         # recovered_from surfaced, recovery event audited
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         package = make_active_package(tmp_path)
         (package / "tasks.md").write_text("- [ ] a\n", encoding="utf-8")
         chain_dir = tmp_path / ".spec" / "autorun"
@@ -932,7 +948,7 @@ class TestStatusResumeDecision:
         assert events[-1]["kind"] == "recovery" and events[-1]["action"] == "recovered_state"
 
     def test_audit_mismatch_adopts_audit_render(self, tmp_path, capsys):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         chain_dir = tmp_path / ".spec" / "autorun"
         chain_dir.mkdir(parents=True, exist_ok=True)
@@ -947,7 +963,7 @@ class TestStatusResumeDecision:
         assert payload["resume"]["detail"]["recovered_state"] is True
 
     def test_resume_json_shape_is_action_reason_detail(self, tmp_path, capsys):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         payload = self.status_json(tmp_path, capsys)
         assert set(payload["resume"]) == {"action", "reason", "detail"}
 
@@ -956,7 +972,7 @@ class TestStatusDerivedKeys:
     """Active-package facts in the status payload (resume lives in TestStatusResumeDecision)."""
 
     def test_active_package_progress_single(self, tmp_path, capsys):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         package = make_active_package(tmp_path, "2026-01-01_demo")
         (package / "tasks.md").write_text("# tasks\n- [x] a\n- [ ] b\n- [ ] c\n", encoding="utf-8")
         assert main(["status", "--root", str(tmp_path), "--format", "json"]) == 0
@@ -967,7 +983,7 @@ class TestStatusDerivedKeys:
         assert "active package: 2026-01-01_demo (1/3 tasks)" in capsys.readouterr().out
 
     def test_active_package_none_without_packages(self, tmp_path, capsys):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         assert main(["status", "--root", str(tmp_path), "--format", "json"]) == 0
         payload = json.loads(capsys.readouterr().out)
         assert payload["active_package"] is None
@@ -975,7 +991,7 @@ class TestStatusDerivedKeys:
         assert "active package: none" in capsys.readouterr().out
 
     def test_active_packages_multiple_are_listed(self, tmp_path, capsys):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         first = make_active_package(tmp_path, "2026-01-01_alpha")
         second = make_active_package(tmp_path, "2026-01-02_beta")
         (first / "tasks.md").write_text("- [ ] a\n", encoding="utf-8")
@@ -992,7 +1008,7 @@ class TestStatusDerivedKeys:
         assert "active packages: 2026-01-01_alpha (0/1 tasks), 2026-01-02_beta (2/2 tasks)" in out
 
     def test_archive_packages_are_excluded(self, tmp_path, capsys):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         archived = tmp_path / ".spec" / "specs" / "archive" / "2025-01-01_old"
         archived.mkdir(parents=True)
         (archived / "spec.md").write_text("# old\n", encoding="utf-8")
@@ -1002,7 +1018,7 @@ class TestStatusDerivedKeys:
         assert "active_packages" not in payload
 
     def test_status_text_lines_are_key_value_parseable(self, tmp_path, capsys):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         package = make_active_package(tmp_path)
         (package / "tasks.md").write_text("- [ ] a\n", encoding="utf-8")
         assert main(["status", "--root", str(tmp_path)]) == 0
@@ -1659,7 +1675,7 @@ class TestWindowRecycle:
         assert all(argv[0] != "ps" for argv in calls)
 
     def test_spawn_records_recycle_state(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autorun_spawn.controlling_tty", lambda: "/dev/ttys012")
@@ -1716,7 +1732,7 @@ class TestWindowRecycle:
         # (codex's probabilistic startup failure) — the dead window is closed
         # quietly and the round is refused with zero state written, so a
         # re-run resumes exactly here instead of stranding the chain.
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autorun_spawn.controlling_tty", lambda: "/dev/ttys012")
@@ -1747,7 +1763,7 @@ class TestWindowRecycle:
         # F17 "late start": the worker was not observed within the bound but
         # the new tab is busy — something is running, so the spawn proceeds
         # fail-open exactly as before.
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autorun_spawn.controlling_tty", lambda: "/dev/ttys012")
@@ -1778,7 +1794,7 @@ class TestWindowRecycle:
         assert state["round"] == 1
 
     def test_spawn_osascript_timeout_refuses_without_recording(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
 
@@ -1792,6 +1808,158 @@ class TestWindowRecycle:
         assert code == 1
         assert "did not answer" in capsys.readouterr().err
         assert not (tmp_path / ".spec" / "autorun" / "chain.json").exists()
+
+
+class TestRefusalClosesSpawnedWindow:
+    """2026-10-09 交接未确认 = 不留进程: a refusal after the window opened
+    must close that window synchronously — an alive worker the chain never
+    recorded is a duplicate executor on re-run. A2 (unparseable open reply)
+    recovers the front window behind the identity interlock; A5 (any failure
+    between the confirmed open and the recorded state) closes the confirmed
+    window; A6 (append_audit, after the state write) stays outside the guard
+    — the handoff is confirmed there and the window is legitimate."""
+
+    @staticmethod
+    def _probe(monkeypatch, open_reply, front_reply, worker_runs, pids):
+        """Fake subprocess.run: the open osascript answers ``open_reply``, the
+        front-window probe answers ``front_reply``; every close-helper argv is
+        recorded and every other call answers empty."""
+        close_argv = []
+
+        def fake_run(argv, *a, **k):
+            if argv[0] == "/bin/sh":
+                close_argv.append(argv)
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            if argv[0] == "osascript" and "do script" in argv[2]:
+                return subprocess.CompletedProcess(argv, 0, stdout=open_reply, stderr="")
+            if argv[0] == "osascript" and "front window" in argv[2]:
+                return subprocess.CompletedProcess(argv, 0, stdout=front_reply, stderr="")
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr("autorun_spawn.worker_running_on_tty", lambda worker, tty: worker_runs)
+        monkeypatch.setattr("autorun_spawn.worker_pids_on_tty", lambda worker, tty: list(pids))
+        return close_argv
+
+    def test_unparseable_reply_closes_the_recovered_window(self, tmp_path, capsys, monkeypatch):
+        # A2 主缺陷: the open reply carries no id/tty — the just-opened window
+        # is recovered via the front window (accepted only because it
+        # verifiably runs OUR worker) and closed before the refusal raises.
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
+        make_active_package(tmp_path)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr("autorun_spawn.controlling_tty", lambda: "/dev/ttys012")
+        close_argv = self._probe(monkeypatch, "front window opened\n", "77 /dev/ttys042\n", True, [4242])
+        code = main(["spawn", "--root", str(tmp_path), "--host", "claude", "--format", "json"])
+        captured = capsys.readouterr()
+        assert code == 1
+        assert "cannot confirm the handoff" in captured.err  # refusal text frozen verbatim
+        assert captured.out == ""
+        assert not (tmp_path / ".spec" / "autorun" / "chain.json").exists()
+        assert not (tmp_path / ".spec" / "autorun" / "spawns.jsonl").exists()
+        assert len(close_argv) == 1
+        script = close_argv[0][2]
+        assert "sleep 0" in script  # synchronous: no scheduling delay
+        assert '"kind": "refusal_close"' in script
+        assert '"round": 1' in script
+        assert '"window_id": 77' in script
+        assert '"prev_tty": "/dev/ttys042"' in script
+        assert 'case "$cmd" in *"claude "*|*/claude)' in script  # identity interlock carries
+        events = (tmp_path / ".spec" / "autorun" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        event = json.loads(events[-1])
+        assert event["kind"] == "spawn_refusal"
+        assert "cannot confirm the handoff" in event["message"]
+
+    def test_unparseable_reply_without_recovery_skips_the_close(self, tmp_path, capsys, monkeypatch):
+        # A2 fail-open: the front window is not OUR worker (or no window at
+        # all) — no close target, the refusal proceeds with the text frozen
+        # verbatim and an honest skip (never a forced close of a user window)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
+        make_active_package(tmp_path)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr("autorun_spawn.controlling_tty", lambda: "/dev/ttys012")
+        close_argv = self._probe(monkeypatch, "front window opened\n", "", False, [4242])
+        code = main(["spawn", "--root", str(tmp_path), "--host", "claude"])
+        captured = capsys.readouterr()
+        assert code == 1
+        assert "cannot confirm the handoff" in captured.err
+        assert close_argv == []  # nothing identity-confirmed → nothing closed
+        assert not (tmp_path / ".spec" / "autorun" / "chain.json").exists()
+
+    def test_failure_between_open_and_state_closes_the_window(self, tmp_path, capsys, monkeypatch):
+        # A5: the open reply parsed fine but the guarded stretch fails before
+        # the state is written — the confirmed window is closed before the
+        # failure propagates (re-run would otherwise spawn a second worker
+        # for the same round)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
+        make_active_package(tmp_path)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr("autorun_spawn.controlling_tty", lambda: "/dev/ttys012")
+        close_argv = self._probe(monkeypatch, "42 /dev/ttys009\n", "", True, [991])
+        monkeypatch.setattr("autorun_spawn.read_window_geometry", lambda tty: (10, 20, 30, 40))
+        monkeypatch.setattr(
+            "autorun_spawn.apply_window_geometry",
+            lambda window_id, geometry: (_ for _ in ()).throw(AutorunError("geometry boom")),
+        )
+        code = main(["spawn", "--root", str(tmp_path), "--host", "claude", "--format", "json"])
+        captured = capsys.readouterr()
+        assert code == 1
+        assert "geometry boom" in captured.err
+        assert len(close_argv) == 1
+        script = close_argv[0][2]
+        assert '"kind": "refusal_close"' in script
+        assert '"window_id": 42' in script
+        assert '"prev_tty": "/dev/ttys009"' in script
+        assert not (tmp_path / ".spec" / "autorun" / "chain.json").exists()
+        assert not (tmp_path / ".spec" / "autorun" / "spawns.jsonl").exists()
+
+    def test_state_written_then_audit_failure_keeps_the_window(self, tmp_path, capsys, monkeypatch):
+        # A6 (裁定不修): once the state is written the handoff is confirmed —
+        # the window is the chain's legitimate worker and stays open even if
+        # the audit append fails afterwards
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
+        make_active_package(tmp_path)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr("autorun_spawn.controlling_tty", lambda: "/dev/ttys012")
+        close_argv = self._probe(monkeypatch, "42 /dev/ttys009\n", "", True, [991])
+
+        def broken_append(path, record):
+            raise RuntimeError("audit disk full")
+
+        monkeypatch.setattr("autorun_spawn.append_audit", broken_append)
+        with pytest.raises(RuntimeError, match="audit disk full"):
+            main(["spawn", "--root", str(tmp_path), "--host", "claude"])
+        assert close_argv == []  # confirmed handoff → never closed
+        assert (tmp_path / ".spec" / "autorun" / "chain.json").exists()
+        assert not (tmp_path / ".spec" / "autorun" / "spawns.jsonl").exists()
+
+    def test_refusal_close_template_renders_contract_lines(self):
+        contract = AUDIT_FIELD_CONTRACT
+        argv = build_close_argv(
+            42,
+            0,
+            chain_support.REFUSAL_CLOSE_WAIT_SECONDS,
+            prev_tty="/dev/ttys042",
+            session_pids=[4242],
+            worker_name="claude",
+            chain="autorun",
+            round_index=3,
+            events_path=EVENTS_PATH,
+            event_kind="refusal_close",
+        )
+        match = re.search(r"printf '(.+)' \"\$now\" \"\$result\" \"\$waited_ms\"", argv[2])
+        assert match is not None
+        template = match.group(1)
+        assert template.endswith("\\n")
+        for result in sorted(contract["recycle_close_result_domain"]):
+            event = json.loads((template[:-2] % ("2026-10-09T12:00:00Z", result, "3000")) + "\n")
+            assert set(event) == contract["event_keys"]["refusal_close"]
+            assert event["kind"] == "refusal_close"
+            assert event["chain"] == "autorun"
+            assert event["round"] == 3
+            assert event["window_id"] == 42
+            assert event["prev_tty"] == "/dev/ttys042"
+            assert event["result"] == result
 
 
 class TestChannelSplit:
@@ -1808,7 +1976,7 @@ class TestChannelSplit:
     def test_matrix_refusals_keep_stdout_empty(self, tmp_path, capsys, monkeypatch):
         # the F3 negative samples in one channel sweep: every refusal path
         # writes its reason to stderr and leaves stdout untouched
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         refusals = [
@@ -1827,7 +1995,7 @@ class TestChannelSplit:
             assert reason in captured.err, argv
 
     def test_success_dry_run_stdout_is_parseable_json(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
@@ -1910,10 +2078,11 @@ AUDIT_FIELD_CONTRACT = {
         "skipped": frozenset({"status", "reason"}),
         "planned": frozenset({"status"}),
     },
-    "event_kind_domain": frozenset({"spawn_refusal", "recycle_close", "recovery"}),
+    "event_kind_domain": frozenset({"spawn_refusal", "recycle_close", "refusal_close", "recovery"}),
     "event_keys": {
         "spawn_refusal": frozenset({"kind", "at", "chain", "type", "message"}),
         "recycle_close": frozenset({"kind", "at", "chain", "round", "window_id", "prev_tty", "result", "waited_ms"}),
+        "refusal_close": frozenset({"kind", "at", "chain", "round", "window_id", "prev_tty", "result", "waited_ms"}),
         "recovery": frozenset({"kind", "at", "chain", "action", "detail"}),
     },
     "recycle_close_result_domain": frozenset({"closed", "multi-tab", "window-gone", "busy-timeout", "osascript-error"}),
@@ -2115,7 +2284,7 @@ class TestAuditFieldContract:
         assert contract["recovery_detail_keys"]["recovered_state"] == frozenset({"source", "state_file"})
 
     def test_dry_run_payload_matches_contract(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
@@ -2131,7 +2300,7 @@ class TestAuditFieldContract:
         assert ISO_Z_PATTERN.fullmatch(payload["spawned_at"])
         assert payload["host"] == "claude"
         assert payload["host_source"] in contract["host_source_domain"]
-        assert payload["plan_docs"] == ["plans/README.md"]
+        assert payload["plan_docs"] == [".spec/plans/README.md"]
         assert isinstance(payload["shell_command"], str)
         assert payload["prev_tty"] == "/dev/ttys012"
         assert payload["osascript"][0] == "osascript"
@@ -2142,7 +2311,7 @@ class TestAuditFieldContract:
         assert set(json.loads(holder_line)) == contract["lock_holder_keys"]
 
     def test_real_spawn_state_row_and_payload_match_contract(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
@@ -2177,7 +2346,7 @@ class TestAuditFieldContract:
         assert row["window_recycle"] == recycle
 
     def test_spawn_refusal_event_matches_contract(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr(
@@ -2280,7 +2449,7 @@ class TestAuditFieldContract:
         assert isinstance(result["reason"], str)
         observed.add(result["status"])
         # planned: the dry-run face reports what a real spawn would record
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
@@ -2387,7 +2556,7 @@ class TestModelIdentity:
             "round": 3,
             "host": host,
             "host_source": "flag",
-            "plan_docs": ["plans/00-master-plan.md"],
+            "plan_docs": [".spec/plans/00-master-plan.md"],
             "max_rounds": 20,
             "updated_at": "2026-10-08T00:00:00Z",
             "shell_command": "cd /p && pi --mode text -- '$spec autorun'",
@@ -2430,7 +2599,7 @@ class TestModelIdentity:
     # --- lock ------------------------------------------------------------------
 
     def test_first_spawn_with_flags_locks_chain_state_and_audit_row(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
@@ -2458,7 +2627,7 @@ class TestModelIdentity:
         assert row["model_injection"] in AUDIT_FIELD_CONTRACT["model_injection_domain"]
 
     def test_first_spawn_without_flags_locks_null(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
@@ -2480,7 +2649,7 @@ class TestModelIdentity:
 
     @pytest.mark.parametrize("host", ["pi", "codex", "claude"])
     def test_no_flags_continuation_injects_the_locked_value(self, tmp_path, capsys, monkeypatch, host):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         self.write_state(tmp_path, self.IDENTITY, host=host)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
@@ -2501,7 +2670,7 @@ class TestModelIdentity:
         assert shell.index(self.model_flag_segment(host, "id", "anthropic/opus-5.5")) < prompt_at
 
     def test_propagation_survives_a_real_second_round(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         self.write_state(tmp_path, self.IDENTITY)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
@@ -2526,7 +2695,7 @@ class TestModelIdentity:
     # --- the four conflict refusals ---------------------------------------------
 
     def test_conflict_id_refuses_with_both_values(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         self.write_state(tmp_path, self.IDENTITY)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
@@ -2539,7 +2708,7 @@ class TestModelIdentity:
         )
 
     def test_conflict_reasoning_refuses_with_both_values(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         self.write_state(tmp_path, self.IDENTITY)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
@@ -2558,7 +2727,7 @@ class TestModelIdentity:
         self.refused(tmp_path, capsys, argv, match="locked reasoning 'high' vs incoming reasoning 'max'")
 
     def test_conflict_absent_vs_present_reasoning_refuses(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         self.write_state(tmp_path, {"id": "anthropic/opus-5.5"})
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
@@ -2577,7 +2746,7 @@ class TestModelIdentity:
         self.refused(tmp_path, capsys, argv, match="locked reasoning absent vs incoming reasoning 'high'")
 
     def test_conflict_null_lock_then_value_refuses(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         self.write_state(tmp_path, None)  # model key present, locked null
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
@@ -2599,7 +2768,7 @@ class TestModelIdentity:
         )
 
     def test_conflict_resolved_host_change_with_identity_refuses(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         self.write_state(tmp_path, self.IDENTITY)  # chain host recorded as pi
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
@@ -2623,7 +2792,7 @@ class TestModelIdentity:
         )
 
     def test_reasoning_without_model_refuses(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         argv = ["spawn", "--root", str(tmp_path), "--host", "pi", "--dry-run", "--reasoning", "high"]
@@ -2633,7 +2802,7 @@ class TestModelIdentity:
         assert "--reasoning requires --model" in captured.err
 
     def test_empty_model_refuses_through_refusal_path(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         self.write_state(tmp_path, self.IDENTITY)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
@@ -2641,7 +2810,7 @@ class TestModelIdentity:
         self.refused(tmp_path, capsys, argv, match="--model must be a non-empty model id")
 
     def test_whitespace_reasoning_refuses_through_refusal_path(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         self.write_state(tmp_path, self.IDENTITY)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
@@ -2665,7 +2834,7 @@ class TestModelIdentity:
         )
 
     def test_padded_meaningful_values_pass_through_verbatim(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
@@ -2695,7 +2864,7 @@ class TestModelIdentity:
         assert payload["model"] == {"id": " anthropic/opus-5.5 ", "reasoning": " high "}
 
     def test_malformed_lock_refuses(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         self.write_state(tmp_path, "not-an-object")
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
@@ -2705,7 +2874,7 @@ class TestModelIdentity:
     # --- the no-lock no-flags default stays byte-identical ----------------------
 
     def test_no_lock_no_flags_default_argv_is_unchanged(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
@@ -2719,7 +2888,7 @@ class TestModelIdentity:
     # --- the --command bypass ---------------------------------------------------
 
     def test_bypass_records_identity_without_injecting(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
         argv = [
@@ -2744,7 +2913,7 @@ class TestModelIdentity:
         assert payload["shell_command"] == f"cd {tmp_path} && sleep 8"
 
     def test_bypass_first_lock_then_host_spawn_refuses(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
@@ -2787,7 +2956,7 @@ class TestModelIdentity:
     # --- partial injection ------------------------------------------------------
 
     def test_partial_when_host_lacks_a_reasoning_flag(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         # construct the host-lacking-reasoning-flag form straight in the table
@@ -2816,7 +2985,7 @@ class TestModelIdentity:
         assert " max" not in shell
 
     def test_none_injection_for_null_identity(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         assert main(["spawn", "--root", str(tmp_path), "--host", "claude", "--format", "json", "--dry-run"]) == 0
@@ -2827,7 +2996,7 @@ class TestModelIdentity:
     # --- status visibility -------------------------------------------------------
 
     def test_status_renders_the_locked_model_line(self, tmp_path, capsys):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         self.write_state(tmp_path, self.IDENTITY)
         spawns_file = tmp_path / ".spec" / "autorun" / "spawns.jsonl"
         spawns_file.write_text(
@@ -2850,7 +3019,7 @@ class TestModelIdentity:
         assert "model: anthropic/opus-5.5 [high] (injection: full)" in capsys.readouterr().out
 
     def test_status_renders_worker_default_when_null(self, tmp_path, capsys):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         self.write_state(tmp_path, None)
         assert main(["status", "--root", str(tmp_path), "--format", "json"]) == 0
         payload = json.loads(capsys.readouterr().out)
@@ -2861,7 +3030,7 @@ class TestModelIdentity:
     # --- old-chain compatibility --------------------------------------------------
 
     def test_legacy_state_without_model_key_first_locks_on_flags(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         # the F1-era shape: no model key at all (pre-F14 chain)
         state_file = tmp_path / ".spec" / "autorun" / "chain.json"
@@ -2892,7 +3061,7 @@ class TestModelIdentity:
         assert state["model"] == {"id": "anthropic/opus-5.5"}
 
     def test_legacy_state_without_model_key_reads_as_unlocked_status(self, tmp_path, capsys):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         state_file = tmp_path / ".spec" / "autorun" / "chain.json"
         state_file.parent.mkdir(parents=True, exist_ok=True)
         state_file.write_bytes(LEGACY_STATE_F1_BYTES)
@@ -3078,7 +3247,7 @@ class TestOptInRoundCap:
     the next round's prompt carries no cap flag."""
 
     def test_no_flag_means_unbounded(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=30)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=30)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
@@ -3089,7 +3258,7 @@ class TestOptInRoundCap:
         assert "--max-rounds" not in payload["osascript"][2]
 
     def test_explicit_flag_wins_exactly(self, tmp_path, capsys, monkeypatch):
-        write_plan(tmp_path / "plans" / "README.md", unchecked=30)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=30)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
@@ -3102,7 +3271,7 @@ class TestOptInRoundCap:
     def test_recorded_cap_is_not_sticky(self, tmp_path, capsys, monkeypatch):
         # a cap recorded by an earlier spawn no longer binds later spawns:
         # the flag alone decides, so a no-flag continuation goes unbounded
-        write_plan(tmp_path / "plans" / "README.md", unchecked=1)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         state_file = tmp_path / ".spec" / "autorun" / "chain.json"
         state_file.parent.mkdir(parents=True, exist_ok=True)

@@ -119,12 +119,20 @@ HOST_ENV_MARKERS: Tuple[Tuple[str, str], ...] = (
 CHAIN_DIR_NAME = ".spec/autorun"
 
 FEATURE_CHECKBOX = re.compile(r"^\s*[-*]\s+\[( |x|X)\]\s*(\S.*)$")
-# One canonical planning root: every planning document lives under ``plans/``
-# (master ``plans/README.md``, phase details ``plans/NN-<slug>.md``, plans
-# aligned with a Development Record ``plans/<YYYY-MM-DD>_<verb>-<object>.md``).
-# ``--plan`` stays the explicit escape hatch for a document kept elsewhere.
-PLAN_ROOT = "plans"
-PLAN_CANDIDATE_GLOB = "plans/*.md"
+# One canonical planning root, spec-side like ``.spec/specs/``: every planning
+# unit lives under ``.spec/plans/`` and carries a spec-style dated slug
+# (``YYYY-MM-DD_<verb>-<object>``) — a single-round plan as ``<slug>.md``, a
+# multi-round cluster as ``<slug>/`` holding ``master.md`` (the checkbox
+# index) plus ``NN-<slug>.md`` phase details. Delivered or retired units move
+# to ``.spec/plans/archive/`` under the same name. Legacy locations (the old
+# repo-root ``plans/`` tree among them) are not scanned by default; ``--plan``
+# stays the explicit escape hatch for a document kept elsewhere.
+PLAN_ROOT = ".spec/plans"
+PLAN_ARCHIVE_DIR_NAME = "archive"
+PLAN_CANDIDATE_GLOBS: Tuple[str, ...] = (
+    ".spec/plans/*.md",  # index seed + single-round plans
+    ".spec/plans/*/master.md",  # cluster checkbox masters
+)
 
 
 class AutorunError(ChainSpawnError):
@@ -148,8 +156,19 @@ def _resolve_root(raw_root: str) -> Path:
 
 
 def plan_candidates(root: Path) -> List[Path]:
-    """Canonical ``plans/*.md`` scan (the planning root is a project fact)."""
-    return sorted(root.glob(PLAN_CANDIDATE_GLOB))
+    """Canonical ``.spec/plans/`` scan (the planning root is a project fact).
+
+    Candidates are the top-level markdown files (the index seed document and
+    single-round plans) plus each cluster's ``master.md``. The ``archive/``
+    directory is never scanned: archived units are history, not candidates.
+    """
+    candidates: List[Path] = []
+    for pattern in PLAN_CANDIDATE_GLOBS:
+        for path in root.glob(pattern):
+            if path.is_dir() or path.parent.name == PLAN_ARCHIVE_DIR_NAME:
+                continue
+            candidates.append(path)
+    return sorted(set(candidates))
 
 
 def count_features(text: str) -> Dict[str, object]:
@@ -435,6 +454,7 @@ def build_close_argv(
     events_path: Path,
     session_pids: Optional[List[int]] = None,
     worker_name: str = "",
+    event_kind: str = "recycle_close",
 ) -> List[str]:
     """Close-helper argv via the shared implementation, raising this
     script's own class on invalid arguments (the seam the chain tests use)."""
@@ -449,6 +469,7 @@ def build_close_argv(
         events_path=events_path,
         session_pids=session_pids,
         worker_name=worker_name,
+        event_kind=event_kind,
         error=AutorunError,
     )
 
@@ -526,6 +547,37 @@ def recycle_previous_window(
         close_wait_seconds=close_wait_seconds,
         pid_lookup=worker_pids_on_tty,
         schedule_close=schedule_window_close,
+    )
+
+
+def recover_front_worker_window(worker_name: str) -> Tuple[Optional[int], Optional[str]]:
+    """Front-window recovery via the shared implementation, with this module's
+    seam: tests patch ``autorun_spawn.worker_running_on_tty`` — only a front
+    window verifiably running OUR worker is accepted as the spawn target."""
+    return chain_support.recover_front_worker_window(worker_name, worker_check=worker_running_on_tty)
+
+
+def close_refused_window(
+    new_window_id: Optional[int],
+    new_tty: Optional[str],
+    worker_name: str,
+    *,
+    chain: str,
+    events_path: Path,
+    round_index: Optional[int] = None,
+    pass_index: Optional[int] = None,
+) -> Dict[str, object]:
+    """Refusal close via the shared implementation, with this module's seam:
+    tests patch ``autorun_spawn.worker_pids_on_tty`` (交接未确认 = 不留进程)."""
+    return chain_support.close_refused_window(
+        new_window_id,
+        new_tty,
+        worker_name,
+        chain=chain,
+        events_path=events_path,
+        round_index=round_index,
+        pass_index=pass_index,
+        pid_lookup=worker_pids_on_tty,
     )
 
 
@@ -737,48 +789,80 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
         completed = run_terminal_open(osascript_argv, error=AutorunError, label="the Terminal window")
         new_window_id, new_tty = parse_spawn_result(completed.stdout)
         if new_window_id is None or new_tty is None:
+            # 2026-10-09: an unconfirmable handoff must not leave the worker
+            # either — recover the just-opened window by identity interlock
+            # (the front window counts only when it verifiably runs OUR
+            # worker) and close it synchronously before refusing.
+            recovered_id, recovered_tty = recover_front_worker_window(worker_name)
+            close_refused_window(
+                recovered_id,
+                recovered_tty,
+                worker_name,
+                chain="autorun",
+                events_path=_chain_dir(root) / CHAIN_EVENTS_FILE,
+                round_index=next_round,
+            )
             # An unconfirmable handoff must not strand the chain: the round
             # is not recorded, so a re-run resumes exactly here.
             raise AutorunError(
                 "osascript reply missing the window id or tty: {!r} — cannot confirm the handoff; "
                 "refusing to record the round".format(completed.stdout.strip())
             )
-        if parent_tty is not None:
-            # F17 geometry: stack the new window where this session's window
-            # sits (no parent window / failed read simply keeps the default)
-            parent_geometry = read_window_geometry(parent_tty)
-            if parent_geometry is not None:
-                apply_window_geometry(new_window_id, parent_geometry)
-        # F17 spawn gate: a window whose worker died instantly (codex's
-        # probabilistic startup failure) is closed quietly and refused with
-        # zero state written — instead of silently recording a round that
-        # never runs. A busy-but-unobserved tab is a late start: proceed.
-        start_verdict = verify_worker_start(worker_name, new_window_id, new_tty)
-        if start_verdict["status"] == "dead-tab":
-            close_spawned_window_quietly(new_window_id)
-            raise AutorunError(
-                "next-round {} — the spawned Terminal window was closed; refusing to record the round".format(
-                    start_verdict["reason"]
+        try:
+            if parent_tty is not None:
+                # F17 geometry: stack the new window where this session's window
+                # sits (no parent window / failed read simply keeps the default)
+                parent_geometry = read_window_geometry(parent_tty)
+                if parent_geometry is not None:
+                    apply_window_geometry(new_window_id, parent_geometry)
+            # F17 spawn gate: a window whose worker died instantly (codex's
+            # probabilistic startup failure) is closed quietly and refused with
+            # zero state written — instead of silently recording a round that
+            # never runs. A busy-but-unobserved tab is a late start: proceed.
+            start_verdict = verify_worker_start(worker_name, new_window_id, new_tty)
+            if start_verdict["status"] == "dead-tab":
+                close_spawned_window_quietly(new_window_id)
+                raise AutorunError(
+                    "next-round {} — the spawned Terminal window was closed; refusing to record the round".format(
+                        start_verdict["reason"]
+                    )
                 )
+            record["window_recycle"] = recycle_previous_window(
+                prev_tty=record["prev_tty"],
+                new_window_id=new_window_id,
+                new_tty=new_tty,
+                worker_name=worker_name,
+                chain="autorun",
+                round_index=next_round,
+                events_path=_chain_dir(root) / CHAIN_EVENTS_FILE,
             )
-        record["window_recycle"] = recycle_previous_window(
-            prev_tty=record["prev_tty"],
-            new_window_id=new_window_id,
-            new_tty=new_tty,
-            worker_name=worker_name,
-            chain="autorun",
-            round_index=next_round,
-            events_path=_chain_dir(root) / CHAIN_EVENTS_FILE,
-        )
 
-        state_file = _chain_dir(root) / CHAIN_STATE_FILE
-        state = dict(record)
-        # F14: the per-spawn injection level is an audit fact (spawns row
-        # only); the chain state carries the identity lock, which the
-        # effective identity already equals on every accepted spawn.
-        state.pop("model_injection")
-        state["updated_at"] = state.pop("spawned_at")
-        atomic_write(state_file, json.dumps(state, indent=2, sort_keys=True) + "\n")
+            state_file = _chain_dir(root) / CHAIN_STATE_FILE
+            state = dict(record)
+            # F14: the per-spawn injection level is an audit fact (spawns row
+            # only); the chain state carries the identity lock, which the
+            # effective identity already equals on every accepted spawn.
+            state.pop("model_injection")
+            state["updated_at"] = state.pop("spawned_at")
+            atomic_write(state_file, json.dumps(state, indent=2, sort_keys=True) + "\n")
+        except BaseException:
+            # 交接未确认 = 不留进程 (2026-10-09): any failure between the
+            # confirmed window open and the recorded state leaves an alive
+            # worker the chain does not know about — a duplicate executor on
+            # re-run. Close the just-opened window before the failure
+            # propagates (idempotent: an already-closed window reports
+            # window-gone). append_audit stays outside the guard: once the
+            # state is written the handoff is confirmed and the window is
+            # the chain's legitimate worker.
+            close_refused_window(
+                new_window_id,
+                new_tty,
+                worker_name,
+                chain="autorun",
+                events_path=_chain_dir(root) / CHAIN_EVENTS_FILE,
+                round_index=next_round,
+            )
+            raise
         append_audit(_chain_dir(root) / CHAIN_SPAWNS_FILE, record)
         return {"dry_run": False, "terminal": completed.stdout.strip(), **record}
 
@@ -985,7 +1069,7 @@ def _add_plan_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--root", default=".", help="project root (default: current directory)")
     parser.add_argument(
         "--plan",
-        help="comma-separated planning document paths (default: scan the canonical plans/ root)",
+        help="comma-separated planning document paths (default: scan the canonical .spec/plans/ root)",
     )
     parser.add_argument("--format", choices=("text", "json"), default="text", help="output format (default: text)")
 

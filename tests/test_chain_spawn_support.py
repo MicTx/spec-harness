@@ -104,6 +104,10 @@ GUARD_TABLE = {
     "CLOSE_TERM_WAIT_SECONDS": 15,
     "TERMINAL_OPEN_ATTEMPTS": 2,
     "TERMINAL_OPEN_RETRY_BACKOFF_SECONDS": 2,
+    # 2026-10-09 add-only: the refusal close runs the escalated close argv
+    # synchronously with no scheduling delay
+    "REFUSAL_CLOSE_WAIT_SECONDS": 30,
+    "REFUSAL_CLOSE_HELPER_TIMEOUT_SECONDS": 100,
 }
 
 
@@ -844,6 +848,214 @@ class TestSessionKillInterlock:
             chain="autoplan",
             pass_index=2,
             events_path=Path("/tmp/spec-test-events.jsonl"),
+        )
+        parsed = subprocess.run(["/bin/sh", "-n"], input=argv[2], text=True, capture_output=True, timeout=10)
+        assert parsed.returncode == 0, parsed.stderr
+
+
+# --- 2026-10-09: refusal close (交接未确认 = 不留进程) --------------------------
+
+
+class TestRefusalCloseHelpers:
+    """The shared refusal-close machinery: front-window recovery behind an
+    identity interlock, and a synchronous, bounded, fail-open close of the
+    window a refused spawn just opened."""
+
+    def test_recovery_accepts_a_front_window_running_our_worker(self, monkeypatch):
+        seen_scripts = []
+
+        def fake_run(argv, *a, **k):
+            seen_scripts.append(argv[2])
+            return subprocess.CompletedProcess(argv, 0, stdout="77 /dev/ttys042\n", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        checked = []
+
+        def worker_check(worker, tty):
+            checked.append((worker, tty))
+            return True
+
+        assert support.recover_front_worker_window("claude", worker_check=worker_check) == (77, "/dev/ttys042")
+        assert checked == [("claude", "/dev/ttys042")]
+        # the probe reads Terminal's front window and its selected tab tty
+        assert any("front window" in script and "tty of selected tab" in script for script in seen_scripts)
+
+    def test_recovery_rejects_a_front_window_that_is_not_our_worker(self, monkeypatch):
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda argv, *a, **k: subprocess.CompletedProcess(argv, 0, stdout="77 /dev/ttys042\n", stderr=""),
+        )
+        # a user's window (or any other command) never passes the interlock —
+        # the refusal then proceeds without a close target (honest skip)
+        assert support.recover_front_worker_window("claude", worker_check=lambda w, t: False) == (None, None)
+
+    @pytest.mark.parametrize(
+        "reply",
+        ["", "garbage\n", "abc /dev/ttys042\n", "77 ttys042\n", "77 /dev/ttys042 extra\n", "77\n"],
+    )
+    def test_recovery_rejects_malformed_replies(self, monkeypatch, reply):
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda argv, *a, **k: subprocess.CompletedProcess(argv, 0, stdout=reply, stderr=""),
+        )
+        assert support.recover_front_worker_window("claude", worker_check=lambda w, t: True) == (None, None)
+
+    def test_recovery_survives_osascript_failure_and_timeout(self, monkeypatch):
+        def failing(argv, *a, **k):
+            raise subprocess.TimeoutExpired(argv, 30)
+
+        monkeypatch.setattr(subprocess, "run", failing)
+        assert support.recover_front_worker_window("claude", worker_check=lambda w, t: True) == (None, None)
+
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda argv, *a, **k: subprocess.CompletedProcess(argv, 1, stdout="", stderr="boom"),
+        )
+        assert support.recover_front_worker_window("claude", worker_check=lambda w, t: True) == (None, None)
+
+    def test_recovery_without_a_worker_name_probes_nothing(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda argv, *a, **k: calls.append(argv) or subprocess.CompletedProcess(argv, 0, stdout="", stderr=""),
+        )
+        assert support.recover_front_worker_window("") == (None, None)
+        assert calls == []
+
+    def test_close_skips_without_a_window_identity(self):
+        sent = []
+        result = support.close_refused_window(
+            None,
+            None,
+            "claude",
+            chain="autorun",
+            round_index=1,
+            events_path=Path("/tmp/spec-test-events.jsonl"),
+            run_helper=sent.append,
+        )
+        assert result["status"] == "skipped"
+        assert "unavailable" in result["reason"]
+        assert sent == []  # nothing to close — no helper ever runs
+
+    def test_close_sends_the_bounded_synchronous_helper(self):
+        sent = []
+        pid_calls = []
+        result = support.close_refused_window(
+            77,
+            "/dev/ttys042",
+            "claude",
+            chain="autorun",
+            round_index=2,
+            events_path=Path("/tmp/spec-test-events.jsonl"),
+            pid_lookup=lambda worker, tty: pid_calls.append((worker, tty)) or [4242],
+            run_helper=sent.append,
+        )
+        assert result["status"] == "close-command-sent"
+        assert result["window_id"] == 77
+        assert result["session_pids"] == [4242]
+        assert pid_calls == [("claude", "/dev/ttys042")]
+        assert len(sent) == 1
+        argv = sent[0]
+        assert argv[:2] == ["/bin/sh", "-c"]
+        script = argv[2]
+        # synchronous: no scheduling delay — the close starts immediately
+        assert "sleep 0" in script
+        assert "sleep 3" not in script
+        # the event records the refusal close, not a recycle
+        assert '"kind": "refusal_close"' in script
+        assert '"round": 2' in script
+        assert '"window_id": 77' in script
+        assert '"prev_tty": "/dev/ttys042"' in script
+        # the F19 identity interlock carries into the refusal close
+        assert 'case "$cmd" in *"claude "*|*/claude)' in script
+        assert 'kill -TERM -"$pgid"' in script
+
+    def test_close_without_a_worker_name_has_no_kill_segment(self):
+        sent = []
+        support.close_refused_window(
+            77,
+            "/dev/ttys042",
+            "",
+            chain="autoplan",
+            pass_index=1,
+            events_path=Path("/tmp/spec-test-events.jsonl"),
+            run_helper=sent.append,
+        )
+        assert len(sent) == 1
+        assert "kill -TERM" not in sent[0][2]
+        assert '"pass": 1' in sent[0][2]
+
+    def test_close_failure_never_masks_the_refusal(self, monkeypatch):
+        def exploding(argv, *a, **k):
+            raise subprocess.TimeoutExpired(argv, 100)
+
+        monkeypatch.setattr(subprocess, "run", exploding)
+        result = support.close_refused_window(
+            77,
+            "/dev/ttys042",
+            "claude",
+            chain="autorun",
+            round_index=1,
+            events_path=Path("/tmp/spec-test-events.jsonl"),
+        )
+        # the default helper swallows OSError/SubprocessError: a failed close
+        # is fail-open, never a second error stacked on the refusal
+        assert result["status"] == "close-command-sent"
+
+    def test_close_skips_when_argv_validation_refuses(self):
+        sent = []
+        result = support.close_refused_window(
+            77,
+            "/dev/ttys042",
+            "claude",
+            chain="autorun",
+            round_index=1,
+            events_path=Path("relative-events.jsonl"),  # not absolute → refused
+            run_helper=sent.append,
+        )
+        assert result["status"] == "skipped"
+        assert "validation refused" in result["reason"]
+        assert sent == []
+
+    def test_event_kind_domain_is_closed(self):
+        argv = support.build_close_argv(
+            42,
+            3,
+            120,
+            prev_tty="/dev/ttys012",
+            chain="autorun",
+            round_index=1,
+            events_path=Path("/tmp/spec-test-events.jsonl"),
+        )
+        assert '"kind": "recycle_close"' in argv[2]  # the default stays recycle_close
+        with pytest.raises(ChainSpawnError, match="event kind"):
+            support.build_close_argv(
+                42,
+                3,
+                120,
+                prev_tty="/dev/ttys012",
+                chain="autorun",
+                round_index=1,
+                events_path=Path("/tmp/spec-test-events.jsonl"),
+                event_kind="bogus",
+            )
+
+    def test_refusal_helper_script_parses_under_sh(self):
+        argv = support.build_close_argv(
+            42,
+            0,
+            support.REFUSAL_CLOSE_WAIT_SECONDS,
+            prev_tty="/dev/ttys042",
+            session_pids=[4242],
+            worker_name="claude",
+            chain="autorun",
+            round_index=1,
+            events_path=Path("/tmp/spec-test-events.jsonl"),
+            event_kind="refusal_close",
         )
         parsed = subprocess.run(["/bin/sh", "-n"], input=argv[2], text=True, capture_output=True, timeout=10)
         assert parsed.returncode == 0, parsed.stderr

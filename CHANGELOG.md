@@ -4,6 +4,16 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation.
 
+## [0.16.0] - 2026-10-10
+
+### Changed
+
+- **Planning documents live under `.spec/plans/`**: `/spec:autorun` and `/spec:autoplan` now discover planning documents only under the canonical `.spec/plans/` root — top-level `*.md` plus planning clusters (`*/master.md`, with `archive/` skipped) — so planning state sits with the rest of the project's spec memory instead of a repo-root `plans/` tree. An existing repo-root `plans/` tree is legacy and no longer scanned by default; `--plan` still names any document explicitly, and `python3 scripts/organize_project_structure.py` treats the whole `.spec/` tree (plans included) as historical evidence.
+
+### Fixed
+
+- **A refused spawn leaves no worker behind**: when an autorun or autoplan spawn is refused after its Terminal window opened — an unparseable window-open reply, or any failure between the confirmed window open and the recorded chain state — the just-opened window is now closed synchronously through the same escalated close helper the window recycle uses, behind a worker-identity interlock: only a window whose selected tab verifiably runs the chain's own worker is ever targeted, and a close that cannot identify the window skips honestly and records why (event kind `refusal_close`, fail-open; refusal messages unchanged). Re-running the chain resumes exactly at the refused round or pass with no duplicate executor; once the round/pass state is written the handoff is confirmed and the window stays open as the chain's legitimate worker.
+
 ## [0.15.0] - 2026-10-09
 
 ### Changed

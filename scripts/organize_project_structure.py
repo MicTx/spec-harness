@@ -124,7 +124,8 @@ CLASS_UNREFERENCED_FILE = "unreferenced-file"
 CLASS_UNREFERENCED_CODE = "unreferenced-code"
 CLASS_DANGLING_DOC = "dangling-doc-path"
 CLASS_EXAMPLE_DOC = "example-doc-path"
-PLAN_ARCHIVE_PREFIX = "plans/archive/"
+PLAN_ARCHIVE_PREFIX = ".spec/plans/archive/"
+LEGACY_PLAN_ARCHIVE_PREFIX = "plans/archive/"
 ARCHIVE_ACTION = "archive"
 CODE_SUFFIXES = {".cjs", ".js", ".jsx", ".mjs", ".py", ".sh", ".ts", ".tsx"}
 ENTRY_BASENAMES = {"SKILL.md", "__init__.py", "__main__.py", "install.sh", "pyproject.toml"}
@@ -381,9 +382,10 @@ def is_historical_path(rel: str, specs_dir_name: str) -> bool:
     """Governance records and changelog history are evidence, not live consumers."""
     if rel == "CHANGELOG.md":
         return True
-    if rel.startswith(PLAN_ARCHIVE_PREFIX):
-        # Delivered/retired plan records under ``plans/archive/`` describe the
-        # repository as it was; their paths are history, like ``.spec/`` records.
+    if rel.startswith(PLAN_ARCHIVE_PREFIX) or rel.startswith(LEGACY_PLAN_ARCHIVE_PREFIX):
+        # Delivered/retired plan records under the planning archive describe
+        # the repository as it was; their paths are history, like ``.spec/``
+        # records. The legacy prefix keeps pre-migration trees historical.
         return True
     top = rel.split("/", 1)[0]
     if top == specs_dir_name or top == ".spec":
@@ -415,16 +417,18 @@ def export_script_whitelist(root: Path) -> set[str]:
 
 
 def is_planning_record(rel: str) -> bool:
-    """Live planning records under ``plans/`` describe future (or past) state.
+    """Live planning records under ``.spec/plans/`` describe future (or past) state.
 
     Their prose names deliverables that may not exist yet and existing files
     by basename; those mentions are planning evidence, not live wiring, so
-    they never become dangling/example findings. Archived records were
-    already historical via ``is_historical_path``; this extends the same
-    ruling to live plans. Mentions from these docs still count toward the
-    reference graph, so retirement detection keeps its inputs.
+    they never become dangling/example findings. ``.spec/`` paths are
+    already historical via ``is_historical_path``; the canonical planning
+    root sits inside it, and the legacy repo-root ``plans/`` tree (pre-
+    migration) keeps the same ruling so an unupgraded project audits the
+    same way. Mentions from these docs still count toward the reference
+    graph, so retirement detection keeps its inputs.
     """
-    return rel.startswith("plans/")
+    return rel.startswith(".spec/plans/") or rel.startswith("plans/")
 
 
 def is_retired_candidate_excluded(rel: str, declared: set[str], whitelist: set[str]) -> bool:

@@ -18,7 +18,7 @@ Subcommands:
                 pass's one assigned document, may be a new file, must
                 stay under the project root). ``framework`` requires the
                 seeded master document (first ``--plan`` entry, default
-                ``plans/README.md``) to exist — evidence that the
+                ``.spec/plans/README.md``) to exist — evidence that the
                 interrogation phase recorded its findings first. Guards
                 are mechanical only (pass cap, single-chain lock, path
                 bounds, seed presence); cluster qualification is the
@@ -74,6 +74,7 @@ from typing import Dict, List, Optional, Tuple
 
 import chain_spawn_support as chain_support  # noqa: E402  # type: ignore
 from autorun_spawn import (  # noqa: E402  # type: ignore  # noqa: E402  # type: ignore
+    PLAN_ARCHIVE_DIR_NAME,
     PLAN_ROOT,
     AutorunError,
     NoPlanError,
@@ -123,6 +124,7 @@ from chain_spawn_support import (  # noqa: E402  # type: ignore
     under_root,
     utc_now,
     validate_cap,
+    worker_pids_on_tty,
     worker_running_on_tty,
 )
 
@@ -132,7 +134,7 @@ EXIT_OK = 0
 EXIT_FAILURE = 1
 
 PASS_KINDS: Tuple[str, ...] = ("framework", "detail", "review")
-DEFAULT_MASTER_DOC = "plans/README.md"
+DEFAULT_MASTER_DOC = ".spec/plans/README.md"
 CHAIN_DIR_NAME = ".spec/autoplan"
 
 
@@ -165,7 +167,7 @@ def _resolve_root(raw_root: str) -> Path:
 
 
 def master_doc_path(root: Path, explicit: Optional[str]) -> Path:
-    """Resolve the master document: first ``--plan`` entry, else ``plans/README.md``."""
+    """Resolve the master document: first ``--plan`` entry, else ``.spec/plans/README.md``."""
     if explicit:
         first = explicit.split(",")[0].strip()
         candidate = Path(first).expanduser()
@@ -176,11 +178,13 @@ def master_doc_path(root: Path, explicit: Optional[str]) -> Path:
 
 
 def _master_link_docs(root: Path, master_path: Path) -> List[str]:
-    """Root-relative ``plans/*.md`` documents linked from the master document.
+    """Root-relative ``.spec/plans/**`` documents linked from the master document.
 
-    The master plan links its phase detail documents (and the index) by
-    sibling-relative markdown links; archive or external links are not detail
-    documents and stay out of the list.
+    A cluster master (``<slug>/master.md``) links its phase detail documents
+    as siblings; the index seeds and single-round plans link across the
+    planning root. Links resolving under the canonical planning root qualify
+    (top-level files and cluster members); the archive and external links
+    are history, not detail documents, and stay out of the list.
     """
     if not master_path.is_file():
         return []
@@ -198,10 +202,17 @@ def _master_link_docs(root: Path, master_path: Path) -> List[str]:
         if not under_root(root, resolved):
             continue
         rel = str(resolved.relative_to(root))
-        # direct children of the canonical planning root only (no archive/)
-        if rel.startswith(PLAN_ROOT + "/") and rel.count("/") == 1 and rel.endswith(".md"):
-            if rel not in found:
-                found.append(rel)
+        # under the canonical planning root, at cluster depth or shallower,
+        # never inside the archive directory
+        if not rel.startswith(PLAN_ROOT + "/") or not rel.endswith(".md"):
+            continue
+        below_root = rel[len(PLAN_ROOT) + 1 :]
+        if PLAN_ARCHIVE_DIR_NAME in below_root.split("/")[:-1]:
+            continue
+        if len(below_root.split("/")) > 2:
+            continue
+        if rel not in found:
+            found.append(rel)
     return found
 
 
@@ -210,7 +221,7 @@ def _detail_docs(root: Path, state: Optional[Dict[str, object]]) -> List[Dict[st
 
     Sources: the last spawn's recorded ``plan_docs``, the phase documents the
     master plan links, and — when neither gives anything — the canonical
-    ``plans/*.md`` scan. F2 exposes ``path``/``exists`` only; the completeness
+    ``.spec/plans/`` scan. F2 exposes ``path``/``exists`` only; the completeness
     heuristic and the divergence re-export belong to F4's classifier.
     """
     recorded: List[str] = []
@@ -379,6 +390,37 @@ def _verify_worker_start(
     )
 
 
+def _recover_front_worker_window(worker_name: str) -> Tuple[Optional[int], Optional[str]]:
+    """Front-window recovery via the shared implementation, with this
+    module's seam: tests patch ``autoplan_spawn.worker_running_on_tty`` —
+    only a front window verifiably running OUR worker is accepted as the
+    spawn target."""
+    return chain_support.recover_front_worker_window(worker_name, worker_check=worker_running_on_tty)
+
+
+def _close_refused_window(
+    new_window_id: Optional[int],
+    new_tty: Optional[str],
+    worker_name: str,
+    *,
+    chain: str,
+    events_path: Path,
+    pass_index: Optional[int] = None,
+) -> Dict[str, object]:
+    """Refusal close via the shared implementation, with this module's
+    seam: tests patch ``autoplan_spawn.worker_pids_on_tty``
+    (交接未确认 = 不留进程)."""
+    return chain_support.close_refused_window(
+        new_window_id,
+        new_tty,
+        worker_name,
+        chain=chain,
+        events_path=events_path,
+        pass_index=pass_index,
+        pid_lookup=worker_pids_on_tty,
+    )
+
+
 def _render_status_model(model: object) -> str:
     """The F14 status line: the locked identity plus the latest injection."""
     if not isinstance(model, dict):
@@ -498,48 +540,80 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
         completed = run_terminal_open(osascript_argv, error=AutoplanSpawnError, label="the pass Terminal window")
         new_window_id, new_tty = parse_spawn_result(completed.stdout)
         if new_window_id is None or new_tty is None:
+            # 2026-10-09: an unconfirmable handoff must not leave the worker
+            # either — recover the just-opened window by identity interlock
+            # (the front window counts only when it verifiably runs OUR
+            # worker) and close it synchronously before refusing.
+            recovered_id, recovered_tty = _recover_front_worker_window(worker_name)
+            _close_refused_window(
+                recovered_id,
+                recovered_tty,
+                worker_name,
+                chain="autoplan",
+                events_path=chain_dir / CHAIN_EVENTS_FILE,
+                pass_index=next_pass,
+            )
             # An unconfirmable handoff must not strand the chain: the pass is
             # not recorded, so a re-run resumes exactly here.
             raise AutoplanSpawnError(
                 "osascript reply missing the window id or tty: {!r} — cannot confirm the handoff; "
                 "refusing to record the pass".format(completed.stdout.strip())
             )
-        if parent_tty is not None:
-            # F17 geometry: stack the new window where this session's window
-            # sits (no parent window / failed read simply keeps the default)
-            parent_geometry = read_window_geometry(parent_tty)
-            if parent_geometry is not None:
-                apply_window_geometry(new_window_id, parent_geometry)
-        # F17 spawn gate: a window whose worker died instantly is closed
-        # quietly and refused with zero state written — instead of silently
-        # recording a pass that never runs. A busy-but-unobserved tab is a
-        # late start: proceed.
-        start_verdict = _verify_worker_start(worker_name, new_window_id, new_tty)
-        if start_verdict["status"] == "dead-tab":
-            close_spawned_window_quietly(new_window_id)
-            raise AutoplanSpawnError(
-                "next-pass {} — the spawned Terminal window was closed; refusing to record the pass".format(
-                    start_verdict["reason"]
+        try:
+            if parent_tty is not None:
+                # F17 geometry: stack the new window where this session's window
+                # sits (no parent window / failed read simply keeps the default)
+                parent_geometry = read_window_geometry(parent_tty)
+                if parent_geometry is not None:
+                    apply_window_geometry(new_window_id, parent_geometry)
+            # F17 spawn gate: a window whose worker died instantly is closed
+            # quietly and refused with zero state written — instead of silently
+            # recording a pass that never runs. A busy-but-unobserved tab is a
+            # late start: proceed.
+            start_verdict = _verify_worker_start(worker_name, new_window_id, new_tty)
+            if start_verdict["status"] == "dead-tab":
+                close_spawned_window_quietly(new_window_id)
+                raise AutoplanSpawnError(
+                    "next-pass {} — the spawned Terminal window was closed; refusing to record the pass".format(
+                        start_verdict["reason"]
+                    )
                 )
+            record["window_recycle"] = chain_support.recycle_previous_window(
+                prev_tty=record["prev_tty"],
+                new_window_id=new_window_id,
+                new_tty=new_tty,
+                worker_name=worker_name,
+                chain="autoplan",
+                pass_index=next_pass,
+                events_path=chain_dir / CHAIN_EVENTS_FILE,
             )
-        record["window_recycle"] = chain_support.recycle_previous_window(
-            prev_tty=record["prev_tty"],
-            new_window_id=new_window_id,
-            new_tty=new_tty,
-            worker_name=worker_name,
-            chain="autoplan",
-            pass_index=next_pass,
-            events_path=chain_dir / CHAIN_EVENTS_FILE,
-        )
 
-        state_file = chain_dir / CHAIN_STATE_FILE
-        state = dict(record)
-        # F14: the per-spawn injection level is an audit fact (spawns row
-        # only); the chain state carries the identity lock, which the
-        # effective identity already equals on every accepted spawn.
-        state.pop("model_injection")
-        state["updated_at"] = state.pop("spawned_at")
-        atomic_write(state_file, json.dumps(state, indent=2, sort_keys=True) + "\n")
+            state_file = chain_dir / CHAIN_STATE_FILE
+            state = dict(record)
+            # F14: the per-spawn injection level is an audit fact (spawns row
+            # only); the chain state carries the identity lock, which the
+            # effective identity already equals on every accepted spawn.
+            state.pop("model_injection")
+            state["updated_at"] = state.pop("spawned_at")
+            atomic_write(state_file, json.dumps(state, indent=2, sort_keys=True) + "\n")
+        except BaseException:
+            # 交接未确认 = 不留进程 (2026-10-09): any failure between the
+            # confirmed window open and the recorded state leaves an alive
+            # worker the chain does not know about — a duplicate executor on
+            # re-run. Close the just-opened window before the failure
+            # propagates (idempotent: an already-closed window reports
+            # window-gone). append_audit stays outside the guard: once the
+            # state is written the handoff is confirmed and the window is
+            # the chain's legitimate worker.
+            _close_refused_window(
+                new_window_id,
+                new_tty,
+                worker_name,
+                chain="autoplan",
+                events_path=chain_dir / CHAIN_EVENTS_FILE,
+                pass_index=next_pass,
+            )
+            raise
         append_audit(chain_dir / CHAIN_SPAWNS_FILE, record)
         return {"dry_run": False, "terminal": completed.stdout.strip(), **record}
 
@@ -707,7 +781,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     spawn_parser.add_argument(
         "--plan",
-        help="comma-separated planning document paths (default: scan the canonical plans/ root)",
+        help="comma-separated planning document paths (default: scan the canonical .spec/plans/ root)",
     )
     spawn_parser.add_argument(
         "--host",

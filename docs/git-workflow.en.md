@@ -9,7 +9,7 @@ Fix the source revision before you edit: use a tag for a stable installation and
     git clone https://github.com/MicTx/spec-harness.git
     cd spec-harness
     git fetch --tags origin
-    git checkout v0.15.0
+    git checkout v0.16.0
 
 Contributors normally clone a fork and keep the official repository as `upstream`:
 
