@@ -2,7 +2,21 @@
 
 This file records user-visible behavior changes. For a detailed design or recovery story, follow the linked documentation; do not infer a new command or guarantee from a changelog bullet alone.
 
-All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation.
+All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
+
+## [0.17.0] - 2026-10-12
+
+### Fixed
+
+- Linux/WSL2 自动规划与执行改用 tmux，支持会话重连；修复失败回滚残留 worker。
+- Linux/WSL2 chains now use attachable tmux sessions; failed handoffs terminate lingering workers.
+
+### Changed
+
+- Windows 请在 WSL2 内运行；需 tmux ≥3.2 和 procps，macOS 保持原行为。
+- Windows requires WSL2 with tmux ≥3.2 and procps; macOS behavior is unchanged.
+- 软件代码改为 PolyForm Noncommercial 1.0.0；商业使用需另行书面授权。
+- Software code now uses PolyForm Noncommercial 1.0.0; commercial use requires separate written authorization.
 
 ## [0.16.0] - 2026-10-10
 

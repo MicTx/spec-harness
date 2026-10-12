@@ -1,5 +1,5 @@
 # scripts/update_checkpoint_support.py
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Update-stage checkpoint primitives for task packages.
 
 An update mutation rewrites the ``spec.md`` / ``tasks.md`` / ``checklist.md``

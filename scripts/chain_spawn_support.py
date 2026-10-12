@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # scripts/chain_spawn_support.py
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Shared chain-state module for the autorun/autoplan spawn scripts (plans/01 F5).
 
 Import-only surface — no CLI, no new execution face. ``scripts/autorun_spawn.py``
@@ -26,6 +26,9 @@ duplicated (plans/01 F5 inventory):
     ``HOST_MODEL_FLAGS``, and the ``model_injection_level`` judgment — the
     render surface only; the identity lock/propagation/refusal semantics
     stay in each spawn script;
+  - portable sessions: automatic macOS Terminal.app / Linux and Windows WSL2
+    tmux selection, private tmux launch/rollback/state transaction; native
+    Windows receives explicit WSL2 guidance without an import-time failure;
   - tty and recycle: ``session_tty``, ``worker_running_on_tty``, the
     Terminal window lookup/parse builders, the bounded-wait close helper
     build/schedule pair, and ``recycle_previous_window``;
@@ -51,17 +54,25 @@ patch points alive while the implementation lives here once.
 from __future__ import annotations
 
 import datetime as _dt
-import fcntl
 import json
 import os
+import platform
 import re
 import shlex
+import shutil
+import signal
 import subprocess
 import sys
 import time
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+
+try:
+    import fcntl
+except ImportError:  # Native Windows: help/status work; spawn explains the WSL2 route.
+    fcntl = None  # type: ignore[assignment]
 
 # Guard table (F12 unified home): every chain boundary constant lives here
 # and nowhere else — the two spawn scripts and chain_recovery import them.
@@ -380,6 +391,8 @@ def single_chain_lock(
     caller supplies its own error factory so the refusal carries the
     script's class name and wording into the audit stream.
     """
+    if fcntl is None:
+        raise error(WINDOWS_SESSION_GUIDANCE)
     chain_dir.mkdir(parents=True, exist_ok=True)
     lock_path = chain_dir / CHAIN_LOCK_FILE
     if busy_message is None:
@@ -444,6 +457,8 @@ def lock_holder(
     unverifiable one degrade to holder-unknown / stale-content. flock remains
     the only source of mutual exclusion.
     """
+    if fcntl is None:
+        return {"status": "unknown", "reason": WINDOWS_SESSION_GUIDANCE}
     if pid_alive_check is None:
         pid_alive_check = pid_alive
     lock_path = chain_dir / CHAIN_LOCK_FILE
@@ -765,6 +780,266 @@ def build_worker_command(
     return argv
 
 
+# --- portable session backend ----------------------------------------------
+
+WINDOWS_SESSION_GUIDANCE = (
+    "Native Windows session spawning is not supported. Use WSL2: run Python, "
+    "the worker CLI and Spec Harness inside the same WSL distribution, install tmux "
+    "(Ubuntu/Debian: sudo apt-get install tmux), then rerun the command there. "
+    "PowerShell / cmd / Git Bash are not WSL2."
+)
+TMUX_TIMEOUT_SECONDS = 10
+TMUX_START_GRACE_SECONDS = 0.5
+TMUX_STOP_GRACE_SECONDS = 1.0
+TMUX_STOP_POLL_SECONDS = 0.05
+
+
+def resolve_terminal_backend(requested: str = "auto") -> str:
+    """Choose a real interactive terminal; never fall back to a headless worker."""
+    system = platform.system()
+    if system == "Windows" or system.startswith(("MSYS", "MINGW", "CYGWIN")):
+        raise ChainSpawnError(WINDOWS_SESSION_GUIDANCE)
+    if requested not in ("auto", "terminal", "tmux"):
+        raise ChainSpawnError(f"unknown terminal backend: {requested!r}")
+    if requested == "terminal":
+        if system != "Darwin":
+            raise ChainSpawnError("the terminal backend requires macOS Terminal.app; use --terminal tmux")
+        return "terminal"
+    if requested == "tmux" or system == "Linux":
+        return "tmux"
+    if system == "Darwin":
+        return "terminal"
+    raise ChainSpawnError(f"unsupported session platform: {system}; use Linux/WSL2 with tmux or macOS")
+
+
+def build_tmux_command(
+    root: Path, worker_command: List[str], chain: str, custom_command: Optional[str] = None
+) -> Tuple[List[str], str, str]:
+    """Build a private tmux server/session with an isolated, inherited environment.
+
+    One socket per spawn avoids stale PATH/auth environment from a pre-existing
+    tmux server, user hooks/configuration, and accidental targeting of user panes.
+    A multi-argument shell command (tmux >=3.2) explicitly uses POSIX sh, not the
+    user's possibly non-POSIX login shell. No command is interpreted twice.
+    """
+    if chain not in ("autoplan", "autorun"):
+        raise ChainSpawnError(f"unknown chain: {chain!r}")
+    name = f"spec-{chain}-{uuid.uuid4().hex}"
+    command = custom_command if custom_command is not None else "exec " + shlex.join(worker_command)
+    argv = [
+        "tmux",
+        "-L",
+        name,
+        "-f",
+        os.devnull,
+        "new-session",
+        "-d",
+        "-s",
+        name,
+        "-c",
+        str(root),
+        "-x",
+        "120",
+        "-y",
+        "40",
+        "/bin/sh",
+        "-c",
+        command,
+    ]
+    return argv, command, name
+
+
+def _tmux_run(argv: List[str]):
+    return subprocess.run(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=TMUX_TIMEOUT_SECONDS,
+    )
+
+
+def open_tmux_session(argv: List[str], name: str) -> None:
+    """Start a detached but attachable TUI; refuse an immediately exited worker."""
+    if shutil.which("tmux") is None:
+        raise ChainSpawnError(
+            "tmux is required for Linux/WSL2 interactive sessions; install tmux >=3.2 "
+            "(Ubuntu/Debian: sudo apt-get install tmux; Fedora: sudo dnf install tmux) "
+            "and rerun. No graphical desktop is required."
+        )
+    if shutil.which("ps") is None:
+        raise ChainSpawnError("ps is required to verify tmux rollback; install procps and rerun")
+    try:
+        completed = _tmux_run(argv)
+        if completed.returncode:
+            raise ChainSpawnError(f"tmux failed to start the session: {completed.stderr.strip()}")
+        time.sleep(TMUX_START_GRACE_SECONDS)
+        probe = _tmux_run(
+            [
+                "tmux",
+                "-L",
+                name,
+                "list-panes",
+                "-t",
+                "=" + name,
+                "-F",
+                "#{pane_dead}|#{pane_pid}",
+            ]
+        )
+        fields = probe.stdout.strip().split("|")
+        if probe.returncode or len(fields) != 2 or fields[0] != "0" or not fields[1].isdigit():
+            raise ChainSpawnError("tmux worker exited or its live pane could not be confirmed; refusing the handoff")
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ChainSpawnError(f"tmux session launch failed: {exc}") from exc
+
+
+def _tmux_group_running(group: int) -> bool:
+    """Verify live members of the captured pane group, ignoring exited zombies.
+
+    killpg(..., 0) also sees zombies, so it cannot prove that a worker is still
+    executing. Session membership is rechecked before each escalation to avoid
+    signaling a process group that no longer belongs to the captured pane.
+    """
+    probe = subprocess.run(
+        ["ps", "-axo", "pid=,pgid=,stat="],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=PS_TIMEOUT_SECONDS,
+    )
+    if probe.returncode or not probe.stdout.strip():
+        raise ChainSpawnError("cannot verify tmux process-group exit: ps failed or returned no processes")
+    running = False
+    for line in probe.stdout.splitlines():
+        fields = line.split()
+        if len(fields) != 3 or not fields[0].isdigit() or not fields[1].isdigit():
+            raise ChainSpawnError("cannot verify tmux process-group exit: malformed ps output")
+        if int(fields[1]) != group or fields[2].startswith(("Z", "X")):
+            continue
+        try:
+            if os.getsid(int(fields[0])) != group:
+                raise ChainSpawnError("tmux process-group identity changed; refusing to signal")
+        except ProcessLookupError:
+            continue  # Exited between the process table snapshot and getsid.
+        running = True
+    return running
+
+
+def _stop_tmux_group(pid: int) -> None:
+    """Stop a verified pane's dedicated group before destroying its identity anchor."""
+    if pid <= 1 or pid == os.getpgrp() or os.getpgid(pid) != pid or os.getsid(pid) != pid:
+        raise ChainSpawnError("tmux pane is not an isolated process group; refusing to signal")
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        if not _tmux_group_running(pid):
+            return
+        try:
+            os.killpg(pid, sig)
+        except ProcessLookupError:
+            return
+        deadline = time.monotonic() + TMUX_STOP_GRACE_SECONDS
+        while True:
+            if not _tmux_group_running(pid):
+                return
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(TMUX_STOP_POLL_SECONDS)
+    raise ChainSpawnError("tmux worker group remains running after SIGKILL; cleanup not confirmed")
+
+
+def _tmux_session_absent(result) -> bool:
+    return bool(result.returncode) and any(
+        phrase in result.stderr.lower() for phrase in ("no server running", "no such file", "can't find session")
+    )
+
+
+def close_tmux_session(name: str) -> Dict[str, str]:
+    """Stop this private pane's worker group, then close only its managed session.
+
+    Destroying a pane merely sends SIGHUP, which workers can ignore. Capture the
+    pane owner while the private server can still identify it, verify POSIX
+    session/group isolation, and bound TERM/KILL plus actual exit observation.
+    Unknown identity or unavailable observation must never report success.
+    """
+    if not re.fullmatch(r"spec-(autoplan|autorun)-[0-9a-f]{32}", name):
+        return {"status": "skipped", "reason": "not a managed tmux session name"}
+    try:
+        pane = _tmux_run(["tmux", "-L", name, "list-panes", "-t", "=" + name, "-F", "#{pane_pid}"])
+        if _tmux_session_absent(pane):
+            return {"status": "gone"}
+        owner = pane.stdout.strip()
+        if pane.returncode or not owner.isdigit():
+            raise ChainSpawnError("cannot identify the private tmux pane owner; cleanup not confirmed")
+        _stop_tmux_group(int(owner))
+        result = _tmux_run(["tmux", "-L", name, "kill-session", "-t", "=" + name])
+        # Worker exit normally removes the last session/server automatically.
+        if result.returncode == 0 or _tmux_session_absent(result):
+            return {"status": "closed"}
+        return {"status": "failed", "reason": result.stderr.strip()}
+    except (ChainSpawnError, OSError, subprocess.SubprocessError) as exc:
+        return {"status": "failed", "reason": str(exc)}
+
+
+def spawn_tmux_payload(
+    root: Path,
+    chain: str,
+    worker_command: List[str],
+    record: Dict[str, object],
+    *,
+    dry_run: bool,
+    custom_command: Optional[str] = None,
+) -> Dict[str, object]:
+    """Shared transaction under the caller's lock: open -> check -> state -> audit.
+
+    State-write success confirms the handoff. Any earlier failure rolls back
+    only the new session; audit failure after commit must never kill its worker.
+    The old terminal is never recycled on this backend.
+    """
+    argv, command, name = build_tmux_command(root, worker_command, chain, custom_command)
+    attach = shlex.join(["tmux", "-L", name, "attach-session", "-t", "=" + name])
+    record = {
+        **record,
+        "terminal_backend": "tmux",
+        "tmux_session": name,
+        "shell_command": command,
+        "prev_tty": None,
+        "attach_command": attach,
+        "window_recycle": {"status": "skipped", "reason": "tmux backend preserves the previous session"},
+    }
+    if dry_run:
+        return {"dry_run": True, "launch_argv": argv, **record}
+    directory = chain_dir(root, chain)
+    try:
+        open_tmux_session(argv, name)
+        state = dict(record)
+        state.pop("model_injection")
+        state["updated_at"] = state.pop("spawned_at")
+        atomic_write(directory / CHAIN_STATE_FILE, json.dumps(state, indent=2, sort_keys=True) + "\n")
+    except BaseException as exc:
+        cleanup = close_tmux_session(name)
+        append_event(
+            directory / CHAIN_EVENTS_FILE,
+            {
+                "kind": "refusal_close",
+                "chain": chain,
+                "at": utc_now(),
+                "tmux_session": name,
+                "cleanup": cleanup,
+            },
+        )
+        if cleanup["status"] == "failed":
+            print(f"warning: tmux rollback failed for {name}: {cleanup.get('reason')}", file=sys.stderr)
+        if isinstance(exc, (OSError, subprocess.SubprocessError)):
+            raise ChainSpawnError(f"tmux handoff failed: {exc}") from exc
+        raise
+    try:
+        append_audit(directory / CHAIN_SPAWNS_FILE, record)
+    except OSError as exc:
+        raise ChainSpawnError(
+            f"tmux handoff committed but spawn audit failed: {exc}; inspect status before retrying"
+        ) from exc
+    return {"dry_run": False, "terminal": name, **record}
+
+
 # --- tty and window recycle ------------------------------------------------
 
 
@@ -812,7 +1087,7 @@ def nearest_ancestor_tty() -> Optional[str]:
         if len(parts) < 2:
             break
         tty = parts[1].strip()
-        if tty and tty != "??":
+        if tty and tty not in ("?", "??", "-"):
             return f"/dev/{tty}"
         try:
             pid = int(parts[0])

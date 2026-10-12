@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # scripts/autoplan_spawn.py
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Serial pass-chain spawn for ``/spec:autoplan``.
 
 Autoplan plans and reviews through a serial fresh-session chain with the
 same spawn discipline as ``/spec:autorun``: one pass = one full agent
-session in its own Terminal.app window (visible TUI, session persisted,
-never a print/exec headless mode), strictly sequential, fail fast. No
+session in its own macOS Terminal.app window or Linux/WSL2 tmux session
+(attachable TUI, session persisted, never a print/exec headless mode),
+strictly sequential, fail fast. No
 pass runs as an in-process subagent of the spawning session (recorded in
 the ``2026-10-07_add-autoplan-pass-chain`` Development Record).
 
@@ -36,7 +37,7 @@ Exit codes are part of the contract:
   - ``1`` operational refusal or failure (lock held, pass cap reached,
          missing seed document, missing ``--target`` for a detail pass,
          target escaping the project root, no worker host available,
-         osascript failure, unreadable chain state);
+         session backend failure, unreadable chain state);
   - ``2`` usage error (argparse).
 
 Contract output goes to stdout (text, or JSON with ``--format json``);
@@ -440,6 +441,7 @@ def _render_status_model(model: object) -> str:
 
 def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
     """Run the pass guards, open the pass window, and record chain state."""
+    backend = chain_support.resolve_terminal_backend(getattr(args, "terminal", "auto"))
     kind: str = args.next
     target = resolve_target(root, args.target, kind)
 
@@ -466,6 +468,8 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
         busy_message=(f"another autoplan pass chain holds {CHAIN_LOCK_FILE}; parallel chains are refused"),
     ):
         state = _read_chain_state(root) or {}
+        if getattr(args, "terminal", "auto") == "auto" and state.get("terminal_backend") == "tmux":
+            backend = "tmux"
         # The pass cap is opt-in: an explicit --max-passes bounds the chain
         # exactly (validated and forwarded to the next pass's prompt);
         # without the flag the chain is unbounded and max_passes records as
@@ -509,8 +513,10 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
         worker_name = worker_command[0]
         injection_level = model_injection_level(effective_identity, host)
         # F17 geometry: the new window inherits this session's window place
-        parent_tty = session_tty()
-        osascript_argv, shell_command = build_terminal_command(root, worker_command)
+        parent_tty = session_tty() if backend == "terminal" else None
+        osascript_argv, shell_command = (
+            build_terminal_command(root, worker_command) if backend == "terminal" else ([], "")
+        )
 
         record = {
             "pass": next_pass,
@@ -526,6 +532,9 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
             "shell_command": shell_command,
             "prev_tty": parent_tty,
         }
+
+        if backend == "tmux":
+            return chain_support.spawn_tmux_payload(root, "autoplan", worker_command, record, dry_run=args.dry_run)
 
         if args.dry_run:
             return {
@@ -706,6 +715,8 @@ def _render_spawn(payload: Dict[str, object]) -> str:
     if payload.get("target"):
         lines.append("target: {}".format(payload["target"]))
     lines.append("shell_command: {}".format(payload["shell_command"]))
+    if payload.get("attach_command"):
+        lines.append("attach: {}".format(payload["attach_command"]))
     recycle = payload.get("window_recycle")
     if isinstance(recycle, dict):
         if recycle.get("status") == "scheduled":
@@ -715,7 +726,9 @@ def _render_spawn(payload: Dict[str, object]) -> str:
         else:
             lines.append("close: skipped ({})".format(recycle.get("reason", "unknown")))
     if payload.get("dry_run"):
-        lines.append("dry-run: osascript not executed")
+        lines.append(
+            "dry-run: {} not executed".format("tmux" if payload.get("terminal_backend") == "tmux" else "osascript")
+        )
     else:
         lines.append("terminal: {}".format(payload.get("terminal", "")))
     return "\n".join(lines)
@@ -744,6 +757,8 @@ def _render_status(payload: Dict[str, object]) -> str:
         lines.append("host: {}".format(payload.get("host")))
         lines.append(_render_status_model(payload.get("model")))
         lines.append("updated_at: {}".format(payload.get("updated_at")))
+        if payload.get("attach_command"):
+            lines.append("attach: {}".format(payload["attach_command"]))
         if payload.get("recovered_from"):
             lines.append("state: recovered from {}".format(payload["recovered_from"]))
     lines.append(render_last_refusal(payload.get("last_refusal")))
@@ -766,7 +781,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
 
-    spawn_parser = subparsers.add_parser("spawn", help="open the next planning-pass Terminal window after guards")
+    spawn_parser = subparsers.add_parser("spawn", help="open the next planning-pass interactive session after guards")
     spawn_parser.add_argument("--root", default=".", help="project root (default: current directory)")
     spawn_parser.add_argument(
         "--next",
@@ -817,10 +832,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     spawn_parser.add_argument(
+        "--terminal",
+        choices=("auto", "terminal", "tmux"),
+        default="auto",
+        help="session backend: macOS Terminal.app or Linux/WSL2 tmux (default: auto)",
+    )
+    spawn_parser.add_argument(
         "--dry-run",
         dest="dry_run",
         action="store_true",
-        help="print the osascript command without executing or recording",
+        help="print the selected backend command without executing or recording",
     )
     spawn_parser.add_argument(
         "--format", choices=("text", "json"), default="text", help="output format (default: text)"

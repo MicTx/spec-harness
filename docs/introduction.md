@@ -71,7 +71,7 @@ Git 记录文件，测试记录命令，聊天记录保存讨论。它们都是�
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.16.0
+git checkout v0.17.0
 bash install.sh
 ```
 
@@ -90,4 +90,4 @@ bash install.sh
 
 前三个问题在任务包里各有对应的文件和命令；第四个问题被回答时，长期工作就获得了它最缺的能力：可以继续，可以复核，也可以交接。Spec Harness 没有把这些问题变成口号，而是变成文件、任务、命令和 Git 记录——这就是全部的机制，没有更多了。
 
-项目采用 GNU Affero General Public License v3（AGPL-3.0-or-later）开源许可，完整条款见 [LICENSE](../LICENSE)。
+软件代码采用 PolyForm Noncommercial 1.0.0，商业使用需另行书面授权；完整条款见 [LICENSE](../LICENSE)。

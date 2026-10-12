@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """
 Package this repository's runtime skill as a distributable agent plugin zip.
 
@@ -72,7 +72,7 @@ AGENT_PLUGINS_AUTHOR_FIELDS = frozenset({"name", "email", "url"})
 CLAUDE_CODE_NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 # 与 export_skill_package.py 保持一致的载荷布局（LICENSE 另放插件根，对齐官方示例布局）
-SKILL_ROOT_FILES = ("SKILL.md", "install.sh", "pyproject.toml")
+SKILL_ROOT_FILES = ("SKILL.md", "install.sh", "pyproject.toml", "LICENSE")
 PLUGIN_ROOT_FILES = ("LICENSE",)
 SKILL_COPY_DIRS = COPY_DIRS
 COPY_IGNORE = shutil.ignore_patterns(*IGNORE_PATTERNS)
@@ -80,7 +80,7 @@ COPY_IGNORE = shutil.ignore_patterns(*IGNORE_PATTERNS)
 DEFAULT_NAME = "spec-harness"
 DEFAULT_DISPLAY_NAME = "Spec Harness"
 PUBLIC_REPOSITORY_URL = "https://github.com/MicTx/spec-harness"
-DEFAULT_LICENSE = "AGPL-3.0-or-later"
+DEFAULT_LICENSE = "PolyForm-Noncommercial-1.0.0"
 DEFAULT_KEYWORDS = ["spec", "task-package", "workflow", "agent-skills"]
 DEFAULT_OUTPUT_DIR = "dist"
 

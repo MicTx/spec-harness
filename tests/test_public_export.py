@@ -35,6 +35,9 @@ def test_public_export_excludes_private_development_state(tmp_path: Path):
     assert not (output / ".github/workflows/ci.yml").exists()
     assert not (output / ".github/workflows/release.yml").exists()
     assert not (output / "release").exists()
+    assert not (output / "tests/test_host_evidence_notes.py").exists()
+    assert not (output / "tests/test_module_dag.py").exists()
+    assert not (output / "tests/test_plans_root.py").exists()
     assert (output / "docs/git-workflow.en.md").is_file()
     assert "scripts/export_public_repo.py" in manifest
     assert (ROOT / "README.md").read_bytes() == before

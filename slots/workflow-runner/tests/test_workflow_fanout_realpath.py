@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """生产 selector 循环的真实路径测试。
 
 不 monkeypatch ``subprocess.run``：这些用例驱动真实子进程，走

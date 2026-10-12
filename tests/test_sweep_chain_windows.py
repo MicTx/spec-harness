@@ -4,11 +4,18 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import chain_spawn_support as support  # noqa: E402  # type: ignore
 import sweep_chain_windows  # noqa: E402  # type: ignore
+
+
+@pytest.fixture(autouse=True)
+def macos_terminal_contract(monkeypatch):
+    monkeypatch.setattr(support.platform, "system", lambda: "Darwin")
 
 
 class TestSweepCLI:

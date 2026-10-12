@@ -254,7 +254,7 @@ def test_export_stamps_entry_without_leaking_identity(tmp_path: Path):
     shipped = "\n".join(
         path.read_text(encoding="utf-8", errors="ignore") for path in output.rglob("*") if path.is_file()
     )
-    for needle in ("Xuankai", "dawudcn", "1002619705"):
+    for needle in identity.values():
         assert needle not in shipped
     assert not (output / "scripts" / "skill_watermark.py").exists()
     assert list(output.rglob(".watermark-key")) == []

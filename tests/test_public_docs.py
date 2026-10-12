@@ -11,7 +11,7 @@ SCRIPTS = ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from export_public_repo import PUBLIC_ROOT_FILES  # noqa: E402  # intentional path setup
+from export_public_repo import PUBLIC_ROOT_FILES, private_remote_patterns  # noqa: E402
 
 PUBLIC_DOCS = (
     "CHANGELOG.md",
@@ -38,7 +38,7 @@ RELATIVE_LINK = re.compile(r"\[[^]]+\]\(([^)#]+)(?:#[^)]+)?\)")
 def test_public_docs_use_public_repository_links_and_current_identity():
     for relative in PUBLIC_DOCS:
         text = (ROOT / relative).read_text(encoding="utf-8")
-        assert "git." + "mxk.dev" not in text
+        assert not any(pattern.search(text) for pattern in private_remote_patterns(ROOT))
         assert "." + "maintainer/" not in text
         assert ".spec/" + "docs/" not in text
         assert "spec harness" in text.lower() or relative in {"docs/git-workflow.md", "docs/git-workflow.en.md"}

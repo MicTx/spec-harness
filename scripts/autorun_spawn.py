@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 # scripts/autorun_spawn.py
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Autorun chain facts and next-round spawn for ``/spec:autorun``.
 
 Subcommands:
 
   - ``plan``    discover the project planning documents and count feature
                 checkboxes (the machine truth for chain termination);
-  - ``spawn``   open a new Terminal.app window in the project path running
-                the worker CLI in a full interactive session with the
-                autorun prompt injected; once the next-round worker is
+  - ``spawn``   open a macOS Terminal.app window or Linux/WSL2 tmux session
+                in the project path, running the worker CLI interactively
+                with the autorun prompt injected; on Terminal.app only,
+                once the next-round worker is
                 confirmed running on the new window's tty, schedule the
                 close of the previous round's Terminal window (window
                 recycling, fail-open),
@@ -25,7 +26,7 @@ Exit codes are part of the contract:
 
   - ``0`` success;
   - ``1`` operational refusal or failure (lock held, round cap reached,
-         no worker host available, no next-round package, osascript
+         no worker host available, no next-round package, session backend
          failure, unreadable chain state);
   - ``2`` usage error (argparse);
   - ``3`` no qualifying planning document (fail closed: the user must
@@ -691,7 +692,8 @@ def _render_status_model(model: object) -> str:
 
 
 def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
-    """Run the spawn guards, open the Terminal window, and record chain state."""
+    """Run the spawn guards, open an interactive session, and record chain state."""
+    backend = chain_support.resolve_terminal_backend(getattr(args, "terminal", "auto"))
     plan = plan_payload(root, args.plan)
     if plan["complete"]:
         raise AutorunError("planning documents report every feature checked; the chain is complete, nothing to spawn")
@@ -708,6 +710,8 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
         busy_message=(f"another autorun chain holds {CHAIN_LOCK_FILE} for this project; parallel chains are refused"),
     ):
         state = _read_chain_state(root) or {}
+        if getattr(args, "terminal", "auto") == "auto" and state.get("terminal_backend") == "tmux":
+            backend = "tmux"
         # The round cap is opt-in: an explicit --max-rounds bounds the chain
         # exactly (validated and forwarded to the next round's prompt);
         # without the flag the chain is unbounded and max_rounds records as
@@ -760,8 +764,10 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
             worker_name = worker_command[0]
             injection_level = model_injection_level(effective_identity, host)
         # F17 geometry: the new window inherits this session's window place
-        parent_tty = session_tty()
-        osascript_argv, shell_command = build_terminal_command(root, worker_command, args.command)
+        parent_tty = session_tty() if backend == "terminal" else None
+        osascript_argv, shell_command = (
+            build_terminal_command(root, worker_command, args.command) if backend == "terminal" else ([], "")
+        )
 
         record = {
             "round": next_round,
@@ -775,6 +781,16 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
             "shell_command": shell_command,
             "prev_tty": parent_tty,
         }
+
+        if backend == "tmux":
+            return chain_support.spawn_tmux_payload(
+                root,
+                "autorun",
+                worker_command,
+                record,
+                dry_run=args.dry_run,
+                custom_command=args.command,
+            )
 
         if args.dry_run:
             return {
@@ -951,6 +967,8 @@ def _render_spawn(payload: Dict[str, object]) -> str:
         "host: {}".format(payload["host"]),
     ]
     lines.append("shell_command: {}".format(payload["shell_command"]))
+    if payload.get("attach_command"):
+        lines.append("attach: {}".format(payload["attach_command"]))
     recycle = payload.get("window_recycle")
     if isinstance(recycle, dict):
         if recycle.get("status") == "scheduled":
@@ -960,7 +978,9 @@ def _render_spawn(payload: Dict[str, object]) -> str:
         else:
             lines.append("close: skipped ({})".format(recycle.get("reason", "unknown")))
     if payload.get("dry_run"):
-        lines.append("dry-run: osascript not executed")
+        lines.append(
+            "dry-run: {} not executed".format("tmux" if payload.get("terminal_backend") == "tmux" else "osascript")
+        )
     else:
         lines.append("terminal: {}".format(payload.get("terminal", "")))
     return "\n".join(lines)
@@ -1038,6 +1058,8 @@ def _render_status(payload: Dict[str, object]) -> str:
         lines.append("host: {}".format(payload.get("host")))
         lines.append(_render_status_model(payload.get("model")))
         lines.append("updated_at: {}".format(payload.get("updated_at")))
+        if payload.get("attach_command"):
+            lines.append("attach: {}".format(payload["attach_command"]))
         if payload.get("recovered_from"):
             lines.append("state: recovered from {}".format(payload["recovered_from"]))
     lines.append(render_last_refusal(payload.get("last_refusal")))
@@ -1084,7 +1106,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan_parser = subparsers.add_parser("plan", help="discover planning documents and count feature checkboxes")
     _add_plan_args(plan_parser)
 
-    spawn_parser = subparsers.add_parser("spawn", help="open the next-round Terminal window after guards")
+    spawn_parser = subparsers.add_parser("spawn", help="open the next-round interactive session after guards")
     _add_plan_args(spawn_parser)
     spawn_parser.add_argument(
         "--host",
@@ -1120,9 +1142,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     spawn_parser.add_argument(
+        "--terminal",
+        choices=("auto", "terminal", "tmux"),
+        default="auto",
+        help="session backend: macOS Terminal.app or Linux/WSL2 tmux (default: auto)",
+    )
+    spawn_parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="print the osascript command without executing or recording",
+        help="print the selected backend command without executing or recording",
     )
 
     status_parser = subparsers.add_parser("status", help="render the current chain state")

@@ -38,6 +38,12 @@ from autorun_spawn import (  # noqa: E402  # type: ignore
 )
 
 
+@pytest.fixture(autouse=True)
+def macos_terminal_contract(monkeypatch):
+    """These legacy tests exercise Terminal.app even when CI runs on Linux."""
+    monkeypatch.setattr(chain_support.platform, "system", lambda: "Darwin")
+
+
 def write_plan(path: Path, unchecked=1, checked=0):
     lines = ["# plan", ""]
     for index in range(checked):
@@ -1931,6 +1937,31 @@ class TestRefusalClosesSpawnedWindow:
             main(["spawn", "--root", str(tmp_path), "--host", "claude"])
         assert close_argv == []  # confirmed handoff → never closed
         assert (tmp_path / ".spec" / "autorun" / "chain.json").exists()
+        assert not (tmp_path / ".spec" / "autorun" / "spawns.jsonl").exists()
+
+    def test_dead_tab_refusal_closes_idempotently(self, tmp_path, capsys, monkeypatch):
+        # dead-tab (F17 instant death): the quiet close already ran, and the
+        # A5 guard still sends the refusal close at the confirmed window —
+        # the helper reports window-gone on an already-closed window
+        # (idempotent by the guard-shaped close, spec §2.2 裁定).
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
+        make_active_package(tmp_path)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr("autorun_spawn.controlling_tty", lambda: "/dev/ttys012")
+        monkeypatch.setattr("autorun_spawn.WORKER_START_TIMEOUT_SECONDS", 0)
+        close_argv = self._probe(monkeypatch, "42 /dev/ttys009\n", "", False, [991])
+        code = main(["spawn", "--root", str(tmp_path), "--host", "claude", "--format", "json"])
+        captured = capsys.readouterr()
+        assert code == 1
+        assert "never started on /dev/ttys009 within 0s" in captured.err  # dead-tab reason verbatim
+        assert "refusing to record the round" in captured.err
+        assert len(close_argv) == 1  # the guard's close, on the already-closed window
+        script = close_argv[0][2]
+        assert '"kind": "refusal_close"' in script
+        assert '"window_id": 42' in script
+        assert '"prev_tty": "/dev/ttys009"' in script
+        assert "for pid in 991; do" in script  # identity interlock carries the session pids
+        assert not (tmp_path / ".spec" / "autorun" / "chain.json").exists()
         assert not (tmp_path / ".spec" / "autorun" / "spawns.jsonl").exists()
 
     def test_refusal_close_template_renders_contract_lines(self):

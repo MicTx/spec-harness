@@ -4,7 +4,7 @@ Task-package workflow for AI coding agents with verifiable scope, evidence, and 
 
 [![CI](https://img.shields.io/github/actions/workflow/status/MicTx/spec-harness/ci-public.yml)](https://github.com/MicTx/spec-harness/actions/workflows/ci-public.yml)
 [![Release](https://img.shields.io/github/v/release/MicTx/spec-harness)](https://github.com/MicTx/spec-harness/releases)
-[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
+[![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](LICENSE)
 [![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
 
 [🇨🇳 阅读中文版](README.md)
@@ -34,7 +34,7 @@ Pick your entry point by what you want to do: to understand the idea first, read
 - **Recoverable state**: reports, failures, completion summaries, and archives come from files on disk, so another session can continue.
 - **Session-boundary handoff**: packages may carry an optional `handoff.md` — a generated snapshot head plus an append-only entry log whose required slots adapt to the collaboration mode (solo / team / agent / cluster); maintained by `spec_handoff.py`, validated by the check gate, and frozen by a terminal entry at archive time.
 - **Interactive recursive planning**: `autoplan` interrogates the user in themed rounds at project start or a phase boundary, then hands framework planning, per-phase detail planning, and the consistency review to fresh full sessions chained serially with the same spawn discipline as `autorun` (never in-process subagents), down to autorun granularity; it stops at the readiness report once the structural gate and an independent review pass — it never starts the chain itself.
-- **Recursive autorun chain**: `autorun` terminates on the feature checkboxes of the project planning documents — after this round is pushed to main, it plans the next round and opens a fresh Terminal window in the same path with the prompt injected (keeping the host CLI that started the chain; override with `--host` or `SPEC_AUTORUN_HOST`), recursing until every planned feature is checked; each round is a full interactive session you can watch and step into at any time, the previous window recycles once the next session is running; a single-chain lock and a refuse-to-start-without-planning guard keep the recursion sane, and the round cap is opt-in (bounded only with an explicit `--max-rounds`; unbounded by default).
+- **Recursive autorun chain**: `autorun` terminates on the feature checkboxes of the project planning documents — after this round is pushed to main, it plans the next round and opens a fresh interactive session in the same path with the prompt injected (Terminal.app on macOS; tmux on Linux/Windows WSL2) (keeping the host CLI that started the chain; override with `--host` or `SPEC_AUTORUN_HOST`), recursing until every planned feature is checked; each round is a full interactive session you can watch and step into at any time, the previous macOS window recycles once the next session is running, while tmux sessions remain attachable; a single-chain lock and a refuse-to-start-without-planning guard keep the recursion sane, and the round cap is opt-in (bounded only with an explicit `--max-rounds`; unbounded by default).
 - **Stable task identity**: tasks can declare an `id:` and explicit `depends-on`; protocol migrations never rewrite historical archives.
 - **Controlled execution**: the main session keeps routing, integration, acceptance, and done/push gates; `workflow-runner` and other slots only execute bounded work.
 - **Two runtime forms**: the local Skill is the reference implementation; the optional `server/` adapter projects remote task-package start/result/health operations.
@@ -66,7 +66,8 @@ Runtime task packages default to `.spec/` in target projects; this source reposi
 - Python 3.9 or newer.
 - A host CLI that loads `SKILL.md` skills, such as Claude Code, Codex, Gemini CLI, Grok Build, OpenCode, OpenClaw, Hermes, Pi, or ZCode.
 - Runtime helpers use only the Python standard library; development checks additionally use `pytest` and `ruff`.
-- The installer and helpers support Linux, macOS, and Windows.
+- The installer requires Bash; Windows users can use WSL2. Planning/execution chain spawning supports macOS Terminal.app and **tmux ≥3.2** on Linux and Windows WSL2, not native PowerShell/cmd/Git Bash.
+- Linux/WSL2 needs no graphical desktop. On Ubuntu/Debian, run `sudo apt-get install tmux procps`; install Python and the worker CLI inside the same Linux/WSL environment. Spawn output and `status` provide a `tmux -L … attach-session …` command; press `Ctrl-b d` to detach without terminating the session. See the [session backend contract](references/commands.md#session-backends).
 
 ## Installation
 
@@ -77,7 +78,7 @@ Run the installer from a checked-out source or release tree:
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.16.0
+git checkout v0.17.0
 bash install.sh
 ```
 
@@ -164,6 +165,7 @@ The export tree is locked by tests:
 
 ```text
 spec/
+├── LICENSE
 ├── SKILL.md
 ├── install.sh
 ├── pyproject.toml
@@ -294,4 +296,4 @@ Spec Harness provides task packages, workflow instructions, templates, verificat
 
 ## License
 
-This project is licensed under the GNU Affero General Public License v3 (AGPL-3.0-or-later). See [LICENSE](LICENSE) for the complete terms.
+Software code is licensed under PolyForm Noncommercial 1.0.0 (`PolyForm-Noncommercial-1.0.0`). Commercial use requires separate written authorization. See [LICENSE](LICENSE) for the complete terms.

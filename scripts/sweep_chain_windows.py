@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # scripts/sweep_chain_windows.py
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Sweep dead chain windows: Terminal windows a chain spawned whose session
 ended and nobody recycled (a crashed round, a refused spawn, a killed
 session — windows off the recycle path).
@@ -55,6 +55,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     root = Path(args.root).expanduser().resolve()
     if not root.is_dir():
         print(f"error: project root is not a directory: {root}", file=sys.stderr)
+        return 1
+    if support.platform.system() != "Darwin":
+        print(
+            "error: this sweep is macOS Terminal.app-only; tmux sessions are not window-sweep targets",
+            file=sys.stderr,
+        )
         return 1
     recorded = support.recorded_chain_ttys(_chain_dirs(root))
     dead = support.find_dead_chain_windows(recorded, exclude_tty=support.session_tty())

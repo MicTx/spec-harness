@@ -29,6 +29,12 @@ from autorun_spawn import (  # noqa: E402  # type: ignore
 )
 
 
+@pytest.fixture(autouse=True)
+def macos_terminal_contract(monkeypatch):
+    """These legacy tests exercise Terminal.app even when CI runs on Linux."""
+    monkeypatch.setattr(chain_support.platform, "system", lambda: "Darwin")
+
+
 def seed_master(root: Path, path=".spec/plans/README.md"):
     doc = root / path
     doc.parent.mkdir(parents=True, exist_ok=True)
@@ -1669,6 +1675,29 @@ class TestRefusalClosesSpawnedWindow:
         assert '"kind": "refusal_close"' in script
         assert '"window_id": 42' in script
         assert '"prev_tty": "/dev/ttys009"' in script
+        assert not (tmp_path / ".spec" / "autoplan" / "chain.json").exists()
+        assert not (tmp_path / ".spec" / "autoplan" / "spawns.jsonl").exists()
+
+    def test_dead_tab_refusal_closes_idempotently(self, tmp_path, capsys, monkeypatch):
+        # dead-tab: the quiet close already ran, and the guard still sends
+        # the refusal close at the confirmed window (idempotent window-gone,
+        # spec §2.2) — the first chain-level dead-tab pin on this chain
+        seed_master(tmp_path)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr("autoplan_spawn.session_tty", lambda: "/dev/ttys012")
+        monkeypatch.setattr("autoplan_spawn.WORKER_START_TIMEOUT_SECONDS", 0)
+        close_argv = self._probe(monkeypatch, "42 /dev/ttys009\n", "", False, [881])
+        code = main(["spawn", "--root", str(tmp_path), "--next", "framework", "--host", "pi", "--format", "json"])
+        captured = capsys.readouterr()
+        assert code == 1
+        assert "never started on /dev/ttys009 within 0s" in captured.err  # dead-tab reason verbatim
+        assert "refusing to record the pass" in captured.err
+        assert len(close_argv) == 1  # the guard's close, on the already-closed window
+        script = close_argv[0][2]
+        assert '"kind": "refusal_close"' in script
+        assert '"pass": 1' in script
+        assert '"window_id": 42' in script
+        assert "for pid in 881; do" in script  # identity interlock carries the session pids
         assert not (tmp_path / ".spec" / "autoplan" / "chain.json").exists()
         assert not (tmp_path / ".spec" / "autoplan" / "spawns.jsonl").exists()
 

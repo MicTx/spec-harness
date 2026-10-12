@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """
 Render the internal spec stage decision that is compatible with Claude Code and Codex-style skill invocation.
 """

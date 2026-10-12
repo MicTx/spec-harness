@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-ROOT_FILES = ("SKILL.md", "install.sh", "pyproject.toml")
+ROOT_FILES = ("SKILL.md", "install.sh", "pyproject.toml", "LICENSE")
 COPY_DIRS = ("agents", "hooks", "references", "server", "slots")
 IGNORE_PATTERNS = ("__pycache__", "*.pyc", ".DS_Store")
 SCRIPT_BLACKLIST = frozenset(
@@ -15,5 +15,6 @@ SCRIPT_BLACKLIST = frozenset(
         "skill_watermark.py",
         "path_safety.py",
         "payload_contract.py",
+        "verify_install_parity.py",
     }
 )

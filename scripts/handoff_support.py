@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Shared handoff-document semantics for the optional package ``handoff.md``.
 
 A handoff document makes session boundaries cheap: the departing collaborator

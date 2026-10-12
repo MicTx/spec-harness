@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # scripts/spec_handoff.py
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Session-boundary handoff CLI for the optional package ``handoff.md``.
 
 Wraps ``handoff_support`` primitives into the operator-facing commands:

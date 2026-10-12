@@ -28,7 +28,7 @@ def _base_agent_plugins_manifest() -> dict:
         "name": "spec-harness",
         "version": "1.2.3",
         "description": "Task-package workflow skill",
-        "license": "AGPL-3.0-or-later",
+        "license": "PolyForm-Noncommercial-1.0.0",
         "keywords": ["spec", "task-package"],
     }
 
@@ -266,6 +266,7 @@ def _scaffold_root(tmpdir: Path, *, with_template: bool = True, with_skill: bool
     """最小仓库根：模板目录 + pyproject + SKILL.md + scripts/。"""
     root = tmpdir / "repo"
     root.mkdir()
+    (root / "LICENSE").write_text((SKILL_ROOT / "LICENSE").read_text(encoding="utf-8"), encoding="utf-8")
     (root / "scripts").mkdir()
     (root / "scripts" / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
     (root / "pyproject.toml").write_text(

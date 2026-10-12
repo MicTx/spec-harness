@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 set -euo pipefail
 
 REPO_URL="${REPO_URL:-}"
@@ -499,7 +499,7 @@ EOF_BODY
       cat <<EOF_BODY
 # /$command_name
 
-Run the recursive autorun chain: finish the active task package goal-style through run, check, done, and push; after a successful push, discover the project planning documents, plan the next round with spec:new from the next unchecked feature, then open a new Terminal.app window in the same path with the autorun prompt injected for the next round. Recursion continues until every feature checkbox in the planning documents is checked; the first failure or a planning-document gap stops the chain with the recovery action. Safety rails: round cap, single-chain lock, sequential spawn only.
+Run the recursive autorun chain: finish the active task package goal-style through run, check, done, and push; after a successful push, discover the project planning documents, plan the next round with spec:new from the next unchecked feature, then open a fresh interactive session in the same path with the autorun prompt injected for the next round (macOS Terminal.app; Linux/Windows WSL2 tmux >=3.2, no graphical desktop needed). Native Windows users must run Python, the worker CLI, and Spec Harness inside WSL2. Recursion continues until every feature checkbox in the planning documents is checked; the first failure or a planning-document gap stops the chain with the recovery action. Safety rails: round cap, single-chain lock, sequential spawn only.
 EOF_BODY
       ;;
     run)

@@ -522,7 +522,8 @@ class TestSessionTty:
         # and never a ?? placeholder.
         result = support.nearest_ancestor_tty()
         if result is not None:
-            assert result.startswith("/dev/ttys")
+            assert result.startswith(("/dev/tty", "/dev/pts/"))
+            assert result != "/dev/tty"
 
 
 # --- opt-in chain caps (F12 guard helpers; F17 adaptive defaults removed) ------

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """2026-10-04 chain/loop 审计回归测试。
 
 覆盖问题台账（见 `.spec/specs/2026-10-04_fix-chain-loop-mechanisms/`）中
