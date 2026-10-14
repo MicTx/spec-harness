@@ -1,21 +1,24 @@
+#!/usr/bin/env python3
 # scripts/update_checkpoint_support.py
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-"""Update-stage checkpoint primitives for task packages.
+"""Read-only recognition of historical update-stage checkpoints.
 
-An update mutation rewrites the ``spec.md`` / ``tasks.md`` / ``checklist.md``
-triad in place; an interruption mid-update would otherwise leave the package
-half-applied with no recovery point. ``begin_update_checkpoint`` snapshots the
-triad into ``update-checkpoint.json`` inside the package directory;
-``complete_update_checkpoint`` clears it only after re-validating checkpoint
-integrity and post-update triad readability; ``rollback_update_checkpoint``
-restores the recorded snapshot; ``detect`` / ``inspect`` surface interrupted
-(begin without complete) or corrupted checkpoints so update flows recover
-explicitly instead of silently losing state.
+The self-managed checkpoint mechanism (triad snapshot into
+``update-checkpoint.json``, begin/rollback/complete lifecycle) was retired in
+favor of Git WIP commits: an update session commits a WIP recovery point on
+the integration branch before rewriting the triad, and rollback is
+``git reset --hard`` / ``git revert`` against that history. This module no
+longer snapshots, restores, or writes anything — it only recognizes and
+validates checkpoint files left behind by packages updated under the retired
+mechanism, so historical half-applied states stay visible instead of becoming
+silent dead corners.
 
-Single-writer contract: the update flow owns the package directory while a
-checkpoint is open; concurrent ``begin`` is a caller-level error, not
-enforced here. Only ``safe_open_support`` is imported while triad reads go
-through the shared O_NOFOLLOW regular-file contract.
+``detect_update_checkpoint`` / ``detect_unresolved_checkpoints`` probe without
+raising (tri-state: none / active / corrupted);
+``inspect_update_checkpoint`` is the strict read that returns the validated
+record or raises ``CheckpointMissingError`` / ``CheckpointCorruptedError`` /
+``CheckpointConsistencyError``. Only ``safe_open_support`` is imported; triad
+reads go through the shared O_NOFOLLOW regular-file contract.
 """
 
 from __future__ import annotations
@@ -24,35 +27,27 @@ import hashlib
 import hmac
 import json
 import os
-import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from safe_open_support import SafeOpenError, open_regular_read
 
 CHECKPOINT_FILENAME = "update-checkpoint.json"
 TRIAD_FILENAMES = ("spec.md", "tasks.md", "checklist.md")
+# checklist.md was optional for v2 packages (F11): a historical snapshot may
+# hold only the members that existed, always including this required core.
+TRIAD_REQUIRED_CORE = ("spec.md", "tasks.md")
 CHECKPOINT_SCHEMA_VERSION = 1
 
-# Per-member bound mirrors spec_package_support.MAX_SPEC_FILE_BYTES (kept
-# literal so this module only depends on safe_open_support).
-MAX_SNAPSHOT_FILE_BYTES = 2 * 1024 * 1024
-# begin bounds every member, so the whole-document bound only rejects absurd
-# files; JSON escaping can expand text several-fold, hence the loose value.
+# Recognition bound mirrors spec_package_support.MAX_SPEC_FILE_BYTES (kept
+# literal so this module only depends on safe_open_support). Checkpoint files
+# were private coordination state, never shared artifacts.
 MAX_CHECKPOINT_FILE_BYTES = 64 * 1024 * 1024
-# Mode applied to restored triad members that did not exist before rollback.
-DEFAULT_MEMBER_MODE = 0o644
-# Checkpoint files are private coordination state, never shared artifacts.
-CHECKPOINT_MODE = 0o600
 
 
 class CheckpointError(Exception):
     """Base class for update-checkpoint failures."""
-
-
-class CheckpointExistsError(CheckpointError):
-    """begin refused: an unresolved checkpoint already exists."""
 
 
 class CheckpointMissingError(CheckpointError):
@@ -64,7 +59,7 @@ class CheckpointCorruptedError(CheckpointError):
 
 
 class CheckpointConsistencyError(CheckpointError):
-    """complete/rollback-time state does not match expectations; mutation refused."""
+    """Recorded state does not match expectations; the read is refused."""
 
 
 @dataclass(frozen=True)
@@ -77,25 +72,15 @@ class UpdateCheckpoint:
     created_at: str
     snapshot: dict[str, str]
 
-    def as_dict(self) -> dict:
-        """Stored document form, including the recomputed integrity checksum."""
-        payload = {
-            "version": self.version,
-            "package": self.package,
-            "intent": self.intent,
-            "createdAt": self.created_at,
-            "snapshot": dict(self.snapshot),
-        }
-        return {**payload, "checksum": _digest_payload(payload)}
-
 
 @dataclass(frozen=True)
 class CheckpointStatus:
     """Tri-state probe result for one package directory.
 
     ``state`` is one of:
-      - ``"none"``: no checkpoint file; no update in flight.
-      - ``"active"``: valid checkpoint; an update began and was not completed.
+      - ``"none"``: no checkpoint file; no historical update in flight.
+      - ``"active"``: valid checkpoint; an update began and was never resolved
+        under the retired mechanism. Git history is the recovery point.
       - ``"corrupted"``: checkpoint present but unparseable or failing
         integrity validation; explicit manual recovery is required.
     """
@@ -127,65 +112,6 @@ def _preview(value: object, limit: int = 80) -> str:
     """Short repr for diagnostics; corrupted payloads must not flood errors."""
     text = repr(value)
     return text if len(text) <= limit else text[: limit - 1] + "…"
-
-
-def _read_triad_member(path: Path) -> str:
-    """Read one triad member as UTF-8 text, byte-faithful across newlines."""
-    try:
-        with open_regular_read(path, max_bytes=MAX_SNAPSHOT_FILE_BYTES) as descriptor:
-            with os.fdopen(descriptor, "r", encoding="utf-8", newline="", closefd=False) as handle:
-                data = handle.read(MAX_SNAPSHOT_FILE_BYTES + 1)
-    except SafeOpenError as exc:
-        raise CheckpointError(f"cannot read {path.name}: {exc}") from exc
-    except UnicodeError as exc:
-        raise CheckpointError(f"{path.name} is not valid UTF-8 text: {exc}") from exc
-    if len(data) > MAX_SNAPSHOT_FILE_BYTES:
-        raise CheckpointError(f"{path.name} exceeds {MAX_SNAPSHOT_FILE_BYTES} bytes")
-    return data
-
-
-def _fsync_directory(directory: Path) -> None:
-    """Best-effort directory fsync so renames/unlinks survive a crash."""
-    try:
-        descriptor = os.open(directory, os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(descriptor)
-    except OSError:
-        pass
-    finally:
-        os.close(descriptor)
-
-
-def _write_file_atomic(path: Path, data: bytes, *, mode: int | None = None) -> None:
-    """Replace ``path`` with ``data`` via an fsync'd temp file and os.replace.
-
-    ``mode=None`` preserves an existing target's permission bits (rollback
-    fidelity for triad members that already exist) and falls back to
-    ``DEFAULT_MEMBER_MODE`` for newly created files; callers that own a
-    private artifact pass an explicit mode.
-    """
-    directory = path.parent
-    target_mode = mode
-    if target_mode is None:
-        try:
-            target_mode = path.stat().st_mode & 0o777
-        except OSError:
-            target_mode = DEFAULT_MEMBER_MODE
-    descriptor, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=directory)
-    temp_path = Path(temp_name)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            os.fchmod(handle.fileno(), target_mode)
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp_path, path)
-    except BaseException:
-        temp_path.unlink(missing_ok=True)
-        raise
-    _fsync_directory(directory)
 
 
 def _read_checkpoint_payload(path: Path) -> dict:
@@ -238,9 +164,10 @@ def _checkpoint_from_payload(payload: dict) -> UpdateCheckpoint:
     snapshot = payload.get("snapshot")
     if not isinstance(snapshot, dict):
         raise CheckpointCorruptedError(f"checkpoint field 'snapshot' must be a JSON object: {_preview(snapshot)}")
-    if set(snapshot) != set(TRIAD_FILENAMES):
+    if not set(TRIAD_REQUIRED_CORE) <= set(snapshot) or not set(snapshot) <= set(TRIAD_FILENAMES):
         raise CheckpointCorruptedError(
-            f"checkpoint 'snapshot' must map exactly the triad {TRIAD_FILENAMES}, got keys {sorted(snapshot)}"
+            f"checkpoint 'snapshot' must map the triad members that exist "
+            f"(required core {TRIAD_REQUIRED_CORE}, optional {TRIAD_FILENAMES}), got keys {sorted(snapshot)}"
         )
     for name, content in snapshot.items():
         if not isinstance(content, str):
@@ -258,7 +185,7 @@ def _checkpoint_from_payload(payload: dict) -> UpdateCheckpoint:
         package=package,
         intent=intent,
         created_at=created_at,
-        snapshot={name: snapshot[name] for name in TRIAD_FILENAMES},
+        snapshot={name: snapshot[name] for name in TRIAD_FILENAMES if name in snapshot},
     )
 
 
@@ -271,27 +198,13 @@ def _load_status(package_dir: Path) -> CheckpointStatus:
             # Only untrusted load/validation failures are corruption. ValueError
             # includes UnicodeError and JSON decoder limits; canonical checksum
             # encoding and structural diagnostics can also reject parsed data.
-            # Keep caller validation and all write paths outside this boundary.
+            # Caller validation stays outside this boundary.
             raise CheckpointCorruptedError(f"invalid update checkpoint data: {path}: {exc}") from exc
     except CheckpointMissingError:
         return CheckpointStatus("none", path)
     except CheckpointCorruptedError as exc:
         return CheckpointStatus("corrupted", path, None, str(exc))
     return CheckpointStatus("active", path, checkpoint)
-
-
-def _write_checkpoint(package_dir: Path, checkpoint: UpdateCheckpoint) -> None:
-    document = json.dumps(checkpoint.as_dict(), ensure_ascii=False, indent=2) + "\n"
-    _write_file_atomic(checkpoint_path(package_dir), document.encode("utf-8"), mode=CHECKPOINT_MODE)
-
-
-def _remove_checkpoint(package_dir: Path) -> None:
-    path = checkpoint_path(package_dir)
-    try:
-        path.unlink()
-    except FileNotFoundError as exc:
-        raise CheckpointMissingError(f"update checkpoint already removed: {path}") from exc
-    _fsync_directory(package_dir)
 
 
 def _require_active_checkpoint(package_dir: Path, action: str) -> UpdateCheckpoint:
@@ -306,81 +219,6 @@ def _require_active_checkpoint(package_dir: Path, action: str) -> UpdateCheckpoi
             f"update checkpoint belongs to package {checkpoint.package!r}, not {package_dir.name!r}; "
             f"refusing to {action} a checkpoint moved between packages"
         )
-    return checkpoint
-
-
-def begin_update_checkpoint(package_dir: Path, intent: str) -> UpdateCheckpoint:
-    """Snapshot the triad and atomically write the package checkpoint.
-
-    Refuses to clobber an existing checkpoint (active or corrupted): an
-    interrupted update must be completed or rolled back first. The checkpoint
-    is written only after every member snapshots cleanly, so a failed begin
-    never leaves a partial checkpoint behind.
-    """
-    if not isinstance(intent, str) or not intent.strip():
-        raise ValueError("intent must be a non-empty string")
-    package_dir = Path(package_dir)
-    if not package_dir.is_dir():
-        raise CheckpointError(f"task package directory not found: {package_dir}")
-    status = _load_status(package_dir)
-    if status.state == "active":
-        raise CheckpointExistsError(
-            f"unresolved update checkpoint already exists (intent: {status.checkpoint.intent!r}); "
-            "complete or rollback before beginning another update"
-        )
-    if status.state == "corrupted":
-        raise CheckpointExistsError(f"corrupted update checkpoint at {status.path}: {status.error}")
-    snapshot = {name: _read_triad_member(package_dir / name) for name in TRIAD_FILENAMES}
-    checkpoint = UpdateCheckpoint(
-        version=CHECKPOINT_SCHEMA_VERSION,
-        package=package_dir.name,
-        intent=intent,
-        created_at=datetime.now(timezone.utc).isoformat(),
-        snapshot=snapshot,
-    )
-    _write_checkpoint(package_dir, checkpoint)
-    return checkpoint
-
-
-def complete_update_checkpoint(package_dir: Path, *, expected_intent: str | None = None) -> UpdateCheckpoint:
-    """Clear the checkpoint after consistency checks; refusal keeps it intact.
-
-    Verified before clearing: the checkpoint is structurally valid with an
-    intact checksum, it belongs to this package, its intent matches
-    ``expected_intent`` when given, and every triad member is currently a
-    readable regular file (the update did not leave a broken package). Any
-    failure raises and leaves the checkpoint in place so rollback stays
-    available; complete never reverts the applied update.
-    """
-    if expected_intent is not None and (not isinstance(expected_intent, str) or not expected_intent.strip()):
-        raise ValueError("expected_intent must be a non-empty string when provided")
-    package_dir = Path(package_dir)
-    checkpoint = _require_active_checkpoint(package_dir, "complete")
-    if expected_intent is not None and checkpoint.intent != expected_intent:
-        raise CheckpointConsistencyError(
-            f"checkpoint intent {checkpoint.intent!r} does not match expected intent {expected_intent!r}; "
-            "refusing to clear"
-        )
-    for name in TRIAD_FILENAMES:
-        try:
-            _read_triad_member(package_dir / name)
-        except CheckpointError as exc:
-            raise CheckpointConsistencyError(f"post-update triad check failed; refusing to clear: {exc}") from exc
-    _remove_checkpoint(package_dir)
-    return checkpoint
-
-
-def rollback_update_checkpoint(package_dir: Path) -> UpdateCheckpoint:
-    """Restore the triad from the snapshot, then remove the checkpoint.
-
-    The checkpoint is removed only after every member is restored, so a failed
-    rollback leaves the interruption detectable and retryable.
-    """
-    package_dir = Path(package_dir)
-    checkpoint = _require_active_checkpoint(package_dir, "roll back")
-    for name in TRIAD_FILENAMES:
-        _write_file_atomic(package_dir / name, checkpoint.snapshot[name].encode("utf-8"))
-    _remove_checkpoint(package_dir)
     return checkpoint
 
 

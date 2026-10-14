@@ -86,13 +86,18 @@ def test_init_end_to_end():
 
         assert (pkg_dir / "spec.md").exists()
         assert (pkg_dir / "tasks.md").exists()
-        assert (pkg_dir / "checklist.md").exists()
+        # v2 packages ship no checklist.md (F11): the template carries only
+        # the two init fences.
+        assert not (pkg_dir / "checklist.md").exists()
+        assert "checklist.md" not in templates
 
         spec_content = (pkg_dir / "spec.md").read_text(encoding="utf-8")
         assert "E2E Test" in spec_content
         assert "[项目名称]" not in spec_content
         assert "### 5.1 验证策略" in spec_content
         assert "范围级别：package" in spec_content
+        assert "evidence: runs" in spec_content
+        assert "- [ ] 标准 A 达成 -> verify: task_0001" in spec_content
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -298,3 +303,109 @@ def test_init_cli_records_local_mode_when_upstream_is_unreachable(tmp_path):
     )
     assert "`spec/2026-08-28_fix-spec-logic-integrity`" in spec_text
     assert "本地模式" in spec_text
+
+
+# --- AUD-07: clean-tree exclusion for active package documents ---
+
+
+def run_init(root: Path, slug: str):
+    return subprocess.run(
+        [sys.executable, str(INIT), "--slug", slug, "--title", "Probe", "--root", str(root)],
+        cwd=root,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_ensure_clean_tree_carries_active_package_documents(tmp_path):
+    from init_spec_package import GitPreflightError, ensure_clean_tree
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_git_repo(repo)
+    package = repo / ".spec" / "specs" / "2026-10-12_first-probe"
+    package.mkdir(parents=True)
+    for filename in ("spec.md", "tasks.md", "checklist.md"):
+        (package / filename).write_text("draft\n", encoding="utf-8")
+
+    # Only the active package's own documents are dirty: carried, not blocking.
+    ensure_clean_tree(repo)
+
+    # A rename whose source is a business file still blocks (both sides of a
+    # rename must be package documents to be carried).
+    (repo / "business.txt").write_text("payload\n", encoding="utf-8")
+    git(repo, "add", "business.txt")
+    git(
+        repo,
+        "-c",
+        "user.email=spec@example.com",
+        "-c",
+        "user.name=Spec Test",
+        "commit",
+        "-m",
+        "business",
+    )
+    git(repo, "mv", "business.txt", ".spec/specs/2026-10-12_first-probe/business.txt")
+    try:
+        ensure_clean_tree(repo)
+    except GitPreflightError as exc:
+        assert "working tree is not clean" in str(exc)
+        assert "business.txt" in str(exc)
+    else:
+        raise AssertionError("rename out of a business path must stay blocking")
+
+
+def test_ensure_clean_tree_still_rejects_archive_dirt(tmp_path):
+    from init_spec_package import GitPreflightError, ensure_clean_tree
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_git_repo(repo)
+    active = repo / ".spec" / "specs" / "2026-10-12_first-probe"
+    active.mkdir(parents=True)
+    (active / "spec.md").write_text("draft\n", encoding="utf-8")
+    archive = repo / ".spec" / "specs" / "archive" / "2026-01-01_legacy-record"
+    archive.mkdir(parents=True)
+    (archive / "completion-summary.md").write_text("summary\n", encoding="utf-8")
+
+    try:
+        ensure_clean_tree(repo)
+    except GitPreflightError as exc:
+        assert "archive/2026-01-01_legacy-record" in str(exc)
+    else:
+        raise AssertionError("archive dirt must stay blocking")
+
+
+def test_replay_exp04a_second_package_with_uncommitted_docs(tmp_path):
+    """EXP-04(a): a previous package's uncommitted documents must not block
+    /spec:new from creating the next package."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_git_repo(repo)
+
+    first = run_init(repo, "2026-10-12_first-probe")
+    assert first.returncode == 0, first.stdout + first.stderr
+    assert git(repo, "branch", "--show-current") == "spec/2026-10-12_first-probe"
+    assert "install the Spec git hooks" in first.stdout
+
+    second = run_init(repo, "2026-10-12_second-probe")
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert git(repo, "branch", "--show-current") == "spec/2026-10-12_second-probe"
+    assert (repo / ".spec" / "specs" / "2026-10-12_second-probe" / "spec.md").is_file()
+    assert (repo / ".spec" / "specs" / "2026-10-12_first-probe" / "spec.md").is_file()
+
+
+def test_replay_exp04a_business_dirt_still_blocks_second_package(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_git_repo(repo)
+    assert run_init(repo, "2026-10-12_first-probe").returncode == 0
+    git(repo, "checkout", "-q", "main")
+    (repo / "unrelated.txt").write_text("dirty\n", encoding="utf-8")
+
+    rejected = run_init(repo, "2026-10-12_second-probe")
+
+    assert rejected.returncode != 0
+    assert "working tree is not clean" in rejected.stderr
+    assert "unrelated.txt" in rejected.stderr
+    assert "spec/2026-10-12_second-probe" not in git(repo, "branch", "--list")

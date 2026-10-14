@@ -383,8 +383,9 @@ def read_handoff(package_dir: Path) -> str | None:
 def write_atomic_text(path: Path, content: str) -> None:
     """Replace ``path`` with ``content`` via an fsync'd temp file and rename.
 
-    Mirrors the update-checkpoint atomic-write convention so a crash mid-write
-    can never truncate the append-only log.
+    Mirrors the retired update-checkpoint atomic-write convention (the
+    mechanism is now read-only recognition; Git WIP carries rollback) so a
+    crash mid-write can never truncate the append-only log.
     """
     directory = path.parent
     try:

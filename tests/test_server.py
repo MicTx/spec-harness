@@ -229,7 +229,7 @@ def test_health_and_start_result_contract(tmp_path: Path):
         assert result["stage"] == "status"
         assert result["status_detail"].startswith("# server probe\n")
         assert "## 项目进展" in result["status_detail"]
-        assert "固化问题定义、关键假设与非目标：进行" in result["status_detail"]
+        assert "初始化最小项目骨架：进行" in result["status_detail"]
         assert "## 流水线" not in result["status_detail"]
 
 

@@ -88,3 +88,18 @@ def test_command_inventories_cover_every_stage():
     stages = set(_install_stages())
     assert set(SKILL_TABLE_ROW.findall(SKILL.read_text(encoding="utf-8"))) == stages
     assert set(COMMANDS_SECTION.findall(COMMANDS.read_text(encoding="utf-8"))) == stages
+
+
+def test_goal_stage_contract_stops_at_local_commit_by_default():
+    """F17 / AUD-19: goal's default landing point is the local commit.
+
+    The push segment is an explicitly authorized action (`--push` or an
+    explicit user instruction), never an automatic hand-off after a green
+    gate. The old unconditional "hand off to /spec:push" wording is the
+    negative sample.
+    """
+    goal = (ROOT / "references" / "stages" / "goal.md").read_text(encoding="utf-8")
+    assert "The default stop is the local commit" in goal
+    assert "`--push`" in goal
+    assert "explicitly authorized" in goal
+    assert "hand off to `/spec:push`" not in goal, "goal must not unconditionally hand off to push"

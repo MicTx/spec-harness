@@ -70,11 +70,21 @@ def docs(*incomplete):
 
 
 class TestReadState:
-    """read_state: ok / missing / recovered / corrupt + never-rewrite."""
+    """read_state: ok / missing / recovered / corrupt + never-rewrite.
+
+    The summary dir and the runtime dir are separate trees since F16 step 3;
+    the tests use ``tmp_path`` as the summary dir and ``runtime`` beside it
+    for the audit/events, mirroring the production split."""
+
+    @staticmethod
+    def runtime(tmp_path):
+        runtime = tmp_path / "runtime"
+        runtime.mkdir(parents=True, exist_ok=True)
+        return runtime
 
     def test_ok_parses_and_fills_old_format_defaults(self, tmp_path):
         write_chain_state(tmp_path, {"round": 4, "max_rounds": 20})
-        state, status = read_state(tmp_path, "autorun")
+        state, status = read_state(tmp_path, self.runtime(tmp_path), "autorun")
         assert status == "ok"
         assert state["round"] == 4
         # old-format defaults: window_recycle {} / host "unknown", in memory only
@@ -86,34 +96,35 @@ class TestReadState:
         raw = '{"round": 4, "max_rounds": 20}'
         write_chain_state(tmp_path, raw=raw)
         before = (tmp_path / "chain.json").read_bytes()
-        read_state(tmp_path, "autorun")
+        read_state(tmp_path, self.runtime(tmp_path), "autorun")
         assert (tmp_path / "chain.json").read_bytes() == before
-        assert not (tmp_path / "events.jsonl").exists()
+        assert not (self.runtime(tmp_path) / "events.jsonl").exists()
 
     def test_missing_is_fresh_even_with_audit_lines(self, tmp_path):
         # spawn writes chain.json before appending spawns.jsonl, so a missing
         # state file means the chain never started (plans/01 assumption)
-        write_spawns(tmp_path, autorun_state(round_index=2))
-        state, status = read_state(tmp_path, "autorun")
+        write_spawns(self.runtime(tmp_path), autorun_state(round_index=2))
+        state, status = read_state(tmp_path, self.runtime(tmp_path), "autorun")
         assert status == "missing"
         assert state is None
 
     def test_non_object_state_triggers_rebuild(self, tmp_path):
         write_chain_state(tmp_path, raw="[1, 2]")
-        write_spawns(tmp_path, autorun_state(round_index=5))
-        state, status = read_state(tmp_path, "autorun")
+        write_spawns(self.runtime(tmp_path), autorun_state(round_index=5))
+        state, status = read_state(tmp_path, self.runtime(tmp_path), "autorun")
         assert status == "recovered"
         assert state["round"] == 5
 
     def test_recovered_rebuilds_from_last_parseable_tail_line(self, tmp_path):
+        runtime = self.runtime(tmp_path)
         write_chain_state(tmp_path, raw="{half-written state")
         write_spawns(
-            tmp_path,
+            runtime,
             autorun_state(round_index=4),
             autorun_state(round_index=5),
             partial_tail='{"round": 6, "max_',
         )
-        state, status = read_state(tmp_path, "autorun")
+        state, status = read_state(tmp_path, runtime, "autorun")
         assert status == "recovered"
         assert state["round"] == 5
         assert state["recovered_from"] == "spawns.jsonl line 2"
@@ -122,8 +133,8 @@ class TestReadState:
         rebuilt = json.loads((tmp_path / "chain.json").read_text(encoding="utf-8"))
         assert rebuilt["round"] == 5
         assert rebuilt["recovered_from"] == "spawns.jsonl line 2"
-        # ... and the recovery is audited
-        events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+        # ... and the recovery is audited in the runtime tree
+        events = [json.loads(line) for line in (runtime / "events.jsonl").read_text(encoding="utf-8").splitlines()]
         assert events[-1]["kind"] == "recovery"
         assert events[-1]["chain"] == "autorun"
         assert events[-1]["action"] == "recovered_state"
@@ -131,16 +142,16 @@ class TestReadState:
 
     def test_corrupt_leaves_files_untouched_when_audit_cannot_rebuild(self, tmp_path):
         write_chain_state(tmp_path, raw="{bad")
-        state, status = read_state(tmp_path, "autorun")
+        state, status = read_state(tmp_path, self.runtime(tmp_path), "autorun")
         assert status == "corrupt"
         assert state is None
         assert (tmp_path / "chain.json").read_text(encoding="utf-8") == "{bad"
-        assert not (tmp_path / "events.jsonl").exists()
+        assert not (self.runtime(tmp_path) / "events.jsonl").exists()
 
     def test_corrupt_when_audit_has_only_partial_lines(self, tmp_path):
         write_chain_state(tmp_path, raw="{bad")
-        write_spawns(tmp_path, partial_tail='{"round": 3, "max')
-        state, status = read_state(tmp_path, "autorun")
+        write_spawns(self.runtime(tmp_path), partial_tail='{"round": 3, "max')
+        state, status = read_state(tmp_path, self.runtime(tmp_path), "autorun")
         assert status == "corrupt"
         assert state is None
 
@@ -336,9 +347,11 @@ class TestDecideTableAutorun:
     def test_read_state_rebuild_annotates_every_downstream_action(self):
         # half-written chain.json -> rebuild -> correct action + note
         with _tmp_dir() as chain_dir:
+            runtime = chain_dir / "runtime"
+            runtime.mkdir()
             write_chain_state(chain_dir, raw="{half")
-            write_spawns(chain_dir, autorun_state(round_index=2))
-            state, status = read_state(chain_dir, "autorun")
+            write_spawns(runtime, autorun_state(round_index=2))
+            state, status = read_state(chain_dir, runtime, "autorun")
             assert status == "recovered"
             decision = decide("autorun", state, status, plan_unchecked=1, active_packages=self.PACKAGE)
             assert decision.action == "continue_package"

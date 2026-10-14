@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -331,15 +332,13 @@ def test_build_summary_contains_all_sections():
         out_of_scope=["不做Y"],
         touched_areas=["scripts/"],
         untouched_areas=["docs/"],
-        build_evidence=["py_compile 通过"],
-        test_evidence=["pytest 通过"],
-        manual_evidence=[],
+        evidence_notes=["构建：py_compile 通过", "测试：pytest 通过"],
         effect_metrics=["无关改动 0"],
         consistency_evidence=["无冲突"],
         commit_ref="abc123",
         push_ref="main",
         git_record_language="zh",
-        knowledge_docs=[],
+        agents_proposals=["+ AGENTS.md 新增：门禁摘要必须携带 runs.jsonl 锚点"],
         follow_ups=["后续A"],
         rejected_extensions=["未引入Z"],
         gate_evidences=["checklist 全绿"],
@@ -352,6 +351,9 @@ def test_build_summary_contains_all_sections():
     assert "## 变更边界" in summary
     assert "## 验证证据" in summary
     assert "## Git 记录" in summary
+    assert "## AGENTS.md 增量提议" in summary
+    assert "```diff" in summary
+    assert "+ AGENTS.md 新增：门禁摘要必须携带 runs.jsonl 锚点" in summary
     assert "## 被拒绝的扩展提议" in summary
     assert "## 门禁证据" in summary
     assert "## 遗留事项" in summary
@@ -389,20 +391,142 @@ def test_build_summary_defaults():
         out_of_scope=[],
         touched_areas=[],
         untouched_areas=[],
-        build_evidence=[],
-        test_evidence=[],
-        manual_evidence=[],
+        evidence_notes=[],
         effect_metrics=[],
         consistency_evidence=[],
         commit_ref="待补充",
         push_ref="待补充",
         git_record_language="zh",
-        knowledge_docs=[],
+        agents_proposals=[],
         follow_ups=[],
         rejected_extensions=[],
         gate_evidences=[],
     )
     assert "待补充" in summary
+
+
+# -- AGENTS.md 增量提议（F15/AUD-13） --
+
+
+def test_build_summary_agents_proposal_renders_single_diff_fence():
+    summary = build_summary(
+        title="Proposal",
+        completed_at="2026-10-13 10:00",
+        result="完成",
+        verified_assumptions=[],
+        open_risks=[],
+        delivered=["功能A"],
+        not_delivered=[],
+        deviations=[],
+        simplifications=[],
+        out_of_scope=[],
+        touched_areas=[],
+        untouched_areas=[],
+        evidence_notes=[],
+        effect_metrics=[],
+        consistency_evidence=[],
+        commit_ref="abc123",
+        push_ref="main",
+        git_record_language="zh",
+        agents_proposals=[
+            "+ ## 工程事实",
+            "+ - complete_spec_package 的蒸馏出口是 --agents-proposal，不扫描 .spec/docs/",
+            "  ",
+        ],
+        follow_ups=[],
+        rejected_extensions=[],
+        gate_evidences=[],
+    )
+    section = summary.split("## AGENTS.md 增量提议", 1)[1].split("\n## ", 1)[0]
+    assert section.count("```") == 2  # opening diff fence + closing fence only
+    assert "+ ## 工程事实" in section
+    assert "+ - complete_spec_package 的蒸馏出口是 --agents-proposal，不扫描 .spec/docs/" in section
+    # blank-only flag values never leak stray lines into the fence
+    assert "  \n" not in section
+
+
+def test_build_summary_agents_proposal_default_records_none():
+    summary = build_summary(
+        title="NoProposal",
+        completed_at="2026-10-13 10:00",
+        result="完成",
+        verified_assumptions=[],
+        open_risks=[],
+        delivered=[],
+        not_delivered=[],
+        deviations=[],
+        simplifications=[],
+        out_of_scope=[],
+        touched_areas=[],
+        untouched_areas=[],
+        evidence_notes=[],
+        effect_metrics=[],
+        consistency_evidence=[],
+        commit_ref="待补充",
+        push_ref="待补充",
+        git_record_language="zh",
+        agents_proposals=[],
+        follow_ups=[],
+        rejected_extensions=[],
+        gate_evidences=[],
+    )
+    section = summary.split("## AGENTS.md 增量提议", 1)[1].split("## ", 1)[0]
+    assert section.strip() == "无"
+    assert "```diff" not in section
+
+
+def test_knowledge_doc_flag_retired():
+    script = Path(__file__).resolve().parent.parent / "scripts" / "complete_spec_package.py"
+    result = subprocess.run(
+        [sys.executable, str(script), "--root", ".", "--slug", "x", "--knowledge-doc", "a.md"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "unrecognized arguments: --knowledge-doc" in result.stderr
+    # the retired helper is gone from the module surface entirely
+    assert not hasattr(complete_module, "detect_knowledge_docs")
+
+
+def test_complete_archive_carries_agents_proposal_and_writes_no_knowledge_docs(tmp_path):
+    """Sandbox archive regression (F15): the real main flow renders the
+    session-authored proposal as a diff fence in the archived summary and
+    never creates files under .spec/docs/."""
+    package = _write_complete_package(tmp_path, "2026-10-13_fix-distill-proposal")
+    docs_dir = tmp_path / ".spec" / "docs"
+    docs_dir.mkdir(parents=True)
+    (docs_dir / "2026-01-01_old-slug_legacy-note.md").write_text("legacy\n", encoding="utf-8")
+    script = Path(__file__).resolve().parent.parent / "scripts" / "complete_spec_package.py"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--root",
+            str(tmp_path),
+            "--slug",
+            package.name,
+            "--archive",
+            "--agents-proposal",
+            "+ AGENTS.md 新增：done 蒸馏出口改为增量提议，不再产出独立知识文档",
+            "--agents-proposal",
+            "+ - 蒸馏出口旗标：--agents-proposal（可重复，每值一行）",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    archive = tmp_path / ".spec" / "specs" / "archive" / package.name
+    summary = (archive / "completion-summary.md").read_text(encoding="utf-8")
+    assert "## AGENTS.md 增量提议" in summary
+    assert "```diff" in summary
+    assert "+ AGENTS.md 新增：done 蒸馏出口改为增量提议，不再产出独立知识文档" in summary
+    assert "+ - 蒸馏出口旗标：--agents-proposal（可重复，每值一行）" in summary
+    # no knowledge documents are generated for this archive: only the
+    # pre-existing legacy file remains in .spec/docs/
+    assert [path.name for path in docs_dir.iterdir()] == ["2026-01-01_old-slug_legacy-note.md"]
+    assert "## 知识沉淀" not in summary
 
 
 def _write_complete_package(root: Path, slug: str) -> Path:
@@ -800,9 +924,9 @@ def test_git_record_language_auto_detects_chinese_title():
 
 
 @pytest.mark.parametrize("checkpoint_state", ["active", "corrupted"])
-def test_complete_archive_rejects_interrupted_update_checkpoint(tmp_path, checkpoint_state):
-    from update_checkpoint_support import begin_update_checkpoint, checkpoint_path
-
+def test_complete_archive_rejects_interrupted_update_checkpoint(
+    tmp_path, checkpoint_state, write_historical_checkpoint
+):
     slug = "2026-09-22_fix-checkpoint-blocker-gates"
     root = tmp_path
     package = root / ".spec" / "specs" / slug
@@ -811,9 +935,9 @@ def test_complete_archive_rejects_interrupted_update_checkpoint(tmp_path, checkp
     (package / "spec.md").write_text(spec, encoding="utf-8")
     (package / "tasks.md").write_text(TASKS_DONE, encoding="utf-8")
     (package / "checklist.md").write_text(CHECKLIST_DONE, encoding="utf-8")
-    begin_update_checkpoint(package, "封堵归档绕过")
+    checkpoint_file = write_historical_checkpoint(package, "封堵归档绕过")
     if checkpoint_state == "corrupted":
-        checkpoint_path(package).write_text("{ bad json", encoding="utf-8")
+        checkpoint_file.write_text("{ bad json", encoding="utf-8")
     script = Path(__file__).resolve().parent.parent / "scripts" / "complete_spec_package.py"
     result = subprocess.run(
         [sys.executable, str(script), "--root", str(root), "--slug", slug, "--archive", "--force"],
@@ -939,15 +1063,13 @@ def test_build_summary_process_metrics_default_backward_compatible():
         out_of_scope=[],
         touched_areas=[],
         untouched_areas=[],
-        build_evidence=[],
-        test_evidence=[],
-        manual_evidence=[],
+        evidence_notes=[],
         effect_metrics=[],
         consistency_evidence=[],
         commit_ref="待补充",
         push_ref="待补充",
         git_record_language="zh",
-        knowledge_docs=[],
+        agents_proposals=[],
         follow_ups=[],
         rejected_extensions=[],
         gate_evidences=[],
@@ -971,15 +1093,13 @@ def test_build_summary_process_metrics_place_between_gate_evidence_and_followups
         out_of_scope=[],
         touched_areas=[],
         untouched_areas=[],
-        build_evidence=[],
-        test_evidence=[],
-        manual_evidence=[],
+        evidence_notes=[],
         effect_metrics=[],
         consistency_evidence=[],
         commit_ref="abc123",
         push_ref="pending",
         git_record_language="zh",
-        knowledge_docs=[],
+        agents_proposals=[],
         follow_ups=[],
         rejected_extensions=[],
         gate_evidences=["check exit 0"],
@@ -1005,15 +1125,13 @@ def test_build_summary_records_verification_scope():
         out_of_scope=[],
         touched_areas=[],
         untouched_areas=[],
-        build_evidence=[],
-        test_evidence=["pytest tests/test_changed.py"],
-        manual_evidence=[],
+        evidence_notes=["测试：pytest tests/test_changed.py"],
         effect_metrics=[],
         consistency_evidence=[],
         commit_ref="abc123",
         push_ref="pending",
         git_record_language="zh",
-        knowledge_docs=[],
+        agents_proposals=[],
         follow_ups=[],
         rejected_extensions=[],
         gate_evidences=["check exit 0"],
@@ -1022,3 +1140,241 @@ def test_build_summary_records_verification_scope():
     assert "## 验证范围" in summary
     assert "- 级别：package" in summary
     assert "不扩大" not in summary
+
+
+# --------------------------------------------------------------------------- #
+# executable-verify protocol at archive time (F7 / AUD-02, AUD-05)
+# --------------------------------------------------------------------------- #
+
+
+def _runs_sandbox(tmp_path: Path, slug: str) -> tuple[Path, Path]:
+    """Git repo on the package branch with a complete `evidence: runs` package."""
+
+    def sh(*args: str) -> subprocess.CompletedProcess:
+        result = subprocess.run(list(args), cwd=tmp_path, capture_output=True, text=True)
+        assert result.returncode == 0, f"{args}\n{result.stdout}\n{result.stderr}"
+        return result
+
+    sh("git", "init", "-q", "-b", "main", str(tmp_path))
+    sh("git", "-C", str(tmp_path), "config", "user.email", "fixture@example.invalid")
+    sh("git", "-C", str(tmp_path), "config", "user.name", "Fixture")
+    (tmp_path / "README.md").write_text("fixture\n", encoding="utf-8")
+    sh("git", "-C", str(tmp_path), "add", ".")
+    sh("git", "-C", str(tmp_path), "commit", "-qm", "initial")
+    sh("git", "-C", str(tmp_path), "checkout", "-qb", f"spec/{slug}")
+    package = tmp_path / ".spec" / "specs" / slug
+    package.mkdir(parents=True)
+    (package / "spec.md").write_text(
+        SPEC + f"\n- Git integration branch：`spec/{slug}`\n\n本包启用 evidence: runs 协议。\n",
+        encoding="utf-8",
+    )
+    (package / "tasks.md").write_text(
+        "- [x] Machine one\n  - boundary: b1\n  - verify: `python3 -c \"print('one')\"` 全绿\n"
+        "- [x] Machine two\n  - boundary: b2\n  - verify: `python3 -c \"print('two')\"` 全绿\n"
+        "- [x] Manual\n  - boundary: b3\n  - verify: manual: 只读复核\n",
+        encoding="utf-8",
+    )
+    (package / "checklist.md").write_text(CHECKLIST_DONE, encoding="utf-8")
+    return tmp_path, package
+
+
+def test_archive_writes_machine_verification_rate(tmp_path):
+    slug = "2026-10-12_rate-in-summary"
+    root, package = _runs_sandbox(tmp_path, slug)
+    recorder = Path(complete_module.__file__).parent / "spec_verify.py"
+    for task_id in ("task_0001", "task_0002"):
+        result = subprocess.run(
+            [sys.executable, str(recorder), "run", "--root", str(root), "--slug", slug, "--task", task_id],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+    result = subprocess.run(
+        [sys.executable, str(Path(complete_module.__file__)), "--root", str(root), "--slug", slug, "--archive"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    summary = (tmp_path / ".spec/specs/archive" / slug / "completion-summary.md").read_text(encoding="utf-8")
+    assert "- 机器验证率：2/2；manual 任务 1 项不计入分母" in summary
+    # The recorded evidence itself archives with the package.
+    assert (tmp_path / ".spec/specs/archive" / slug / "runs.jsonl").is_file()
+
+
+def test_archive_refuses_stale_runs_fingerprint(tmp_path):
+    slug = "2026-10-12_stale-runs-fingerprint"
+    root, package = _runs_sandbox(tmp_path, slug)
+    recorder = Path(complete_module.__file__).parent / "spec_verify.py"
+    result = subprocess.run(
+        [sys.executable, str(recorder), "run", "--root", str(root), "--slug", slug, "--task", "task_0001"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    # Sabotage the worktree after evidence capture: the archive must refuse.
+    (root / "README.md").write_text("tampered after evidence\n", encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, str(Path(complete_module.__file__)), "--root", str(root), "--slug", slug, "--archive"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1
+    assert "check gates" in result.stderr
+    assert not (tmp_path / ".spec/specs/archive" / slug).exists()
+
+
+def test_build_summary_omits_machine_rate_for_legacy_packages():
+    summary = build_summary(
+        title="Legacy",
+        completed_at="2026-10-12",
+        result="完成",
+        verified_assumptions=[],
+        open_risks=[],
+        delivered=[],
+        not_delivered=[],
+        deviations=[],
+        simplifications=[],
+        out_of_scope=[],
+        touched_areas=[],
+        untouched_areas=[],
+        evidence_notes=["pytest"],
+        effect_metrics=[],
+        consistency_evidence=[],
+        commit_ref="abc123",
+        push_ref="pending",
+        git_record_language="zh",
+        agents_proposals=[],
+        follow_ups=[],
+        rejected_extensions=[],
+        gate_evidences=["check exit 0"],
+        verification_scope_level="package",
+    )
+    assert "机器验证率" not in summary
+
+
+# -- F9 (AUD-06): archive commit-interval recording --
+
+
+def _interval_sandbox(tmp_path: Path, slug: str, *, with_main: bool = True) -> Path:
+    """Git repo on the package branch; main exists unless with_main=False."""
+
+    def sh(*args: str) -> subprocess.CompletedProcess:
+        result = subprocess.run(list(args), cwd=tmp_path, capture_output=True, text=True)
+        assert result.returncode == 0, f"{args}\n{result.stdout}\n{result.stderr}"
+        return result
+
+    if with_main:
+        sh("git", "init", "-q", "-b", "main", str(tmp_path))
+    else:
+        # A default branch that is not `main`, so refs/heads/main stays absent.
+        sh("git", "init", "-q", "-b", "trunk", str(tmp_path))
+    sh("git", "-C", str(tmp_path), "config", "user.email", "fixture@example.invalid")
+    sh("git", "-C", str(tmp_path), "config", "user.name", "Fixture")
+    (tmp_path / "README.md").write_text("fixture\n", encoding="utf-8")
+    sh("git", "-C", str(tmp_path), "add", ".")
+    sh("git", "-C", str(tmp_path), "commit", "-qm", "initial")
+    sh("git", "-C", str(tmp_path), "checkout", "-qb", f"spec/{slug}")
+    package = tmp_path / ".spec" / "specs" / slug
+    package.mkdir(parents=True)
+    (package / "spec.md").write_text(SPEC + f"\n- Git integration branch：`spec/{slug}`\n", encoding="utf-8")
+    (package / "tasks.md").write_text(TASKS_DONE, encoding="utf-8")
+    (package / "checklist.md").write_text(CHECKLIST_DONE, encoding="utf-8")
+    return tmp_path
+
+
+def _archived_summary(tmp_path: Path, slug: str) -> str:
+    return (tmp_path / ".spec" / "specs" / "archive" / slug / "completion-summary.md").read_text(encoding="utf-8")
+
+
+def test_archive_records_resolvable_commit_interval(tmp_path):
+    slug = "2026-10-12_record-archive-commit-range"
+    root = _interval_sandbox(tmp_path, slug)
+    result = subprocess.run(
+        [sys.executable, str(Path(complete_module.__file__)), "--root", str(root), "--slug", slug, "--archive"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    summary = _archived_summary(tmp_path, slug)
+    match = re.search(r"^- 提交区间：([0-9a-f]{40})\.\.([0-9a-f]{40})$", summary, re.MULTILINE)
+    assert match is not None, summary
+    base, head = match.groups()
+    # Both endpoints resolve in Git and base is an ancestor of head.
+    for sha in (base, head):
+        resolved = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--verify", f"{sha}^{{commit}}"],
+            capture_output=True,
+            text=True,
+        )
+        assert resolved.returncode == 0 and resolved.stdout.strip() == sha
+    ancestry = subprocess.run(
+        ["git", "-C", str(root), "merge-base", "--is-ancestor", base, head],
+        capture_output=True,
+    )
+    assert ancestry.returncode == 0
+    # base is exactly the merge-base off main: the interval covers the whole
+    # integration-branch delivery window.
+    merge_base = subprocess.run(
+        ["git", "-C", str(root), "merge-base", "main", "HEAD"],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert base == merge_base
+
+
+def test_archive_records_out_of_scope_interval_for_non_git_root(tmp_path):
+    slug = "2026-10-12_interval-non-git"
+    package = tmp_path / ".spec" / "specs" / slug
+    package.mkdir(parents=True)
+    (package / "spec.md").write_text(SPEC, encoding="utf-8")
+    (package / "tasks.md").write_text(TASKS_DONE, encoding="utf-8")
+    (package / "checklist.md").write_text(CHECKLIST_DONE, encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, str(Path(complete_module.__file__)), "--root", str(tmp_path), "--slug", slug, "--archive"],
+        capture_output=True,
+        text=True,
+    )
+    # The interval never blocks archival: a non-Git root records 适用外.
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "- 提交区间：适用外（非 Git 工作区或无提交）" in _archived_summary(tmp_path, slug)
+
+
+def test_archive_records_out_of_scope_interval_without_main_branch(tmp_path):
+    slug = "2026-10-12_interval-no-main"
+    root = _interval_sandbox(tmp_path, slug, with_main=False)
+    result = subprocess.run(
+        [sys.executable, str(Path(complete_module.__file__)), "--root", str(root), "--slug", slug, "--archive"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "- 提交区间：适用外（无法解析 refs/heads/main 的 merge-base）" in _archived_summary(tmp_path, slug)
+
+
+def test_build_summary_omits_interval_for_legacy_callers():
+    summary = build_summary(
+        title="Legacy",
+        completed_at="2026-10-12",
+        result="完成",
+        verified_assumptions=[],
+        open_risks=[],
+        delivered=[],
+        not_delivered=[],
+        deviations=[],
+        simplifications=[],
+        out_of_scope=[],
+        touched_areas=[],
+        untouched_areas=[],
+        evidence_notes=["pytest"],
+        effect_metrics=[],
+        consistency_evidence=[],
+        commit_ref="abc123",
+        push_ref="pending",
+        git_record_language="zh",
+        agents_proposals=[],
+        follow_ups=[],
+        rejected_extensions=[],
+        gate_evidences=["check exit 0"],
+        verification_scope_level="package",
+    )
+    assert "提交区间" not in summary

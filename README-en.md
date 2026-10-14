@@ -28,13 +28,13 @@ Pick your entry point by what you want to do: to understand the idea first, read
 
 ## What You Get
 
-- **One task package**: `spec.md`, `tasks.md`, and `checklist.md` under `.spec/specs/YYYY-MM-DD_slug/`.
+- **One task package**: `spec.md` and `tasks.md` under `.spec/specs/YYYY-MM-DD_slug/` (new-format packages carry no `checklist.md`; acceptance runs through the `spec.md` §6 success criteria, while legacy packages keep theirs).
 - **One evidence chain**: `goal -> scope -> tasks -> verification -> archive -> commit -> push`; every task declares a `boundary` and a `verify` command.
 - **Explicit stages**: `new`, `goal`, `autoplan`, `autorun`, `run`, `check`, `done`, `push`, `update`, `status`, `doctor`, and `organize`.
 - **Recoverable state**: reports, failures, completion summaries, and archives come from files on disk, so another session can continue.
 - **Session-boundary handoff**: packages may carry an optional `handoff.md` — a generated snapshot head plus an append-only entry log whose required slots adapt to the collaboration mode (solo / team / agent / cluster); maintained by `spec_handoff.py`, validated by the check gate, and frozen by a terminal entry at archive time.
 - **Interactive recursive planning**: `autoplan` interrogates the user in themed rounds at project start or a phase boundary, then hands framework planning, per-phase detail planning, and the consistency review to fresh full sessions chained serially with the same spawn discipline as `autorun` (never in-process subagents), down to autorun granularity; it stops at the readiness report once the structural gate and an independent review pass — it never starts the chain itself.
-- **Recursive autorun chain**: `autorun` terminates on the feature checkboxes of the project planning documents — after this round is pushed to main, it plans the next round and opens a fresh interactive session in the same path with the prompt injected (Terminal.app on macOS; tmux on Linux/Windows WSL2) (keeping the host CLI that started the chain; override with `--host` or `SPEC_AUTORUN_HOST`), recursing until every planned feature is checked; each round is a full interactive session you can watch and step into at any time, the previous macOS window recycles once the next session is running, while tmux sessions remain attachable; a single-chain lock and a refuse-to-start-without-planning guard keep the recursion sane, and the round cap is opt-in (bounded only with an explicit `--max-rounds`; unbounded by default).
+- **Recursive autorun chain**: `autorun` terminates on the feature checkboxes of the project planning documents — after this round is pushed to main, it plans the next round and opens a fresh interactive session in the same path with the prompt injected (Terminal.app on macOS; tmux on Linux/Windows WSL2) (keeping the host CLI that started the chain; override with `--host` or `SPEC_AUTORUN_HOST`), recursing until every planned feature is checked; each round is a full interactive session you can watch and step into at any time, the previous macOS window recycles once the next session is running, while tmux sessions remain attachable; a single-chain lock and a refuse-to-start-without-planning guard keep the recursion sane; rounds default to a cap of 5 (an explicit `--max-rounds` overrides, `--unbounded` removes it), the worker inherits the parent session's permissions with no silent escalation (`--permission-mode bypass` opts in explicitly), and a frozen feature-set fingerprint refuses spawns when the plan grows mid-chain.
 - **Stable task identity**: tasks can declare an `id:` and explicit `depends-on`; protocol migrations never rewrite historical archives.
 - **Controlled execution**: the main session keeps routing, integration, acceptance, and done/push gates; `workflow-runner` and other slots only execute bounded work.
 - **Two runtime forms**: the local Skill is the reference implementation; the optional `server/` adapter projects remote task-package start/result/health operations.
@@ -78,17 +78,19 @@ Run the installer from a checked-out source or release tree:
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.17.0
+git checkout v0.18.0
 bash install.sh
 ```
 
 `install.sh` is the only local Skill installer. The optional `server/install.sh` is a separate self-hosted server-mode deployment entrypoint. To upgrade or roll back, check out the target tag and run the installer again.
 
+Installing from a source tree needs no signing credentials: when none are found locally, the installer exports with `--skip-signing` automatically and prints a one-line notice; distribution signing is enforced only by the release build (release archives ship pre-signed). To sign locally, point `SPEC_SIGNING_IDENTITY` and `SPEC_SIGNING_KEY` at an identity JSON and a key file; `SPEC_SKIP_SIGNING=1` skips explicitly.
+
 ### Supported hosts
 
 | `INSTALL_HOSTS` | Host | Default directory | Extra behavior |
 | --- | --- | --- | --- |
-| `claude` | Claude Code | `~/.claude/skills` | writes `/spec` and 12 stage commands |
+| `claude` | Claude Code | `~/.claude/skills` | writes `/spec` and stage commands (5 on core, 12 on full) |
 | `claude-desktop` | Claude Desktop | `~/.claude-desktop/skills` | Skill only |
 | `codex`, `codex-desktop` | Codex | `~/.codex/skills` | both tokens share the directory |
 | `gemini` | Gemini CLI | `~/.gemini/skills` | |
@@ -99,12 +101,20 @@ bash install.sh
 | `pi` | Pi agent | `~/.pi/agent/skills` | relocatable with `PI_DIR` |
 | `zcode` | ZCode | `~/.zcode/skills` | project-owned host |
 | `desktop`, `rpi` | Claude Code + Codex | both default directories | combined targets |
-| `all` | all hosts | as listed above | default |
+| `all` | all hosts | as listed above | explicit full set |
+
+With no `INSTALL_HOSTS` the installer auto-detects: only hosts whose CLI is on `PATH` or whose default host directory exists get installed; hosts this installer installed before are kept via their ownership marker, and skipped hosts are listed in the install output. An explicit `INSTALL_HOSTS` value (including `all`) bypasses detection entirely.
 
 Select one host explicitly when needed:
 
 ```bash
 INSTALL_HOSTS=codex CODEX_SKILLS_DIR=~/.codex/skills bash install.sh
+```
+
+Install profile: `INSTALL_PROFILE` selects the component surface and defaults to `core` — the kernel only (core stage commands `/spec:new` `/spec:run` `/spec:check` `/spec:done` `/spec:push`, Git hooks, and the scripts tree), without extension components (`slots/`, `agents/`) or extended stage commands (`goal`/`autoplan`/`autorun`/`update`/`status`/`doctor`/`organize`). `INSTALL_PROFILE=full` restores the complete install (all 12 stage commands plus extension components, byte-identical to the previous behavior). Re-running the default install on a machine that previously installed full downgrades it back to core: extended stage commands and agents are backed up, then removed. Opt in explicitly when you need the chains, planning passes, or extension capabilities:
+
+```bash
+INSTALL_PROFILE=full bash install.sh
 ```
 
 The installer refuses to overwrite a same-name Skill without its `.spec-skill-install` ownership marker. Set `FORCE=1` only when intentionally replacing a user-owned directory. `pi` now means the Pi agent; use `rpi` or `desktop` for the former Claude + Codex combination.
@@ -116,6 +126,8 @@ Export only the runtime Skill package:
 ```bash
 python3 scripts/export_skill_package.py --output /tmp/spec --force
 ```
+
+Calling the exporter directly never auto-skips signing: in a keyless environment add `--skip-signing` explicitly (the installer applies it automatically under the same conditions). The exporter also accepts `--profile core|full` (default `full`, byte-identical to the release payload).
 
 Place the exported `spec/` directory in the host's Skill directory. Trigger it with `$spec` in Codex/Pi/ZCode or `/spec:goal` in Claude Code.
 
@@ -129,7 +141,7 @@ spec:goal add payment recovery with tests
 # Claude Code: /spec:goal add payment recovery with tests
 ```
 
-The host walks the stages with you: clarify the goal and scope first (`goal`), then execute (`run`) and review (`check`), and finally archive and commit (`done`, `push`). To bypass the host and drive the scripts directly, the effect is equivalent — create a task package in the project you want to change:
+The host walks the stages with you: clarify the goal and scope first (`goal`), then execute (`run`) and review (`check`), and finally archive and commit (`done`); push (`push`) runs only when explicitly requested. To bypass the host and drive the scripts directly, the effect is equivalent — create a task package in the project you want to change:
 
 ```bash
 python3 /tmp/spec-harness/scripts/init_spec_package.py \
@@ -155,7 +167,7 @@ python3 /tmp/spec-harness/scripts/complete_spec_package.py \
   --archive
 ```
 
-This script creates the summary and archives the package; run `git commit` separately, then use `push_spec_package.py` for merge and push cleanup. Retired members go to `archive/retired` under a `never delete` policy. A task is only complete after its `verify` command has actually run.
+This script creates the summary and archives the package; run `git commit` separately, then use `push_spec_package.py` for merge and push cleanup. Retired members go to `archive/retired` under a `never delete` policy. A task is only complete after its `verify` command has actually run — never a checked checkbox alone. For stronger evidence binding, declare `evidence: runs` in `spec.md`: machine tasks' `verify` commands are actually executed by `scripts/spec_verify.py run`, appending each run record (exit, duration, stdout tail hash, worktree fingerprint) to the package's `runs.jsonl`, and check/done accept only a latest record with `exit == 0` whose fingerprint still matches the current worktree — never run means unverified, and a tree changed after capture means expired evidence.
 
 ## Exporting A Runtime Skill Package
 
@@ -166,6 +178,7 @@ The export tree is locked by tests:
 ```text
 spec/
 ├── LICENSE
+├── NOTICE
 ├── SKILL.md
 ├── install.sh
 ├── pyproject.toml
@@ -178,8 +191,7 @@ spec/
 ├── hooks/
 │   ├── pre-commit
 │   ├── pre-push
-│   ├── claude_stop_guard.py
-│   └── spec_disk_truth_gate.py
+│   └── claude_stop_guard.py
 ├── references/
 │   ├── 00-readme.md
 │   ├── changelog-guide.md
@@ -191,7 +203,20 @@ spec/
 │   ├── slots.md
 │   ├── storage-and-archive.md
 │   ├── templates.md
-│   └── orchestration.md
+│   ├── orchestration.md
+│   └── stages/
+│       ├── autoplan.md
+│       ├── autorun.md
+│       ├── check.md
+│       ├── doctor.md
+│       ├── done.md
+│       ├── goal.md
+│       ├── new.md
+│       ├── organize.md
+│       ├── push.md
+│       ├── run.md
+│       ├── status.md
+│       └── update.md
 ├── scripts/
 │   ├── autoplan_gate.py
 │   ├── autoplan_spawn.py
@@ -221,6 +246,7 @@ spec/
 │   ├── smoke_test_spec_skill.py
 │   ├── spec_handoff.py
 │   ├── spec_package_support.py
+│   ├── spec_verify.py
 │   ├── sweep_chain_windows.py
 │   ├── update_checkpoint.py
 │   └── update_checkpoint_support.py
@@ -281,7 +307,7 @@ python3 -m pytest tests/test_public_docs.py tests/test_export_skill_package.py -
 git diff --check
 ```
 
-The full contributor matrix is in [`CONTRIBUTING.md`](CONTRIBUTING.md). A task package declares `package`, `integration`, or `project` verification in `spec.md` under `### 5.1 验证策略`.
+The full contributor matrix is in [`CONTRIBUTING.md`](CONTRIBUTING.md). A task package declares `package`, `integration`, or `project` verification in `spec.md` under `### 5.1 验证策略` (machine key `verification-strategy`): sections are recognized by their machine keys, so English titles and key anchors are equally valid — see the English-title variant in [`references/templates.md`](references/templates.md).
 
 ## Versions And Releases
 

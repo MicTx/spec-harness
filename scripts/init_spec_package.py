@@ -21,6 +21,7 @@ from spec_package_support import (
     active_branch_bindings,
     add_specs_dir_arg,
     combined_process_output,
+    is_development_record_slug,
     load_reference_templates,
     remote_unavailable_detected,
     resolve_specs_child,
@@ -148,15 +149,87 @@ def ensure_not_protected(branch: str) -> None:
         raise GitPreflightError(f"refusing to use protected integration branch: {branch}")
 
 
-def ensure_clean_tree(root: Path) -> None:
-    dirty = git_stdout(root, "status", "--porcelain")
+def _unquote_porcelain_path(field: str) -> str:
+    """Unquote one C-quoted porcelain path; decode failure keeps the raw
+    text so the entry stays blocking dirt (fail closed)."""
+    if field.startswith('"') and field.endswith('"') and len(field) >= 2:
+        body = field[1:-1]
+        try:
+            return body.encode("latin-1", "backslashreplace").decode("unicode_escape").encode("latin-1").decode("utf-8")
+        except (UnicodeDecodeError, UnicodeEncodeError):
+            return field
+    return field
+
+
+def _porcelain_line_paths(status_line: str) -> list[str]:
+    """File paths named by one ``git status --porcelain`` line.
+
+    Rename lines carry two paths (``old -> new``); both sides of the rename
+    must be active-package documents for the line to be carried.
+    """
+    if len(status_line) < 4:
+        return []
+    field = status_line[3:]
+    sides = field.split(" -> ", 1) if " -> " in field else [field]
+    return [_unquote_porcelain_path(side) for side in sides]
+
+
+def _is_active_package_document(path: str, specs_roots: list[Path], repo_root: Path) -> bool:
+    """True when the path lives inside a live active package's own directory.
+
+    Only ``<specs-root>/specs/<slug>/...`` counts: the slug must be a valid
+    Development Record slug, must exist as a directory on disk, and must not
+    be the ``archive/`` container (archive dirt still blocks /spec:new).
+    """
+    candidate = Path(path)
+    if candidate.is_absolute():
+        return False
+    for specs_root in specs_roots:
+        try:
+            relative = candidate.relative_to(specs_root)
+        except ValueError:
+            continue
+        parts = relative.parts
+        if len(parts) < 2 or parts[0] != "specs" or parts[1] == "archive":
+            continue
+        slug = parts[1]
+        if not is_development_record_slug(slug):
+            continue
+        if not (repo_root / specs_root / "specs" / slug).is_dir():
+            continue
+        return True
+    return False
+
+
+def ensure_clean_tree(root: Path, specs_root: Path | None = None) -> None:
+    # --untracked-files=all keeps untracked entries as file paths so a fresh
+    # package's documents can be attributed to their slug instead of showing
+    # up as one collapsed ".spec/" line that cannot be attributed (AUD-07:
+    # a previous package's uncommitted documents must not block /spec:new).
+    dirty = git_stdout(root, "status", "--porcelain", "--untracked-files=all")
     if not dirty:
+        return
+    specs_roots = [name for name in (Path(".spec"), Path(".trae")) if (root / name).is_dir()]
+    if specs_root is not None:
+        try:
+            primary = specs_root.resolve(strict=False).relative_to(root.resolve(strict=False))
+        except ValueError:
+            primary = None
+        if primary is not None and primary not in specs_roots:
+            specs_roots.append(primary)
+    residual: list[str] = []
+    for line in dirty.splitlines():
+        paths = _porcelain_line_paths(line)
+        if paths and all(_is_active_package_document(path, specs_roots, root) for path in paths):
+            continue
+        residual.append(line)
+    if not residual:
         return
     raise GitPreflightError(
         "working tree is not clean; /spec:new must start from a clean tree before "
         "checking out main and creating an independent integration branch\n"
-        "dirty status:\n"
-        f"{dirty}\n"
+        "active task package documents (<specs>/specs/<slug>/) are carried automatically; "
+        "everything below is unrelated work:\n" + "\n".join(residual) + "\n"
         "action: commit, stash, or move unrelated work to its own Development Record before creating this package"
     )
 
@@ -214,6 +287,7 @@ def create_integration_branch_from_main(
     *,
     skip: bool = False,
     disable_hooks: bool = False,
+    specs_root: Path | None = None,
 ) -> BranchCreation:
     repo_root = repository_root(target_root)
     if repo_root is None or skip:
@@ -229,7 +303,7 @@ def create_integration_branch_from_main(
         raise GitPreflightError(
             f"integration branch {branch} is already bound to active task package(s): {', '.join(owners)}"
         )
-    ensure_clean_tree(repo_root)
+    ensure_clean_tree(repo_root, specs_root=specs_root)
     ensure_local_branch_exists(repo_root, main_branch, "main branch")
 
     branch_exists = (
@@ -303,10 +377,9 @@ def main() -> int:
 
     # Load templates BEFORE creating branches so a template failure doesn't
     # leave the user stranded on a feature branch with no package files.
-    # The checklist template ships the optional 裁决性检查：<命令> @ <时间>
-    # acceptance-evidence line: load_reference_templates parses only the first
-    # fence under "## `checklist.md`" in references/templates.md, so that fence
-    # IS the init behavior — keep this note and the fence in sync.
+    # The spec/tasks templates are required; the checklist template is
+    # optional (v2 packages ship no checklist.md — F11), so whatever
+    # load_reference_templates returns is exactly what gets rendered.
     try:
         templates = load_reference_templates(skill_root)
     except ValueError as exc:
@@ -321,6 +394,7 @@ def main() -> int:
             args.branch.strip() if args.branch else None,
             skip=args.skip_git_branch,
             disable_hooks=args.disable_git_hooks,
+            specs_root=specs_root,
         )
     except (FileNotFoundError, subprocess.CalledProcessError, GitPreflightError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -342,10 +416,14 @@ def main() -> int:
         if creation.mode == "local":
             print("branch-mode: local")
             print(f"note: {creation.note}")
-    print(f"created: {package_dir / 'spec.md'}")
-    print(f"created: {package_dir / 'tasks.md'}")
-    print(f"created: {package_dir / 'checklist.md'}")
+    for filename in templates:
+        print(f"created: {package_dir / filename}")
     print(f"ready: {package_dir}")
+    if repository_root(target_root) is not None:
+        print(
+            "hint: install the Spec git hooks to enforce the gates on commit/push: "
+            f"python3 {Path(__file__).resolve().parent / 'install_git_hooks.py'} --root <repo>"
+        )
     return 0
 
 

@@ -46,6 +46,15 @@ STALE_STAGE_ALIASES = ("route", "tasks")
 NATIVE_AGENT_NAMES = ("orchestrator", "planner", "reviewer", "confirmer")
 BUILTIN_SLOT_NAMES = ("team-loop", "workflow-runner")
 
+# Install profiles (planning F16 sub-step 2, AUD-18): the marker's profile=
+# stamp selects the audit face. Markers predating the split carry no stamp
+# and audit as full — behavior unchanged for existing installs. The faces
+# are hardcoded here (payload_contract is maintainer-side and never ships);
+# alignment with the contract is pinned by tests/test_install_profile.py.
+PROFILE_VALUES = ("core", "full")
+CORE_STAGE_COMMANDS = ("new", "run", "check", "done", "push")
+EXTENSION_FILE_PREFIXES = ("agents/", "server/")
+
 
 def claude_agents_dir() -> Path:
     override = os.environ.get("CLAUDE_AGENTS_DIR")
@@ -77,7 +86,6 @@ REQUIRED_RUNTIME_FILES: Tuple[str, ...] = (
     "agents/confirmer.md",
     "hooks/pre-commit",
     "hooks/pre-push",
-    "hooks/spec_disk_truth_gate.py",
     "references/00-readme.md",
     "references/commands.md",
     "references/output-contracts.md",
@@ -264,7 +272,21 @@ class Doctor:
     )
 
     def user_stages(self) -> List[str]:
+        if self.install_profile() == "core":
+            return list(CORE_STAGE_COMMANDS)
         return list(self.USER_STAGES)
+
+    def install_profile(self) -> str:
+        """The marker's profile= stamp; a marker without one is a full install."""
+        profile = self.read_marker(self.skill_root).get("profile", "full")
+        return profile if profile in PROFILE_VALUES else "full"
+
+    def required_runtime_files(self) -> Tuple[str, ...]:
+        """The layout face this install's profile must carry (F16: core drops
+        agents/, server/, and the slot manifests)."""
+        if self.install_profile() == "core":
+            return tuple(name for name in REQUIRED_RUNTIME_FILES if not name.startswith(EXTENSION_FILE_PREFIXES))
+        return REQUIRED_RUNTIME_FILES
 
     def _pyproject_version(self, root: Path) -> str:
         pyproject = root / "pyproject.toml"
@@ -395,11 +417,13 @@ class Doctor:
         return {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
 
     def check_skill_layout(self) -> bool:
-        missing = [name for name in REQUIRED_RUNTIME_FILES if not (self.skill_root / name).is_file()]
+        required_files = self.required_runtime_files()
+        missing = [name for name in required_files if not (self.skill_root / name).is_file()]
         slots_root = self.skill_root / "slots"
-        for slot_name in BUILTIN_SLOT_NAMES:
-            if not (slots_root / slot_name / "manifest.json").is_file():
-                missing.append(f"slots/{slot_name}/manifest.json")
+        if self.install_profile() == "full":
+            for slot_name in BUILTIN_SLOT_NAMES:
+                if not (slots_root / slot_name / "manifest.json").is_file():
+                    missing.append(f"slots/{slot_name}/manifest.json")
         if missing:
             self.record(
                 "skill.layout",
@@ -422,12 +446,11 @@ class Doctor:
                 "重新导出运行时包，确保 slots/<name>/manifest.json、scripts、hooks、tests 全部随包分发",
             )
             return False
-        self.record(
-            "skill.layout",
-            "Skill 安装完整性",
-            "ok",
-            f"{len(REQUIRED_RUNTIME_FILES)} 个运行时文件与 {len(BUILTIN_SLOT_NAMES)} 个 slot 资产齐全",
-        )
+        if self.install_profile() == "full":
+            detail = f"{len(required_files)} 个运行时文件与 {len(BUILTIN_SLOT_NAMES)} 个 slot 资产齐全（profile=full）"
+        else:
+            detail = f"{len(required_files)} 个核对面运行时文件齐全（profile=core，不含 slot/扩展组件）"
+        self.record("skill.layout", "Skill 安装完整性", "ok", detail)
         return True
 
     def check_skill_scripts(self) -> None:
@@ -544,7 +567,12 @@ class Doctor:
             )
             return
         source = marker.get("source", "")
-        self.record("skill.marker", "安装所有权标记", "ok", f"安装器接管；source={source or '未知'}")
+        self.record(
+            "skill.marker",
+            "安装所有权标记",
+            "ok",
+            f"安装器接管；source={source or '未知'}；profile={self.install_profile()}",
+        )
         source_dir = Path(source) if source else None
         if source_dir and source_dir.is_dir() and (source_dir / "SKILL.md").is_file():
             drifted = self._drifted_files(source_dir)
@@ -563,7 +591,7 @@ class Doctor:
 
     def _drifted_files(self, source_dir: Path) -> List[str]:
         drifted: List[str] = []
-        for name in REQUIRED_RUNTIME_FILES:
+        for name in self.required_runtime_files():
             installed = self.skill_root / name
             origin = source_dir / name
             if not origin.is_file():
@@ -604,7 +632,7 @@ class Doctor:
             owned = "安装器接管" if marker else "无标记"
             versions.append(f"{label} {version}（{owned}）")
             changed = []
-            for name in REQUIRED_RUNTIME_FILES:
+            for name in self.required_runtime_files():
                 source, installed = self.skill_root / name, skill_dir / name
                 if source.is_file() and (not installed.is_file() or source.read_bytes() != installed.read_bytes()):
                     changed.append(name)
@@ -739,6 +767,11 @@ class Doctor:
         """
         if self.host_filter is not None and "claude" not in {name.strip() for name in self.host_filter}:
             return
+        # Core installs do not publish native agents (F16: agents/ is
+        # extension surface); leftover files from a former full install are
+        # swept by the installer's downgrade path, not audited here.
+        if self.install_profile() == "core":
+            return
         skills_claude_dir = self.host_skill_dir(self._find_host("claude"))
         if self.is_foreign_skill(skills_claude_dir):
             self.record(
@@ -856,6 +889,9 @@ class Doctor:
             self.fix_log.append("reinstall skipped: no bash on PATH; run manually: " + self._claude_fix_command())
             return False
         env = dict(os.environ, INSTALL_HOSTS="claude", SPEC_SKIP_SIGNING="1")
+        # Preserve the audited install's profile: a markerless reinstall
+        # would silently downgrade a full install to the core default.
+        env["INSTALL_PROFILE"] = self.install_profile()
         completed = subprocess.run(
             [bash, str(install_sh)], capture_output=True, text=True, env=env, cwd=str(self.skill_root)
         )
@@ -1006,11 +1042,14 @@ class Doctor:
             return
         detail_parts = managed + other_copy + unmanaged
         if not detail_parts:
+            # AUD-07: hooks are the disk-truth gate surface; a repository
+            # without them silently loses commit/push enforcement, so the
+            # missing-hook finding is a warning, not an optional note.
             self.record(
                 "project.hooks",
                 "Git hooks 指针",
-                "info",
-                "未安装磁盘真源 hooks（可选能力）",
+                "warn",
+                "未安装磁盘真源 hooks（门禁不生效）",
                 f"需要时运行 python3 {self.skill_root / 'scripts' / 'install_git_hooks.py'} --root {git_toplevel}",
             )
             return

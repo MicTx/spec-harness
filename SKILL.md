@@ -20,11 +20,11 @@ Use spec when:
 - User explicitly requests spec mode or task packages
 - Project start or phase boundary needing an interactive planning pass before the autonomous chain
 
-Skip it for a small reversible fix, a one-off experiment, or work whose complete plan and proof fit in one short command sequence.
+Skip it for a small reversible fix, a one-off experiment, or work whose complete plan and proof fit in one short command sequence. When the entry point meets an obviously small task (one-line reversible fix with its test, typo, copy tweak), advise against opening a package and offer the lightweight path instead: fix + test directly, then push with a `Spec: none (<非空理由>)` footer; the user decides whether they want the record anyway.
 
 ## Commands
 
-Read only the relevant section from `references/commands.md` for your current stage. Do not read the entire commands or output-contracts files upfront.
+Read only the relevant stage file under `references/stages/` for your current stage. Do not read entire reference files upfront.
 
 ### Core workflow
 
@@ -41,7 +41,7 @@ Read only the relevant section from `references/commands.md` for your current st
 
 ### Optional entry points
 
-Read `references/commands.md` for details if using these:
+Read the stage files under `references/stages/` (the `references/commands.md` index links each) for details if using these:
 
 | Command | Purpose |
 | --- | --- |
@@ -49,11 +49,13 @@ Read `references/commands.md` for details if using these:
 | `/spec:autoplan` | interactive planning: interrogate the user in themed rounds, then run framework/detail/review passes as a serial fresh-session chain with the same spawn discipline as autorun, down to autorun granularity, gate consistency, and report autorun readiness |
 | `/spec:autorun` | recursive chain: finish the active package, plan the next round from the project planning documents, and spawn a fresh interactive session (macOS Terminal.app or Linux/Windows WSL2 tmux) with the autorun prompt until every planned feature is done |
 | `/spec:doctor` | Environment self-check and repair |
-| `/spec:organize` | First-principles structure audit. Default new package in the target project; never delete, archive under `archive/retired`; disposition covers every member of a confirmed class |
+| `/spec:organize` | First-principles structure audit, audit-only by default; `--apply` or an explicit instruction creates the package and applies fixes; never delete, archive under `archive/retired`; disposition covers every member of a confirmed class |
+
+Install profile boundary: `new / run / check / done / push` are the kernel stage commands every install ships. The extended stages (`goal`, `autoplan`, `autorun`, `update`, `status`, `doctor`, `organize`) belong to `INSTALL_PROFILE=full`. On a core install (the default), an extended-stage invocation is answered with the install hint — reinstall with `INSTALL_PROFILE=full bash install.sh` — not executed as if the command were present.
 
 ## Core capability: single-orchestrator execution
 
-The main session is the orchestrator and owns routing, acceptance, and the `done`/`push` gates. It does the critical path itself — planning, integration, independent verification, acceptance, and all shared glue files. Bounded sidecar work may be delegated to in-process subagents only after a machine route decision (`python3 scripts/route_decision.py --text "<goal>"`) and a written assignment contract (goal / scope / excluded areas / output / verification; see [`references/orchestration.md`](references/orchestration.md)). Delegation never moves routing, acceptance, or gate authorization out of the main session, and one session still owns one package on one integration branch at a time; two sessions must not write the same package. When the route decision flags `channel_profile.shared_pool` (single gateway/model pool), keep fanning out in parallel — apply the constrained-channel protocol in [`references/orchestration.md`](references/orchestration.md) (slice minimization + lane-death salvage + burst backoff); never clamp lane count.
+The main session is the orchestrator and owns routing, acceptance, and the `done`/`push` gates. It does the critical path itself — planning, integration, independent verification, acceptance, and all shared glue files. Bounded sidecar work may be delegated to in-process subagents only after a machine route decision (`python3 scripts/route_decision.py --root <project> --slug <slug>`, decided from package structure) and a written assignment contract (goal / scope / excluded areas / output / verification; see [`references/orchestration.md`](references/orchestration.md)). Delegation never moves routing, acceptance, or gate authorization out of the main session, and one session still owns one package on one integration branch at a time; two sessions must not write the same package. When the route decision flags `channel_profile.shared_pool` (single gateway/model pool), keep fanning out in parallel — apply the constrained-channel protocol in [`references/orchestration.md`](references/orchestration.md) (slice minimization + lane-death salvage + burst backoff); never clamp lane count.
 
 ### Managed paths
 
@@ -67,7 +69,7 @@ The full delegation contract — five-route vocabulary, assignment-contract fiel
 ## Execution loop
 
 1. Route/read the current package and verify its integration branch. Fill `tasks.md` so every task carries `boundary` (what may change) and `verify` (how completion is proven), plus explicit `depends-on` when order matters. Optional stable `id: task-name` gives a task an identity that survives reordering.
-2. Produce a route decision with `python3 scripts/route_decision.py --text "<package goal>"` and write `### 5.4 编排策略` when the route is not `local`. Work ready tasks in dependency order. Before checking a task off, actually run the verification its `verify` line describes; a checkbox without a run verification is not done. For `explore`/`build`/`review` with clean ownership, spawn bounded sidecar lanes under the assignment contract in `references/orchestration.md`. If the package's task shapes match a registered slot's triggers (e.g. `team-loop`), hand the execution segment to that slot's managed protocol instead of improvising a loop. Merge sidecar results on the main thread before editing shared boundaries.
+2. Produce a route decision with `python3 scripts/route_decision.py --root <project> --slug <slug>` — a single entry decided from package structure, never goal wording (`references/stages/run.md` step 3 is the contract) — and write `### 5.4 编排策略` when the route is not `local`. Work ready tasks in dependency order; before checking a task off, actually run the verification its `verify` line describes — a checkbox without a run verification is not done. For `explore`/`build`/`review` with clean ownership, spawn bounded sidecar lanes under the assignment contract in `references/orchestration.md`; slot-trigger shapes go to the slot's managed protocol (see [Extension slots](#extension-slots)). Merge sidecar results on the main thread before editing shared boundaries.
 3. Keep going until all tasks are checked, then run the check gates, finish `checklist.md` with real evidence, and continue to `done`/`push` as authorized.
 4. If something is blocked, record the blocker on the task (a `!` marker or a blocked status line) and surface it to the user; do not silently skip or fake completion.
 
@@ -91,7 +93,7 @@ The optional Claude Stop hook (`hooks/claude_stop_guard.py`) checks package conv
    - Can't `run` while `spec.md` has template placeholders or blockers
    - Can't `done` without `boundary` and `verify` in every task
    - Can't `done` unless `checklist.md` is fully checked with passing acceptance and at least one non-placeholder evidence (script/test/build output)
-   - An interrupted `/spec:update` leaves an unresolved `update-checkpoint.json`; route hard-blocks the package until `scripts/update_checkpoint.py` `rollback`/`complete` resolves it (lifecycle contract: `references/commands.md` `/spec:update`)
+   - A historical `update-checkpoint.json` (retired mechanism) marks a half-applied package: route renders a prominent advisory and check/done refuse until Git-history recovery resolves the triad and the file is deleted (`scripts/update_checkpoint.py` `status` recognizes it; contract: `references/stages/update.md`)
 
 4. **Issue handling**: Actionable issues found during `check` must be written back to the current package and fixed in the same round. Do not output executable fixes as user deliverables. Only ask the user about a project-shaping constraint, a decision that cannot be reasonably assumed, or an external dependency the agent cannot resolve. Closed issues must have one of: `resolved_current`, `resolved_followup`, `accepted_risk`, `external_blocked`, `non_actionable`.
 
@@ -110,9 +112,9 @@ The optional Claude Stop hook (`hooks/claude_stop_guard.py`) checks package conv
 
 9. **Changelog generation** (optional tooling): `scripts/generate_changelog.py` converts Git history into standardized changelog entries on demand (`--from`/`--to`, `--spec-only`, `--output`, `--prepend`). It is a manual helper for release notes, not an automatic step of `done`/`push`.
 
-10. **Distillation destination**: Knowledge distilled at `done`/`goal` lands only in the executing project's own `.spec/docs/` — the `.spec/` tree inside the repository the task package runs in. Never write spec experience, process rules, or any memory into global carriers (`~/.claude/CLAUDE.md`, user-level `AGENTS.md`, or any user-level memory file). Distill only project-specific engineering facts; spec process mechanics live in this skill, not in distillations.
+10. **Distillation destination**: Knowledge distilled at `done`/`goal` renders as an incremental `AGENTS.md` proposal inside `completion-summary.md` — a single `## AGENTS.md 增量提议` diff fence (`--agents-proposal`, repeatable, one line per value; `无` when the round has no reusable fact) — and that summary is the only channel. Never apply the proposal automatically: `AGENTS.md` and host-equivalent instruction files are human-maintained, and landing a proposal is a human decision. Never write spec experience, process rules, or any memory into global carriers (`~/.claude/CLAUDE.md`, user-level `AGENTS.md`, or any user-level memory file). Distill only project-specific engineering facts; spec process mechanics live in this skill, not in distillations. Standalone `.spec/docs/` knowledge documents are no longer produced; existing ones are retained unchanged as history.
 
-Read [`references/commands.md`](references/commands.md) for stage-specific details. See [`references/storage-and-archive.md`](references/storage-and-archive.md) for directory structure and archiving.
+Read the stage contracts under [`references/stages/`](references/stages/) — [`references/commands.md`](references/commands.md) is their index. See [`references/storage-and-archive.md`](references/storage-and-archive.md) for directory structure and archiving.
 
 ## Extension slots
 

@@ -28,13 +28,13 @@ Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 
 
 ## 你会得到什么
 
-- **一个任务包**：在 `.spec/specs/YYYY-MM-DD_slug/` 中保存 `spec.md`、`tasks.md` 和 `checklist.md`。
+- **一个任务包**：在 `.spec/specs/YYYY-MM-DD_slug/` 中保存 `spec.md` 和 `tasks.md`（新版包不含 `checklist.md`，验收走 `spec.md` §6 成功标准；旧包的 `checklist.md` 继续有效）。
 - **一条可验证链**：`目标 → 范围 → 任务 → 验证 → 归档 → 提交 → 推送`，每个任务都声明 `boundary` 与 `verify`。
 - **明确的入口**：`new`、`goal`、`autoplan`、`autorun`、`run`、`check`、`done`、`push`、`update`、`status`、`doctor`、`organize`。
 - **可恢复的状态**：报告、失败原因、完成摘要和归档都来自磁盘文件，换会话仍能继续。
 - **会话边界交接**：任务包可选 `handoff.md`——生成式快照头 + append-only 条目日志，必填小节随协作模式（单人/多人/agent/集群）自适应，`spec_handoff.py` 维护、check 门禁校验、done 归档时冻结。
 - **交互式递归规划**：`autoplan` 在项目初期或阶段收口时多轮征询摸清目标，随后按 `autorun` 同款串联递归把框架规划、逐阶段细节规划与一致性复核逐个交给全新会话接力（不用于进程内子代理），细化到 autorun 颗粒度，结构门禁与独立复核通过后停在就绪报告，从不自动起链。
-- **递归自动链**：`autorun` 以项目规划文档的功能 checkbox 为终止条件——本轮跑完推送到 main 后，自动规划下一轮并在同路径开新交互会话注入提示词接续（macOS 用 Terminal.app，Linux/Windows WSL2 用 tmux）（沿用起链时的宿主 CLI，可用 `--host` 或 `SPEC_AUTORUN_HOST` 显式改选），直到全部功能勾选完成；每轮是完整交互会话，可旁观也可随时接管，macOS 旧窗口在新会话就位后自动回收，tmux 会话保留供重新连接；单链锁与「无合格规划文档拒绝起链」护栏防止失控递归，轮次上限为可选护栏（显式 `--max-rounds` 才设限，默认不限轮）。
+- **递归自动链**：`autorun` 以项目规划文档的功能 checkbox 为终止条件——本轮跑完推送到 main 后，自动规划下一轮并在同路径开新交互会话注入提示词接续（macOS 用 Terminal.app，Linux/Windows WSL2 用 tmux）（沿用起链时的宿主 CLI，可用 `--host` 或 `SPEC_AUTORUN_HOST` 显式改选），直到全部功能勾选完成；每轮是完整交互会话，可旁观也可随时接管，macOS 旧窗口在新会话就位后自动回收，tmux 会话保留供重新连接；单链锁与「无合格规划文档拒绝起链」护栏防止失控递归；默认轮次上限 5（显式 `--max-rounds` 可改设，`--unbounded` 解除），worker 权限默认继承父会话、探测不到就不提权（`--permission-mode bypass` 才显式提权），规划特性集指纹冻结会拒绝链中途新增未勾选特性的自旋。
 - **稳定的任务身份**：任务可用 `id:` 与 `depends-on` 声明身份与依赖；协议迁移不改写历史归档。
 - **受控的执行面**：主会话保留路由、集成、验收和 done/push 门禁；`workflow-runner` 与其他 slots 只执行有边界的工作段。
 - **两种运行形态**：本地 Skill 是参考实现；可选 `server/` 适配器只负责远端任务包的 start/result/health 投影。
@@ -78,17 +78,19 @@ Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.17.0
+git checkout v0.18.0
 bash install.sh
 ```
 
 `install.sh` 是本地 Skill 的唯一安装入口；可选的 `server/install.sh` 只用于部署 self-hosted server-mode。更新或回滚时切换到目标 tag 后重新运行安装器。
 
+源码树安装不需要签名凭据：本地没有签发凭据时，安装器自动以 `--skip-signing` 导出并打印一行提示；发布签名只由 release 构建强制（release 压缩包出厂自带签名）。需要本地签发时设置 `SPEC_SIGNING_IDENTITY` 与 `SPEC_SIGNING_KEY` 指向身份 JSON 与密钥文件；显式跳过也可用 `SPEC_SKIP_SIGNING=1`。
+
 ### 支持的宿主
 
 | `INSTALL_HOSTS` | 宿主 | 默认目录 | 额外行为 |
 | --- | --- | --- | --- |
-| `claude` | Claude Code | `~/.claude/skills` | 生成 `/spec` 与 12 个阶段命令 |
+| `claude` | Claude Code | `~/.claude/skills` | 生成 `/spec` 与阶段命令（core 5 个，full 12 个） |
 | `claude-desktop` | Claude Desktop | `~/.claude-desktop/skills` | 只安装 Skill |
 | `codex`、`codex-desktop` | Codex | `~/.codex/skills` | 两个 token 共用目录 |
 | `gemini` | Gemini CLI | `~/.gemini/skills` | |
@@ -99,12 +101,20 @@ bash install.sh
 | `pi` | Pi agent | `~/.pi/agent/skills` | 可用 `PI_DIR` 重定位 |
 | `zcode` | ZCode | `~/.zcode/skills` | 项目自有宿主 |
 | `desktop`、`rpi` | Claude Code + Codex | 两套默认目录 | 组合目标 |
-| `all` | 全部宿主 | 按上表写入 | 默认值 |
+| `all` | 全部宿主 | 按上表写入 | 显式全量 |
+
+不设置 `INSTALL_HOSTS` 时安装器自动探测：只安装「宿主 CLI 在 PATH 或宿主默认目录已存在」的宿主，本安装器装过的宿主按所有权标记沿用；跳过的宿主列在安装输出里。显式给定 `INSTALL_HOSTS`（含 `all`）时完全不探测。
 
 只安装一个宿主时显式指定 token，例如：
 
 ```bash
 INSTALL_HOSTS=codex CODEX_SKILLS_DIR=~/.codex/skills bash install.sh
+```
+
+安装 profile：`INSTALL_PROFILE` 选择组件面，缺省 `core`——只装内核（核心阶段命令 `/spec:new` `/spec:run` `/spec:check` `/spec:done` `/spec:push`、Git 钩子与脚本树），不装扩展组件（`slots/`、`agents/`）与扩展阶段命令（`goal`/`autoplan`/`autorun`/`update`/`status`/`doctor`/`organize`）；`INSTALL_PROFILE=full` 恢复完整安装（全部 12 个阶段命令与扩展组件，与旧版字节等价）。已装 full 的机器重跑默认安装会降回 core：扩展阶段命令与 agents 先入备份再移除。需要链、规划链或扩展能力时显式指定：
+
+```bash
+INSTALL_PROFILE=full bash install.sh
 ```
 
 安装器默认拒绝覆盖没有 `.spec-skill-install` 所有权标记的同名 Skill；确认替换用户目录时才设置 `FORCE=1`。`pi` 现在表示 Pi agent，旧的 Claude + Codex 组合请使用 `rpi` 或 `desktop`。
@@ -116,6 +126,8 @@ INSTALL_HOSTS=codex CODEX_SKILLS_DIR=~/.codex/skills bash install.sh
 ```bash
 python3 scripts/export_skill_package.py --output /tmp/spec --force
 ```
+
+手动直调导出器不会自动跳过签名：无凭据环境需显式加 `--skip-signing`（安装器在同样条件下会自动附加并提示）。导出器同样接受 `--profile core|full`（缺省 `full`，与 release 载荷字节等价）。
 
 把导出的 `spec/` 目录放入宿主的 Skill 根目录，然后在 Codex/Pi/ZCode 中触发 `$spec`，或在 Claude Code 中使用 `/spec:goal`。
 
@@ -129,7 +141,7 @@ spec:goal add payment recovery with tests
 # Claude Code: /spec:goal add payment recovery with tests
 ```
 
-宿主会按阶段引导：先澄清目标与范围（`goal`），再执行（`run`）、复核（`check`），最后归档提交（`done`、`push`）。想绕过宿主直接驱动脚本时，效果等价——在目标项目中创建任务包：
+宿主会按阶段引导：先澄清目标与范围（`goal`），再执行（`run`）、复核（`check`），最后归档提交（`done`）；推送（`push`）仅在显式要求时执行。想绕过宿主直接驱动脚本时，效果等价——在目标项目中创建任务包：
 
 ```bash
 python3 /tmp/spec-harness/scripts/init_spec_package.py \
@@ -155,7 +167,7 @@ python3 /tmp/spec-harness/scripts/complete_spec_package.py \
   --archive
 ```
 
-该脚本只负责生成摘要并归档；随后手动运行 `git commit`，再用 `push_spec_package.py` 做合并和推送收尾。废弃成员只归档到 `archive/retired`，遵循 `never delete` 原则；每个任务必须先真实运行 `verify`，不能只勾选复选框。
+该脚本只负责生成摘要并归档；随后手动运行 `git commit`，再用 `push_spec_package.py` 做合并和推送收尾。废弃成员只归档到 `archive/retired`，遵循 `never delete` 原则；每个任务必须先真实运行 `verify`，不能只勾选复选框。需要更强的证据绑定时，在 `spec.md` 声明 `evidence: runs`：机器任务的 `verify` 命令由 `scripts/spec_verify.py run` 真实执行并把运行记录（exit、耗时、stdout 尾哈希、工作树指纹）追加到包内 `runs.jsonl`，check/done 只认「最近一次 exit==0 且指纹匹配当前工作树」的记录——没跑过就是未验证，取证后改了代码就是证据过期。
 
 ## 导出运行时 Skill 包
 
@@ -166,6 +178,7 @@ python3 /tmp/spec-harness/scripts/complete_spec_package.py \
 ```text
 spec/
 ├── LICENSE
+├── NOTICE
 ├── SKILL.md
 ├── install.sh
 ├── pyproject.toml
@@ -178,8 +191,7 @@ spec/
 ├── hooks/
 │   ├── pre-commit
 │   ├── pre-push
-│   ├── claude_stop_guard.py
-│   └── spec_disk_truth_gate.py
+│   └── claude_stop_guard.py
 ├── references/
 │   ├── 00-readme.md
 │   ├── changelog-guide.md
@@ -191,7 +203,20 @@ spec/
 │   ├── slots.md
 │   ├── storage-and-archive.md
 │   ├── templates.md
-│   └── orchestration.md
+│   ├── orchestration.md
+│   └── stages/
+│       ├── autoplan.md
+│       ├── autorun.md
+│       ├── check.md
+│       ├── doctor.md
+│       ├── done.md
+│       ├── goal.md
+│       ├── new.md
+│       ├── organize.md
+│       ├── push.md
+│       ├── run.md
+│       ├── status.md
+│       └── update.md
 ├── scripts/
 │   ├── autoplan_gate.py
 │   ├── autoplan_spawn.py
@@ -221,6 +246,7 @@ spec/
 │   ├── smoke_test_spec_skill.py
 │   ├── spec_handoff.py
 │   ├── spec_package_support.py
+│   ├── spec_verify.py
 │   ├── sweep_chain_windows.py
 │   ├── update_checkpoint.py
 │   └── update_checkpoint_support.py
@@ -281,7 +307,7 @@ python3 -m pytest tests/test_public_docs.py tests/test_export_skill_package.py -
 git diff --check
 ```
 
-完整验证范围以 [`CONTRIBUTING.md`](CONTRIBUTING.md) 为准；任务包的 `package`、`integration`、`project` 验证级别由 `spec.md` 的 `### 5.1 验证策略` 声明。
+完整验证范围以 [`CONTRIBUTING.md`](CONTRIBUTING.md) 为准；任务包的 `package`、`integration`、`project` 验证级别由 `spec.md` 的 `### 5.1 验证策略` 区块声明（机器键 `verification-strategy`，区块按机器键识别，英文标题与键锚点等价，见 [`references/templates.md`](references/templates.md) 的英文模板变体）。
 
 ## 获取版本
 

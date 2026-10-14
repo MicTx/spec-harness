@@ -5,10 +5,13 @@
 代码触发半边：任何会话/脚本都可以 `loop_route.py --text "..."` 拿到结构化判定，
 无需人工记忆该加载哪个 skill。
 
-判定为启发式评分（可解释、可测试），不做魔法：
-- loop 形状：循环/多轮/迭代直至/直到通过/retry until 等收敛语义
-- 显式团队词：agents-team/spawn_agent/子代理/并行代理
-- 评审-修复让出：带「再审/复审」复合语义的文本先于通用打分让出
+F12（AUD-11）触发域收敛后，形态信号分强弱：
+- 强信号：自带「循环到通过/收敛」绑定语义的组合形态（直至/直到通过/到…为止/
+  iterate until…/迭代收敛等）与显式轮数——单个即过推荐阈；
+- 弱信号：裸循环词（循环/多轮/迭代/反复/loop）与团队词——单独出现确定性
+  不推荐，降级为普通 sidecar 编排，仅与强信号共现时补分。
+
+评审-修复让出：带「再审/复审」复合语义的文本先于通用打分让出。
 
 批量 fan-out 与评审-修复闭环形态归 workflow-runner（仓库自有执行面裁定）；
 批量让出以删词实现（2026-10-04），评审-修复让出以显式早退实现（2026-10-08 补完，
@@ -27,21 +30,28 @@ from typing import Any, Optional
 
 MODES = ("until-converged", "fixed-rounds", "none")
 
-LOOP_PATTERNS = [
-    r"循环",
-    r"多轮",
-    r"迭代",
-    r"反复",
+# 收敛语义强信号（F12 强弱分权）：自带「循环到通过/收敛」绑定语义，单个即过推荐阈。
+LOOP_STRONG_PATTERNS = [
     r"直至",
     r"直到.{0,12}(通过|收敛|完成|达标)",
     r"到.{0,10}为止",
     r"一轮轮",
     r"自?[主自].{0,6}(推进|完成)",
-    r"\bloop\b",
-    r"\blooping\b",
+    # 组合收敛语义：迭代/循环 + 收敛，自带「循环到收敛」绑定（如「迭代收敛」）。
+    r"(迭代|循环|多轮|反复).{0,6}收敛",
     r"\biterat\w*\b.{0,30}\buntil\b",
     r"\bretry\b.{0,30}\buntil\b",
     r"\buntil\b.{0,16}\b(pass|converge|green|done)\b",
+]
+# 裸循环弱信号：泛化循环词，单独出现不推荐（确定性降级为普通 sidecar 编排），
+# 仅与强信号/显式轮数共现时补分（F12：循环依赖/事件循环/多轮谈判等不是收敛任务）。
+LOOP_WEAK_PATTERNS = [
+    r"循环",
+    r"多轮",
+    r"迭代",
+    r"反复",
+    r"\bloop\b",
+    r"\blooping\b",
 ]
 TEAM_PATTERNS = [
     r"agents-team",
@@ -86,15 +96,18 @@ def route(text: str) -> dict[str, Any]:
             "suggestedConfig": None,
         }
 
-    loop_hits = _score(text, LOOP_PATTERNS)
+    # F12 强弱分权：收敛语义（强）单个即过阈；裸循环词/团队词（弱）单独不推荐，
+    # 确定性降级为普通 sidecar 编排；显式轮数本身就是强信号（用户点名了轮数）。
+    strong_hits = _score(text, LOOP_STRONG_PATTERNS)
+    weak_hits = _score(text, LOOP_WEAK_PATTERNS)
     team_hits = _score(text, TEAM_PATTERNS)
     explicit_rounds = ROUND_EXPLICIT.search(text)
 
-    total = loop_hits * 2 + team_hits + (2 if explicit_rounds else 0)
-    recommended = total >= 2
+    total = strong_hits * 2 + weak_hits + team_hits + (2 if explicit_rounds else 0)
+    recommended = total >= 2 and (strong_hits >= 1 or explicit_rounds is not None)
 
     mode = "until-converged"
-    if explicit_rounds and loop_hits == 0:
+    if explicit_rounds and strong_hits == 0:
         mode = "fixed-rounds"
     if not recommended:
         mode = "none"
@@ -114,12 +127,14 @@ def route(text: str) -> dict[str, Any]:
             config["maxRounds"] = min(100, max(1, int(explicit_rounds.group(1))))
 
     reasons = []
-    if loop_hits:
-        reasons.append(f"循环/收敛语义 x{loop_hits}")
+    if strong_hits:
+        reasons.append(f"循环/收敛语义(强) x{strong_hits}")
     if team_hits:
         reasons.append(f"显式团队词 x{team_hits}")
     if explicit_rounds:
         reasons.append(f"显式轮数 {explicit_rounds.group(0)}")
+    if weak_hits:
+        reasons.append(f"循环词(弱) x{weak_hits}")
 
     return {
         "loopRecommended": recommended,

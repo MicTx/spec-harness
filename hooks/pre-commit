@@ -1,27 +1,21 @@
 #!/bin/sh
 set -eu
 
-# The source hook resolves its runtime; install_git_hooks.py replaces this
-# placeholder with an absolute path in installed copies.
+# The source hook fails closed unless rendered; install_git_hooks.py
+# replaces these placeholders with absolute paths in installed copies.
 repo=$(git rev-parse --show-toplevel)
-hook_dir=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 checker="__SPEC_CHECK_ALL_SCRIPT_PLACEHOLDER__"
-checker_placeholder_prefix=__SPEC_CHECK_ALL_
-checker_placeholder="${checker_placeholder_prefix}SCRIPT_PLACEHOLDER__"
-# Checker resolution order:
-#   1. SPEC_CHECK_ALL_SCRIPT environment override (highest priority).
-#   2. The in-project copy at "$repo/scripts/check_all_spec_packages.py"
-#      when it exists and is readable (keeps the spec source repository
-#      self-contained).
-#   3. The absolute path rendered by install_git_hooks.py, already held in
-#      $checker when the placeholder above was replaced.
-#   4. The bootstrap path relative to this hook (unrendered source template).
+# Checker resolution:
+#   1. SPEC_CHECK_ALL_SCRIPT environment override — the explicit operator
+#      escape hatch; the path in effect is echoed to stderr so a swap is
+#      never silent.
+#   2. The absolute path rendered by install_git_hooks.py, already held in
+#      $checker when the placeholder above was replaced. Repository content
+#      can never replace the gate checker; an unrendered template fails
+#      closed below.
 if [ -n "${SPEC_CHECK_ALL_SCRIPT:-}" ]; then
   checker="$SPEC_CHECK_ALL_SCRIPT"
-elif [ -f "$repo/scripts/check_all_spec_packages.py" ] && [ -r "$repo/scripts/check_all_spec_packages.py" ]; then
-  checker="$repo/scripts/check_all_spec_packages.py"
-elif [ "$checker" = "$checker_placeholder" ]; then
-  checker="$hook_dir/../scripts/check_all_spec_packages.py"
+  printf '%s\n' "spec gate: using SPEC_CHECK_ALL_SCRIPT override: $checker" >&2
 fi
 
 if [ ! -f "$checker" ]; then
@@ -48,6 +42,27 @@ if [ "$python" != "${python##*/}" ] && [ ! -x "$python" ]; then
   printf '%s\n' "error: Spec gate requires a trusted Python interpreter" >&2
   exit 1
 fi
+
+# Branch-aware gate routing (AUD-07): the full gate guards the irreversible
+# paths — commits on the main branch (the merge destination) and commits
+# carrying archive paths on any branch. In-flight WIP commits on spec/*
+# integration branches get the structural lint only; the full gate
+# re-engages at the main-branch merge (pre-push + push_spec_package).
+# The channel is decided by objective Git facts (branch name, staged
+# paths), never by a committer-declared footer.
+branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+case "$branch" in
+  spec/*)
+    if git diff --cached --name-only --diff-filter=ACMRT 2>/dev/null | grep -q "specs/archive/"; then
+      : # Archive-carrying commits keep the full gate on every branch.
+    else
+      printf '%s\n' \
+        "spec gate: WIP commit on integration branch $branch — structural lint only;" \
+        "the full gate runs for main-branch and archive-carrying commits" >&2
+      exec "$python" "$checker" --root "$repo" --lint-only
+    fi
+    ;;
+esac
 
 baseline=""
 for ref in refs/heads/main refs/heads/master; do

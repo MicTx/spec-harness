@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import subprocess
 import sys
 from collections.abc import Callable
 from datetime import datetime
@@ -28,10 +29,16 @@ from issue_closure_support import (
 from safe_open_support import SafeOpenError, open_regular_read
 from spec_package_support import (
     MAX_SPEC_FILE_BYTES,
+    SECTION_BEHAVIOR_METRICS,
+    SECTION_KEY_ASSUMPTIONS,
+    SECTION_MINIMAL_PATH,
+    SECTION_OUT_OF_SCOPE,
+    SPEC_TITLE_SUFFIXES,
     SpecControlError,
     add_specs_dir_arg,
     detect_language,
     extract_evidence_fields,
+    extract_heading_title_from_content,
     extract_section_bullets,
     is_development_record_slug,
     is_placeholder_value,
@@ -42,6 +49,7 @@ from spec_package_support import (
     validate_branch_bound_package,
     verification_scope,
 )
+from spec_verify import machine_verification_summary, runs_protocol_enabled
 
 
 def parse_args() -> argparse.Namespace:
@@ -79,7 +87,23 @@ def parse_args() -> argparse.Namespace:
         default="auto",
         help="Language for Git record labels in completion-summary.md (auto detects from spec title)",
     )
-    parser.add_argument("--knowledge-doc", action="append", default=[])
+    parser.add_argument(
+        "--main-branch",
+        default="main",
+        help="Branch the integration branch merges into; used only for the recorded 提交区间 anchor",
+    )
+    parser.add_argument(
+        "--agents-proposal",
+        action="append",
+        default=[],
+        help=(
+            "One line of the AGENTS.md incremental diff proposal for this round's "
+            "distillation; repeat for multiple lines. Rendered as a single diff "
+            "fence in the summary; omit to record 无 (no reusable fact this round). "
+            "The script only carries session-authored proposal text and never "
+            "writes into AGENTS.md or any host instruction file."
+        ),
+    )
     parser.add_argument(
         "--follow-up",
         action="append",
@@ -149,21 +173,42 @@ def completed_task_subjects(tasks_content: str) -> list[str]:
 def archive_summary_values(
     spec_content: str,
     tasks_content: str,
-    checklist_content: str,
+    checklist_content: str | None,
     args: argparse.Namespace,
 ) -> dict[str, list[str]]:
-    """Fill archive summary sections from the already-passed triad."""
-    evidence = extract_evidence_fields(checklist_content)
-    assumptions = normalize_items(extract_section_bullets(spec_content, "### 2.2 关键假设"))
-    minimal_path = normalize_items(extract_section_bullets(spec_content, "## 4. 最小实现路径"))
-    out_of_scope = normalize_items(extract_section_bullets(spec_content, "### 3.3 不在范围内"))
-    behavior = normalize_items(extract_section_bullets(spec_content, "### 6.1 行为成效指标"))
+    """Fill archive summary sections from the already-passed package.
+
+    Evidence fields collapse to machine evidence (runs.jsonl for
+    ``evidence: runs`` packages) plus free-text notes (F11): the legacy
+    ``--test-evidence`` / ``--build-evidence`` / ``--manual-evidence``
+    arguments aggregate into the notes list and never gate the archive.
+    """
+    evidence = extract_evidence_fields(checklist_content or "")
+    assumptions = normalize_items(extract_section_bullets(spec_content, SECTION_KEY_ASSUMPTIONS))
+    minimal_path = normalize_items(extract_section_bullets(spec_content, SECTION_MINIMAL_PATH))
+    out_of_scope = normalize_items(extract_section_bullets(spec_content, SECTION_OUT_OF_SCOPE))
+    behavior = normalize_items(extract_section_bullets(spec_content, SECTION_BEHAVIOR_METRICS))
     command_evidence = [
         f"{key}：{value}"
         for key in ("脚本验证", "测试", "构建")
         if (value := evidence.get(key, "")) and not is_placeholder_value(value)
     ]
     delivered = completed_task_subjects(tasks_content)
+    evidence_notes = (
+        [
+            *(f"测试：{value}" for value in args.test_evidence),
+            *(f"构建：{value}" for value in args.build_evidence),
+            *(f"手工：{value}" for value in args.manual_evidence),
+        ]
+        or command_evidence
+        or [
+            (
+                "机器证据：runs.jsonl（见验证范围的机器验证率）"
+                if runs_protocol_enabled(spec_content)
+                else "命令证据：spec.md §6 成功标准 verify span"
+            )
+        ]
+    )
     return {
         "verified_assumptions": args.verified_assumption or assumptions or ["Development Record 假设与范围门禁通过"],
         "delivered": args.delivered or delivered or ["Development Record 内全部任务已完成"],
@@ -171,18 +216,11 @@ def archive_summary_values(
         "out_of_scope": args.out_of_scope or out_of_scope or ["未扩张到任务边界外"],
         "touched_areas": args.touched_area or ["见 tasks.md 的 boundary 记录"],
         "untouched_areas": args.untouched_area or out_of_scope or ["任务边界外模块未触碰"],
-        "build_evidence": args.build_evidence or ["适用外：本任务没有独立构建步骤"],
-        "test_evidence": args.test_evidence or command_evidence or ["check_spec_package.py 当前磁盘门禁通过"],
-        "manual_evidence": args.manual_evidence or ["适用外：脚本证据覆盖验收路径"],
+        "evidence_notes": evidence_notes,
         "effect_metrics": args.effect_metric or behavior or ["Development Record 行为门禁通过"],
-        "consistency_evidence": args.consistency_evidence or ["跨载体一致性 checklist 已通过"],
+        "consistency_evidence": args.consistency_evidence or ["验收面（checklist 或成功标准）已通过"],
         "gate_evidences": args.gate_evidence or ["check_spec_package.py exit 0"],
     }
-
-
-def detect_knowledge_docs(docs_dir: Path, slug: str) -> list[str]:
-    matches = sorted(docs_dir.glob(f"*{slug}_*.md"))
-    return [str(path.relative_to(docs_dir.parent)) for path in matches]
 
 
 MAX_ARCHIVE_FILES = 512
@@ -190,12 +228,9 @@ MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 
 
 def extract_title_from_content(spec_content: str, slug: str) -> str:
-    for line in spec_content.splitlines():
-        if line.startswith("# "):
-            title = line[2:].strip()
-            suffix = " - 项目范围"
-            return title[: -len(suffix)].strip() if title.endswith(suffix) else title
-    return slug
+    # Shared bilingual suffix pair (项目范围 / Project Scope): the H1 is
+    # display text and never gates, so both localizations strip here.
+    return extract_heading_title_from_content(spec_content, slug, SPEC_TITLE_SUFFIXES)
 
 
 def write_regular_text(path: Path, content: str) -> None:
@@ -355,6 +390,42 @@ def archive_validated_package(
         raise
 
 
+def archive_commit_range(root: Path, main_branch: str) -> str:
+    """AUD-06: the delivery window this archive anchors to, frozen at archive time.
+
+    Returns ``<merge-base(main, HEAD)>..<HEAD>`` — the interval covering every
+    commit this package delivered on its integration branch, computed once
+    here and never recomputed by gates (the archive commit that lands right
+    after this summary is head's direct child and carries the same Spec
+    footer, closing the window by construction). Non-Git roots, a missing
+    main branch, or an unresolvable merge-base return an explicit 适用外 note
+    so archival is never blocked by the interval itself.
+    """
+
+    def run_git(*args: str) -> str | None:
+        try:
+            result = subprocess.run(
+                ["git", *args],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+                env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return result.stdout.strip() if result.returncode == 0 else None
+
+    head = run_git("rev-parse", "HEAD")
+    if head is None:
+        return "适用外（非 Git 工作区或无提交）"
+    base = run_git("merge-base", f"refs/heads/{main_branch}", "HEAD")
+    if base is None:
+        return f"适用外（无法解析 refs/heads/{main_branch} 的 merge-base）"
+    return f"{base}..{head}"
+
+
 def git_record_labels(language: str) -> dict[str, str]:
     if language == "en":
         return {
@@ -392,24 +463,31 @@ def build_summary(
     out_of_scope: list[str],
     touched_areas: list[str],
     untouched_areas: list[str],
-    build_evidence: list[str],
-    test_evidence: list[str],
-    manual_evidence: list[str],
+    evidence_notes: list[str],
     effect_metrics: list[str],
     consistency_evidence: list[str],
     commit_ref: str,
     push_ref: str,
     git_record_language: str,
-    knowledge_docs: list[str],
+    agents_proposals: list[str],
     follow_ups: list[str],
     rejected_extensions: list[str],
     gate_evidences: list[str],
     issue_dispositions: list[dict[str, object]] | None = None,
     process_metrics: list[str] | None = None,
     verification_scope_level: str | None = None,
+    machine_verification_rate: str | None = None,
+    commit_range: str | None = None,
 ) -> str:
     git_labels = git_record_labels(git_record_language)
     closure = render_issue_closure(issue_dispositions or [])
+    # Optional machine-verification line: rendered only for `evidence: runs`
+    # packages, so legacy summaries keep their exact field order and content.
+    machine_rate_section = f"- 机器验证率：{machine_verification_rate}\n" if machine_verification_rate else ""
+    # AUD-06: the commit-interval anchor. The label stays fixed Chinese (not
+    # localized) because it is the machine-readable anchor the footer
+    # interval judge parses; None keeps legacy callers' output unchanged.
+    commit_range_section = f"- 提交区间：{commit_range}\n" if commit_range else ""
     # Optional process-metrics section: rendered only when real entries are
     # passed, so legacy summaries keep their exact field order.
     process_metrics_section = ""
@@ -417,6 +495,16 @@ def build_summary(
     if metric_entries:
         rendered_metrics = "\n".join(f"- {value}" for value in metric_entries)
         process_metrics_section = f"\n## 过程指标\n{rendered_metrics}\n"
+    # AUD-13 (F15): distillation is an incremental AGENTS.md diff proposal the
+    # done session authors; the script only renders it (diff fence, one line
+    # per repeated flag value) and records 无 explicitly when there is nothing
+    # reusable. It never writes into AGENTS.md or any host instruction file —
+    # landing a proposal stays a human decision.
+    proposal_lines = [line.strip() for line in agents_proposals if line and line.strip()]
+    if proposal_lines:
+        agents_proposal_section = "```diff\n" + "\n".join(proposal_lines) + "\n```"
+    else:
+        agents_proposal_section = "无"
     return f"""# {title} - 完成总结
 
 ## 交付结论
@@ -455,18 +543,12 @@ def build_summary(
 {bullet_lines(untouched_areas, "待补充")}
 
 ## 验证证据
-### 构建
-{bullet_lines(build_evidence, "待补充")}
-
-### 测试
-{bullet_lines(test_evidence, "待补充")}
-
-### 手工验证
-{bullet_lines(manual_evidence, "待补充")}
+### 备注
+{bullet_lines(evidence_notes, "待补充")}
 
 ## 验证范围
 - 级别：{verification_scope_level or "历史包未声明"}
-- 规则：check 与 done 复用该范围；只有记录升级触发时才执行全项目检查
+{machine_rate_section}- 规则：check 与 done 复用该范围；只有记录升级触发时才执行全项目检查
 
 ## 哲学生效证据
 ### 行为成效回填
@@ -482,10 +564,10 @@ def build_summary(
 - {git_labels["action"]}：{git_labels["commit"]} / {git_labels["push"]}
 - {git_labels["effect"]}：{bullet_inline(effect_metrics, "待补充")}
 - {git_labels["commit"]}：{commit_ref}
-- {git_labels["push"]}：{push_ref}
+{commit_range_section}- {git_labels["push"]}：{push_ref}
 
-## 知识沉淀
-{bullet_lines(knowledge_docs, "无")}
+## AGENTS.md 增量提议
+{agents_proposal_section}
 
 ## 被拒绝的扩展提议
 {bullet_lines(rejected_extensions, "无")}
@@ -547,7 +629,6 @@ def main() -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     try:
-        docs_dir = resolve_specs_child(specs_root, "docs")
         package_dir = resolve_specs_child(specs_root, "specs", slug)
         archive_dir = resolve_specs_child(specs_root, "specs", "archive")
     except ValueError as exc:
@@ -567,22 +648,23 @@ def main() -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    for path in (spec_path, tasks_path, checklist_path):
+    for path in (spec_path, tasks_path):
         if not path.exists():
             print(f"error: required file missing: {path}", file=sys.stderr)
             return 1
+    # checklist.md is optional since v2 packages (F11).
+    checklist_content: str | None = read_regular_text(checklist_path) if checklist_path.exists() else None
 
     try:
         spec_content = read_regular_text(spec_path)
         tasks_content = read_regular_text(tasks_path)
-        checklist_content = read_regular_text(checklist_path)
     except (OSError, UnicodeError, ValueError) as exc:
         print(f"error: invalid task package file: {exc}", file=sys.stderr)
         return 1
     required_snapshots = {
         "spec.md": spec_content,
         "tasks.md": tasks_content,
-        "checklist.md": checklist_content,
+        **({"checklist.md": checklist_content} if checklist_content is not None else {}),
     }
     branch_ok, branch_detail = validate_branch_bound_package(root, slug, spec_content)
     if not branch_ok:
@@ -603,8 +685,13 @@ def main() -> int:
             return 1
         # root enables the evidence freshness anchor: a stale 证据锚点 at done
         # time (HEAD moved after evidence capture) blocks the archive, exactly
-        # like the check stage it reuses.
-        if not overall_check_passed(spec_content, tasks_content, checklist_content, slug=slug, root=root):
+        # like the check stage it reuses. package_dir additionally enables the
+        # executable-verify gate: an `evidence: runs` package archives only
+        # when every machine task's latest runs.jsonl record is exit==0 and
+        # fingerprint-fresh against the current worktree.
+        if not overall_check_passed(
+            spec_content, tasks_content, checklist_content, slug=slug, root=root, package_dir=package_dir
+        ):
             print(
                 "error: spec package has not passed check gates; "
                 "run check_spec_package.py or use --allow-incomplete to bypass",
@@ -633,7 +720,6 @@ def main() -> int:
 
     title = extract_title_from_content(spec_content, slug)
     completed_at = args.completed_at or datetime.now().strftime("%Y-%m-%d %H:%M")
-    knowledge_docs = args.knowledge_doc or detect_knowledge_docs(docs_dir, slug)
 
     try:
         issue_dispositions = [parse_issue_disposition_arg(value) for value in args.issue_disposition]
@@ -677,9 +763,11 @@ def main() -> int:
             "out_of_scope": args.out_of_scope,
             "touched_areas": args.touched_area,
             "untouched_areas": args.untouched_area,
-            "build_evidence": args.build_evidence,
-            "test_evidence": args.test_evidence,
-            "manual_evidence": args.manual_evidence,
+            "evidence_notes": [
+                *(f"测试：{value}" for value in args.test_evidence),
+                *(f"构建：{value}" for value in args.build_evidence),
+                *(f"手工：{value}" for value in args.manual_evidence),
+            ],
             "effect_metrics": args.effect_metric,
             "consistency_evidence": args.consistency_evidence,
             "gate_evidences": args.gate_evidence,
@@ -688,6 +776,18 @@ def main() -> int:
     git_record_language = args.git_record_language
     if git_record_language == "auto":
         git_record_language = detect_language(title)
+
+    # Executable-verify packages carry their machine-verification rate into
+    # the archived summary (manual tasks are honest human work, excluded
+    # from the denominator). Computed from the same runs.jsonl the gate
+    # above already accepted, so the rate never disagrees with the gate.
+    machine_rate = None
+    if runs_protocol_enabled(spec_content):
+        try:
+            machine_rate = machine_verification_summary(tasks_content, package_dir)
+        except (OSError, UnicodeError, ValueError, SpecControlError) as exc:
+            print(f"error: runs 证据不可读：{exc}", file=sys.stderr)
+            return 1
 
     summary = build_summary(
         title=title,
@@ -702,15 +802,13 @@ def main() -> int:
         out_of_scope=summary_values["out_of_scope"],
         touched_areas=summary_values["touched_areas"],
         untouched_areas=summary_values["untouched_areas"],
-        build_evidence=summary_values["build_evidence"],
-        test_evidence=summary_values["test_evidence"],
-        manual_evidence=summary_values["manual_evidence"],
+        evidence_notes=summary_values["evidence_notes"],
         effect_metrics=summary_values["effect_metrics"],
         consistency_evidence=summary_values["consistency_evidence"],
         commit_ref=args.commit.strip() or "pending local commit",
         push_ref=args.push.strip() or "not-run (push stage follows commit)",
         git_record_language=git_record_language,
-        knowledge_docs=knowledge_docs,
+        agents_proposals=args.agents_proposal,
         follow_ups=args.follow_up,
         rejected_extensions=args.rejected_extension,
         gate_evidences=summary_values["gate_evidences"],
@@ -719,6 +817,8 @@ def main() -> int:
         # package-derived default, an unpassed flag renders no section.
         process_metrics=args.process_metric,
         verification_scope_level=verification_scope(spec_content),
+        machine_verification_rate=machine_rate,
+        commit_range=archive_commit_range(root, args.main_branch),
     )
 
     if args.archive:
@@ -737,8 +837,15 @@ def main() -> int:
             return 1
 
     archive_dir.mkdir(parents=True, exist_ok=True)
-    evidence_values = extract_evidence_fields(checklist_content)
-    evidence_filled = sum(1 for value in evidence_values.values() if value and not is_placeholder_value(value))
+    # Dashboard 证据 metric: legacy packages count filled checklist evidence
+    # fields; v2 packages count checked §6 success criteria.
+    if checklist_content is not None:
+        evidence_values = extract_evidence_fields(checklist_content)
+        evidence_filled = sum(1 for value in evidence_values.values() if value and not is_placeholder_value(value))
+    else:
+        from spec_package_support import section_checkboxes_by_prefix
+
+        _total, evidence_filled = section_checkboxes_by_prefix(spec_content, "## 6.")
     from report_spec_package import parse_tasks as parse_task_records_for_strip
 
     _sections, package_tasks = parse_task_records_for_strip(tasks_content)

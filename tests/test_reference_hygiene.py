@@ -88,7 +88,7 @@ def test_assignment_contract_excluded_areas_carries_secret_exclusion():
 
 
 def test_done_distillation_discipline_carries_credential_ban():
-    section = _section(_read("references", "commands.md"), "## `/spec:done`")
+    section = _read("references", "stages", "done.md")
     assert "蒸馏文本不得含真实凭证值" in section, "/spec:done distillation discipline must carry the credential ban"
     assert "env file / host-side injection" in section, "ban must point at the legitimate injection path"
     assert "<admin-token>" in section, "replacement example must be a placeholder"
@@ -97,7 +97,7 @@ def test_done_distillation_discipline_carries_credential_ban():
 def test_templates_writing_requirements_extend_hygiene_to_boundary_and_evidence():
     content = _read("references", "templates.md")
     block_start = content.index("Writing requirements:", content.index("# [项目名称] - 任务拆解"))
-    block = content[block_start : content.index("# [项目名称] - 验收清单")]
+    block = content[block_start : content.index("## Success criteria")]
     assert "Credential hygiene" in block, "tasks writing requirements must carry the credential-hygiene bullet"
     assert "`boundary` / `verify`" in block, "hygiene must extend to boundary/verify lines"
     assert "acceptance evidence" in block, "hygiene must extend to acceptance evidence"

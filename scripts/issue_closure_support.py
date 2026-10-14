@@ -179,22 +179,30 @@ def _load_archive_node(
         return [f"follow-up Development Record is not archived: {slug}"], ()
 
     contents: dict[str, str] = {}
-    for filename in ("spec.md", "tasks.md", "checklist.md", "completion-summary.md"):
+    for filename in ("spec.md", "tasks.md", "completion-summary.md"):
         try:
             contents[filename] = _read_regular_text(package / filename)
         except IssueClosureError as exc:
             failures.append(str(exc))
-    if not all(filename in contents for filename in ("spec.md", "tasks.md", "checklist.md", "completion-summary.md")):
+    # checklist.md is optional since v2 archives (F11): read when present,
+    # otherwise acceptance is judged from the §6 success-criteria surface.
+    checklist_path = package / "checklist.md"
+    if checklist_path.is_file():
+        try:
+            contents["checklist.md"] = _read_regular_text(checklist_path)
+        except IssueClosureError as exc:
+            failures.append(str(exc))
+    if not all(filename in contents for filename in ("spec.md", "tasks.md", "completion-summary.md")):
         return failures, ()
 
     from check_spec_package import overall_check_passed
-    from spec_package_support import checklist_passed, count_unchecked_checkboxes, count_unfinished_tasks
+    from spec_package_support import acceptance_complete, count_unfinished_tasks
 
     unfinished = count_unfinished_tasks(contents["tasks.md"])
     if unfinished:
         failures.append(f"follow-up archive has unfinished tasks: {slug}")
-    if count_unchecked_checkboxes(contents["checklist.md"]) or not checklist_passed(contents["checklist.md"]):
-        failures.append(f"follow-up archive checklist is not passed: {slug}")
+    if not acceptance_complete(contents.get("checklist.md"), contents["spec.md"]):
+        failures.append(f"follow-up archive acceptance surface is not passed: {slug}")
     # Same legacy-baseline doctrine as check_all_spec_packages: an archive
     # byte-identical to the authoritative baseline was graded under the gates
     # of its day and is never retrospectively re-graded by *current* gates
@@ -204,7 +212,7 @@ def _load_archive_node(
     if not gate_exempt and not overall_check_passed(
         contents["spec.md"],
         contents["tasks.md"],
-        contents["checklist.md"],
+        contents.get("checklist.md"),
         slug=slug,
     ):
         failures.append(f"follow-up archive Spec gate is not passed: {slug}")

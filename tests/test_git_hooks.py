@@ -3,6 +3,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 CHECKER = ROOT / "scripts" / "check_all_spec_packages.py"
 PRE_COMMIT = ROOT / "hooks" / "pre-commit"
@@ -451,3 +453,56 @@ def test_pre_push_all_mode_blocks_uncommitted_active_package(tmp_path):
 
     assert result.returncode != 0
     assert "active package must be archived" in result.stdout + result.stderr
+
+
+def test_pre_push_lite_channel_releases_none_only_push(tmp_path):
+    """F11: `Spec: none (<reason>)` attributes a trivial unpackaged commit;
+    a none-only push skips the package gate and lands on the remote."""
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    (repo / "README.md").write_text("initial\n", encoding="utf-8")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "initial", "-m", "Spec: none (bootstrap)")
+    git(repo, "remote", "add", "origin", str(remote))
+    install_hook(repo, PRE_PUSH)
+    (repo / "typo.txt").write_text("typo\n", encoding="utf-8")
+    git(repo, "add", "typo.txt")
+    git(repo, "commit", "-m", "fix: trivial typo", "-m", "Spec: none (typo fix covered by tests)")
+
+    result = git(repo, "push", "origin", "HEAD:main", check=False)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert git(remote, "show-ref", "--verify", "refs/heads/main", check=False).returncode == 0
+
+
+@pytest.mark.parametrize(
+    ("footer", "expected_message"),
+    [
+        ("Spec: none", "requires a non-empty reason"),
+        ("Spec: none ()", "requires a non-empty reason"),
+        # Reasons with parentheses are deliberately outside the footer
+        # grammar: they fall through to the generic attribution rejection.
+        ("Spec: none (reason with ) inside)", "attribution"),
+    ],
+)
+def test_pre_push_rejects_malformed_none_footer(tmp_path, footer, expected_message):
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    (repo / "README.md").write_text("initial\n", encoding="utf-8")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "initial", "-m", "Spec: none (bootstrap)")
+    git(repo, "remote", "add", "origin", str(remote))
+    install_hook(repo, PRE_PUSH)
+    (repo / "typo.txt").write_text("typo\n", encoding="utf-8")
+    git(repo, "add", "typo.txt")
+    git(repo, "commit", "-m", "fix: trivial typo", "-m", footer)
+
+    result = git(repo, "push", "origin", "HEAD:main", check=False)
+
+    assert result.returncode != 0
+    assert expected_message in result.stdout + result.stderr
+    assert git(remote, "show-ref", "--verify", "refs/heads/main", check=False).returncode != 0

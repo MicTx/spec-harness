@@ -622,6 +622,97 @@ def test_archived_package_skips_branch_binding(tmp_path):
     assert json.loads(result.stdout)["archived"] is True
 
 
+def test_check_cli_fails_on_active_update_checkpoint(tmp_path, write_historical_checkpoint):
+    """AUD-08 (EXP-03): check must refuse a live checkpoint exactly like
+    complete/check_all already do — “check passes, done refuses” contradicted
+    the gate contract. The mechanism is retired; the refusal now carries the
+    Git recovery path instead of rollback/complete instructions."""
+    repo = tmp_path / "repo"
+    slug = "2026-10-12_fix-check-active-ckpt"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "checkout", "-q", "-b", f"spec/{slug}"], check=True)
+    package = repo / ".spec" / "specs" / slug
+    _write_triad(
+        package,
+        _make_spec() + f"\n- Git integration branch：`spec/{slug}`\n",
+        _make_tasks(done=True),
+        _make_complete_checklist(),
+    )
+    write_historical_checkpoint(package, "改写 spec 第二节")
+
+    result = _run_check(repo, slug)
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "存在未完成 update checkpoint" in result.stderr
+    assert "按 Git 历史确认/恢复三件套" in result.stderr
+    assert "git reset --hard" in result.stderr
+    assert "删除 update-checkpoint.json" in result.stderr
+
+
+def test_check_cli_fails_on_corrupted_update_checkpoint(tmp_path):
+    """A corrupted checkpoint reports manual recovery instead of crashing."""
+    repo = tmp_path / "repo"
+    slug = "2026-10-12_fix-check-corrupt-ckpt"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "checkout", "-q", "-b", f"spec/{slug}"], check=True)
+    package = repo / ".spec" / "specs" / slug
+    _write_triad(
+        package,
+        _make_spec() + f"\n- Git integration branch：`spec/{slug}`\n",
+        _make_tasks(done=True),
+        _make_complete_checklist(),
+    )
+    (package / "update-checkpoint.json").write_text("{ not json", encoding="utf-8")
+
+    result = _run_check(repo, slug)
+
+    assert result.returncode == 1
+    assert "记录已损坏" in result.stderr
+    assert "删除 update-checkpoint.json" in result.stderr
+
+
+def test_archived_package_with_checkpoint_file_still_passes(tmp_path):
+    """The checkpoint file rides into archive/ as comparable history, not a
+    live blocker: the archived read-only review stays green."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    archive_pkg = repo / ".spec" / "specs" / "archive" / "2026-01-01_fix-archived-ckpt"
+    _write_triad(
+        archive_pkg,
+        _make_spec() + "\n- Git integration branch：`spec/2026-01-01_fix-archived-ckpt`\n",
+        _make_tasks(done=True),
+        _make_checklist(passed=True),
+    )
+    (archive_pkg / "update-checkpoint.json").write_text(
+        json.dumps({"status": "active", "intent": "历史遗留"}), encoding="utf-8"
+    )
+
+    result = _run_check(repo, "2026-01-01_fix-archived-ckpt")
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_commands_md_update_section_matches_checkpoint_enforcement():
+    """AUD-08 lineage: the doc's enforcement paragraph must match the code —
+    route advises (historical artifact), check/complete/check_all refuse
+    until Git-history recovery deletes the file, Git WIP is the rollback
+    mechanism."""
+    update_stage = Path(__file__).resolve().parent.parent / "references" / "stages" / "update.md"
+    text = update_stage.read_text(encoding="utf-8")
+    assert "do not probe the checkpoint" not in text
+    # Retired write lifecycle and CLI subcommands must not survive in the doc.
+    assert "begin → rewrite the three documents → complete" not in text
+    assert "rollback --slug" not in text and "complete --slug" not in text
+    # The surviving contract: Git WIP rollback + advisory/refusal split.
+    assert "Route advises, gates agree" in text
+    assert "git reset --hard" in text
+    assert "status [--slug" in text
+
+
 # -- G2/G3: review-round gate-machinery fixes --
 
 
@@ -685,19 +776,55 @@ def test_completed_task_title_with_block_word_is_not_blocked(tmp_path):
     assert "存在阻塞任务" not in payload["gaps"]
 
 
-def test_unchecked_task_title_with_block_word_still_blocks():
-    """G3 guard: the 阻塞 keyword still blocks while the task is unchecked."""
+def test_unchecked_task_title_with_block_word_does_not_block():
+    """AUD-10: a title about blocking work is not a blocked task.
+
+    The structured gate reads only the ``!`` marker and status lines; the
+    old unchecked-title heuristic (Chinese-only) is gone, so a title like
+    阻塞判定结构化 or 修复登录接口阻塞主线程 never gates-blocks.
+    """
     from check_spec_package import compute_gate_results, convergence_state
 
     tasks = """## Phase
-- [ ] 解除依赖阻塞并修复
+- [ ] 阻塞判定结构化
   - boundary: only x
   - verify: passes
+- [ ] 修复登录接口阻塞主线程
+  - boundary: only y
+  - verify: works
 """
     results = compute_gate_results(_make_spec(), tasks, _make_checklist(), slug="2026-09-08_fix-blocked-open")
+    assert results.blocked_tasks is False
     converged, gaps = convergence_state(results)
     assert converged is False
-    assert "存在阻塞任务" in gaps
+    assert "存在阻塞任务" not in gaps
+
+
+def test_blocked_marker_and_status_lines_are_authoritative():
+    """AUD-10: structured markers keep gating, including English status lines."""
+    from check_spec_package import compute_gate_results
+
+    marker_tasks = """## Phase
+- [x] Task A
+  - boundary: only x
+  - verify: passes
+- [!] Task B
+  - boundary: only y
+  - verify: works
+"""
+    results = compute_gate_results(
+        _make_spec(), marker_tasks, _make_checklist(passed=True), slug="2026-09-08_fix-blocked-open"
+    )
+    assert results.blocked_tasks
+    assert not results.overall_ok
+
+    for status_line in ("阻塞：等待外部系统", "blocked: waiting on external system"):
+        tasks = _make_tasks(done=True) + f"\n{status_line}\n"
+        results = compute_gate_results(
+            _make_spec(), tasks, _make_checklist(passed=True), slug="2026-09-08_fix-blocked-open"
+        )
+        assert results.blocked_tasks, status_line
+        assert not results.overall_ok
 
 
 def test_orchestration_section_absent_does_not_block():
@@ -1366,6 +1493,49 @@ def test_spec_without_any_checkboxes_is_vacuous_pass():
     assert results.overall_ok is True
 
 
+def test_2_3_question_checkboxes_are_isolated_from_function_count():
+    """AUD-10 区段隔离：2.3 未决复选框不改变功能框计数，3.1 语义不变。"""
+    for marker in ("", "<!-- spec-format: 2 -->\n"):
+        base = (
+            _spec_with_function_boxes((" ", "x", " "))
+            .replace(
+                "# Test - 项目范围\n",
+                f"# Test - 项目范围\n\n{marker}",
+            )
+            .replace(
+                "### 2.3 待确认问题\n- 无\n",
+                "### 2.3 待确认问题\n- [ ] 未决问题甲\n- [x] 已决问题乙 → 结论\n",
+            )
+        )
+        results = compute_gate_results(base, _make_tasks(), _make_checklist(), slug="2026-09-25_fix-x")
+        assert results.unchecked_spec_functions == 2, marker
+
+        all_ticked_2_3 = base.replace("- [ ] 未决问题甲", "- [x] 未决问题甲 → 已决")
+        results = compute_gate_results(all_ticked_2_3, _make_tasks(), _make_checklist(), slug="2026-09-25_fix-x")
+        assert results.unchecked_spec_functions == 2, marker  # unchanged by 2.3 state
+
+    # v2 channel: the ticked/un-ticked pair parses as exactly one open question.
+    v2 = base.replace("# Test - 项目范围\n", "# Test - 项目范围\n\n<!-- spec-format: 2 -->\n")
+    assert compute_gate_results(v2, _make_tasks(), _make_checklist(), slug="2026-09-25_fix-x").pending_questions == [
+        "未决问题甲"
+    ]
+
+
+def test_3_1_mvp_title_variant_still_counts():
+    """旧式标题 `### 3.1 MVP` 与新式同判（前缀限定，不依赖标题文字）。"""
+    spec = _spec_with_function_boxes((" ", "x")).replace("### 3.1 核心功能（MVP）", "### 3.1 MVP")
+    results = compute_gate_results(spec, _make_tasks(done=True), _make_checklist(passed=True), slug="2026-09-25_fix-x")
+    assert results.unchecked_spec_functions == 1
+    assert results.function_ok is False
+
+
+def test_checkboxes_outside_3_1_are_not_function_gate_input():
+    """非 3.1 区段的复选框（如 5.4 编排）不计入功能框门禁。"""
+    spec = _make_spec() + "\n### 5.4 编排策略\n- [ ] route: explore\n"
+    results = compute_gate_results(spec, _make_tasks(), _make_checklist(), slug="2026-09-25_fix-x")
+    assert results.unchecked_spec_functions == 0
+
+
 def _scope_spec(level: str = "package"):
     return (
         _make_spec()
@@ -1416,3 +1586,139 @@ def test_check_rejects_malformed_declared_verification_scope():
     assert results.verification_scope_errors
     assert results.overall_ok is False
     assert gate_failure_details(results, "2026-09-25_fix-scope")["验证范围"]
+
+
+# -- v2 success-criteria packages (F11): no checklist.md --
+
+
+def _make_v2_spec(criteria_checked: bool = False, command_span: bool = True, runs_marker: bool = False) -> str:
+    marker_box = "x" if criteria_checked else " "
+    criteria = (
+        "- [x] 标准 A 达成 -> verify: task_0001\n- [x] 标准 B 达成 -> verify: task_0002"
+        if criteria_checked
+        else "- [ ] 标准 A 达成 -> verify: task_0001\n- [ ] 标准 B 达成 -> verify: task_0002"
+    )
+    if command_span:
+        criteria += f"\n- [{marker_box}] 复核命令证据 -> verify: `python3 -m pytest -q tests/test_x.py`"
+    marker = "\n- 证据协议：evidence: runs\n" if runs_marker else ""
+    return f"""# T - 项目范围
+
+<!-- spec-format: 2 -->
+
+## 1. 问题定义
+- **项目目标**：真实目标
+- **目标用户**：真实用户
+- **核心价值**：真实价值
+
+## 2. 假设与待确认
+### 2.1 已确认事实
+- 事实一
+### 2.2 关键假设
+- 假设一
+### 2.3 待确认问题
+- 无
+## 3. 功能范围
+### 3.1 核心功能（MVP）
+- [x] 功能 A
+### 3.3 不在范围内
+- 不做 X
+## 4. 最小实现路径
+- 方案一
+- 方案二
+- 方案三
+## 5. 技术决策{marker}
+### 5.1 验证策略
+- 范围级别：package
+- 变更对象：模块 A
+- 快速检查：python3 -m pytest -q tests/test_x.py
+- 集成检查：适用外：无直接受影响链路
+- 全项目检查：适用外：发布门禁
+- 升级触发：共享基础设施变化时升级
+## 6. 成功标准与验证方式
+{criteria}
+## 7. 风险与约束
+- 风险一 -> 缓解
+"""
+
+
+_V2_TASKS_DONE = "- [x] Task A\n  - boundary: x\n  - verify: ran\n"
+
+
+def test_v2_package_without_checklist_passes_on_checked_criteria_and_command_evidence():
+    spec = _make_v2_spec(criteria_checked=True, command_span=True)
+    assert overall_check_passed(spec, _V2_TASKS_DONE, None, slug="2026-10-12_v2-ok") is True
+
+
+def test_v2_package_with_unchecked_criteria_fails():
+    spec = _make_v2_spec(criteria_checked=False, command_span=True)
+    assert overall_check_passed(spec, _V2_TASKS_DONE, None, slug="2026-10-12_v2-open") is False
+
+
+def test_v2_package_with_empty_criteria_surface_fails_closed():
+    spec = _make_v2_spec(criteria_checked=True, command_span=False).replace(
+        "## 6. 成功标准与验证方式\n\n## 7.", "## 6. 成功标准与验证方式\n\n## 7."
+    )
+    # Remove the criteria lines entirely: an empty acceptance surface is a
+    # contract failure, never a vacuous pass.
+    spec = "\n".join(line for line in spec.splitlines() if "标准 A 达成" not in line and "标准 B 达成" not in line)
+    assert overall_check_passed(spec, _V2_TASKS_DONE, None, slug="2026-10-12_v2-empty") is False
+
+
+def test_v2_package_without_runs_and_without_command_span_fails():
+    spec = _make_v2_spec(criteria_checked=True, command_span=False)
+    assert overall_check_passed(spec, _V2_TASKS_DONE, None, slug="2026-10-12_v2-noevid") is False
+
+
+def test_v2_convergence_gap_names_success_criteria():
+    from check_spec_package import compute_gate_results, convergence_state
+
+    results = compute_gate_results(_make_v2_spec(criteria_checked=False), _V2_TASKS_DONE, None)
+    converged, gaps = convergence_state(results)
+    assert not converged
+    assert any("成功标准未勾" in gap for gap in gaps)
+    assert not any("未勾检查清单" in gap for gap in gaps)
+
+
+def test_legacy_checklist_package_conclusion_unchanged():
+    """The v2 branch must not leak into legacy packages: a failing checklist
+    package keeps its exact gate conclusions."""
+    spec = _make_spec()
+    tasks = _make_tasks(done=True)
+    failing_checklist = _make_checklist(passed=False)
+    assert overall_check_passed(spec, tasks, failing_checklist, slug="2026-06-12_legacy") is False
+    passing = _make_complete_checklist()
+    assert overall_check_passed(spec, tasks, passing, slug="2026-06-12_legacy") is True
+
+
+def _v2_runs_sandbox(tmp_path: Path, slug: str) -> Path:
+    """Git repo + v2 package with an evidence: runs declaration, no runs."""
+    import subprocess
+
+    subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "t@e.c"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "T"], check=True, capture_output=True)
+    (tmp_path / "README.md").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "init"], check=True, capture_output=True)
+    package = tmp_path / ".spec" / "specs" / slug
+    package.mkdir(parents=True)
+    (package / "spec.md").write_text(_make_v2_spec(criteria_checked=True, runs_marker=True), encoding="utf-8")
+    (package / "tasks.md").write_text(_V2_TASKS_DONE, encoding="utf-8")
+    return tmp_path
+
+
+def test_v2_runs_package_blocked_by_missing_runs_evidence(tmp_path):
+    root = _v2_runs_sandbox(tmp_path, "2026-10-12_v2-runs")
+    package_dir = root / ".spec" / "specs" / "2026-10-12_v2-runs"
+    spec_content = (package_dir / "spec.md").read_text(encoding="utf-8")
+    assert (
+        overall_check_passed(
+            spec_content,
+            _V2_TASKS_DONE,
+            None,
+            slug="2026-10-12_v2-runs",
+            root=root,
+            package_dir=package_dir,
+        )
+        is False
+    )

@@ -12,10 +12,15 @@ duplicated (plans/01 F5 inventory):
     opt-in round/pass cap helpers, the osascript/ps timeouts, the
     worker-confirmation bound and poll, the close delay/poll/wait bounds,
     the chain file names, ``utc_now``;
-  - paths and state: ``chain_dir`` / ``resolve_root`` / ``under_root`` /
-    ``atomic_write``, the strict state read mechanism, and the tolerant
-    ``read_state`` (the F4 four-status read with the corrupt-state rebuild —
-    the recovery *decisions* stay in ``scripts/chain_recovery.py``);
+  - paths and state: ``chain_dir`` (tracked summary) / ``chain_runtime_dir``
+    (the ``.git/spec-chain/<chain>/`` per-machine runtime root, F16 step 3) /
+    ``resolve_root`` / ``under_root`` / ``atomic_write``, the strict state
+    read mechanism, the tolerant ``read_state`` (the F4 four-status read
+    with the corrupt-state rebuild — the recovery *decisions* stay in
+    ``scripts/chain_recovery.py``), and the summary/volatile split
+    (``split_volatile_state`` / ``write_chain_state`` /
+    ``read_volatile_state``): the tracked summary never carries the
+    volatile spawn-moment keys, they live in the runtime tree;
   - lock: ``single_chain_lock`` (flock mutex + one advisory holder line per
     acquisition) and ``lock_holder`` (the status-side probe);
   - audit: ``append_audit`` (``spawns.jsonl``), ``append_event`` /
@@ -54,6 +59,7 @@ patch points alive while the implementation lives here once.
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import json
 import os
 import platform
@@ -98,13 +104,25 @@ TERMINAL_OPEN_RETRY_BACKOFF_SECONDS = 2
 # the helper's waits plus its osascript calls.
 REFUSAL_CLOSE_WAIT_SECONDS = 30
 REFUSAL_CLOSE_HELPER_TIMEOUT_SECONDS = 100
-# Chain caps are opt-in only: an explicit ``--max-rounds`` / ``--max-passes``
-# bounds the chain exactly; without the flag the chain is unbounded (no cap
-# is computed, ``max_rounds``/``max_passes`` record as null, and the
-# continuation prompt carries no cap flag). The 2026-10-09 removal of the
-# F17 adaptive default caps is recorded in the Development Record; only the
-# validation and the boundary judgment of an explicitly given cap remain
-# here (F12).
+# Chain caps (F1, AUD-01): a restored default bounds every chain — autorun
+# rounds default to 5, autoplan passes to 20 — an explicit ``--max-rounds`` /
+# ``--max-passes`` overrides the default, and ``--unbounded`` removes the cap
+# entirely (the pre-F1 behavior, now opt-in). The 2026-10-09 opt-in-only
+# regime is superseded by this 2026-10-12 restoration; the strict validation
+# and the next==cap boundary judgment (F12) stay unchanged. The effective
+# cap resolves per spawn (flag > --unbounded > default) and travels to the
+# next round's prompt, so a chain's cap decision is self-carrying.
+DEFAULT_AUTORUN_MAX_ROUNDS = 5
+DEFAULT_AUTOPLAN_MAX_PASSES = 20
+
+# F1 (AUD-01) chain permission modes. ``ask`` renders no escalation flag on
+# any host; ``bypass`` renders the host's escalation flag (claude's
+# ``--dangerously-skip-permissions``). ``inherit`` is a spawn-script
+# decision — probe the parent session — resolved to ask/bypass before the
+# argv renders; the render surface only knows the two effective modes.
+PERMISSION_MODES: Tuple[str, ...] = ("inherit", "ask", "bypass")
+WORKER_PERMISSION_MODES: Tuple[str, ...] = ("ask", "bypass")
+CLAUDE_BYPASS_FLAG = "--dangerously-skip-permissions"
 
 AUTORUN_CHAIN_DIR = ".spec/autorun"
 AUTOPLAN_CHAIN_DIR = ".spec/autoplan"
@@ -112,6 +130,17 @@ CHAIN_STATE_FILE = "chain.json"
 CHAIN_SPAWNS_FILE = "spawns.jsonl"
 CHAIN_LOCK_FILE = "chain.lock"
 CHAIN_EVENTS_FILE = "events.jsonl"
+# F16 step 3 (AUD-14/AUD-18): per-machine runtime state lives under
+# ``.git/spec-chain/<chain>/`` — inside the Git directory, so untracked by
+# construction and machine-local without any .gitignore entry. The tracked
+# tree keeps only the summary (``.spec/<chain>/chain.json``, volatile-free),
+# so a round's plan-sync commit no longer carries ttys, window ids, or pids.
+CHAIN_RUNTIME_ROOT = Path(".git") / "spec-chain"
+VOLATILE_STATE_FILE = "volatile.json"
+# Keys describing one machine's spawn moment (the spawning tty, the window
+# recycle plan). They live in volatile.json and in the audit rows; the
+# tracked summary never carries them.
+VOLATILE_STATE_KEYS: Tuple[str, ...] = ("prev_tty", "window_recycle")
 # Trailing events lines scanned for ``last_refusal`` (recent failures only).
 EVENTS_TAIL_LINES = 20
 
@@ -144,6 +173,27 @@ def validate_cap(value: int, option: str) -> int:
     if value < 1:
         raise ChainSpawnError(f"--{option} must be >= 1")
     return value
+
+
+def resolve_effective_cap(
+    explicit: Optional[int],
+    unbounded: bool,
+    default: int,
+    option: str,
+    error: Callable[..., Exception] = ChainSpawnError,
+) -> Optional[int]:
+    """F1: resolve the effective chain cap from the spawn flags.
+
+    Precedence: an explicit ``--{option}`` value wins; ``--unbounded``
+    removes the cap (None); otherwise the restored default applies. Giving
+    both flags at once is refused — the intent is ambiguous and the chain
+    record must not carry a cap the caller did not actually choose.
+    """
+    if explicit is not None and unbounded:
+        raise error(f"--unbounded and --{option} are mutually exclusive; pick one cap decision")
+    if unbounded:
+        return None
+    return explicit if explicit is not None else default
 
 
 def next_index_within_cap(
@@ -208,12 +258,153 @@ def utc_now() -> str:
 
 
 def chain_dir(root: Path, chain: str) -> Path:
-    """The runtime state directory of one chain under ``root``."""
+    """The tracked summary directory of one chain under ``root``."""
     if chain == "autorun":
         return root / AUTORUN_CHAIN_DIR
     if chain == "autoplan":
         return root / AUTOPLAN_CHAIN_DIR
     raise ChainSpawnError(f"unknown chain: {chain!r} (expected 'autorun' or 'autoplan')")
+
+
+def chain_runtime_dir(root: Path, chain: str) -> Path:
+    """The per-machine runtime directory of one chain (lock, logs, volatile).
+
+    Lives under ``.git/spec-chain/`` so Git never tracks it and a worktree
+    clone starts fresh; the summary stays tracked under ``.spec/<chain>/``.
+    """
+    if chain not in ("autorun", "autoplan"):
+        raise ChainSpawnError(f"unknown chain: {chain!r} (expected 'autorun' or 'autoplan')")
+    return root / CHAIN_RUNTIME_ROOT / chain
+
+
+def split_volatile_state(state: Dict[str, object]) -> Tuple[Dict[str, object], Dict[str, object]]:
+    """Split one state record into (tracked summary fields, volatile fields).
+
+    The audit row keeps the full record; only the summary write strips the
+    volatile keys, and volatile.json carries exactly those keys.
+    """
+    volatile = {key: state[key] for key in VOLATILE_STATE_KEYS if key in state}
+    summary = {key: value for key, value in state.items() if key not in VOLATILE_STATE_KEYS}
+    return summary, volatile
+
+
+def write_chain_state(summary_dir: Path, runtime_dir: Path, state: Dict[str, object]) -> None:
+    """Atomic split write: volatile.json first, then the tracked summary.
+
+    Volatile first so a crash between the two writes leaves the summary as
+    the previous commit point; the next spawn overwrites both anyway. The
+    summary never carries the volatile keys, so it stays byte-stable across
+    machine-side churn and safe for the round's plan-sync commit.
+    """
+    summary, volatile = split_volatile_state(state)
+    atomic_write(runtime_dir / VOLATILE_STATE_FILE, json.dumps(volatile, indent=2, sort_keys=True) + "\n")
+    atomic_write(summary_dir / CHAIN_STATE_FILE, json.dumps(summary, indent=2, sort_keys=True) + "\n")
+
+
+def read_volatile_state(runtime_dir: Path) -> Dict[str, object]:
+    """Tolerant volatile read: ``{}`` when missing or unreadable.
+
+    The volatile file is machine-side render fuel (status text, window
+    sweep), never a gate input — degrade to defaults instead of failing the
+    read, and let the next spawn overwrite whatever is corrupt.
+    """
+    path = runtime_dir / VOLATILE_STATE_FILE
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"warning: volatile state unreadable ({path}): {exc}", file=sys.stderr)
+        return {}
+    if not isinstance(data, dict):
+        print(f"warning: volatile state is not a JSON object: {path}", file=sys.stderr)
+        return {}
+    return data
+
+
+def migrate_legacy_chain_state(root: Path, chain: str) -> Dict[str, object]:
+    """One idempotent legacy→runtime migration pass for one chain (F16 step 3).
+
+    Legacy layout (pre-split): ``chain.lock`` / ``spawns.jsonl`` /
+    ``events.jsonl`` beside the summary under ``.spec/<chain>/``, and the
+    summary itself carrying the volatile keys. New layout: those files live
+    under ``.git/spec-chain/<chain>/`` and the summary is volatile-free.
+
+    Every move is an atomic rename on the same filesystem — a reader or
+    writer holding an open descriptor follows the inode, so even a racing
+    pre-migration process stays mutually excluded through the flock. A
+    failure (target unwritable, cross-device, whatever) leaves the legacy
+    bytes exactly as found, is reported in the return value, and never
+    raises; the next status/spawn entry re-runs the pass. Called before any
+    state read in ``status`` and ``spawn``, so both layouts render
+    identically and the tracked tree converges to summary-only.
+    """
+    summary_dir = chain_dir(root, chain)
+    runtime_dir = chain_runtime_dir(root, chain)
+    moved: List[str] = []
+    skipped: List[Dict[str, str]] = []
+    for name in (CHAIN_LOCK_FILE, CHAIN_SPAWNS_FILE, CHAIN_EVENTS_FILE):
+        legacy = summary_dir / name
+        if not legacy.is_file():
+            continue
+        target = runtime_dir / name
+        if target.exists():
+            # Both positions populated means a partial earlier migration met
+            # fresh runtime writes; merging append-only logs is not worth the
+            # corruption risk — keep the legacy bytes and report the skip.
+            skipped.append({"file": name, "reason": "target already exists"})
+            continue
+        try:
+            runtime_dir.mkdir(parents=True, exist_ok=True)
+            os.replace(legacy, target)
+            moved.append(name)
+        except OSError as exc:
+            skipped.append({"file": name, "reason": str(exc)})
+
+    # Strip volatile keys the tracked summary may still carry (legacy writer
+    # or a partial earlier strip): first migration writes them to
+    # volatile.json, then rewrites the summary without them. An existing
+    # volatile.json is authoritative and stays; the stale summary copies are
+    # dropped either way. Atomic writes on both files keep every
+    # intermediate state readable.
+    volatile_stripped = False
+    state_file = summary_dir / CHAIN_STATE_FILE
+    if state_file.is_file():
+        try:
+            data = json.loads(state_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            data = None
+        if isinstance(data, dict):
+            legacy_volatile = {key: data[key] for key in VOLATILE_STATE_KEYS if key in data}
+            if legacy_volatile:
+                volatile_path = runtime_dir / VOLATILE_STATE_FILE
+                if not volatile_path.exists():
+                    try:
+                        atomic_write(volatile_path, json.dumps(legacy_volatile, indent=2, sort_keys=True) + "\n")
+                    except OSError as exc:
+                        skipped.append({"file": VOLATILE_STATE_FILE, "reason": str(exc)})
+                        legacy_volatile = {}
+                if legacy_volatile:
+                    for key in VOLATILE_STATE_KEYS:
+                        data.pop(key, None)
+                    try:
+                        atomic_write(state_file, json.dumps(data, indent=2, sort_keys=True) + "\n")
+                        volatile_stripped = True
+                    except OSError as exc:
+                        skipped.append({"file": CHAIN_STATE_FILE, "reason": str(exc)})
+
+    report: Dict[str, object] = {
+        "chain": chain,
+        "moved": moved,
+        "skipped": skipped,
+        "volatile_stripped": volatile_stripped,
+    }
+    if moved or volatile_stripped:
+        append_event(
+            runtime_dir / CHAIN_EVENTS_FILE,
+            {"kind": "state_migrated", "at": utc_now(), "chain": chain, "detail": report},
+        )
+    return report
 
 
 def resolve_root(raw_root: str) -> Path:
@@ -299,23 +490,27 @@ def last_audit_record(path: Path) -> Tuple[Optional[Dict[str, object]], int]:
     return None, 0
 
 
-def read_audit_tail(chain_dir: Path) -> Optional[Dict[str, object]]:
+def read_audit_tail(runtime_dir: Path) -> Optional[Dict[str, object]]:
     """The last complete ``spawns.jsonl`` record, or ``None`` (partial lines skipped)."""
-    record, _ = last_audit_record(chain_dir / CHAIN_SPAWNS_FILE)
+    record, _ = last_audit_record(runtime_dir / CHAIN_SPAWNS_FILE)
     return record
 
 
-def read_state(chain_dir: Path, chain: str = "unknown") -> Tuple[Optional[Dict[str, object]], str]:
-    """Tolerant ``chain.json`` read returning ``(state, read_status)``.
+def read_state(summary_dir: Path, runtime_dir: Path, chain: str = "unknown") -> Tuple[Optional[Dict[str, object]], str]:
+    """Tolerant chain-state read returning ``(state, read_status)``.
 
-    Statuses: ``ok`` (parsed), ``missing`` (no file — a fresh chain, even when
+    Reads the tracked summary from ``summary_dir``; the recovery path (and
+    every event append) works against ``runtime_dir``. Statuses: ``ok``
+    (parsed), ``missing`` (no file — a fresh chain, even when
     audit lines exist), ``recovered`` (corrupt file rebuilt from the last
     parseable ``spawns.jsonl`` line; the rebuild is written back atomically
     with ``recovered_from`` plus a ``recovery`` event), ``corrupt`` (file
     present but unreadable and the audit cannot rebuild it — manual
-    inspection; the file is left exactly as found).
+    inspection; the file is left exactly as found). The rebuilt state is
+    split: volatile fields land in volatile.json, the summary stays
+    volatile-free.
     """
-    state_file = chain_dir / CHAIN_STATE_FILE
+    state_file = summary_dir / CHAIN_STATE_FILE
     if not state_file.is_file():
         return None, READ_MISSING
     data: Optional[Dict[str, object]] = None
@@ -328,20 +523,22 @@ def read_state(chain_dir: Path, chain: str = "unknown") -> Tuple[Optional[Dict[s
     if data is not None:
         return _normalize_state(data), READ_OK
 
-    record, line_number = last_audit_record(chain_dir / CHAIN_SPAWNS_FILE)
+    record, line_number = last_audit_record(runtime_dir / CHAIN_SPAWNS_FILE)
     if record is None:
         return None, READ_CORRUPT
 
     # Rebuild from the audit tail: atomic write-back plus the recovery audit.
     # The audit row converts to state form first: F14's per-spawn injection
     # level is a spawns-row-only fact and never enters chain.json (the lock
-    # rides along; old rows predate both keys and stay legacy-shaped).
+    # rides along; old rows predate both keys and stay legacy-shaped). The
+    # volatile fields split out to volatile.json — the rebuild is a new-layout
+    # write, so the summary comes out volatile-free even from a legacy row.
     recovered = _normalize_state(record)
     recovered.pop("model_injection", None)
     recovered["recovered_from"] = f"{CHAIN_SPAWNS_FILE} line {line_number}"
-    atomic_write(state_file, json.dumps(recovered, indent=2, sort_keys=True) + "\n")
+    write_chain_state(summary_dir, runtime_dir, recovered)
     append_recovery_event(
-        chain_dir,
+        runtime_dir,
         chain,
         "recovered_state",
         {"source": f"{CHAIN_SPAWNS_FILE} line {line_number}", "state_file": CHAIN_STATE_FILE},
@@ -732,7 +929,11 @@ def model_injection_level(identity: Optional[Dict[str, str]], host: str) -> str:
 
 
 def build_worker_command(
-    host: str, root: Path, prompt: str, model_identity: Optional[Dict[str, str]] = None
+    host: str,
+    root: Path,
+    prompt: str,
+    model_identity: Optional[Dict[str, str]] = None,
+    permission_mode: str = "ask",
 ) -> List[str]:
     """Build the interactive worker argv for the next-round session.
 
@@ -747,7 +948,19 @@ def build_worker_command(
     default) renders through the shared host flag mapping right after the
     worker binary; ``None`` keeps the argv byte-identical to the pre-F14
     form (the compatibility red line).
+
+    F1 (AUD-01): ``permission_mode`` carries the *effective* mode — the
+    spawn script resolves ``inherit`` by probing the parent session before
+    it renders. ``ask`` (the default) renders no escalation flag on any
+    host; ``bypass`` renders the host's escalation flag — today only claude
+    has one (``--dangerously-skip-permissions``); pi and codex accept the
+    mode for the audit record with no argv change. The pre-F1 argv always
+    escalated claude workers; the restored default deliberately does not.
     """
+    if permission_mode not in WORKER_PERMISSION_MODES:
+        raise ChainSpawnError(
+            f"unknown worker permission mode: {permission_mode!r} (expected one of {WORKER_PERMISSION_MODES})"
+        )
     if host == "codex":
         # codex >=0.160 seatbelt denies .git writes under workspace-write, so
         # `git add`/`git commit` die with EPERM at the round's commit stage
@@ -770,7 +983,10 @@ def build_worker_command(
     elif host == "pi":
         argv = ["pi", "--mode", "text", "--", prompt]
     elif host == "claude":
-        argv = ["claude", "--dangerously-skip-permissions", prompt]
+        argv = ["claude"]
+        if permission_mode == "bypass":
+            argv.append(CLAUDE_BYPASS_FLAG)
+        argv.append(prompt)
     else:
         raise ChainSpawnError(f"unknown worker host: {host}")
     if model_identity:
@@ -778,6 +994,54 @@ def build_worker_command(
         if model_argv:
             argv[1:1] = model_argv
     return argv
+
+
+# --- F1 feature-set fingerprint (AUD-01) ----------------------------------------
+#
+# A chain must not spin on a plan that grew behind its back: every spawn
+# freezes an ordered hash of the planning documents' feature checkboxes and
+# the next spawn refuses when the fingerprint moved. The hash covers the
+# feature *texts* in document order — checking a box off is legitimate
+# progress and leaves the fingerprint unchanged; adding, removing, or
+# rewording a feature changes it and refuses the spawn through the existing
+# refusal path (no state written).
+
+FEATURE_CHECKBOX_LINE = re.compile(r"^\s*[-*]\s+\[( |x|X)\]\s*(\S.*)$")
+
+
+def feature_lines(text: str) -> List[str]:
+    """Feature checkbox item texts in document order (state-independent)."""
+    items: List[str] = []
+    for line in text.splitlines():
+        match = FEATURE_CHECKBOX_LINE.match(line)
+        if match:
+            items.append(match.group(2).strip())
+    return items
+
+
+def feature_fingerprint(docs: List[Path], root: Optional[Path] = None) -> str:
+    """Ordered sha256 over ``(doc path, feature text)`` pairs for ``docs``.
+
+    ``root`` relativizes each doc path when it stays under the root, so the
+    fingerprint survives a checkout at another absolute location. Doc order
+    is the caller's deterministic discovery order (sorted); the hash mixes
+    each path with a NUL separator so no concatenation ambiguity exists.
+    Unreadable docs contribute their path with no items — a planning doc a
+    chain depends on must not silently vanish from the fingerprint.
+    """
+    digest = hashlib.sha256()
+    for doc in docs:
+        rel = str(doc.relative_to(root)) if root is not None and under_root(root, doc) else str(doc)
+        try:
+            text = doc.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        for item in feature_lines(text):
+            digest.update(rel.encode("utf-8"))
+            digest.update(b"\x00")
+            digest.update(item.encode("utf-8"))
+            digest.update(b"\x00")
+    return digest.hexdigest()
 
 
 # --- portable session backend ----------------------------------------------
@@ -1007,17 +1271,18 @@ def spawn_tmux_payload(
     }
     if dry_run:
         return {"dry_run": True, "launch_argv": argv, **record}
-    directory = chain_dir(root, chain)
+    summary_dir = chain_dir(root, chain)
+    runtime_dir = chain_runtime_dir(root, chain)
     try:
         open_tmux_session(argv, name)
         state = dict(record)
         state.pop("model_injection")
         state["updated_at"] = state.pop("spawned_at")
-        atomic_write(directory / CHAIN_STATE_FILE, json.dumps(state, indent=2, sort_keys=True) + "\n")
+        write_chain_state(summary_dir, runtime_dir, state)
     except BaseException as exc:
         cleanup = close_tmux_session(name)
         append_event(
-            directory / CHAIN_EVENTS_FILE,
+            runtime_dir / CHAIN_EVENTS_FILE,
             {
                 "kind": "refusal_close",
                 "chain": chain,
@@ -1032,7 +1297,7 @@ def spawn_tmux_payload(
             raise ChainSpawnError(f"tmux handoff failed: {exc}") from exc
         raise
     try:
-        append_audit(directory / CHAIN_SPAWNS_FILE, record)
+        append_audit(runtime_dir / CHAIN_SPAWNS_FILE, record)
     except OSError as exc:
         raise ChainSpawnError(
             f"tmux handoff committed but spawn audit failed: {exc}; inspect status before retrying"

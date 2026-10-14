@@ -19,6 +19,7 @@ from dashboard_support import HEALTH_OK, HEALTH_RISK, Dashboard
 from spec_package_support import (
     PROTECTED_BRANCHES,
     PROTECTED_PREFIXES,
+    active_package_slugs,
     combined_process_output,
     remote_unavailable_detected,
     scope_from_changed_paths,
@@ -28,13 +29,16 @@ try:
     from check_all_spec_packages import (
         CheckFailure,
         check_all_packages,
+        footer_interval_warnings,
         git_revision_snapshot,
         legacy_archive_hashes,
         render_failures,
+        render_footer_interval_warnings,
     )
 except ImportError:  # pragma: no cover - optional until disk-truth lands
     CheckFailure = None  # type: ignore[assignment]
     check_all_packages = None  # type: ignore[assignment]
+    footer_interval_warnings = None  # type: ignore[assignment]
     git_revision_snapshot = None  # type: ignore[assignment]
     legacy_archive_hashes = None  # type: ignore[assignment]
 
@@ -86,8 +90,11 @@ Repair the remote Git hosting service before running Spec push cleanup again:
    mirror, and CI/Actions state
 
 Built-in Gitea repair: when the remote is a Gitea instance you administer,
-rerun push with `--repair-gitea-hooks --gitea-url <base-url> --gitea-token
-<admin-token>` (or env SPEC_GITEA_URL / SPEC_GITEA_TOKEN). This runs the
+rerun push with `--repair-gitea-hooks --gitea-url <base-url>` and provide the
+site-admin token via the SPEC_GITEA_TOKEN environment variable or
+SPEC_GITEA_TOKEN_FILE=/path/to/token-file (SPEC_GITEA_TOKEN wins when both
+are set). The --gitea-token flag is deprecated and refused: a command-line
+token is visible in process listings and shell history. This runs the
 official FAQ maintenance actions (sync_repo_branches, sync_repo_tags,
 resync_all_hooks) via the site admin API and retries the push once.
 
@@ -104,18 +111,56 @@ def git_hooks_broken_detected(output: str) -> bool:
     return any(marker in normalized for marker in GIT_HOOKS_BROKEN_MARKERS)
 
 
+def _resolve_gitea_token() -> str | None:
+    """Resolve the Gitea admin token from env or token file (AUD-22).
+
+    SPEC_GITEA_TOKEN wins; SPEC_GITEA_TOKEN_FILE is read and stripped. A
+    missing, unreadable, or empty token file fails loudly instead of
+    degrading to a silent empty token.
+    """
+    env_token = (os.environ.get("SPEC_GITEA_TOKEN") or "").strip()
+    if env_token:
+        return env_token
+    token_file = (os.environ.get("SPEC_GITEA_TOKEN_FILE") or "").strip()
+    if not token_file:
+        return None
+    path = Path(token_file)
+    if not path.exists():
+        raise PushError(
+            f"SPEC_GITEA_TOKEN_FILE points to a missing file: {token_file}; "
+            "set SPEC_GITEA_TOKEN or write the token to the file"
+        )
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise PushError(
+            f"SPEC_GITEA_TOKEN_FILE is not readable: {token_file} ({exc}); set SPEC_GITEA_TOKEN or fix the file"
+        ) from exc
+    token = raw.strip()
+    if not token:
+        raise PushError(
+            f"SPEC_GITEA_TOKEN_FILE is empty: {token_file}; set SPEC_GITEA_TOKEN or write the token to the file"
+        )
+    return token
+
+
 class GiteaRepairSettings:
-    """Opt-in repair configuration resolved from flags with env fallback."""
+    """Opt-in repair configuration resolved from env/file carriers (AUD-22).
+
+    The token never travels on argv: the ``--gitea-token`` flag is refused in
+    ``parse_args`` and resolution reads ``SPEC_GITEA_TOKEN`` or
+    ``SPEC_GITEA_TOKEN_FILE`` only. A disabled repair resolves no token so a
+    normal push grows no new failure surface from an unrelated env var.
+    """
 
     def __init__(
         self,
         enabled: bool,
         base_url: str | None,
-        token: str | None,
     ) -> None:
         self.enabled = enabled
         self.base_url = (base_url or os.environ.get("SPEC_GITEA_URL") or "").strip() or None
-        self.token = (token or os.environ.get("SPEC_GITEA_TOKEN") or "").strip() or None
+        self.token = _resolve_gitea_token() if enabled else None
 
 
 class BrokenGitHooksError(PushError):
@@ -166,7 +211,7 @@ def repair_gitea_hooks_once(repair: GiteaRepairSettings) -> None:
     if not repair.base_url or not repair.token:
         raise BrokenGitHooksError(
             "repair-gitea-hooks is enabled but credentials are incomplete; "
-            "provide --gitea-url/--gitea-token or SPEC_GITEA_URL/SPEC_GITEA_TOKEN\n" + GIT_HOOKS_FIX_GUIDANCE
+            "provide --gitea-url plus SPEC_GITEA_TOKEN or SPEC_GITEA_TOKEN_FILE\n" + GIT_HOOKS_FIX_GUIDANCE
         )
     print(
         f"Gitea hook repair: running official maintenance tasks on {repair.base_url} (site-wide operation)...",
@@ -255,9 +300,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--gitea-token",
         default=None,
-        help="Gitea site admin token for hook repair (env: SPEC_GITEA_TOKEN)",
+        help="deprecated and refused: provide SPEC_GITEA_TOKEN or SPEC_GITEA_TOKEN_FILE instead",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.gitea_token is not None:
+        # AUD-22: fail loud before any other work — a silent ignore would let
+        # "thought I passed the token" repair calls run without credentials.
+        print(
+            "error: --gitea-token is deprecated and refused: a command-line token "
+            "is visible in process listings and shell history. Provide the token "
+            "via the SPEC_GITEA_TOKEN environment variable or "
+            "SPEC_GITEA_TOKEN_FILE=/path/to/token-file instead.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    return args
 
 
 def _temp_roots() -> list[str]:
@@ -498,10 +555,20 @@ def changed_files_against_main(root: Path, branch: str, main_branch: str) -> lis
     return [line.strip() for line in diff.stdout.splitlines() if line.strip()]
 
 
-def spec_footer_slugs(root: Path, branch: str, main_branch: str) -> list[str]:
+SPEC_NONE_FOOTER_PATTERN = re.compile(r"^Spec:\s*none\s*\(([^()]+)\)\s*$")
+
+
+def spec_footer_attribution(root: Path, branch: str, main_branch: str) -> tuple[list[str], list[str]]:
+    """Commit-footer attribution for a working branch (F11 lite channel).
+
+    Returns ``(slugs, none_reasons)``: ordinary ``Spec: <slug>`` footers
+    resolve to Development Record slugs; ``Spec: none (<非空理由>)`` footers
+    attribute a trivial unpackaged commit and carry their reason here. A
+    commit with neither footer is a push-blocking attribution gap.
+    """
     base = git(root, "merge-base", f"refs/heads/{main_branch}", f"refs/heads/{branch}", check=False)
     if base.returncode != 0:
-        return []
+        return [], []
     commits = git(
         root,
         "rev-list",
@@ -510,32 +577,52 @@ def spec_footer_slugs(root: Path, branch: str, main_branch: str) -> list[str]:
         check=False,
     )
     if commits.returncode != 0:
-        return []
+        return [], []
     commit_shas = [line.strip() for line in commits.stdout.splitlines() if line.strip()]
     if not commit_shas:
         commit_shas = [git_stdout(root, "rev-parse", f"refs/heads/{branch}")]
     slugs: set[str] = set()
+    none_reasons: list[str] = []
     unattributed: list[str] = []
     for sha in commit_shas:
         message = git(root, "show", "-s", "--format=%B", sha, check=False)
         if message.returncode != 0:
             unattributed.append(sha[:12])
             continue
+        lines = [line.strip() for line in message.stdout.splitlines()]
+        if any(re.match(r"^Spec:\s*none\s*(\(\s*\))?\s*$", line) for line in lines):
+            # The bare word would otherwise parse as a slug named "none" and
+            # die later with a confusing archive-not-found error.
+            raise PushError(
+                "`Spec: none` lite channel requires a non-empty reason: "
+                "write `Spec: none (<非空理由>)` in the commit footer"
+            )
         commit_slugs = {
             match.group(1)
-            for line in message.stdout.splitlines()
-            if (match := re.match(r"^Spec:\s*([a-z0-9][a-z0-9_-]*[a-z0-9]|[a-z0-9])\s*$", line.strip()))
+            for line in lines
+            if (match := re.match(r"^Spec:\s*([a-z0-9][a-z0-9_-]*[a-z0-9]|[a-z0-9])\s*$", line))
         }
         if not commit_slugs:
-            unattributed.append(sha[:12])
+            none_matches = [match.group(1).strip() for line in lines if (match := SPEC_NONE_FOOTER_PATTERN.match(line))]
+            if none_matches and any(none_matches):
+                none_reasons.extend(reason for reason in none_matches if reason)
+            else:
+                unattributed.append(sha[:12])
         slugs.update(commit_slugs)
     if unattributed:
         raise PushError(
             "working branch contains commit(s) without `Spec: <slug>` attribution: "
             + ", ".join(unattributed)
-            + "; retro-pack and amend the commits before push"
+            + "; retro-pack and amend the commits before push, or attribute trivial "
+            "unpackaged work with `Spec: none (<非空理由>)`"
         )
-    return sorted(slugs)
+    return sorted(slugs), none_reasons
+
+
+def spec_footer_slugs(root: Path, branch: str, main_branch: str) -> list[str]:
+    """Slug-only view of :func:`spec_footer_attribution` (compat wrapper)."""
+    slugs, _none_reasons = spec_footer_attribution(root, branch, main_branch)
+    return slugs
 
 
 def touched_spec_scope(
@@ -854,13 +941,60 @@ def run_spec_gate(
     if attribution_slugs is None:
         raise PushError("cannot determine target-branch Spec attribution from Git diff")
     if not attribution_slugs:
-        attribution_slugs = spec_footer_slugs(root, branch, main_branch)
-        if not attribution_slugs:
+        footer_slugs, none_reasons = spec_footer_attribution(root, branch, main_branch)
+        if none_reasons and not footer_slugs:
+            # F11 lite channel: trivial unpackaged work. The footer itself
+            # (non-empty reason) is mandatory and already verified; the
+            # channel stays closed while any active package exists — its
+            # executable issues are unverified by definition and must land
+            # through their own slug gates, not around them.
+            active = []
+            for specs_dir_name in specs_dirs or [".spec"]:
+                active.extend(active_package_slugs(root / specs_dir_name / "specs"))
+            if active:
+                raise PushError(
+                    "`Spec: none` lite channel refuses: active task package(s) "
+                    + ", ".join(active)
+                    + " still have unverified executable work; land through `Spec: <slug>` "
+                    "after check/done, or archive the package first"
+                )
+            notes.append("lite-channel attribution: " + ", ".join(f"none ({reason})" for reason in none_reasons))
+            return notes
+        if not footer_slugs:
             raise PushError(
                 "working branch has no Spec attribution; retro-pack the change, archive its Development Record, "
                 "and add `Spec: <slug>` to each implementation commit"
             )
+        attribution_slugs = footer_slugs
         notes.append(f"commit-footer attribution: {', '.join(attribution_slugs)}")
+        # F9 (AUD-06): footer-attributed pushes get the interval-attribution
+        # warning from the same single judge the pre-push hook calls. A cited
+        # archive whose recorded 提交区间 predates this branch's delivery
+        # window is named with evidence; warn-only during the observation
+        # period, so this never blocks the push.
+        if footer_interval_warnings is not None and render_footer_interval_warnings is not None:
+            window = git(
+                root,
+                "merge-base",
+                f"refs/heads/{main_branch}",
+                f"refs/heads/{branch}",
+                check=False,
+            )
+            window_base = window.stdout.strip() if window.returncode == 0 else ""
+            if window_base:
+                interval_warnings = footer_interval_warnings(
+                    root,
+                    attribution_slugs,
+                    revision=f"refs/heads/{branch}",
+                    window_base=window_base,
+                    specs_dirs=specs_dirs,
+                )
+                if interval_warnings:
+                    print(render_footer_interval_warnings(interval_warnings), file=sys.stderr)
+                    notes.append(
+                        "footer interval warning: cited archive range predates the push window "
+                        "(see stderr; observation period)"
+                    )
     else:
         notes.append(f"changed-package attribution: {', '.join(attribution_slugs)}")
 
@@ -1233,12 +1367,13 @@ def _run_push_plan(
 def main() -> int:
     args = parse_args()
     requested_root = Path(args.root).resolve()
-    repair = GiteaRepairSettings(
-        enabled=args.repair_gitea_hooks,
-        base_url=args.gitea_url,
-        token=args.gitea_token,
-    )
     try:
+        # Inside the try so a bad SPEC_GITEA_TOKEN_FILE fails through the
+        # standard PushError path instead of an unhandled traceback.
+        repair = GiteaRepairSettings(
+            enabled=args.repair_gitea_hooks,
+            base_url=args.gitea_url,
+        )
         root = repository_root(requested_root)
         ensure_git_repo(root)
         branch = args.branch or current_branch(root)

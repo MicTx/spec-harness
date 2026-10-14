@@ -441,15 +441,15 @@ def test_relative_import_keeps_live_module_and_still_flags_unused(tmp_path):
     assert "pkg/unused_mod.py" in report.unreferenced_code
 
 
-def test_organize_command_contract_requires_new_package_and_archive():
-    commands = (ROOT / "references" / "commands.md").read_text(encoding="utf-8")
-    start = commands.index("## `/spec:organize`")
-    end = commands.index("## `/spec:goal`")
-    section = commands[start:end]
-    for phrase in ("default new package", "never delete", "archive/retired", "every member"):
-        assert phrase in section
+def test_organize_command_contract_defaults_to_audit_only():
+    """F17 / AUD-19: organize defaults to audit-only; applying is explicit."""
+    section = (ROOT / "references" / "stages" / "organize.md").read_text(encoding="utf-8")
+    for phrase in ("audit-only", "`--apply`", "explicit opt-in", "never delete", "archive/retired", "every member"):
+        assert phrase in section, f"organize.md lost contract phrase: {phrase!r}"
     assert "deprecate and clean" not in section
-    assert "Audit-only, no changes" not in section
+    # The pre-F17 default (create a package by default) is the reversion marker.
+    assert "Audit-only is an explicit opt-out" not in section
+    assert "(default new package)" not in section
     live_files = (
         ROOT / "SKILL.md",
         ROOT / "install.sh",
@@ -463,7 +463,27 @@ def test_organize_command_contract_requires_new_package_and_archive():
         assert "deprecate and clean" not in text
 
 
-def test_installer_organize_command_says_new_package_and_never_delete(tmp_path):
+def test_organize_command_contract_reports_next_step_and_freezes_disk(tmp_path):
+    """The default organize run outputs a report and touches nothing on disk."""
+    root = make_fixture_repo(tmp_path)
+
+    def working_tree_snapshot() -> list[tuple[str, int, int]]:
+        # .git internals (e.g. the index) legitimately churn when the script
+        # queries git; the freeze contract covers the working tree only.
+        return sorted(
+            (str(path.relative_to(root)), path.stat().st_mtime_ns, path.stat().st_size)
+            for path in root.rglob("*")
+            if path.is_file() and ".git" not in path.parts
+        )
+
+    before = working_tree_snapshot()
+    completed = run_audit(root)
+    after = working_tree_snapshot()
+    assert completed.returncode == 0
+    assert before == after, "the facts script must not create or modify files in the default run"
+
+
+def test_installer_organize_command_defaults_to_audit_only(tmp_path):
     if subprocess.run(["bash", "--version"], capture_output=True).returncode != 0:
         pytest.skip("bash not available")
     home = tmp_path / "home"
@@ -473,6 +493,9 @@ def test_installer_organize_command_says_new_package_and_never_delete(tmp_path):
         {
             "HOME": str(home),
             "INSTALL_HOSTS": "claude",
+            # The organize stage command exists only under full (core is the
+            # default since F16).
+            "INSTALL_PROFILE": "full",
             "CLAUDE_SKILLS_DIR": str(home / ".claude" / "skills"),
             "CLAUDE_COMMANDS_DIR": str(home / ".claude" / "commands"),
             "CLAUDE_AGENTS_DIR": str(home / ".claude" / "agents"),
@@ -492,9 +515,13 @@ def test_installer_organize_command_says_new_package_and_never_delete(tmp_path):
     assert result.returncode == 0, result.stderr
     command = home / ".claude" / "commands" / "spec" / "organize.md"
     text = command.read_text(encoding="utf-8")
-    assert "default new package" in text
+    assert "audit-only" in text
+    assert "--apply" in text
     assert "never delete" in text
     assert "deprecate and clean" not in text
+    # The pre-F17 default wording must not survive into installed copies.
+    assert "Audit-only is an explicit opt-out" not in text
+    assert "(default new package)" not in text
 
 
 # -- Base-relative resolution and wiring sources (fixes mass false "dangling").

@@ -38,7 +38,7 @@ COMPLETE_SPEC = """\
 - 无
 ## 3. 功能范围
 ### 3.3 不在范围内
-- none
+- exclusion: everything outside this fixture's boundary
 ## 4. 最小实现路径
 - one
 - two

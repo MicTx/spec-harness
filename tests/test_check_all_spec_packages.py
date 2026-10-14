@@ -523,17 +523,20 @@ def test_legacy_hash_matches_crlf_worktree_copy_against_lf_baseline(tmp_path):
 
 
 @pytest.mark.parametrize("checkpoint_state", ["active", "corrupted"])
-def test_check_all_rejects_interrupted_update_checkpoint(tmp_path, checkpoint_state):
-    from update_checkpoint_support import begin_update_checkpoint, checkpoint_path
-
+def test_check_all_rejects_interrupted_update_checkpoint(tmp_path, checkpoint_state, write_historical_checkpoint):
     slug = "2026-09-22_fix-checkpoint-blocker-gates"
     package = make_package(tmp_path, slug, passed=True)
-    begin_update_checkpoint(package, "封堵归档绕过")
+    checkpoint_file = write_historical_checkpoint(package, "封堵归档绕过")
     if checkpoint_state == "corrupted":
-        checkpoint_path(package).write_text("{ bad json", encoding="utf-8")
+        checkpoint_file.write_text("{ bad json", encoding="utf-8")
 
     failures = check_all_packages(tmp_path)
-    assert any(failure.slug == slug and "update checkpoint" in failure.reason for failure in failures)
+    assert any(
+        failure.slug == slug
+        and "update checkpoint" in failure.reason
+        and "删除 update-checkpoint.json" in failure.reason
+        for failure in failures
+    )
 
 
 def test_check_all_rejects_standalone_blocked_status_line(tmp_path):
@@ -621,3 +624,59 @@ def test_followup_spec_gate_still_fails_drifted_archive_with_unchecked_spec_boxe
     # Without an authoritative baseline the archive is re-graded as well.
     failures = check_all_packages(tmp_path, slugs=[referencing_slug])
     assert any("Spec gate is not passed" in failure.reason for failure in failures)
+
+
+# --- --lint-only structural channel (AUD-07 WIP gate) ---
+
+
+def test_lint_only_carries_gate_failing_active_package(tmp_path):
+    """A work-in-progress package fails the full gate but passes the lint."""
+    slug = "2026-10-12_allow-integration-wip-and-handoff"
+    make_package(tmp_path, slug, passed=False)
+
+    gate_failures = check_all_packages(tmp_path)
+    lint_failures = check_all_packages(tmp_path, lint_only=True)
+
+    assert any(f.slug == slug and "check gates not passed" in f.reason for f in gate_failures)
+    assert lint_failures == []
+
+
+def test_lint_only_still_reports_structural_errors(tmp_path, write_historical_checkpoint):
+    invalid = make_package(tmp_path, "invalid-record-slug", passed=False)
+    del invalid  # slug itself is the defect under test
+    blocked = make_package(tmp_path, "2026-10-12_fix-lint-structure", passed=False)
+    write_historical_checkpoint(blocked, "WIP lint structural probe")
+    missing = make_package(tmp_path, "2026-10-12_fix-missing-file", passed=False)
+    (missing / "tasks.md").unlink()
+
+    failures = check_all_packages(tmp_path, lint_only=True)
+    reasons = {(f.slug, f.reason) for f in failures}
+
+    assert ("invalid-record-slug", "invalid Development Record slug") in reasons
+    assert any(slug == "2026-10-12_fix-lint-structure" and "update checkpoint" in reason for slug, reason in reasons)
+    assert any(
+        slug == "2026-10-12_fix-missing-file" and ("tasks.md" in reason or "No such file" in reason)
+        for slug, reason in reasons
+    )
+
+
+def test_lint_only_still_enforces_archive_completeness(tmp_path):
+    archived = make_archived_package(tmp_path, "2026-10-12_fix-archive-lint")
+    (archived / "completion-summary.md").write_text("", encoding="utf-8")
+
+    failures = check_all_packages(tmp_path, lint_only=True)
+
+    assert any(f.slug == "2026-10-12_fix-archive-lint" and "completion summary is empty" in f.reason for f in failures)
+
+
+def test_lint_only_cli_flag_switches_channel(tmp_path):
+    make_package(tmp_path, "2026-10-12_allow-integration-wip-and-handoff", passed=False)
+    cli = [sys.executable, str(Path(check_all_module.__file__).resolve()), "--root", str(tmp_path)]
+
+    full = subprocess.run(cli, capture_output=True, text=True)
+    linted = subprocess.run([*cli, "--lint-only"], capture_output=True, text=True)
+
+    assert full.returncode == 1
+    assert "check gates not passed" in full.stdout
+    assert linted.returncode == 0, linted.stdout + linted.stderr
+    assert "result: passed" in linted.stdout

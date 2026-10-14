@@ -73,13 +73,19 @@ Conventional Commits:
 - scope: optional, the affected module (e.g. `install`, `spec`, `push`).
 - description: imperative mood, ≤ 72 characters, following the user's language; no "already done", use the base verb form.
 - body: optional, explains why (not what), wrapped at 72 characters.
-- footer: optional, anchors this round's task package with `Spec: <slug>`, replacing the old `[Spec-#N]` numbering.
+- footer: optional, anchors this round's task package with `Spec: <slug>`, replacing the old `[Spec-#N]` numbering. In-flight commits on the integration branch may instead carry `Spec-WIP: <slug>` (see below).
 
 Slug-to-commit relations:
 
 - One slug (task package) maps to 1..N commits.
 - The slug's verb is the overall intent; individual commit types may differ (an `add-billing` package can contain `feat`, `test`, `docs`).
 - Not every commit must carry the footer; the `done` archive commit should carry `Spec: <slug>` for traceability.
+
+In-flight WIP footer:
+
+- Commits on the package's integration branch made before its archive round may carry `Spec-WIP: <slug>`; they pass `pre-commit` through the structural-lint channel and can be pushed on `spec/*` branches for handoff.
+- The footer is a marker for humans and later attribution tooling, not a gate input: hooks decide the WIP channel from the branch name and staged paths, never from this footer.
+- When the branch merges to main via `/spec:push`, the archive commit's `Spec: <slug>` footer is the attribution of record; a bare `Spec-WIP:` footer must not be the only attribution on a non-merge commit reaching main.
 
 Examples:
 

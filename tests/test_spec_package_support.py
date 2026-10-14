@@ -9,6 +9,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from spec_package_support import (
+    SECTION_MINIMAL_PATH,
     SECTION_PLACEHOLDER_ITEMS,
     active_package_slugs,
     checklist_passed,
@@ -568,8 +569,8 @@ def test_minimal_path_template_slots_filtered_but_real_xxx_items_count():
 - 修复 xxx.py 的编码问题 -> verify: pytest tests/test_encoding.py 通过
 """
     items = normalize_items(
-        extract_section_bullets(spec, "## 4. 最小实现路径"),
-        ignored=SECTION_PLACEHOLDER_ITEMS["## 4. 最小实现路径"],
+        extract_section_bullets(spec, SECTION_MINIMAL_PATH),
+        ignored=SECTION_PLACEHOLDER_ITEMS[SECTION_MINIMAL_PATH],
     )
     assert items == ["修复 xxx.py 的编码问题 -> verify: pytest tests/test_encoding.py 通过"]
 
@@ -1002,3 +1003,40 @@ def test_verification_scope_rejects_non_run_required_check(marker):
     text = _verification_scope("project").replace("- 全项目检查：适用外：发布门禁", f"- 全项目检查：{marker}")
     errors = verification_scope_errors(text)
     assert any("全项目检查" in error and "必须填写真实" in error for error in errors)
+
+
+# -- F12（AUD-11）历史 5.4 兼容：orchestration_strategy_errors 结论不变 --
+# local / 未启用 / 适用外 三类历史形态在结构路由落地后必须保持原判定；
+# 该层语义本包不动，这里钉住路由改造前后的解析等价。
+
+
+def test_orchestration_strategy_errors_accepts_historical_forms():
+    from spec_package_support import orchestration_strategy_errors
+
+    # 显式合法 token
+    for token in ("local", "explore", "build", "review", "external", "`local`"):
+        content = f"### 5.4 编排策略\n- route: {token}\n- ownership: 主线程\n"
+        assert orchestration_strategy_errors(content) == [], token
+    # opt-out 声明（历史包的 local 等价形态）
+    for decl in ("- 未启用：单线执行。", "- 适用外：单会话执行，未启用编排。", "- 不启用（单线程）", "- 单线"):
+        content = f"### 5.4 编排策略\n{decl}\n"
+        assert orchestration_strategy_errors(content) == [], decl
+    # 无 5.4 节 = 默认 local，无错误
+    assert orchestration_strategy_errors("## 5. 技术决策\n- 决策一\n") == []
+
+
+def test_orchestration_strategy_errors_rejects_invalid_and_missing_route():
+    from spec_package_support import orchestration_strategy_errors
+
+    for route_line in ("- route: build（主线程）+ review", "- route: nonsense"):
+        content = f"### 5.4 编排策略\n{route_line}\n"
+        errors = orchestration_strategy_errors(content)
+        assert errors and "单 token" in errors[0], route_line
+    # 有节但既无 route 也无 opt-out 声明
+    content = "### 5.4 编排策略\n- ownership: 主线程\n"
+    errors = orchestration_strategy_errors(content)
+    assert errors and "route" in errors[0]
+    # 多个 route 字段
+    content = "### 5.4 编排策略\n- route: local\n- route: review\n"
+    errors = orchestration_strategy_errors(content)
+    assert errors and "唯一" in errors[0]

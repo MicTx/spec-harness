@@ -15,6 +15,7 @@ from issue_closure_support import (  # noqa: E402
     parse_issue_disposition_arg,
     render_issue_closure,
     validate_completion_summary,
+    validate_followup_archives,
     validate_issue_dispositions,
 )
 
@@ -361,3 +362,26 @@ def test_completion_summary_requires_v1_block_and_no_placeholders(tmp_path: Path
     )
     failures = validate_completion_summary(summary.replace("delivered", "待补充"))
     assert any("placeholder" in failure for failure in failures)
+
+
+def test_followup_v2_archive_without_checklist_judged_by_success_criteria(tmp_path: Path):
+    """F11: a v2 follow-up archive (no checklist.md) passes the closure gate
+    through its §6 success criteria; unchecked criteria keep it rejected."""
+    slug = "2026-10-12_followup-v2"
+    package = _write_archived_followup(tmp_path, slug)
+    (package / "checklist.md").unlink()
+    spec = package / "spec.md"
+    spec_text = spec.read_text(encoding="utf-8")
+    spec_text += (
+        "## 6. 成功标准与验证方式\n- [x] 标准 A 达成 -> verify: task_0001\n- [ ] 标准 B 未达成 -> verify: task_0001\n"
+    )
+    spec.write_text(spec_text, encoding="utf-8")
+
+    failures = validate_followup_archives(tmp_path / ".spec", [slug])
+    assert any("acceptance surface is not passed" in failure for failure in failures)
+
+    spec_text = spec_text.replace("- [ ] 标准 B 未达成", "- [x] 标准 B 达成")
+    spec.write_text(spec_text, encoding="utf-8")
+    failures = validate_followup_archives(tmp_path / ".spec", [slug])
+    assert not any("acceptance surface" in failure for failure in failures)
+    assert not any("checklist" in failure for failure in failures)

@@ -20,6 +20,7 @@ from dashboard_support import (
     default_pipeline,
     project_gap_message,
     task_strip_from_records,
+    worst_health,
 )
 from handoff_support import freshness, parse_handoff, read_handoff, validate_handoff
 from report_spec_package import parse_tasks
@@ -61,19 +62,32 @@ active_packages = active_package_slugs
 
 
 def checkpoint_alert(status: CheckpointStatus) -> str:
-    """Explicit blocking line for an unresolved update checkpoint."""
+    """Prominent advisory line for a historical unresolved checkpoint.
+
+    The checkpoint mechanism is retired: Git WIP history is the recovery
+    point, so this is an advisory to resolve via Git and delete the file,
+    not a hard block on routing.
+    """
     if status.state == "active" and status.checkpoint is not None:
-        return f"存在未完成 update checkpoint：更新「{status.checkpoint.intent}」尚未确认完成或回滚"
-    return "存在未完成 update checkpoint：检查点记录损坏，需人工恢复"
+        return (
+            f"存在未完成 update checkpoint（历史遗留，机制已退役）：更新「{status.checkpoint.intent}」"
+            "未确认完成；按 Git 历史确认/恢复三件套后删除 update-checkpoint.json，再继续 check/done"
+        )
+    return (
+        "存在未完成 update checkpoint（历史遗留，机制已退役）：记录已损坏；"
+        "按 Git 历史恢复三件套后删除 update-checkpoint.json，再重跑 check"
+    )
 
 
 def _route_unreadable_checkpoint(slug: str, status: CheckpointStatus, output_format: str) -> str:
     """Render recovery without inventing progress from an unreadable triad."""
     alert = checkpoint_alert(status)
     next_step = (
-        "处理未完成 update checkpoint：rollback 回滚更新，或 complete 确认保留"
+        "处理未完成 update checkpoint（历史遗留）：按 Git 历史确认/恢复三件套后"
+        "删除 update-checkpoint.json，再重跑 status"
         if status.state == "active"
-        else "处理未完成 update checkpoint：检查点记录损坏，需人工恢复；恢复有效记录后再 rollback 或 complete"
+        else "处理未完成 update checkpoint（历史遗留）：记录已损坏；"
+        "按 Git 历史恢复三件套后删除 update-checkpoint.json，再重跑 status"
     )
     if output_format == "json":
         return json.dumps(
@@ -129,7 +143,10 @@ def route_for_package(
         resolve_specs_child(specs_root, "specs", slug, name) for name in ("spec.md", "tasks.md", "checklist.md")
     ]
     try:
-        spec_content, tasks_content, checklist_content = [read_regular_text(path) for path in triad_paths]
+        spec_content, tasks_content = (read_regular_text(path) for path in triad_paths[:2])
+        # checklist.md is optional since v2 packages (F11): absent file → the
+        # success-criteria acceptance surface instead of the checklist gates.
+        checklist_content: str | None = read_regular_text(triad_paths[2]) if triad_paths[2].exists() else None
     except (OSError, UnicodeError, ValueError):
         if checkpoint_pending:
             return _route_unreadable_checkpoint(slug, checkpoint_status, output_format)
@@ -147,8 +164,9 @@ def route_for_package(
     all_done = r.all_tasks_done
     check_passed = r.overall_ok
 
-    # An unresolved checkpoint remains a hard block even when the triad is
-    # readable; route only detects it and never resolves it.
+    # An unresolved historical checkpoint is a prominent advisory, not a
+    # hard block: Git WIP history is the recovery point, and the check/done
+    # gates still refuse while the file exists. Route only detects it.
 
     alerts: list[str] = []
     if checkpoint_pending:
@@ -164,9 +182,9 @@ def route_for_package(
     alerts.extend(f"验证范围尚未满足：{error}" for error in r.verification_scope_errors)
 
     orchestration_blocked = bool(r.orchestration_errors)
-    if checkpoint_pending or blocked or r.pending_questions or r.spec_clarification_gaps or orchestration_blocked:
+    if blocked or r.pending_questions or r.spec_clarification_gaps or orchestration_blocked:
         next_stage = "status"
-        health = HEALTH_BLOCKED if (blocked or checkpoint_pending) else HEALTH_RISK
+        health = HEALTH_BLOCKED if blocked else HEALTH_RISK
         # Still scoping when clarification is missing; otherwise stalled mid-run.
         pipeline = default_pipeline(
             "new" if (r.pending_questions or r.spec_clarification_gaps or orchestration_blocked) else "run"
@@ -183,6 +201,8 @@ def route_for_package(
             alerts.append(f"任务执行说明不完整：缺影响范围 {r.missing_boundary} 项，缺验证方式 {r.missing_verify} 项")
         if r.unchecked_items:
             alerts.append(f"项目尚有 {r.unchecked_items} 项验收未完成")
+        if not r.checklist_present and not r.success_criteria_ok:
+            alerts.append(f"项目尚有 {r.success_criteria_total - r.success_criteria_checked} 项成功标准未达成")
         if not check_passed and len(alerts) == 0:
             alerts.append("项目尚未满足最终验收要求")
     else:
@@ -197,8 +217,10 @@ def route_for_package(
     except SpecControlError:
         current_task = None
     if checkpoint_pending:
-        next_action = "处理未完成 update checkpoint：rollback 回滚更新，或 complete 确认保留"
-    elif blocked:
+        # Advisory-level attention: gates refuse until resolved, but routing
+        # itself proceeds; the advisory line carries the recovery guidance.
+        health = worst_health(health, HEALTH_RISK)
+    if blocked:
         next_action = next((f"解除阻塞：{task.text}" for task in tasks if task.is_blocked), "处理任务阻塞")
     elif r.pending_questions:
         next_action = f"确认需求：{r.pending_questions[0]}"
@@ -207,7 +229,14 @@ def route_for_package(
     elif orchestration_blocked:
         next_action = f"修正编排策略：{r.orchestration_errors[0]}"
     elif all_done and check_passed:
-        next_action = "整理交付结果并完成归档"
+        if checkpoint_pending:
+            # Converged except for the historical checkpoint: resolving it is
+            # the only step left before done (check/done refuse while it lives).
+            next_action = (
+                "处理历史遗留 update checkpoint：按 Git 历史确认/恢复三件套后删除 update-checkpoint.json，再继续归档"
+            )
+        else:
+            next_action = "整理交付结果并完成归档"
     elif all_done:
         next_action = "修复验收未通过项"
     else:
@@ -238,7 +267,7 @@ def route_for_package(
         strip=strip,
         strip_labels=strip_labels,
         metrics={
-            "阻塞": "1" if (blocked or checkpoint_pending) else "0",
+            "阻塞": "1" if blocked else "0",
             "待确认": str(len(r.pending_questions)),
             "门禁": "通过" if check_passed else f"缺口 {gate_gap_total}",
             "证据": str(r.evidence_filled_count),

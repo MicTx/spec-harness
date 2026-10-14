@@ -138,7 +138,7 @@ Single packages follow the unified project-update output. With multiple packages
 
 ## `/spec:goal`
 
-Plan, execute, accept, archive, and publish automatically from one goal sentence. Intermediate updates always follow actual task progress; never show the sub-stage chain. The final reply centers on delivered functionality, verification results, and publication status; stop only for real external blockers.
+Plan, execute, accept, and archive automatically from one goal sentence; the chain stops at the local commit by default. Intermediate updates always follow actual task progress; never show the sub-stage chain. The final reply centers on delivered functionality, verification results, and the suggested push command (publication status only when push was explicitly authorized); stop only for real external blockers.
 
 ## `/spec:doctor`
 
@@ -158,7 +158,7 @@ Run directly:
 python3 scripts/organize_project_structure.py --root <project> [--check] [--format json]
 ```
 
-The output is a structure-audit report, not the project-update schema: group by "repository inventory / reference graph (live vs historical) / deprecated candidates / finding classes / architecture consistency / summary", listing facts and candidates only, no preset conclusions. The default is a new task package in the target project before any move or doc fix (default new package). Do not append findings to an unrelated active package. Verdicts are keep / archive / merge / migrate. Never delete; archive confirmed orphans under `archive/retired`. A confirmed class is unfinished until every member is dispositioned. When `--check` fails, list the drift items truthfully and fix them this round; structure is declared trustworthy only after the architecture-consistency repair completes.
+The output is a structure-audit report, not the project-update schema: group by "repository inventory / reference graph (live vs historical) / deprecated candidates / finding classes / architecture consistency / summary", listing facts and candidates only, no preset conclusions. The default is audit-only: output the report and stop, closing with the next step. Applying (`--apply` or an explicit user instruction) creates a new task package in the target project before any move or doc fix; do not append findings to an unrelated active package. Verdicts are keep / archive / merge / migrate. Never delete; archive confirmed orphans under `archive/retired`. A confirmed class is unfinished until every member is dispositioned. When `--check` fails, list the drift items truthfully and fix them this round; structure is declared trustworthy only after the architecture-consistency repair completes.
 
 ## `/spec:autorun`
 

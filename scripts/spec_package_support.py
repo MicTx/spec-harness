@@ -25,30 +25,218 @@ from pathlib import Path
 
 from safe_open_support import SafeOpenError, open_regular_read
 
+# §1 problem-definition labels: canonical Chinese key plus lowercase English
+# display aliases (matched case-insensitively in extract_problem_definition_values).
+PROJECT_DEFINITION_LABEL_ALIASES = {
+    "项目目标": ("goal", "objective"),
+    "目标用户": ("target users", "users"),
+    "核心价值": ("core value", "value"),
+}
+# Template placeholder values per label: Chinese template first, English
+# template second. A value equal to any of them is placeholder content.
 PROJECT_DEFINITION_PLACEHOLDERS = {
-    "项目目标": "一句话描述项目要解决什么问题",
-    "目标用户": "谁会使用这个产品或系统",
-    "核心价值": "完成后能持续提供什么价值",
+    "项目目标": ("一句话描述项目要解决什么问题", "one sentence describing the problem this project solves"),
+    "目标用户": ("谁会使用这个产品或系统", "who will use this product or system"),
+    "核心价值": ("完成后能持续提供什么价值", "the lasting value delivered once complete"),
 }
 
-GENERIC_PLACEHOLDERS = {"无", "待补充", "待完善", "n/a", "N/A", "NA"}
+GENERIC_PLACEHOLDERS = {"无", "待补充", "待完善", "n/a", "N/A", "NA", "none", "None"}
 DEFAULT_EVIDENCE_PLACEHOLDERS = {
     "以 task package 状态机为真，fresh package 不得直接进入实现态",
 }
 
 MAX_SPEC_FILE_BYTES = 2 * 1024 * 1024
 
+
+# --------------------------------------------------------------------------- #
+# Language-neutral section keys (F18 / AUD-21)
+#
+# Gates identify a package section by a stable machine key, not by its
+# display language. A SectionKey resolves through its alias list (canonical
+# Chinese heading first, English display title second) or through an HTML
+# key anchor: `<!-- spec:key -->` directly above the heading or trailing on
+# the heading line. A registered anchor wins over the display title; an
+# unregistered anchor is inert prose. Aliases only ever grow — the frozen
+# Chinese set is locked by tests/test_bilingual_package.py.
+# --------------------------------------------------------------------------- #
+
+SPEC_KEY_ANCHOR_LINE = re.compile(r"^<!--\s*spec:([a-z0-9-]+)\s*-->$")
+SPEC_KEY_TRAILING_ANCHOR = re.compile(r"^(#{1,6}\s+\S.*?)?\s*<!--\s*spec:([a-z0-9-]+)\s*-->$")
+
+
+class SectionKey:
+    """Stable machine identity of one parsed package section.
+
+    ``matches`` keeps the historical exact semantics (heading equality plus
+    one optional trailing parenthetical note); ``matches_prefix`` keeps the
+    historical prefix semantics used by the 5.1/5.4 scanners. Both accept
+    every alias and both honor key anchors.
+    """
+
+    __slots__ = ("key", "aliases")
+
+    def __init__(self, key: str, *aliases: str) -> None:
+        if not aliases:
+            raise ValueError("SectionKey requires at least one alias")
+        self.key = key
+        self.aliases = tuple(aliases)
+
+    @property
+    def canonical(self) -> str:
+        """Canonical (Chinese) heading — the one user-facing messages quote."""
+        return self.aliases[0]
+
+    def _identity(self, line: str) -> tuple[str | None, str | None]:
+        """Resolve a line to ``(anchor_key, heading_text)``.
+
+        ``anchor_key`` is ``self.key`` when our own anchor identified the
+        line (the display title then never participates), the string
+        ``"other"`` when a different registered key owns it, or ``None``.
+        ``heading_text`` is the anchor-stripped display title, or ``None``
+        when the line is not a heading.
+        """
+        stripped = line.strip()
+        match = SPEC_KEY_TRAILING_ANCHOR.match(stripped)
+        if match is None:
+            return (None, stripped if stripped.startswith("#") else None)
+        heading_text, anchor_key = match.group(1), match.group(2)
+        if heading_text is None:
+            # A bare anchor line is a marker, never a heading by itself.
+            return (None, None)
+        if anchor_key == self.key:
+            return (self.key, heading_text.strip())
+        if anchor_key in PACKAGE_SECTION_KEYS:
+            # A different registered key owns this line; the display title
+            # must not smuggle it into another section (key wins over alias).
+            return ("other", None)
+        # Unregistered anchor: inert prose, match on the display title.
+        return (None, heading_text.strip())
+
+    def matches(self, line: str) -> bool:
+        anchor, text = self._identity(line)
+        if anchor == self.key:
+            return True
+        if text is None:
+            return False
+        return any(heading_line_matches(text, alias) for alias in self.aliases)
+
+    def matches_prefix(self, line: str) -> bool:
+        anchor, text = self._identity(line)
+        if anchor == self.key:
+            return True
+        if text is None:
+            return False
+        return any(text.startswith(alias) for alias in self.aliases)
+
+    def __repr__(self) -> str:
+        return f"SectionKey({self.key!r})"
+
+
+SECTION_CONFIRMED_FACTS = SectionKey("confirmed-facts", "### 2.1 已确认事实", "### 2.1 Confirmed Facts")
+SECTION_KEY_ASSUMPTIONS = SectionKey("key-assumptions", "### 2.2 关键假设", "### 2.2 Key Assumptions")
+SECTION_OPEN_QUESTIONS = SectionKey("open-questions", "### 2.3 待确认问题", "### 2.3 Open Questions")
+SECTION_OUT_OF_SCOPE = SectionKey("out-of-scope", "### 3.3 不在范围内", "### 3.3 Out of Scope")
+SECTION_MINIMAL_PATH = SectionKey("minimal-path", "## 4. 最小实现路径", "## 4. Minimal Implementation Path")
+SECTION_VERIFICATION_STRATEGY = SectionKey("verification-strategy", "### 5.1 验证策略", "### 5.1 Verification Strategy")
+SECTION_ORCHESTRATION = SectionKey("orchestration", "### 5.4 编排策略", "### 5.4 Orchestration Strategy")
+SECTION_ACCEPTANCE_EVIDENCE = SectionKey("acceptance-evidence", "## 验收证据", "## Acceptance Evidence")
+SECTION_BEHAVIOR_METRICS = SectionKey("behavior-metrics", "### 6.1 行为成效指标", "### 6.1 Behavior Metrics")
+SECTION_CROSS_CARRIER_CONSISTENCY = SectionKey(
+    "cross-carrier-consistency", "## 跨载体一致性", "## Cross-Carrier Consistency"
+)
+SECTION_STRUCTURE_CREDIBILITY = SectionKey(
+    "structure-credibility", "## 项目结构与文档可信度", "## Project Structure & Documentation Credibility"
+)
+SECTION_BOUNDARY_REGRESSION = SectionKey("boundary-regression", "## 边界回归", "## Boundary Regression")
+
+PACKAGE_SECTION_KEYS: dict[str, SectionKey] = {
+    section.key: section
+    for section in (
+        SECTION_CONFIRMED_FACTS,
+        SECTION_KEY_ASSUMPTIONS,
+        SECTION_OPEN_QUESTIONS,
+        SECTION_OUT_OF_SCOPE,
+        SECTION_MINIMAL_PATH,
+        SECTION_VERIFICATION_STRATEGY,
+        SECTION_ORCHESTRATION,
+        SECTION_ACCEPTANCE_EVIDENCE,
+        SECTION_BEHAVIOR_METRICS,
+        SECTION_CROSS_CARRIER_CONSISTENCY,
+        SECTION_STRUCTURE_CREDIBILITY,
+        SECTION_BOUNDARY_REGRESSION,
+    )
+}
+
+
+def fold_section_key_anchors(content: str) -> str:
+    """Fold standalone key-anchor lines into the following heading line.
+
+    ``<!-- spec:key -->`` directly above a heading (blank lines tolerated)
+    becomes a trailing anchor on that heading, so every scanner sees one
+    uniform form. Fenced code blocks are skipped verbatim: a template fence
+    quoting an anchor is prose, not a section marker. An anchor not followed
+    by a heading is restored as the plain comment it looked like.
+    """
+    out: list[str] = []
+    buffered: list[str] = []
+    pending_key: str | None = None
+    in_fence = False
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            if pending_key is not None:
+                out.extend(buffered)
+                buffered = []
+                pending_key = None
+            in_fence = not in_fence
+            out.append(line)
+            continue
+        if in_fence:
+            out.append(line)
+            continue
+        anchor = SPEC_KEY_ANCHOR_LINE.fullmatch(stripped)
+        if anchor is not None and anchor.group(1) in PACKAGE_SECTION_KEYS:
+            buffered.append(line)
+            pending_key = anchor.group(1)
+            continue
+        if pending_key is not None:
+            if not stripped:
+                out.append(line)
+                continue
+            if re.match(r"^#{1,6}\s", stripped):
+                out.append(line.rstrip() + f" <!-- spec:{pending_key} -->")
+                buffered = []
+                pending_key = None
+                continue
+            # Not followed by a heading: the anchor was a stray comment.
+            out.extend(buffered)
+            out.append(line)
+            buffered = []
+            pending_key = None
+            continue
+        out.append(line)
+    out.extend(buffered)
+    return "\n".join(out)
+
+
 SECTION_PLACEHOLDER_ITEMS = {
-    "### 2.1 已确认事实": {"事实 A"},
-    "### 2.2 关键假设": {"假设 A"},
-    "### 2.3 待确认问题": {"问题 A"},
-    "### 3.3 不在范围内": {"明确列出本轮不做的内容"},
+    SECTION_CONFIRMED_FACTS: {"事实 A", "Fact A"},
+    SECTION_KEY_ASSUMPTIONS: {"假设 A", "Assumption A"},
+    SECTION_OPEN_QUESTIONS: {"问题 A", "Question A"},
+    SECTION_OUT_OF_SCOPE: {"明确列出本轮不做的内容", "explicitly list what this round will not do"},
     # Template slots for the minimal path embed "xxx" inside prose, so after
     # normalize_items moved to bare-token equality they are enumerated here
     # explicitly (references/templates.md `## 4. 最小实现路径` block). The
     # `标准 A/B -> verify: xxx` lines live under `## 6. 成功标准与验证方式`
     # and never flow through normalize_items, so they need no entry.
-    "## 4. 最小实现路径": {"最简单可行方案：xxx", "暂不引入：xxx", "不做的抽象/配置化：xxx"},
+    SECTION_MINIMAL_PATH: {
+        "最简单可行方案：xxx",
+        "暂不引入：xxx",
+        "不做的抽象/配置化：xxx",
+        "simplest viable approach: xxx",
+        "not introducing yet: xxx",
+        "abstractions/configurability not built: xxx",
+    },
 }
 
 
@@ -385,17 +573,27 @@ def write_text(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
-def _heading_level(heading: str) -> int:
-    match = re.match(r"^(#+)\s+", heading.strip())
+def _heading_level(heading: str | SectionKey) -> int:
+    source = heading.aliases[0] if isinstance(heading, SectionKey) else heading
+    match = re.match(r"^(#+)\s+", source.strip())
     return len(match.group(1)) if match else 0
 
 
-def heading_line_matches(line: str, heading: str) -> bool:
+def _heading_level_source(heading: str | SectionKey) -> str:
+    return heading.aliases[0] if isinstance(heading, SectionKey) else heading
+
+
+def heading_line_matches(line: str, heading: str | SectionKey) -> bool:
     """Match a complete heading, optionally followed by one parenthetical note.
+
+    A :class:`SectionKey` matches through any alias or its key anchor; a
+    plain string keeps the exact historical semantics.
 
     Require paired, nonempty, non-nested parentheses at the end; arbitrary
     prefixes must not make ``## 行为成效回填`` match ``## 行为成效``.
     """
+    if isinstance(heading, SectionKey):
+        return heading.matches(line)
     actual, expected = line.strip(), heading.strip()
     if actual == expected:
         return True
@@ -403,20 +601,28 @@ def heading_line_matches(line: str, heading: str) -> bool:
     return match is not None and bool((match.group(1) or match.group(2)).strip())
 
 
-def section_exists(content: str, heading: str) -> bool:
+def section_exists(content: str, heading: str | SectionKey) -> bool:
+    if isinstance(heading, SectionKey):
+        content = fold_section_key_anchors(content)
     return any(heading_line_matches(line, heading) for line in content.splitlines())
 
 
-def section_prefix_exists(content: str, heading_prefix: str) -> bool:
+def section_prefix_exists(content: str, heading_prefix: str | SectionKey) -> bool:
     """Prefix match for optional titled sections such as orchestration briefs."""
+    if isinstance(heading_prefix, SectionKey):
+        content = fold_section_key_anchors(content)
+        return any(heading_prefix.matches_prefix(line) for line in content.splitlines())
     prefix = heading_prefix.strip()
     return any(line.strip().startswith(prefix) for line in content.splitlines())
 
 
-def section_checkboxes(content: str, heading: str) -> tuple[int, int]:
+def section_checkboxes(content: str, heading: str | SectionKey) -> tuple[int, int]:
+    if isinstance(heading, SectionKey):
+        content = fold_section_key_anchors(content)
     lines = content.splitlines()
     in_section = False
-    target_level = _heading_level(heading) or len(heading.split(" ")[0])
+    source = _heading_level_source(heading)
+    target_level = _heading_level(heading) or len(source.split(" ")[0])
     total = 0
     checked = 0
 
@@ -435,12 +641,42 @@ def section_checkboxes(content: str, heading: str) -> tuple[int, int]:
     return total, checked
 
 
-def extract_heading_title_from_content(content: str, fallback: str, suffix: str) -> str:
+def section_checkboxes_by_prefix(content: str, heading_prefix: str) -> tuple[int, int]:
+    """Checkbox ``(total, checked)`` inside the section headed by ``prefix``.
+
+    Same section-scan semantics as ``section_checkboxes`` but matches the
+    numbered prefix (``### 3.1``), since the title text after the number
+    varies across packages (核心功能（MVP） / MVP). Used to scope function-box
+    counting so other checkbox regions (e.g. section 2.3 question boxes)
+    never leak into the feature gate.
+    """
+    prefix = heading_prefix.strip()
+    target_level = _heading_level(prefix) or 10
+    total = checked = 0
+    in_section = False
+    for line in content.splitlines():
+        if not in_section:
+            if line.strip().startswith(prefix):
+                in_section = True
+            continue
+        if re.match(r"^#{1,%d} " % target_level, line):
+            break
+        match = re.match(r"^\s*-\s\[(.)\]\s+.*$", line)
+        if match:
+            total += 1
+            if match.group(1).lower() == "x":
+                checked += 1
+    return total, checked
+
+
+def extract_heading_title_from_content(content: str, fallback: str, suffix: str | tuple[str, ...]) -> str:
+    suffixes = suffix if isinstance(suffix, tuple) else (suffix,)
     for line in content.splitlines():
         if line.startswith("# "):
             title = line[2:].strip()
-            if title.endswith(suffix):
-                return title[: -len(suffix)].strip()
+            for ending in suffixes:
+                if ending and title.endswith(ending):
+                    return title[: -len(ending)].strip()
             return title
     return fallback
 
@@ -449,14 +685,22 @@ def extract_heading_title(path: Path, fallback: str, suffix: str) -> str:
     return extract_heading_title_from_content(read_text(path), fallback, suffix)
 
 
+# Package title suffixes, bilingual: the H1 is display text, the gate
+# contract never depends on it.
+SPEC_TITLE_SUFFIXES = (" - 项目范围", " - Project Scope")
+
+
 def extract_title_from_content(spec_content: str, slug: str) -> str:
-    return extract_heading_title_from_content(spec_content, slug, " - 项目范围")
+    return extract_heading_title_from_content(spec_content, slug, SPEC_TITLE_SUFFIXES)
 
 
-def extract_section_bullets(content: str, heading: str) -> list[str]:
+def extract_section_bullets(content: str, heading: str | SectionKey) -> list[str]:
+    if isinstance(heading, SectionKey):
+        content = fold_section_key_anchors(content)
     lines = content.splitlines()
     in_section = False
-    target_level = _heading_level(heading) or len(heading.split(" ")[0])
+    source = _heading_level_source(heading)
+    target_level = _heading_level(heading) or len(source.split(" ")[0])
     bullets: list[str] = []
 
     for line in lines:
@@ -472,7 +716,7 @@ def extract_section_bullets(content: str, heading: str) -> list[str]:
     return bullets
 
 
-def extract_structured_section_fields(content: str, heading_prefix: str) -> dict[str, str]:
+def extract_structured_section_fields(content: str, heading_prefix: str | SectionKey) -> dict[str, str]:
     """Top-level ``- key: value`` fields of a titled section.
 
     Only bullets at the section's own indentation level count: indented
@@ -484,10 +728,17 @@ def extract_structured_section_fields(content: str, heading_prefix: str) -> dict
     fields: dict[str, str] = {}
     lines = content.splitlines()
     in_section = False
-    prefix = heading_prefix.strip()
+    section_key = heading_prefix if isinstance(heading_prefix, SectionKey) else None
+    if section_key is not None:
+        content = fold_section_key_anchors(content)
+        lines = content.splitlines()
+        prefix = section_key.canonical
+    else:
+        prefix = heading_prefix.strip()
 
     for line in lines:
-        if line.strip().startswith(prefix):
+        starts = section_key.matches_prefix(line) if section_key is not None else line.strip().startswith(prefix)
+        if starts:
             in_section = True
             continue
         if in_section and re.match(r"^#{1,3} ", line):
@@ -505,7 +756,9 @@ def extract_structured_section_fields(content: str, heading_prefix: str) -> dict
     return fields
 
 
-VERIFICATION_SCOPE_HEADING_PREFIX = "### 5.1 验证策略"
+SECTION_VERIFICATION_SCOPE_HEADING = SECTION_VERIFICATION_STRATEGY
+# Backwards-compatible name: the canonical heading string (messages quote it).
+VERIFICATION_SCOPE_HEADING_PREFIX = SECTION_VERIFICATION_STRATEGY.canonical
 VERIFICATION_SCOPE_LEVELS = ("package", "integration", "project")
 VERIFICATION_SCOPE_REQUIRED_FIELDS = (
     "范围级别",
@@ -515,10 +768,88 @@ VERIFICATION_SCOPE_REQUIRED_FIELDS = (
     "全项目检查",
     "升级触发",
 )
+# English display aliases for the 5.1 field labels (lowercase, matched
+# case-insensitively). Parsed keys normalize to the canonical Chinese label
+# so every downstream gate and message keeps its exact historical form.
+VERIFICATION_SCOPE_FIELD_ALIASES = {
+    "范围级别": ("scope", "scope level"),
+    "变更对象": ("changed surface", "changes"),
+    "快速检查": ("quick check",),
+    "集成检查": ("integration check",),
+    "全项目检查": ("full-project check", "full project check"),
+    "升级触发": ("escalation trigger", "escalation"),
+}
+_VERIFICATION_SCOPE_FIELD_ALIASES_LOOKUP = {
+    alias: canonical for canonical, aliases in VERIFICATION_SCOPE_FIELD_ALIASES.items() for alias in aliases
+}
+
+
+# 5.1 value semantics, bilingual: how a package states "exempt / escalate
+# from here" for the full-project check, and which skip markers reject a
+# field that the declared scope requires to be a real command.
+_VERIFICATION_SCOPE_EXEMPTION_STARTS = ("适用外", "不适用")
+_VERIFICATION_SCOPE_EXEMPTION_STARTS_EN = ("out of scope", "not applicable", "n/a")
+_VERIFICATION_SCOPE_EXEMPTION_CONTAINS = ("仅在", "仅当")
+_VERIFICATION_SCOPE_EXEMPTION_CONTAINS_EN = ("only at", "only when", "only if")
+_VERIFICATION_SCOPE_SKIP_STARTS = (
+    "适用外",
+    "不适用",
+    "仅在",
+    "仅当",
+    "条件：",
+    "条件:",
+    "由全项目检查",
+    "未执行",
+    "未运行",
+    "未验证",
+    "未检查",
+    "未跑",
+    "跳过",
+    "不执行",
+)
+_VERIFICATION_SCOPE_SKIP_STARTS_EN = (
+    "out of scope",
+    "not applicable",
+    "n/a",
+    "only at",
+    "only when",
+    "only if",
+    "condition:",
+    "not run",
+    "not executed",
+    "not verified",
+    "not checked",
+    "skipped",
+    "skip",
+)
+
+
+def _verification_scope_explains_escalation(value: str) -> bool:
+    lowered = value.lower()
+    return (
+        value.startswith(_VERIFICATION_SCOPE_EXEMPTION_STARTS)
+        or lowered.startswith(_VERIFICATION_SCOPE_EXEMPTION_STARTS_EN)
+        or any(marker in value for marker in _VERIFICATION_SCOPE_EXEMPTION_CONTAINS)
+        or any(marker in lowered for marker in _VERIFICATION_SCOPE_EXEMPTION_CONTAINS_EN)
+    )
+
+
+def _verification_scope_is_skip_marker(value: str) -> bool:
+    lowered = value.lower()
+    return value.startswith(_VERIFICATION_SCOPE_SKIP_STARTS) or lowered.startswith(_VERIFICATION_SCOPE_SKIP_STARTS_EN)
+
+
+def _canonical_verification_scope_key(raw: str) -> str:
+    """Map an English 5.1 field label onto its canonical Chinese key."""
+    key = raw.strip()
+    if key in VERIFICATION_SCOPE_REQUIRED_FIELDS:
+        return key
+    return _VERIFICATION_SCOPE_FIELD_ALIASES_LOOKUP.get(key.lower(), key)
 
 
 def _verification_scope_section_lines(spec_content: str) -> tuple[list[str], int]:
     """Return the first real 5.1 section and count real headings outside fences."""
+    spec_content = fold_section_key_anchors(spec_content)
     in_fence = False
     in_section = False
     headings = 0
@@ -530,7 +861,7 @@ def _verification_scope_section_lines(spec_content: str) -> tuple[list[str], int
             continue
         if in_fence:
             continue
-        if heading_line_matches(line, VERIFICATION_SCOPE_HEADING_PREFIX):
+        if SECTION_VERIFICATION_STRATEGY.matches(line):
             headings += 1
             if not in_section:
                 in_section = True
@@ -565,7 +896,7 @@ def verification_scope_fields(spec_content: str) -> dict[str, str]:
             continue
         match = re.match(r"^-\s*([^：:]+?)\s*[：:]\s*(.*)$", line)
         if match:
-            fields.setdefault(match.group(1).strip(), match.group(2).strip())
+            fields.setdefault(_canonical_verification_scope_key(match.group(1)), match.group(2).strip())
     return fields
 
 
@@ -587,8 +918,10 @@ def verification_scope_errors(spec_content: str) -> list[str]:
         if line[:1] in (" ", "\t"):
             continue
         match = re.match(r"^-\s*([^：:]+?)\s*[：:]\s*(.*)$", line)
-        if match and match.group(1).strip() in duplicate_counts:
-            duplicate_counts[match.group(1).strip()] += 1
+        if match:
+            canonical = _canonical_verification_scope_key(match.group(1))
+            if canonical in duplicate_counts:
+                duplicate_counts[canonical] += 1
     errors.extend(
         f"`{VERIFICATION_SCOPE_HEADING_PREFIX}` 字段 {field} 出现 {count} 次，必须唯一"
         for field, count in duplicate_counts.items()
@@ -608,7 +941,7 @@ def verification_scope_errors(spec_content: str) -> list[str]:
         )
     if level in {"package", "integration"}:
         full_project = fields.get("全项目检查", "").strip()
-        if full_project and not (full_project.startswith("适用外") or "仅在" in full_project or "仅当" in full_project):
+        if full_project and not _verification_scope_explains_escalation(full_project):
             errors.append(
                 f"`{VERIFICATION_SCOPE_HEADING_PREFIX}` package/integration 范围必须说明"
                 "全项目检查的升级条件或适用外理由"
@@ -620,24 +953,7 @@ def verification_scope_errors(spec_content: str) -> list[str]:
     }.get(level, ())
     for field in required_real_fields:
         value = fields.get(field, "").strip()
-        if value.startswith(
-            (
-                "适用外",
-                "不适用",
-                "仅在",
-                "仅当",
-                "条件：",
-                "条件:",
-                "由全项目检查",
-                "未执行",
-                "未运行",
-                "未验证",
-                "未检查",
-                "未跑",
-                "跳过",
-                "不执行",
-            )
-        ):
+        if _verification_scope_is_skip_marker(value):
             errors.append(f"`{VERIFICATION_SCOPE_HEADING_PREFIX}` {level} 范围必须填写真实的{field}，不能标记为适用外")
     return errors
 
@@ -715,8 +1031,11 @@ def _is_closed_pending_question(item: str) -> bool:
     """Accept a whole struck-out question plus an explicit closure record.
 
     A strike alone, an incidental 已确认, and unrecognized live prose all
-    stay pending. Deliberately recognize a small grammar rather than infer
-    resolution from arbitrary narrative or strip the historical question.
+    stay pending. Deliberately recognize a small generic grammar rather than
+    infer resolution from arbitrary narrative or strip the historical
+    question. Case-specific closure phrases were removed (AUD-10): packages
+    that need bespoke syntax move to the v2 checkbox model, and historical
+    archives stay valid through the baseline-equivalence exemption.
     """
     match = re.fullmatch(r"~~([^~\n]+)~~\s*(?:→|->)\s*(.+)", item.strip())
     if not match or not match.group(1).strip():
@@ -725,23 +1044,12 @@ def _is_closed_pending_question(item: str) -> bool:
     if _has_unresolved_question(resolution):
         return False
     reference = r"(?:（[^（）()]+）|\([^（）()]+\))?"
-    chapter = r"见第\s*[0-9]+\s*节"
-    authorization_reference = rf"(?:（{chapter}）|\({chapter}\))?"
     closure_patterns = (
         # Completion, optionally with a paired explanatory note.
         rf"已(?:执行完成|完成|解决|关闭)\s*{reference}[。.]?",
         # Authorization is not completion unless completion is also recorded.
         rf"已(?:于\s*\d{{4}}-\d{{2}}-\d{{2}}\s*)?用户授权\s*{reference}"
         r"\s*[，,；;]\s*已执行完成[。.]?",
-        # An authorized scope decision can close a blocker while retaining
-        # an explicit deployment configuration and honest failure behavior.
-        # Keep dated map-scope authorization and chapter references explicit;
-        # neither arbitrary authorization prose nor arbitrary footnotes close it.
-        r"(?:[0-9]{4}-[0-9]{2}-[0-9]{2}\s*)?用户追加(?:地图多坐标系)?授权\s*"
-        rf"{authorization_reference}\s*[：:]\s*不再阻塞[^，,；;。.!！]+"
-        r"(?:[；;]\s*[A-Za-z_][A-Za-z0-9_]*\s*仍为部署侧配置[，,]\s*"
-        r"未配置时[^，,；;。.!！]+报\s*(?:503(?:/错误)?|错误)"
-        r"(?:[，,]\s*内置底图与运行时模板不受影响)?)?[。.]?",
     )
     return any(re.fullmatch(pattern, resolution) for pattern in closure_patterns)
 
@@ -792,61 +1100,112 @@ def _is_no_pending_declaration(item: str) -> bool:
     return not re.search(interrogative, live_prose)
 
 
+SPEC_FORMAT_MARKER = re.compile(r"<!--\s*spec-format:\s*(\d+)\s*-->")
+
+
+def spec_format_version(content: str) -> int:
+    """Parse the package format marker; 1 (legacy) when absent.
+
+    v2 switches the section-2.3 model to checkboxes (tick = closed, see
+    ``_pending_questions_v2``); versions >= 2 all use that model. A marker
+    opts into known semantics only — it never guesses at ones this engine
+    predates, and legacy parsing stays the no-marker default.
+    """
+    match = SPEC_FORMAT_MARKER.search(content)
+    return int(match.group(1)) if match else 1
+
+
+def _pending_questions_v2(items: list[str]) -> list[str]:
+    """Resolve section-2.3 items under the v2 checkbox model (AUD-10).
+
+    ``- [ ]`` is an open question and ``- [x]`` is closed in place (the
+    tick itself is the decision; an inline ``→ 结论`` is recommended, not
+    required). The ``- 无`` declaration closes the section. Any other bullet
+    is malformed for v2 and honestly stays pending — no intent inference,
+    which is exactly what the structured model removes.
+    """
+    pending: list[str] = []
+    for item in items:
+        match = re.match(r"\[(.)\]\s*(.*)$", item)
+        if match:
+            if match.group(1).lower() != "x":
+                pending.append(match.group(2).strip() or item)
+            continue
+        if _is_no_pending_declaration(item):
+            continue
+        pending.append(item)
+    return pending
+
+
 def extract_pending_questions(spec_content: str) -> list[str]:
     items = normalize_items(
-        extract_section_bullets(spec_content, "### 2.3 待确认问题"),
-        ignored=SECTION_PLACEHOLDER_ITEMS["### 2.3 待确认问题"],
+        extract_section_bullets(spec_content, SECTION_OPEN_QUESTIONS),
+        ignored=SECTION_PLACEHOLDER_ITEMS[SECTION_OPEN_QUESTIONS],
     )
+    if spec_format_version(spec_content) >= 2:
+        return _pending_questions_v2(items)
     return [item for item in items if not _is_no_pending_declaration(item) and not _is_closed_pending_question(item)]
 
 
 def extract_problem_definition_values(spec_content: str) -> dict[str, str]:
+    """Extract §1 bold-label fields, bilingual (项目目标 / Goal, ...).
+
+    Canonical keys stay Chinese; English display labels resolve onto them
+    case-insensitively. Unrecognized bold labels are ignored exactly as
+    before — only the three definition labels participate.
+    """
+    label_lookup = {
+        **{label: label for label in PROJECT_DEFINITION_PLACEHOLDERS},
+        **{alias: label for label, aliases in PROJECT_DEFINITION_LABEL_ALIASES.items() for alias in aliases},
+    }
     values: dict[str, str] = {}
-    for label in PROJECT_DEFINITION_PLACEHOLDERS:
-        match = re.search(rf"- \*\*{re.escape(label)}\*\*：(.*)", spec_content)
-        if match:
-            values[label] = match.group(1).strip()
+    for match in re.finditer(r"(?m)^-\s*\*\*([^*：:]+)\*\*\s*[：:]\s*(.*)$", spec_content):
+        label = label_lookup.get(match.group(1).strip().lower(), None)
+        if label is not None and label not in values:
+            values[label] = match.group(2).strip()
     return values
 
 
 def clarification_gaps(spec_content: str) -> list[str]:
     gaps: list[str] = []
     definition_values = extract_problem_definition_values(spec_content)
-    for label, placeholder in PROJECT_DEFINITION_PLACEHOLDERS.items():
+    for label, placeholders in PROJECT_DEFINITION_PLACEHOLDERS.items():
         value = definition_values.get(label, "")
-        if not value or value == placeholder:
+        if not value or value in placeholders:
             gaps.append(f"`spec.md` 缺少有效{label}")
 
     required_sections = (
-        "### 2.1 已确认事实",
-        "### 2.2 关键假设",
-        "### 3.3 不在范围内",
-        "## 4. 最小实现路径",
+        SECTION_CONFIRMED_FACTS,
+        SECTION_KEY_ASSUMPTIONS,
+        SECTION_OUT_OF_SCOPE,
+        SECTION_MINIMAL_PATH,
     )
-    for heading in required_sections:
-        ignored = SECTION_PLACEHOLDER_ITEMS.get(heading, set())
-        items = normalize_items(extract_section_bullets(spec_content, heading), ignored=ignored)
+    for section in required_sections:
+        ignored = SECTION_PLACEHOLDER_ITEMS.get(section, set())
+        items = normalize_items(extract_section_bullets(spec_content, section), ignored=ignored)
         if not items:
-            gaps.append(f"`spec.md` 缺少有效区块：{heading}")
+            gaps.append(f"`spec.md` 缺少有效区块：{section.canonical}")
 
-    pending_heading = "### 2.3 待确认问题"
-    pending_bullets = extract_section_bullets(spec_content, pending_heading)
+    pending_bullets = extract_section_bullets(spec_content, SECTION_OPEN_QUESTIONS)
     pending_real = normalize_items(
         pending_bullets,
-        ignored=SECTION_PLACEHOLDER_ITEMS[pending_heading],
+        ignored=SECTION_PLACEHOLDER_ITEMS[SECTION_OPEN_QUESTIONS],
     )
     has_decision = any(_is_no_pending_declaration(bullet) for bullet in pending_bullets)
     if not pending_real and not has_decision:
-        gaps.append(f"`spec.md` 缺少有效区块：{pending_heading}")
+        gaps.append(f"`spec.md` 缺少有效区块：{SECTION_OPEN_QUESTIONS.canonical}")
 
     return gaps
 
 
 ORCHESTRATION_ROUTES = ("local", "explore", "build", "review", "external")
-ORCHESTRATION_HEADING_PREFIX = "### 5.4 编排策略"
+SECTION_ORCHESTRATION_HEADING = SECTION_ORCHESTRATION
+# Backwards-compatible name: the canonical heading string (messages quote it).
+ORCHESTRATION_HEADING_PREFIX = SECTION_ORCHESTRATION.canonical
 # Historical packages wrote explicit opt-outs instead of a route token;
 # these are equivalent to `route: local` and must not fail the gate.
-_ORCHESTRATION_OPT_OUTS = ("未启用", "适用外", "不启用", "单线", "单线程")
+# English opt-outs cover the English template and hand-written packages.
+_ORCHESTRATION_OPT_OUTS = ("未启用", "适用外", "不启用", "单线", "单线程", "not enabled", "not applicable", "n/a")
 # One tokenizer for every consumer of the 5.4 top level: the generic field
 # parser and the route gate must see exactly the same bullets, so a route the
 # parser recognizes (including `- route : value` spacing) can never be
@@ -857,10 +1216,11 @@ BULLET_LINE = re.compile(r"^-\s?")
 
 def _orchestration_top_level_lines(spec_content: str) -> list[str]:
     """Unindented bullet lines of the 5.4 section (nested bullets excluded)."""
+    spec_content = fold_section_key_anchors(spec_content)
     collected: list[str] = []
     in_section = False
     for line in spec_content.splitlines():
-        if line.strip().startswith(ORCHESTRATION_HEADING_PREFIX):
+        if SECTION_ORCHESTRATION.matches_prefix(line):
             in_section = True
             continue
         if in_section and re.match(r"^#{1,3} ", line):
@@ -884,7 +1244,7 @@ def _is_orchestration_opt_out_declaration(bullet: str) -> bool:
     text = BULLET_LINE.sub("", bullet, count=1).strip()
     key_match = TOP_LEVEL_BULLET_FIELD.match(f"- {text}")
     subject = key_match.group(1).strip() if key_match else text
-    return subject.startswith(_ORCHESTRATION_OPT_OUTS)
+    return subject.startswith(_ORCHESTRATION_OPT_OUTS) or subject.lower().startswith(_ORCHESTRATION_OPT_OUTS)
 
 
 def _top_level_field(line: str) -> re.Match | None:
@@ -902,8 +1262,8 @@ def orchestration_strategy_errors(spec_content: str) -> list[str]:
     (未启用 / 适用外 / 不启用 / 单线 / 单线程 as the bullet's own subject)
     count as `route: local`. Nested (indented) bullets never participate.
     """
-    if not section_exists(spec_content, ORCHESTRATION_HEADING_PREFIX) and not section_prefix_exists(
-        spec_content, ORCHESTRATION_HEADING_PREFIX
+    if not section_exists(spec_content, SECTION_ORCHESTRATION) and not section_prefix_exists(
+        spec_content, SECTION_ORCHESTRATION
     ):
         return []
     bullets = _orchestration_top_level_lines(spec_content)
@@ -1049,6 +1409,20 @@ class TaskRecord:
         return bool(self.boundary.strip()) and bool(self.verify.strip())
 
 
+_BLOCKED_TITLE_MARK = re.compile(r"(?i)\b(?:blocked|blocker)\b")
+
+
+def task_title_signals_blocked(title: str) -> bool:
+    """Title-level block signal, bilingual: 阻塞 / blocked / blocker.
+
+    Word boundaries keep "unblocked" and "BlockerReport" style tokens out;
+    the standalone ``blocked:`` status line and the ``!`` marker remain the
+    authoritative signals (has_blocked_tasks) — this drives the task graph's
+    ready computation only.
+    """
+    return "阻塞" in title or bool(_BLOCKED_TITLE_MARK.search(title))
+
+
 def parse_task_records(tasks_content: str) -> list[TaskRecord]:
     """Parse ``tasks.md`` checkbox tasks into position-stable records.
 
@@ -1101,9 +1475,7 @@ def parse_task_records(tasks_content: str) -> list[TaskRecord]:
                 id=explicit[0] if explicit else f"task_{len(records) + 1:04d}",
                 title=title,
                 checked=marker.lower() == "x",
-                # A "!" marker or an unchecked task titled 阻塞 is a block
-                # signal; completed tasks describing resolved blocking are not.
-                blocked=marker == "!" or ("阻塞" in title and marker.lower() != "x"),
+                blocked=marker == "!" or (task_title_signals_blocked(title) and marker.lower() != "x"),
                 boundary=boundary,
                 verify=verify,
                 block_text="\n".join(own_block if explicit else block),
@@ -1207,11 +1579,26 @@ def resolve_active_slug(
 
 
 def checklist_passed(content: str) -> bool:
-    return bool(re.search(r"(?m)^\*\*验收结果\*\*：通过\s*$", content))
+    """Acceptance verdict line, bilingual: 验收结果：通过 / Result: pass."""
+    return bool(re.search(r"(?im)^\*\*(?:验收结果|Result)\*\*\s*[：:]\s*(?:通过|pass)\s*$", content))
 
 
 def checklist_complete(content: str) -> bool:
     return checklist_passed(content) and count_unchecked_checkboxes(content) == 0
+
+
+def acceptance_complete(checklist_content: str | None, spec_content: str) -> bool:
+    """Acceptance-complete judgment across both package formats (F11).
+
+    A legacy checklist package is complete when its checklist passed with no
+    unchecked boxes. A v2 package (no checklist.md) is complete when every
+    spec.md §6 success-criterion checkbox is checked; an empty §6 surface
+    fails closed — there is no acceptance contract to satisfy.
+    """
+    if checklist_content is not None:
+        return checklist_complete(checklist_content)
+    total, checked = section_checkboxes_by_prefix(spec_content, "## 6.")
+    return total > 0 and total == checked
 
 
 def extract_evidence_fields(checklist_content: str) -> dict[str, str]:
@@ -1222,6 +1609,7 @@ def extract_evidence_fields(checklist_content: str) -> dict[str, str]:
     common nested evidence blocks remain machine-readable. Indented
     ``旧：`` / ``新：`` style lines no longer leak as top-level keys.
     """
+    checklist_content = fold_section_key_anchors(checklist_content)
     fields: dict[str, str] = {}
     lines = checklist_content.splitlines()
     in_section = False
@@ -1239,10 +1627,10 @@ def extract_evidence_fields(checklist_content: str) -> dict[str, str]:
         nested_parts = []
 
     for line in lines:
-        if heading_line_matches(line, "## 验收证据"):
+        if heading_line_matches(line, SECTION_ACCEPTANCE_EVIDENCE):
             in_section = True
             continue
-        if in_section and re.match(r"^##\s+", line) and not heading_line_matches(line, "## 验收证据"):
+        if in_section and re.match(r"^##\s+", line) and not heading_line_matches(line, SECTION_ACCEPTANCE_EVIDENCE):
             flush_current()
             break
         if not in_section:
@@ -1335,15 +1723,27 @@ def extract_evidence_anchor(checklist_content: str) -> tuple[str, str] | None:
 
 
 def load_reference_templates(root: Path) -> dict[str, str]:
+    """Parse the init fences from references/templates.md.
+
+    ``spec.md`` / ``tasks.md`` fences are required. The ``checklist.md``
+    fence is optional since v2 packages stopped shipping one (F11): when the
+    fence is absent the returned mapping simply has no ``checklist.md`` key
+    and init renders no checklist file. A fence that *is* present still
+    renders, so a project that wants checklists back can restore the fence
+    without touching the parser.
+    """
     reference_path = root / "references" / "templates.md"
     content = read_text(reference_path)
-    filenames = ("spec.md", "tasks.md", "checklist.md")
+    required_filenames = ("spec.md", "tasks.md")
+    optional_filenames = ("checklist.md",)
     templates: dict[str, str] = {}
 
-    for filename in filenames:
+    for filename in (*required_filenames, *optional_filenames):
         pattern = rf"## `{re.escape(filename)}`\n\n```markdown\n(.*?)\n```"
         match = re.search(pattern, content, re.S)
         if not match:
+            if filename in optional_filenames:
+                continue
             raise ValueError(f"template block not found for {filename} in {reference_path}")
         templates[filename] = match.group(1)
 
@@ -1458,10 +1858,12 @@ def active_branch_bindings(root: Path, specs_dir_name: str | None = None) -> dic
 
 
 def active_package_slugs(specs_dir: Path) -> list[str]:
-    """Slugs of active packages: triad present, not archive/hidden/symlink.
+    """Slugs of active packages: package docs present, not archive/hidden/symlink.
 
     Single enumeration contract for route/status views; skips the same
-    non-package entries as check_all_spec_packages.package_dirs.
+    non-package entries as check_all_spec_packages.package_dirs. checklist.md
+    is optional since v2 packages (F11), so spec.md + tasks.md define the
+    package here.
     """
     if not specs_dir.exists():
         return []
@@ -1469,7 +1871,7 @@ def active_package_slugs(specs_dir: Path) -> list[str]:
     for path in sorted(specs_dir.iterdir()):
         if path.name == "archive" or path.name.startswith(".") or not path.is_dir() or path.is_symlink():
             continue
-        if (path / "spec.md").exists() and (path / "tasks.md").exists() and (path / "checklist.md").exists():
+        if (path / "spec.md").exists() and (path / "tasks.md").exists():
             packages.append(path.name)
     return packages
 

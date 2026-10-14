@@ -87,6 +87,25 @@ class TestSweepCLI:
         payload = json.loads(capsys.readouterr().out)
         assert payload == {"dry_run": False, "recorded_ttys": 1, "found": 0, "closed": [], "skipped": []}
 
+    def test_runtime_layout_seeds_are_swept_too(self, tmp_path, capsys, monkeypatch):
+        """F16 step 3: the audit lives under .git/spec-chain/<chain>/ — the
+        sweep reads the runtime positions (and keeps legacy coverage)."""
+        runtime = support.chain_runtime_dir(tmp_path, "autoplan")
+        runtime.mkdir(parents=True, exist_ok=True)
+        (runtime / "spawns.jsonl").write_text(
+            json.dumps({"pass": 1, "prev_tty": "/dev/ttys021"}) + "\n", encoding="utf-8"
+        )
+        self._seeds(tmp_path)
+        seen: dict = {}
+        monkeypatch.setattr(
+            support,
+            "find_dead_chain_windows",
+            lambda recorded, exclude_tty=None: (seen.setdefault("recorded", list(recorded)), [])[1],
+        )
+        monkeypatch.setattr(support, "close_terminal_windows", lambda ids: {"closed": [], "skipped": []})
+        assert sweep_chain_windows.main(["--root", str(tmp_path), "--dry-run"]) == 0
+        assert seen["recorded"] == ["/dev/ttys021", "/dev/ttys009"]
+
     def test_bad_root_refuses(self, tmp_path, capsys):
         assert sweep_chain_windows.main(["--root", str(tmp_path / "nope")]) == 1
         assert "not a directory" in capsys.readouterr().err

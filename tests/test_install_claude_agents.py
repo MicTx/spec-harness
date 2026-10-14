@@ -32,6 +32,9 @@ def run_installer(home: Path, extra_env: dict[str, str] | None = None) -> subpro
         {
             "HOME": str(home),
             "INSTALL_HOSTS": "claude",
+            # Full-surface assertions: native agents install only under
+            # INSTALL_PROFILE=full (core is the default since F16).
+            "INSTALL_PROFILE": "full",
             "CLAUDE_SKILLS_DIR": str(home / ".claude" / "skills"),
             "CLAUDE_COMMANDS_DIR": str(home / ".claude" / "commands"),
             "CLAUDE_AGENTS_DIR": str(home / ".claude" / "agents"),
@@ -76,7 +79,8 @@ def test_installer_publishes_native_claude_agents(tmp_path):
     result = run_installer(home, _watermark_env(tmp_path))
     assert result.returncode == 0, result.stderr
     installed = (home / ".claude" / "skills" / "spec" / "SKILL.md").read_text(encoding="utf-8")
-    assert installed.split("\u2063", 1)[0] == (ROOT / "SKILL.md").read_text(encoding="utf-8")
+    # AUD-17: the entry file installs byte-identical plain text.
+    assert installed == (ROOT / "SKILL.md").read_text(encoding="utf-8")
     assert "Rights Holder Example" not in installed
     assert not (home / ".claude" / "skills" / "spec" / "scripts" / "skill_watermark.py").exists()
     for name in AGENT_NAMES:
@@ -90,7 +94,10 @@ def test_installer_publishes_native_claude_agents(tmp_path):
 
 
 @requires_bash
-def test_installer_refuses_unmarked_source_without_key(tmp_path):
+def test_installer_copies_unmarked_source_without_key(tmp_path):
+    # AUD-04 / F3: an unsigned source layout with no local credentials is the
+    # normal fresh-checkout case — the installer copies it as-is with a visible
+    # notice instead of the pre-F3 refusal dead end.
     home = tmp_path / "home"
     home.mkdir()
     unmarked = tmp_path / "unmarked-skill"
@@ -111,9 +118,11 @@ def test_installer_refuses_unmarked_source_without_key(tmp_path):
     assert export.returncode == 0, export.stderr
     (unmarked / "scripts" / "route_spec_package.py").unlink()
     result = run_installer(home, {"SOURCE_DIR": str(unmarked)})
-    assert result.returncode != 0
-    assert "distribution signature" in result.stderr
-    assert not (home / ".claude" / "skills" / "spec").exists()
+    assert result.returncode == 0, result.stderr
+    assert "no signing credentials found - installing the unsigned source tree as-is" in result.stdout
+    installed = home / ".claude" / "skills" / "spec" / "SKILL.md"
+    assert installed.is_file()
+    assert installed.read_text(encoding="utf-8") == (unmarked / "SKILL.md").read_text(encoding="utf-8")
 
 
 @requires_bash
@@ -139,9 +148,11 @@ def test_installer_keeps_existing_mark_without_local_key(tmp_path):
     (marked / "scripts" / "route_spec_package.py").unlink()
     result = run_installer(home, {"SOURCE_DIR": str(marked)})
     assert result.returncode == 0, result.stderr
-    installed = (home / ".claude" / "skills" / "spec" / "SKILL.md").read_text(encoding="utf-8")
-    assert "\u2063" in installed
-    assert "holder@example.invalid" not in installed
+    installed_skill = (home / ".claude" / "skills" / "spec" / "SKILL.md").read_text(encoding="utf-8")
+    assert "\u2063" not in installed_skill
+    installed_notice = (home / ".claude" / "skills" / "spec" / "NOTICE").read_text(encoding="utf-8")
+    assert "\u2063" in installed_notice
+    assert "holder@example.invalid" not in installed_notice
 
 
 @requires_bash

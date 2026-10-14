@@ -1,21 +1,31 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-"""spec 编排路由决策：任务文本 -> 五路由判定 + lane 建议。
+"""spec 编排路由决策：单一入口，按包结构判定五路由 + lane 建议。
 
-把 `### 5.4 编排策略` 的 route 词表从纯约定升级为机器可判定入口：
+F12（AUD-11）收敛后的路由语义：
+- 路由输入是包结构（未完成任务数、boundary 覆盖模块数、依赖图宽度、风险标签），
+  不是目标文本——同一任务的长短描述得到相同路由。
+- 零结构信号一律 local；仅强结构信号给非 local（阈值是固定常量，可测试）。
+- `--text` 降级为只读诊断（人工对照用），不作为路由输入。
+- 历史 `### 5.4 编排策略` 的 route 解析兼容保留：合法 5.4 route 仍是显式覆盖。
+
+包结构判定为确定性规则（可解释、可测试），不做魔法：
+- local: 小而局部、无跨模块并行收益（零强结构信号）
+- review: boundary/verify 命中信任边界/破坏性风险标签（认证/计费/密钥/迁移/破坏性）
+- explore: 多任务宽边界，或依赖图纠缠（单任务依赖过宽，理解先行）
+- build: 中等规模、可切分（多任务多模块且依赖宽度受控）
+- external: 升级条件；结构路由不自动给出，由显式 5.4 route 或 --route 覆盖到达
+
 `/spec:new` 定范围后、`/spec:run` 执行前，任何会话都可以运行
 
-    python3 scripts/route_decision.py --text "<goal>"
+    python3 scripts/route_decision.py --root <project> --slug <slug>
 
-拿到结构化 JSON（route / score / reason / lanes），代替凭记忆写 5.4。
-判定为显式启发式评分（可解释、可测试），不做魔法：
-- local: 小而局部、单文件、无并行收益
-- explore: 理解缺失、结构不清、需要多面并行探察
-- build: 实现具体、ownership 可按模块/文件干净切分
-- review: 代码已存在、风险评审是主要需求
-- external: 需要隔离 git 状态、长时间运行或多终端监控
+拿到结构化 JSON（route / basis / structure / score / reason / lanes / risks），
+代替凭记忆写 5.4。文本面保留只读诊断入口
 
-契约详见 references/orchestration.md；lane 建议是草案，
+    python3 scripts/route_decision.py --text "<goal>"   # 对照用，不是路由输入
+
+契约详见 references/orchestration.md；lane 建议是草案（boundary 模块即所有权面），
 主会话仍按 assignment contract 细化后才会委派。
 """
 
@@ -215,6 +225,193 @@ def infer_channel_profile(text: str) -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# 包结构路由（F12/AUD-11：单一入口按包结构决策；文本只做只读诊断）
+# ---------------------------------------------------------------------------
+
+# 固定阈值（无使用证据不做配置化；调整须随测试与试点实录一起评审）：
+# 多任务宽边界或依赖纠缠给 explore；中等规模可切分给 build；风险标签给 review；
+# 其余一律 local。仅强结构信号给非 local。
+EXPLORE_MIN_TASKS = 6
+EXPLORE_MIN_MODULES = 4
+EXPLORE_TANGLE_DEP_WIDTH = 3
+BUILD_MIN_TASKS = 4
+BUILD_MIN_MODULES = 3
+BUILD_MAX_DEP_WIDTH = 2
+LANE_DRAFT_CAP = 4
+
+# boundary 里提及但不计入代码面的簿记树（包文档/链状态/loop 运行时状态）。
+_NON_CODE_MODULE_ROOTS = frozenset({".spec", ".agents"})
+
+_PATH_TOKEN_RE = re.compile(r"[A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.\-]+)+")
+
+
+def _boundary_modules(boundary: str) -> set[str]:
+    """从 boundary 提取覆盖模块：路径 token 归一到首段（slots 归到 slot 目录）。
+
+    `.spec/`、`.agents/` 是包簿记/运行时状态树，不是代码面，不计数；
+    裸文件名（无路径分隔）推不出模块归属，跳过。
+    """
+    modules: set[str] = set()
+    for token in _PATH_TOKEN_RE.findall(boundary or ""):
+        parts = [part for part in token.split("/") if part]
+        if not parts or parts[0] in _NON_CODE_MODULE_ROOTS:
+            continue
+        if parts[0].startswith("-"):
+            # 以 - 开头的是命令行旗标（--slug/--root 等），不是路径/模块。
+            continue
+        if parts[0] == "slots" and len(parts) >= 2:
+            modules.add("/".join(parts[:2]))
+        else:
+            modules.add(parts[0])
+    return modules
+
+
+def collect_package_structure(root: Path, slug: str) -> dict[str, Any]:
+    """读任务包结构：未完成任务数、boundary 覆盖模块、依赖宽度、风险标签、5.4 route。
+
+    只统计未完成任务（剩余工作形状）；tasks 解析失败按空任务集处理（路由永不
+    抛错），但包文档缺失/不可读会向外抛——路由输入必须可解释，不在这褢
+    兜底猜文本。boundary_text 仅内部供 channel_profile 推断，不随 JSON 输出。
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from spec_package_support import (  # noqa: E402
+        TOP_LEVEL_BULLET_FIELD,
+        _orchestration_top_level_lines,
+        extract_title_from_content,
+        parse_task_records,
+        read_regular_text,
+        resolve_specs_child,
+        resolve_specs_root,
+        task_dependencies,
+    )
+
+    specs_root = resolve_specs_root(root, None)
+    package_dir = resolve_specs_child(specs_root, "specs", slug)
+    spec_content = read_regular_text(package_dir / "spec.md")
+    tasks_content = read_regular_text(package_dir / "tasks.md")
+
+    title = extract_title_from_content(spec_content, slug) or slug
+
+    try:
+        records = parse_task_records(tasks_content)
+    except Exception:  # noqa: BLE001 - structure is derived data; routing must never crash
+        records = []
+    open_records = [record for record in records if not record.checked]
+
+    modules: set[str] = set()
+    for record in open_records:
+        modules.update(_boundary_modules(record.boundary))
+    dep_width = max((len(task_dependencies(record)) for record in open_records), default=0)
+
+    boundary_text = "；".join(
+        f"{record.boundary} {record.verify}"
+        for record in open_records
+        if record.boundary.strip() or record.verify.strip()
+    )
+    risk_labels = _risks(boundary_text)
+
+    explicit_route: str | None = None
+    route_bullets = [
+        line
+        for line in _orchestration_top_level_lines(spec_content)
+        if (match := TOP_LEVEL_BULLET_FIELD.match(line)) is not None and match.group(1).strip() == "route"
+    ]
+    if len(route_bullets) == 1:
+        token = TOP_LEVEL_BULLET_FIELD.match(route_bullets[0]).group(2).strip().strip("`").strip()
+        if token in ROUTES:
+            explicit_route = token
+
+    return {
+        "title": title,
+        "task_count": len(open_records),
+        "boundary_modules": sorted(modules),
+        "module_count": len(modules),
+        "dep_width": dep_width,
+        "risk_labels": risk_labels,
+        "boundary_text": boundary_text,
+        "explicit_route": explicit_route,
+    }
+
+
+def decide_by_structure(structure: dict[str, Any]) -> dict[str, Any]:
+    """按包结构做路由判定。永不抛错，永远返回结构化结果；依据=包结构。"""
+    task_count = int(structure.get("task_count") or 0)
+    modules = list(structure.get("boundary_modules") or [])
+    module_count = len(modules)
+    dep_width = int(structure.get("dep_width") or 0)
+    risks = list(structure.get("risk_labels") or [])
+
+    signals: list[str] = []
+    if risks:
+        route = "review"
+        signals.append(f"风险标签 {risks}")
+    elif task_count >= EXPLORE_MIN_TASKS and module_count >= EXPLORE_MIN_MODULES:
+        route = "explore"
+        signals.append(f"任务数 {task_count}≥{EXPLORE_MIN_TASKS} × 模块数 {module_count}≥{EXPLORE_MIN_MODULES}")
+    elif dep_width >= EXPLORE_TANGLE_DEP_WIDTH:
+        route = "explore"
+        signals.append(f"依赖宽度 {dep_width}≥{EXPLORE_TANGLE_DEP_WIDTH}（纠缠，理解先行）")
+    elif task_count >= BUILD_MIN_TASKS and module_count >= BUILD_MIN_MODULES and dep_width <= BUILD_MAX_DEP_WIDTH:
+        route = "build"
+        signals.append(
+            f"任务数 {task_count}≥{BUILD_MIN_TASKS} × 模块数 {module_count}≥{BUILD_MIN_MODULES}"
+            f" × 依赖宽度 {dep_width}≤{BUILD_MAX_DEP_WIDTH}"
+        )
+    else:
+        route = "local"
+
+    # score = 强结构信号命中数（可解释：每项都是独立可复核的阈值判定）。
+    score = sum(
+        (
+            bool(risks),
+            task_count >= EXPLORE_MIN_TASKS,
+            module_count >= EXPLORE_MIN_MODULES,
+            dep_width >= EXPLORE_TANGLE_DEP_WIDTH,
+            task_count >= BUILD_MIN_TASKS,
+            module_count >= BUILD_MIN_MODULES,
+        )
+    )
+
+    # lane 草案 = boundary 模块（互不相交的所有权面，确定性所有权检查的基砆）。
+    lanes: list[str] = []
+    if route in ("explore", "build", "review"):
+        lanes = modules[:LANE_DRAFT_CAP]
+    # 风险信号非空即要求独立安全评审 lane；业务面 lane 不能替代。
+    if risks and "安全评审" not in lanes:
+        lanes = lanes + ["安全评审"]
+
+    reason = "依据=包结构：" + ("；".join(signals) if signals else "无强结构信号，一律 local")
+    return {
+        "route": route,
+        "basis": "package-structure",
+        "score": score,
+        "reason": reason,
+        "lanes": lanes,
+        "risks": risks,
+        "structure": {
+            "task_count": task_count,
+            "boundary_modules": modules,
+            "module_count": module_count,
+            "dep_width": dep_width,
+            "risk_labels": risks,
+        },
+    }
+
+
+def _apply_structure_override(result: dict[str, Any], route: str) -> dict[str, Any]:
+    """显式覆盖（--route 或合法 5.4 route）后重算 route 相关字段，保持自洽。"""
+    lanes: list[str] = []
+    if route in ("explore", "build", "review"):
+        lanes = list(result["structure"]["boundary_modules"])[:LANE_DRAFT_CAP]
+    if result["risks"] and "安全评审" not in lanes:
+        lanes = lanes + ["安全评审"]
+    reason = result["reason"] + f"；显式覆盖 route={route}"
+    if route == "external":
+        reason += "（升级条件：隔离/长时运行由显式声明到达，结构路由不自动给出）"
+    return {**result, "route": route, "lanes": lanes, "override": True, "reason": reason}
+
+
 def _route_dependent_fields(route: str, text: str, scores: dict[str, int], risks: list[str]) -> dict[str, Any]:
     """按最终 route 重算 lanes/reason；score 取该 route 的启发式分。
 
@@ -249,9 +446,11 @@ def decide(text: str) -> dict[str, Any]:
     scores = _score_map(cleaned)
 
     route = max(scores, key=lambda key: (scores[key], ROUTES.index(key)))
-    # 全零信号按字数粗分：小文本 local，大文本 explore（理解先行）。
-    if sum(scores.values()) == 0:
-        route = "local" if len(cleaned) < 40 else "explore"
+    # 零信号一律 local（F12/AUD-11）：不再按字数分流——同一修复的长短
+    # 描述必须得到相同路由，文本长度不是路由信号；零分时上面的索引平局
+    # 决胜会漂到 external，这里显式归 local。
+    if scores[route] == 0:
+        route = "local"
     # external 是升级条件而不是并列竞争：命中隔离/长运行信号时直接升级。
     if scores["external"] > 0 and route not in ("external", "local"):
         route = "external"
@@ -279,79 +478,39 @@ def decide(text: str) -> dict[str, Any]:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=("Route decision for spec orchestration: task text -> one of " + " / ".join(ROUTES)),
-        epilog="Output is a single JSON object: route, score, reason, lanes (draft lane suggestions).",
+        description=(
+            "Route decision for spec orchestration: package structure -> one of "
+            + " / ".join(ROUTES)
+            + " (single entry); --text is a read-only diagnostic, not a routing input"
+        ),
+        epilog=(
+            "Output is a single JSON object: route, basis, structure (package mode), "
+            "score, reason, lanes (draft ownership surfaces)."
+        ),
     )
-    parser.add_argument("--text", required=True, help="Task text / package goal to route.")
+    parser.add_argument(
+        "--text",
+        help="Read-only diagnostic: text heuristic for side-by-side comparison (NOT the routing input).",
+    )
     parser.add_argument(
         "--route",
         help="Explicit route override; must be one of: " + " / ".join(ROUTES),
     )
     parser.add_argument(
         "--root",
-        help="Project root containing the task package (consumed with --slug to add package context).",
+        help=(
+            "Project root containing the task package; with --slug this is the single "
+            "routing entry, decided from package structure."
+        ),
     )
     parser.add_argument(
         "--slug",
-        help="Task package slug; with --root, the open tasks and any valid 5.4 route join the decision.",
+        help=(
+            "Task package slug; with --root the decision reads open-task count, boundary "
+            "module coverage, dependency width, and risk labels."
+        ),
     )
     return parser.parse_args(argv)
-
-
-def _package_context(root: Path, slug: str) -> tuple[str, str | None]:
-    """读取任务包：拼接目标 + 未完成任务/boundary 文本，并提取合法 5.4 route。
-
-    只消费未完成任务标题与 boundary，避免已完成任务的噪音；5.4 route
-    非法或缺席时不作为覆盖（门禁会在 run 前拦截非法策略）。
-    """
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from spec_package_support import (  # noqa: E402
-        TOP_LEVEL_BULLET_FIELD,
-        _orchestration_top_level_lines,
-        extract_title_from_content,
-        parse_task_records,
-        read_regular_text,
-        resolve_specs_child,
-        resolve_specs_root,
-    )
-
-    specs_root = resolve_specs_root(root, None)
-    package_dir = resolve_specs_child(specs_root, "specs", slug)
-    spec_content = read_regular_text(package_dir / "spec.md")
-    tasks_content = read_regular_text(package_dir / "tasks.md")
-
-    goal = f"{slug}"
-    title = extract_title_from_content(spec_content, slug)
-    if title:
-        goal = title
-
-    open_fragments: list[str] = []
-    try:
-        records = parse_task_records(tasks_content)
-    except Exception:  # noqa: BLE001 - context is advisory; routing must never crash
-        records = []
-    for record in records:
-        if record.checked:
-            continue
-        open_fragments.append(record.title)
-        if record.boundary.strip():
-            open_fragments.append(record.boundary)
-        if record.verify.strip():
-            open_fragments.append(record.verify)
-
-    explicit_route: str | None = None
-    route_bullets = [
-        line
-        for line in _orchestration_top_level_lines(spec_content)
-        if (match := TOP_LEVEL_BULLET_FIELD.match(line)) is not None and match.group(1).strip() == "route"
-    ]
-    if len(route_bullets) == 1:
-        token = TOP_LEVEL_BULLET_FIELD.match(route_bullets[0]).group(2).strip().strip("`").strip()
-        if token in ROUTES:
-            explicit_route = token
-
-    context_text = goal if not open_fragments else goal + "：" + "；".join(open_fragments)
-    return context_text, explicit_route
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -362,33 +521,55 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    text = args.text
-    package_route = None
-    if args.root and args.slug:
-        try:
-            context_text, package_route = _package_context(Path(args.root), args.slug)
-            text = f"{args.text}；{context_text}" if args.text else context_text
-        except Exception as exc:  # noqa: BLE001 - missing/invalid package degrades to text-only
-            print(f"route_decision: package context unavailable ({exc}); falling back to --text", file=sys.stderr)
-    else:
-        package_route = None
+    if bool(args.root) != bool(args.slug):
+        print("route_decision: --root and --slug must be given together", file=sys.stderr)
+        return 2
+    if not args.root and args.text is None:
+        print(
+            "route_decision: nothing to route — pass --root + --slug for package-structure "
+            "routing (the single entry) or --text for a read-only diagnostic",
+            file=sys.stderr,
+        )
+        return 2
 
-    override_route = args.route or package_route
-    heuristic = decide(text)
-    risks = heuristic["risks"]
-    channel_profile = infer_channel_profile(text)
-    scores = _score_map(text)
-    if override_route is not None and override_route in ROUTES:
-        result = {
-            **_route_dependent_fields(override_route, text, scores, risks),
-            "risks": risks,
-            "channel_profile": channel_profile,
-            "override": True,
-        }
-        if package_route and not args.route:
-            result["source"] = "package-5.4"
+    if args.root:
+        # 包结构路由：唯一路由入口。包不可读时 fail closed——路由结果必须可由
+        # 包结构解释，不许退回猜文本（那正是 AUD-11 要消除的非确定语义）。
+        try:
+            structure = collect_package_structure(Path(args.root), args.slug)
+        except Exception as exc:  # noqa: BLE001 - never guess from text
+            print(
+                f"route_decision: package structure unavailable ({exc}); refusing to route from text",
+                file=sys.stderr,
+            )
+            return 1
+        result = decide_by_structure(structure)
+        result["channel_profile"] = infer_channel_profile(structure["boundary_text"])
+        package_route = structure["explicit_route"]
+        override_route = args.route or package_route
+        if override_route is not None:
+            result = _apply_structure_override(result, override_route)
+            if package_route and not args.route:
+                result["source"] = "package-5.4"
+        else:
+            result["override"] = False
     else:
-        result = {**heuristic, "channel_profile": channel_profile, "override": False}
+        # 只读诊断面：文本启发式对照，不作为路由输入。
+        text = (args.text or "").strip()
+        heuristic = decide(text)
+        risks = heuristic["risks"]
+        channel_profile = infer_channel_profile(text)
+        if args.route is not None:
+            scores = _score_map(text)
+            result = {
+                **_route_dependent_fields(args.route, text, scores, risks),
+                "basis": "text-diagnostic",
+                "risks": risks,
+                "channel_profile": channel_profile,
+                "override": True,
+            }
+        else:
+            result = {**heuristic, "basis": "text-diagnostic", "override": False}
     print(json.dumps(result, ensure_ascii=False))
     return 0
 

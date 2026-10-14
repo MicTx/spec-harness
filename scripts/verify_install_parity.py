@@ -6,8 +6,10 @@ installed copy are BY DESIGN and this tool pins them as PASS conditions —
 an install-parity audit should not re-derive them, and must never mistake
 the signature for dirt and strip it:
 
-1. The installed ``SKILL.md`` carries the invisible ``\\u2063`` distribution
-   signature stamped at export time; the repository source stays clean.
+1. A signed install carries the invisible ``\\u2063`` distribution signature
+   in ``NOTICE`` (AUD-17: the entry ``SKILL.md`` stays plain text and is
+   never loaded into model context); the repository source stays clean.
+   An unsigned source-tree install legitimately has no ``NOTICE``.
 2. Maintainer-side scripts (``SCRIPT_BLACKLIST`` in ``payload_contract.py``)
    are never shipped — a leftover copy in an install is stale upgrade dirt.
 3. Only ``ROOT_FILES`` land at the install root; ``RELEASE.md``,
@@ -36,18 +38,31 @@ from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from payload_contract import COPY_DIRS, IGNORE_PATTERNS, ROOT_FILES, SCRIPT_BLACKLIST  # noqa: E402
+from payload_contract import (  # noqa: E402
+    COPY_DIRS,
+    CORE_EXCLUDED_DIRS,
+    CORE_EXCLUDED_SCRIPTS,
+    IGNORE_PATTERNS,
+    PROFILE_VALUES,
+    ROOT_FILES,
+    SCRIPT_BLACKLIST,
+    copy_dirs_for_profile,
+    excluded_scripts_for_profile,
+)
 
 # The export-time distribution signature (scripts/skill_watermark.py): a
-# MARK + PAD-bitstream + MARK line appended to SKILL.md. The repo source
+# MARK + PAD-bitstream + MARK line appended to NOTICE. The repo source
 # stays clean of all three codepoints.
 SIGNATURE_MARK = "\u2063"
-SIGNATURE_PAD = "\u2060\u200b"
-SIGNATURE_CHARS = SIGNATURE_MARK + SIGNATURE_PAD
+
+# The file carrying the signature in an install (export_skill_package's
+# NOTICE text + mark). Not a repo file, not a user sidecar — a known
+# generated root file.
+SIGNATURE_CARRIER = "NOTICE"
 
 # Installer-owned artifacts expected inside an install (install.sh's
 # ownership sidecar); not user sidecars, not payload, never a warning.
-KNOWN_INSTALL_EXTRAS = {".spec-skill-install"}
+KNOWN_INSTALL_EXTRAS = {".spec-skill-install", SIGNATURE_CARRIER}
 SIDEAR_VERSION_PATTERN = re.compile(r"^version=(\S+)", re.MULTILINE)
 
 # The installer's host skill directories (install.sh backup_namespace table).
@@ -81,10 +96,15 @@ def _ignored(name: str) -> bool:
     return any(fnmatch.fnmatch(name, pattern) for pattern in IGNORE_PATTERNS)
 
 
-def shipped_files(repo: Path) -> List[Path]:
+def shipped_files(
+    repo: Path,
+    copy_dirs: Tuple[str, ...] = COPY_DIRS,
+    excluded_scripts: frozenset = frozenset(),
+) -> List[Path]:
     """The exporter's shipped set as repo-relative paths (mirrors the payload
-    contract exactly: ROOT_FILES + non-blacklisted top-level scripts/*.py +
-    COPY_DIRS recursively, minus ignore patterns)."""
+    contract exactly: ROOT_FILES + non-blacklisted top-level scripts/*.py
+    minus the profile's excluded scripts + the profile's COPY_DIRS
+    recursively, minus ignore patterns)."""
     files: List[Path] = []
     for name in ROOT_FILES:
         candidate = repo / name
@@ -97,11 +117,12 @@ def shipped_files(repo: Path) -> List[Path]:
                 entry.is_file()
                 and entry.suffix == ".py"
                 and entry.name not in SCRIPT_BLACKLIST
+                and entry.name not in excluded_scripts
                 and not entry.name.startswith("_")
                 and not _ignored(entry.name)
             ):
                 files.append(entry)
-    for dirname in COPY_DIRS:
+    for dirname in copy_dirs:
         base = repo / dirname
         if not base.is_dir():
             continue
@@ -111,7 +132,7 @@ def shipped_files(repo: Path) -> List[Path]:
     return files
 
 
-def audit_install(install: Path, repo: Path) -> Dict[str, object]:
+def audit_install(install: Path, repo: Path, profile: str = "full") -> Dict[str, object]:
     """One install against the repo: expected asymmetries pass, everything
     else in the shipped set must be byte-identical."""
     failures: List[str] = []
@@ -126,7 +147,7 @@ def audit_install(install: Path, repo: Path) -> Dict[str, object]:
     if repo_version is not None and install_version is not None and repo_version != install_version:
         failures.append(f"version drift: install {install_version} != repo {repo_version}")
 
-    shipped = shipped_files(repo)
+    shipped = shipped_files(repo, copy_dirs_for_profile(profile), excluded_scripts_for_profile(profile))
     checked = 0
     for source in shipped:
         relative = source.relative_to(repo)
@@ -135,19 +156,7 @@ def audit_install(install: Path, repo: Path) -> Dict[str, object]:
             failures.append(f"missing shipped file: {relative}")
             continue
         checked += 1
-        if relative.as_posix() == "SKILL.md":
-            # the one file allowed to differ: the export-time signature. The
-            # install copy must equal the repo copy with every signature
-            # codepoint filtered out (MARK and PAD bitstream — the same strip
-            # skill_watermark itself uses); any other difference is real
-            # content drift.
-            install_text = "".join(
-                ch for ch in target.read_text(encoding="utf-8", errors="replace") if ch not in SIGNATURE_CHARS
-            )
-            repo_text = source.read_text(encoding="utf-8", errors="replace")
-            if install_text != repo_text:
-                failures.append(f"content drift: {relative}")
-        elif source.read_bytes() != target.read_bytes():
+        if source.read_bytes() != target.read_bytes():
             failures.append(f"content drift: {relative}")
 
     # A blacklisted maintainer script inside an install is stale dirt from an
@@ -155,6 +164,12 @@ def audit_install(install: Path, repo: Path) -> Dict[str, object]:
     for name in sorted(SCRIPT_BLACKLIST):
         if (install / "scripts" / name).is_file():
             failures.append(f"stale maintainer script in install: scripts/{name}")
+    # Under core, a leftover chain script is the same upgrade dirt class as
+    # an excluded component directory: a warning (the installer's whole-tree
+    # replace removes it on the next core upgrade), never a failure.
+    for name in sorted(CORE_EXCLUDED_SCRIPTS):
+        if profile == "core" and (install / "scripts" / name).is_file():
+            warnings.append(f"stale extension script in install (core profile): scripts/{name}")
 
     install_skill = (
         (install / "SKILL.md").read_text(encoding="utf-8", errors="replace") if (install / "SKILL.md").is_file() else ""
@@ -162,17 +177,26 @@ def audit_install(install: Path, repo: Path) -> Dict[str, object]:
     repo_skill = (
         (repo / "SKILL.md").read_text(encoding="utf-8", errors="replace") if (repo / "SKILL.md").is_file() else ""
     )
-    if SIGNATURE_MARK not in install_skill:
-        failures.append("install SKILL.md carries no distribution signature (\\u2063)")
+    if SIGNATURE_MARK in install_skill:
+        failures.append(
+            "install SKILL.md carries a distribution signature (\\u2063) — the signature "
+            f"lives in {SIGNATURE_CARRIER} now (AUD-17); this install is stale, reinstall"
+        )
     if SIGNATURE_MARK in repo_skill:
         failures.append("repo SKILL.md is signature-stamped — the source tree must stay clean")
+    notice = install / SIGNATURE_CARRIER
+    if notice.is_file():
+        if SIGNATURE_MARK not in notice.read_text(encoding="utf-8", errors="replace"):
+            failures.append(f"install {SIGNATURE_CARRIER} carries no distribution signature (\\u2063)")
 
     # Unknown extras (user sidecars) are warnings, not failures: an install
     # directory may legitimately hold user-owned notes next to the payload.
     # Installer-owned artifacts (.spec-skill-install) are expected and never
     # surface; its version= field is cross-checked against the install's
     # pyproject — a half-upgraded install (payload moved, sidecar stale)
-    # fails here.
+    # fails here. Under core, files from excluded components in an install
+    # are stale upgrade dirt from a full install, still a warning here (the
+    # installer's whole-tree replace removes them on the next core upgrade).
     shipped_set = {source.relative_to(repo).as_posix() for source in shipped}
     for entry in sorted(install.rglob("*")):
         if not entry.is_file():
@@ -199,6 +223,7 @@ def audit_install(install: Path, repo: Path) -> Dict[str, object]:
         "ok": not failures,
         "version": install_version,
         "repo_version": repo_version,
+        "profile": profile,
         "checked": checked,
         "failures": failures,
         "warnings": warnings,
@@ -238,6 +263,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--repo", default=str(Path(__file__).resolve().parent.parent), help="repository root (default: this checkout)"
     )
+    parser.add_argument(
+        "--profile",
+        choices=PROFILE_VALUES,
+        default="full",
+        help=(
+            "component profile of the audited installs (default: full). Pass core for "
+            "INSTALL_PROFILE=core installs: the expected set drops "
+            + ", ".join(CORE_EXCLUDED_DIRS)
+            + " and the chain-family scripts ("
+            + ", ".join(sorted(CORE_EXCLUDED_SCRIPTS))
+            + ")"
+        ),
+    )
     parser.add_argument("--json", action="store_true", help="machine-readable report")
     args = parser.parse_args(argv)
 
@@ -273,7 +311,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 }
             )
             continue
-        reports.append(audit_install(install, repo))
+        reports.append(audit_install(install, repo, profile=args.profile))
 
     if args.json:
         print(json.dumps({"repo": str(repo), "installs": reports}, indent=2, sort_keys=True))

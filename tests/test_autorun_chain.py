@@ -235,9 +235,9 @@ class TestSpawnCommand:
         assert "round cap" in capsys.readouterr().err
 
     def test_uncapped_state_spawns_past_any_count(self, tmp_path, capsys, monkeypatch):
-        # no flag = no cap: a chain at round 20 continues past the count that
-        # used to stop it — the recorded cap becomes null and the prompt
-        # carries no cap flag
+        # --unbounded removes the cap: a chain at round 20 continues past the
+        # default — the recorded cap becomes null and the prompt carries the
+        # --unbounded flag so the next round does not re-acquire the default
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=2)
         make_active_package(tmp_path)
         state = tmp_path / ".spec" / "autorun" / "chain.json"
@@ -245,11 +245,12 @@ class TestSpawnCommand:
         state.write_text(json.dumps({"round": 20, "max_rounds": 20}), encoding="utf-8")
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
-        code = main(["spawn", "--root", str(tmp_path), "--host", "pi", "--format", "json", "--dry-run"])
+        code = main(["spawn", "--root", str(tmp_path), "--host", "pi", "--format", "json", "--dry-run", "--unbounded"])
         assert code == 0
         payload = json.loads(capsys.readouterr().out)
         assert payload["round"] == 21
         assert payload["max_rounds"] is None
+        assert "--unbounded" in payload["shell_command"]
         assert "--max-rounds" not in payload["shell_command"]
 
     def test_round_equal_to_cap_is_allowed(self, tmp_path, capsys, monkeypatch):
@@ -298,7 +299,7 @@ class TestSpawnCommand:
         captured = capsys.readouterr()
         assert captured.out == ""
         assert captured.err.strip() == "error: round cap reached: next round 21 exceeds --max-rounds 20"
-        assert not (tmp_path / ".spec" / "autorun" / "spawns.jsonl").exists()
+        assert not (tmp_path / ".git" / "spec-chain" / "autorun" / "spawns.jsonl").exists()
 
     def test_bool_and_float_round_refuse_like_non_integer(self, tmp_path, capsys, monkeypatch):
         # F12 strict int gate: bool/float/string values are refused like any
@@ -317,7 +318,7 @@ class TestSpawnCommand:
             assert captured.out == "", bad
             assert "non-integer round" in captured.err, bad
             assert repr(bad) in captured.err, bad
-            assert not (tmp_path / ".spec" / "autorun" / "spawns.jsonl").exists(), bad
+            assert not (tmp_path / ".git" / "spec-chain" / "autorun" / "spawns.jsonl").exists(), bad
 
     def test_max_rounds_zero_refuses_without_chain_writes(self, tmp_path, capsys, monkeypatch):
         # F12 boundary matrix: --max-rounds 0 fails fast in main (validate_cap)
@@ -331,12 +332,12 @@ class TestSpawnCommand:
         assert captured.out == ""
         assert captured.err.strip() == "error: --max-rounds must be >= 1"
         assert not (tmp_path / ".spec" / "autorun" / "chain.json").exists()
-        assert not (tmp_path / ".spec" / "autorun" / "spawns.jsonl").exists()
+        assert not (tmp_path / ".git" / "spec-chain" / "autorun" / "spawns.jsonl").exists()
 
     def test_refuses_when_lock_held(self, tmp_path, capsys, monkeypatch):
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
-        lock = tmp_path / ".spec" / "autorun" / "chain.lock"
+        lock = tmp_path / ".git" / "spec-chain" / "autorun" / "chain.lock"
         lock.parent.mkdir(parents=True, exist_ok=True)
         with open(lock, "a+", encoding="utf-8") as handle:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -368,7 +369,9 @@ class TestSpawnCommand:
         assert state["round"] == 1
         assert state["host"] == "claude"
         assert state["host_source"] == "flag"
-        spawns = (tmp_path / ".spec" / "autorun" / "spawns.jsonl").read_text(encoding="utf-8").splitlines()
+        spawns = (
+            (tmp_path / ".git" / "spec-chain" / "autorun" / "spawns.jsonl").read_text(encoding="utf-8").splitlines()
+        )
         assert len(spawns) == 1
         assert json.loads(spawns[0])["round"] == 1
 
@@ -390,7 +393,9 @@ class TestSpawnCommand:
         assert "not authorized" in captured.err
         assert captured.out == ""
         assert not (tmp_path / ".spec" / "autorun" / "chain.json").exists()
-        events = (tmp_path / ".spec" / "autorun" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        events = (
+            (tmp_path / ".git" / "spec-chain" / "autorun" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        )
         assert len(events) == 1
         event = json.loads(events[0])
         assert event["kind"] == "spawn_refusal"
@@ -413,8 +418,10 @@ class TestSpawnCommand:
         assert "non-integer round" in captured.err
         assert "'soon'" in captured.err
         assert captured.out == ""
-        assert not (tmp_path / ".spec" / "autorun" / "spawns.jsonl").exists()
-        events = (tmp_path / ".spec" / "autorun" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        assert not (tmp_path / ".git" / "spec-chain" / "autorun" / "spawns.jsonl").exists()
+        events = (
+            (tmp_path / ".git" / "spec-chain" / "autorun" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        )
         assert len(events) == 1
         event = json.loads(events[0])
         assert event["kind"] == "spawn_refusal"
@@ -518,7 +525,7 @@ class TestLockObservability:
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
         assert main(["spawn", "--root", str(tmp_path), "--host", "pi", "--dry-run"]) == 0
-        lock_file = tmp_path / ".spec" / "autorun" / "chain.lock"
+        lock_file = tmp_path / ".git" / "spec-chain" / "autorun" / "chain.lock"
         lines = [line for line in lock_file.read_text(encoding="utf-8").splitlines() if line.strip()]
         assert lines, "a holder line must be written once flock succeeds"
         holder = json.loads(lines[-1])
@@ -529,10 +536,10 @@ class TestLockObservability:
         assert holder["at"]
 
     def test_probe_free_without_lock_file(self, tmp_path):
-        assert probe_lock(tmp_path / ".spec" / "autorun") == {"status": "free"}
+        assert probe_lock(tmp_path / ".git" / "spec-chain" / "autorun") == {"status": "free"}
 
     def test_probe_free_when_unheld_and_leaves_lock_acquirable(self, tmp_path):
-        chain_dir = tmp_path / ".spec" / "autorun"
+        chain_dir = tmp_path / ".git" / "spec-chain" / "autorun"
         chain_dir.mkdir(parents=True)
         lock_file = chain_dir / "chain.lock"
         lock_file.write_text("", encoding="utf-8")
@@ -543,7 +550,7 @@ class TestLockObservability:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def test_probe_reports_live_holder_and_releases(self, tmp_path):
-        chain_dir = tmp_path / ".spec" / "autorun"
+        chain_dir = tmp_path / ".git" / "spec-chain" / "autorun"
         lock_file = chain_dir / "chain.lock"
         holder_line = (
             json.dumps(
@@ -572,7 +579,7 @@ class TestLockObservability:
         assert probe_lock(chain_dir) == {"status": "free"}
 
     def test_probe_reports_stale_content_for_dead_pid(self, tmp_path, monkeypatch):
-        chain_dir = tmp_path / ".spec" / "autorun"
+        chain_dir = tmp_path / ".git" / "spec-chain" / "autorun"
         lock_file = chain_dir / "chain.lock"
         content = json.dumps({"pid": 999999, "command": "gone", "at": "t", "chain": "autorun"}) + "\n"
         handle = self.hold_lock(lock_file, content)
@@ -584,7 +591,7 @@ class TestLockObservability:
             handle.close()
 
     def test_probe_degrades_on_empty_content(self, tmp_path):
-        chain_dir = tmp_path / ".spec" / "autorun"
+        chain_dir = tmp_path / ".git" / "spec-chain" / "autorun"
         handle = self.hold_lock(chain_dir / "chain.lock")
         try:
             assert probe_lock(chain_dir) == {"status": "held", "holder": "unknown"}
@@ -593,7 +600,7 @@ class TestLockObservability:
             handle.close()
 
     def test_probe_degrades_on_partial_content(self, tmp_path):
-        chain_dir = tmp_path / ".spec" / "autorun"
+        chain_dir = tmp_path / ".git" / "spec-chain" / "autorun"
         handle = self.hold_lock(chain_dir / "chain.lock", '{"pid": 123')
         try:
             assert probe_lock(chain_dir) == {"status": "held", "holder": "unknown"}
@@ -602,7 +609,7 @@ class TestLockObservability:
             handle.close()
 
     def test_probe_degrades_when_liveness_unverifiable(self, tmp_path, monkeypatch):
-        chain_dir = tmp_path / ".spec" / "autorun"
+        chain_dir = tmp_path / ".git" / "spec-chain" / "autorun"
         content = json.dumps({"pid": os.getpid(), "command": "x", "at": "t", "chain": "autorun"}) + "\n"
         handle = self.hold_lock(chain_dir / "chain.lock", content)
         monkeypatch.setattr("autorun_spawn._pid_alive", lambda pid: None)
@@ -613,7 +620,7 @@ class TestLockObservability:
             handle.close()
 
     def test_probe_degrades_when_lock_unreadable(self, tmp_path, monkeypatch):
-        chain_dir = tmp_path / ".spec" / "autorun"
+        chain_dir = tmp_path / ".git" / "spec-chain" / "autorun"
         chain_dir.mkdir(parents=True)
         (chain_dir / "chain.lock").write_text("", encoding="utf-8")
 
@@ -640,7 +647,7 @@ class TestLockObservability:
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         assert main(["status", "--root", str(tmp_path)]) == 0
         assert "lock: free" in capsys.readouterr().out
-        chain_dir = tmp_path / ".spec" / "autorun"
+        chain_dir = tmp_path / ".git" / "spec-chain" / "autorun"
         content = json.dumps({"pid": os.getpid(), "command": "spawn", "at": "t0", "chain": "autorun"}) + "\n"
         handle = self.hold_lock(chain_dir / "chain.lock", content)
         try:
@@ -665,7 +672,7 @@ class TestRefusalAudit:
     def test_lock_refusal_records_event(self, tmp_path, capsys, monkeypatch):
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
-        lock_file = tmp_path / ".spec" / "autorun" / "chain.lock"
+        lock_file = tmp_path / ".git" / "spec-chain" / "autorun" / "chain.lock"
         lock_file.parent.mkdir(parents=True, exist_ok=True)
         with open(lock_file, "a+", encoding="utf-8") as handle:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -677,7 +684,9 @@ class TestRefusalAudit:
         err = capsys.readouterr().err
         assert err.startswith("error:")
         assert "parallel chains are refused" in err
-        events = (tmp_path / ".spec" / "autorun" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        events = (
+            (tmp_path / ".git" / "spec-chain" / "autorun" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        )
         assert len(events) == 1
         event = json.loads(events[0])
         assert event["kind"] == "spawn_refusal"
@@ -690,18 +699,20 @@ class TestRefusalAudit:
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         assert main(["spawn", "--root", str(tmp_path), "--dry-run"]) == 3
-        events = (tmp_path / ".spec" / "autorun" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        events = (
+            (tmp_path / ".git" / "spec-chain" / "autorun" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        )
         assert json.loads(events[0])["type"] == "NoPlanError"
 
     def test_plan_command_error_is_not_a_refusal_event(self, tmp_path, capsys):
         make_active_package(tmp_path)
         assert main(["plan", "--root", str(tmp_path)]) == 3
-        assert not (tmp_path / ".spec" / "autorun" / "events.jsonl").exists()
+        assert not (tmp_path / ".git" / "spec-chain" / "autorun" / "events.jsonl").exists()
 
     def test_refusal_records_do_not_write_chain_state(self, tmp_path, capsys, monkeypatch):
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
-        lock_file = tmp_path / ".spec" / "autorun" / "chain.lock"
+        lock_file = tmp_path / ".git" / "spec-chain" / "autorun" / "chain.lock"
         lock_file.parent.mkdir(parents=True, exist_ok=True)
         with open(lock_file, "a+", encoding="utf-8") as handle:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -711,11 +722,11 @@ class TestRefusalAudit:
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         assert not (tmp_path / ".spec" / "autorun" / "chain.json").exists()
-        assert not (tmp_path / ".spec" / "autorun" / "spawns.jsonl").exists()
+        assert not (tmp_path / ".git" / "spec-chain" / "autorun" / "spawns.jsonl").exists()
 
     def test_status_last_refusal_ignores_recycle_close(self, tmp_path, capsys):
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
-        events = tmp_path / ".spec" / "autorun" / "events.jsonl"
+        events = tmp_path / ".git" / "spec-chain" / "autorun" / "events.jsonl"
         events.parent.mkdir(parents=True, exist_ok=True)
         events.write_text(
             json.dumps(
@@ -741,7 +752,7 @@ class TestRefusalAudit:
 
     def test_status_tolerates_partial_tail_line(self, tmp_path, capsys):
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
-        events = tmp_path / ".spec" / "autorun" / "events.jsonl"
+        events = tmp_path / ".git" / "spec-chain" / "autorun" / "events.jsonl"
         events.parent.mkdir(parents=True, exist_ok=True)
         good = json.dumps(
             {"kind": "spawn_refusal", "at": "t1", "chain": "autorun", "type": "AutorunError", "message": "locked"}
@@ -755,7 +766,7 @@ class TestRefusalAudit:
 
     def test_status_reports_refusals_without_chain_state(self, tmp_path, capsys):
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
-        events = tmp_path / ".spec" / "autorun" / "events.jsonl"
+        events = tmp_path / ".git" / "spec-chain" / "autorun" / "events.jsonl"
         events.parent.mkdir(parents=True, exist_ok=True)
         events.write_text(
             json.dumps(
@@ -791,7 +802,7 @@ class TestRefusalAudit:
 
     def test_last_refusal_window_ignores_older_refusals(self, tmp_path, capsys):
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
-        events = tmp_path / ".spec" / "autorun" / "events.jsonl"
+        events = tmp_path / ".git" / "spec-chain" / "autorun" / "events.jsonl"
         events.parent.mkdir(parents=True, exist_ok=True)
         lines = [
             json.dumps(
@@ -812,7 +823,7 @@ class TestRefusalAudit:
     def test_refusal_append_separates_from_unterminated_tail(self, tmp_path):
         # live defect (2026-10-07): an unterminated tail glued the next append
         # onto the same line; the append now separates before writing
-        events_dir = tmp_path / ".spec" / "autorun"
+        events_dir = tmp_path / ".git" / "spec-chain" / "autorun"
         events_dir.mkdir(parents=True)
         events = events_dir / "events.jsonl"
         events.write_text('{"kind": "recycle_close", "at": "t0"}', encoding="utf-8")
@@ -829,7 +840,7 @@ class TestRefusalAudit:
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=0, checked=1)
         make_active_package(tmp_path)
         # events.jsonl as a directory makes the append fail
-        (tmp_path / ".spec" / "autorun" / "events.jsonl").mkdir(parents=True)
+        (tmp_path / ".git" / "spec-chain" / "autorun" / "events.jsonl").mkdir(parents=True)
         assert main(["spawn", "--root", str(tmp_path), "--dry-run"]) == 1
         err = capsys.readouterr().err
         assert err.startswith("error:")
@@ -937,9 +948,11 @@ class TestStatusResumeDecision:
         package = make_active_package(tmp_path)
         (package / "tasks.md").write_text("- [ ] a\n", encoding="utf-8")
         chain_dir = tmp_path / ".spec" / "autorun"
+        runtime_dir = tmp_path / ".git" / "spec-chain" / "autorun"
+        runtime_dir.mkdir(parents=True, exist_ok=True)
         chain_dir.mkdir(parents=True, exist_ok=True)
         (chain_dir / "chain.json").write_text("{half-written", encoding="utf-8")
-        (chain_dir / "spawns.jsonl").write_text(
+        (runtime_dir / "spawns.jsonl").write_text(
             json.dumps({"round": 4, "max_rounds": 20, "host": "pi"}) + "\n", encoding="utf-8"
         )
         payload = self.status_json(tmp_path, capsys)
@@ -950,18 +963,20 @@ class TestStatusResumeDecision:
         out = self.status_text(tmp_path, capsys)
         assert "resume: continue_package (" in out
         assert "state: recovered from spawns.jsonl line 1" in out
-        events = [json.loads(line) for line in (chain_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+        events = [json.loads(line) for line in (runtime_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()]
         assert events[-1]["kind"] == "recovery" and events[-1]["action"] == "recovered_state"
 
     def test_audit_mismatch_adopts_audit_render(self, tmp_path, capsys):
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         chain_dir = tmp_path / ".spec" / "autorun"
+        runtime_dir = tmp_path / ".git" / "spec-chain" / "autorun"
+        runtime_dir.mkdir(parents=True, exist_ok=True)
         chain_dir.mkdir(parents=True, exist_ok=True)
         (chain_dir / "chain.json").write_text(
             json.dumps({"round": 3, "max_rounds": 7, "host": "pi"}) + "\n", encoding="utf-8"
         )
-        (chain_dir / "spawns.jsonl").write_text(
+        (runtime_dir / "spawns.jsonl").write_text(
             json.dumps({"round": 7, "max_rounds": 7, "host": "pi"}) + "\n", encoding="utf-8"
         )
         payload = self.status_json(tmp_path, capsys)
@@ -1043,9 +1058,17 @@ class TestCommandBuilders:
         assert build_prompt("pi", ["--plan a.md,b.md"], 5) == "$spec autorun --plan a.md,b.md --max-rounds 5"
 
     def test_prompt_without_cap_carries_no_flag(self):
-        # unbounded chains forward no cap flag — nothing to hit mid-chain
+        # a None cap with no --unbounded decision carries no cap flag (the
+        # spawn wiring never produces this form since F1; the prompt stays
+        # total for direct callers)
         assert build_prompt("codex", [], None) == "$spec autorun"
         assert build_prompt("claude", ["--plan a.md"], None) == "/spec:autorun --plan a.md"
+
+    def test_prompt_forwards_unbounded(self):
+        # an explicitly unbounded chain forwards --unbounded so the next
+        # round does not re-acquire the default cap (F1)
+        assert build_prompt("codex", [], None, unbounded=True) == "$spec autorun --unbounded"
+        assert build_prompt("claude", ["--plan a.md"], None, unbounded=True) == "/spec:autorun --plan a.md --unbounded"
 
     def test_plan_args_quote_spacey_paths(self):
         # the prompt is re-parsed as arguments by the next session, so a path
@@ -1722,16 +1745,21 @@ class TestWindowRecycle:
                     "round_index": 1,
                     "pass_index": None,
                     "prev_tty": "/dev/ttys012",
-                    "events_path": tmp_path / ".spec" / "autorun" / "events.jsonl",
+                    "events_path": tmp_path / ".git" / "spec-chain" / "autorun" / "events.jsonl",
                     "session_pids": [],
                     "worker_name": "claude",
                 },
             )
         ]
         state = json.loads((tmp_path / ".spec" / "autorun" / "chain.json").read_text(encoding="utf-8"))
-        assert state["window_recycle"]["window_id"] == 7
-        assert state["window_recycle"]["close_wait_seconds"] == 120
-        assert state["prev_tty"] == "/dev/ttys012"
+        # F16 step 3: the spawn-moment facts live in volatile.json
+        volatile = json.loads(
+            (tmp_path / ".git" / "spec-chain" / "autorun" / "volatile.json").read_text(encoding="utf-8")
+        )
+        assert volatile["window_recycle"]["window_id"] == 7
+        assert volatile["window_recycle"]["close_wait_seconds"] == 120
+        assert volatile["prev_tty"] == "/dev/ttys012"
+        assert "window_recycle" not in state and "prev_tty" not in state
 
     def test_spawn_refuses_when_worker_never_starts(self, tmp_path, capsys, monkeypatch):
         # F17 "dead tab": the window opened but the worker died instantly
@@ -1759,8 +1787,10 @@ class TestWindowRecycle:
         assert "never started on /dev/ttys009 within 0s (tab idle)" in captured.err
         assert "refusing to record the round" in captured.err
         assert not (tmp_path / ".spec" / "autorun" / "chain.json").exists()
-        assert not (tmp_path / ".spec" / "autorun" / "spawns.jsonl").exists()
-        events = (tmp_path / ".spec" / "autorun" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        assert not (tmp_path / ".git" / "spec-chain" / "autorun" / "spawns.jsonl").exists()
+        events = (
+            (tmp_path / ".git" / "spec-chain" / "autorun" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        )
         event = json.loads(events[-1])
         assert event["kind"] == "spawn_refusal"
         assert "never started" in event["message"]
@@ -1862,7 +1892,7 @@ class TestRefusalClosesSpawnedWindow:
         assert "cannot confirm the handoff" in captured.err  # refusal text frozen verbatim
         assert captured.out == ""
         assert not (tmp_path / ".spec" / "autorun" / "chain.json").exists()
-        assert not (tmp_path / ".spec" / "autorun" / "spawns.jsonl").exists()
+        assert not (tmp_path / ".git" / "spec-chain" / "autorun" / "spawns.jsonl").exists()
         assert len(close_argv) == 1
         script = close_argv[0][2]
         assert "sleep 0" in script  # synchronous: no scheduling delay
@@ -1871,7 +1901,9 @@ class TestRefusalClosesSpawnedWindow:
         assert '"window_id": 77' in script
         assert '"prev_tty": "/dev/ttys042"' in script
         assert 'case "$cmd" in *"claude "*|*/claude)' in script  # identity interlock carries
-        events = (tmp_path / ".spec" / "autorun" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        events = (
+            (tmp_path / ".git" / "spec-chain" / "autorun" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        )
         event = json.loads(events[-1])
         assert event["kind"] == "spawn_refusal"
         assert "cannot confirm the handoff" in event["message"]
@@ -1917,7 +1949,7 @@ class TestRefusalClosesSpawnedWindow:
         assert '"window_id": 42' in script
         assert '"prev_tty": "/dev/ttys009"' in script
         assert not (tmp_path / ".spec" / "autorun" / "chain.json").exists()
-        assert not (tmp_path / ".spec" / "autorun" / "spawns.jsonl").exists()
+        assert not (tmp_path / ".git" / "spec-chain" / "autorun" / "spawns.jsonl").exists()
 
     def test_state_written_then_audit_failure_keeps_the_window(self, tmp_path, capsys, monkeypatch):
         # A6 (裁定不修): once the state is written the handoff is confirmed —
@@ -1937,7 +1969,7 @@ class TestRefusalClosesSpawnedWindow:
             main(["spawn", "--root", str(tmp_path), "--host", "claude"])
         assert close_argv == []  # confirmed handoff → never closed
         assert (tmp_path / ".spec" / "autorun" / "chain.json").exists()
-        assert not (tmp_path / ".spec" / "autorun" / "spawns.jsonl").exists()
+        assert not (tmp_path / ".git" / "spec-chain" / "autorun" / "spawns.jsonl").exists()
 
     def test_dead_tab_refusal_closes_idempotently(self, tmp_path, capsys, monkeypatch):
         # dead-tab (F17 instant death): the quiet close already ran, and the
@@ -1962,7 +1994,7 @@ class TestRefusalClosesSpawnedWindow:
         assert '"prev_tty": "/dev/ttys009"' in script
         assert "for pid in 991; do" in script  # identity interlock carries the session pids
         assert not (tmp_path / ".spec" / "autorun" / "chain.json").exists()
-        assert not (tmp_path / ".spec" / "autorun" / "spawns.jsonl").exists()
+        assert not (tmp_path / ".git" / "spec-chain" / "autorun" / "spawns.jsonl").exists()
 
     def test_refusal_close_template_renders_contract_lines(self):
         contract = AUDIT_FIELD_CONTRACT
@@ -2058,8 +2090,9 @@ class TestNoPlanErrorContract:
 ISO_Z_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 
 AUDIT_FIELD_CONTRACT = {
-    # chain.json after a real spawn (updated_at form; window_recycle always
-    # recorded, whatever the recycle outcome)
+    # chain.json after a real spawn (updated_at form) — F16 step 3: the
+    # tracked summary is volatile-free; the spawn-moment keys live in
+    # volatile.json under .git/spec-chain/<chain>/ and in every audit row
     "chain_state_required": frozenset(
         {
             "round",
@@ -2067,16 +2100,21 @@ AUDIT_FIELD_CONTRACT = {
             "host_source",
             "plan_docs",
             "max_rounds",
+            "feature_fingerprint",
+            "permission_mode",
+            "permission_effective",
             "updated_at",
             "shell_command",
-            "prev_tty",
-            "window_recycle",
             "model",
         }
     ),
+    # volatile.json after a real spawn: exactly the spawn-moment keys, never
+    # in the tracked summary
+    "volatile_state_required": frozenset({"prev_tty", "window_recycle"}),
     # written only by the corrupt-rebuild path, with a recovery event
     "chain_state_conditional": frozenset({"recovered_from"}),
-    # spawns.jsonl row after a real spawn (spawned_at form)
+    # spawns.jsonl row after a real spawn (spawned_at form): the runtime-tree
+    # audit keeps the full record, volatile keys included
     "spawns_row_required": frozenset(
         {
             "round",
@@ -2084,6 +2122,9 @@ AUDIT_FIELD_CONTRACT = {
             "host_source",
             "plan_docs",
             "max_rounds",
+            "feature_fingerprint",
+            "permission_mode",
+            "permission_effective",
             "spawned_at",
             "shell_command",
             "prev_tty",
@@ -2102,6 +2143,7 @@ AUDIT_FIELD_CONTRACT = {
         "real": frozenset({"dry_run", "terminal"}),
     },
     # in-memory read defaults for missing writer keys; the file never changes
+    # (host on the summary read; window_recycle on the volatile read overlay)
     "read_defaults": {"window_recycle": {}, "host": "unknown"},
     "window_recycle_status_domain": frozenset({"scheduled", "skipped", "planned"}),
     "window_recycle_keys": {
@@ -2109,12 +2151,13 @@ AUDIT_FIELD_CONTRACT = {
         "skipped": frozenset({"status", "reason"}),
         "planned": frozenset({"status"}),
     },
-    "event_kind_domain": frozenset({"spawn_refusal", "recycle_close", "refusal_close", "recovery"}),
+    "event_kind_domain": frozenset({"spawn_refusal", "recycle_close", "refusal_close", "recovery", "state_migrated"}),
     "event_keys": {
         "spawn_refusal": frozenset({"kind", "at", "chain", "type", "message"}),
         "recycle_close": frozenset({"kind", "at", "chain", "round", "window_id", "prev_tty", "result", "waited_ms"}),
         "refusal_close": frozenset({"kind", "at", "chain", "round", "window_id", "prev_tty", "result", "waited_ms"}),
         "recovery": frozenset({"kind", "at", "chain", "action", "detail"}),
+        "state_migrated": frozenset({"kind", "at", "chain", "detail"}),
     },
     "recycle_close_result_domain": frozenset({"closed", "multi-tab", "window-gone", "busy-timeout", "osascript-error"}),
     "recovery_action_domain": frozenset({"recovered_state", "state_diverged"}),
@@ -2127,11 +2170,15 @@ AUDIT_FIELD_CONTRACT = {
     # the write_lock_holder line (sort_keys json + newline, never cleared)
     "lock_holder_keys": frozenset({"pid", "command", "at", "chain"}),
     "host_source_domain": frozenset({"flag", "env", "session", "path", "custom"}),
-    # status payload keys computed beyond the state; state keys pass through
+    # status payload keys computed beyond the state; state keys pass through.
+    # F16 step 3: prev_tty/window_recycle render from the runtime volatile
+    # file (overlay, defaults applied), and chain_runtime_dir names the
+    # per-machine tree that holds lock/logs/volatile
     "status_derived_required": frozenset(
         {
             "project",
             "chain_state_file",
+            "chain_runtime_dir",
             "state_status",
             "started",
             "lock",
@@ -2141,6 +2188,8 @@ AUDIT_FIELD_CONTRACT = {
             "active_package",
             "resume",
             "model",
+            "prev_tty",
+            "window_recycle",
         }
     ),
     # present only when more than one active package is discovered
@@ -2273,18 +2322,26 @@ class TestAuditFieldContract:
     def test_contract_dict_is_internally_consistent(self):
         contract = AUDIT_FIELD_CONTRACT
         # the state and the audit row differ only in the timestamp key and
-        # the F14 spawns-row-only injection level (the lock rides in both)
-        assert contract["chain_state_required"] - {"updated_at"} == (
+        # the F14 spawns-row-only injection level (the lock rides in both);
+        # F16 step 3: the row additionally carries the volatile keys that
+        # left the tracked summary
+        assert contract["chain_state_required"] - {"updated_at"} | contract["volatile_state_required"] == (
             contract["spawns_row_required"] - {"spawned_at", "model_injection"}
         )
         assert "updated_at" in contract["chain_state_required"]
         assert "spawned_at" in contract["spawns_row_required"]
         assert contract["chain_state_conditional"].isdisjoint(contract["chain_state_required"])
-        assert "window_recycle" in contract["chain_state_required"]
-        # read defaults fill writer keys that old files may lack
+        # F16 step 3: the volatile keys live in volatile.json and in every
+        # audit row, never in the tracked summary
+        assert contract["volatile_state_required"] == frozenset({"prev_tty", "window_recycle"})
+        assert contract["volatile_state_required"].isdisjoint(contract["chain_state_required"])
+        assert contract["volatile_state_required"] <= contract["spawns_row_required"]
+        assert contract["volatile_state_required"] <= contract["status_derived_required"]
+        # read defaults fill writer keys that old files may lack: host on the
+        # summary read, window_recycle on the volatile overlay
         assert set(contract["read_defaults"]) == {"window_recycle", "host"}
-        for key in contract["read_defaults"]:
-            assert key in contract["chain_state_required"]
+        assert "host" in contract["chain_state_required"]
+        assert "window_recycle" in contract["volatile_state_required"]
         # every window_recycle status has exactly one pinned key shape
         assert set(contract["window_recycle_keys"]) == contract["window_recycle_status_domain"]
         for keys in contract["window_recycle_keys"].values():
@@ -2326,8 +2383,13 @@ class TestAuditFieldContract:
         assert payload["dry_run"] is True
         assert payload["round"] == 1
         assert isinstance(payload["round"], int) and not isinstance(payload["round"], bool)
-        # the cap is opt-in: the no-flag spawn records null and forwards none
-        assert payload["max_rounds"] is None
+        # F1: the restored default cap applies without a flag — recorded and
+        # forwarded to the next round's prompt; the permission decision and
+        # the feature fingerprint ride in every record face
+        assert payload["max_rounds"] == 5
+        assert payload["feature_fingerprint"]
+        assert payload["permission_mode"] == "inherit"
+        assert payload["permission_effective"] == "ask"
         assert ISO_Z_PATTERN.fullmatch(payload["spawned_at"])
         assert payload["host"] == "claude"
         assert payload["host_source"] in contract["host_source_domain"]
@@ -2338,7 +2400,7 @@ class TestAuditFieldContract:
         assert payload["window_recycle"] == {"status": "planned"}
         assert set(payload["window_recycle"]) == contract["window_recycle_keys"]["planned"]
         # the dry run still takes the lock: one holder line in the writer's form
-        holder_line = (tmp_path / ".spec" / "autorun" / "chain.lock").read_text(encoding="utf-8")
+        holder_line = (tmp_path / ".git" / "spec-chain" / "autorun" / "chain.lock").read_text(encoding="utf-8")
         assert set(json.loads(holder_line)) == contract["lock_holder_keys"]
 
     def test_real_spawn_state_row_and_payload_match_contract(self, tmp_path, capsys, monkeypatch):
@@ -2365,11 +2427,18 @@ class TestAuditFieldContract:
         assert set(state) == contract["chain_state_required"]
         assert ISO_Z_PATTERN.fullmatch(state["updated_at"])
         assert state["round"] == 1
-        recycle = state["window_recycle"]
+        # F16 step 3: the volatile keys left the tracked summary...
+        assert contract["volatile_state_required"].isdisjoint(set(state))
+        volatile = json.loads(
+            (tmp_path / ".git" / "spec-chain" / "autorun" / "volatile.json").read_text(encoding="utf-8")
+        )
+        # ...and landed in volatile.json with exactly the pinned key set
+        assert set(volatile) == contract["volatile_state_required"]
+        recycle = volatile["window_recycle"]
         assert recycle["status"] in contract["window_recycle_status_domain"]
         assert set(recycle) == contract["window_recycle_keys"][recycle["status"]]
 
-        rows = (tmp_path / ".spec" / "autorun" / "spawns.jsonl").read_text(encoding="utf-8").splitlines()
+        rows = (tmp_path / ".git" / "spec-chain" / "autorun" / "spawns.jsonl").read_text(encoding="utf-8").splitlines()
         assert len(rows) == 1
         row = json.loads(rows[0])
         assert set(row) == contract["spawns_row_required"]
@@ -2388,7 +2457,9 @@ class TestAuditFieldContract:
         assert main(["spawn", "--root", str(tmp_path), "--host", "claude"]) == 1
         capsys.readouterr()
         contract = AUDIT_FIELD_CONTRACT
-        events = (tmp_path / ".spec" / "autorun" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        events = (
+            (tmp_path / ".git" / "spec-chain" / "autorun" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        )
         assert len(events) == 1
         event = json.loads(events[0])
         assert set(event) == contract["event_keys"]["spawn_refusal"]
@@ -2399,27 +2470,31 @@ class TestAuditFieldContract:
         assert isinstance(event["message"], str)
         # a refused spawn never reaches the state or the audit row
         assert not (tmp_path / ".spec" / "autorun" / "chain.json").exists()
-        assert not (tmp_path / ".spec" / "autorun" / "spawns.jsonl").exists()
+        assert not (tmp_path / ".git" / "spec-chain" / "autorun" / "spawns.jsonl").exists()
 
     def test_corrupt_state_rebuild_writes_contract_shaped_state_and_recovery_event(self, tmp_path, capsys):
         chain_dir = tmp_path / ".spec" / "autorun"
+        runtime_dir = tmp_path / ".git" / "spec-chain" / "autorun"
+        runtime_dir.mkdir(parents=True, exist_ok=True)
         chain_dir.mkdir(parents=True, exist_ok=True)
         (chain_dir / "chain.json").write_text("{half-written", encoding="utf-8")
-        (chain_dir / "spawns.jsonl").write_bytes(LEGACY_SPAWNS_ROUND2_ROW_BYTES)
+        (runtime_dir / "spawns.jsonl").write_bytes(LEGACY_SPAWNS_ROUND2_ROW_BYTES)
         assert main(["status", "--root", str(tmp_path), "--format", "json"]) == 0
         payload = json.loads(capsys.readouterr().out)
         contract = AUDIT_FIELD_CONTRACT
         assert payload["state_status"] == "recovered"
         assert payload["recovered_from"] == "spawns.jsonl line 1"
         state = json.loads((chain_dir / "chain.json").read_text(encoding="utf-8"))
-        # the rebuilt state is the audit row (spawned_at intact) plus provenance;
-        # the legacy row predates F14's model keys, so the expected set comes
-        # from the row itself (the rebuild adds provenance, invents nothing)
+        # the rebuilt state is the audit row (spawned_at intact) plus provenance,
+        # split volatile-free: the rebuild is a new-layout write, so the volatile
+        # keys land in volatile.json instead of the summary
         row_keys = set(json.loads(LEGACY_SPAWNS_ROUND2_ROW_BYTES.decode("utf-8")))
-        assert set(state) == row_keys | contract["chain_state_conditional"]
+        assert set(state) == (row_keys | contract["chain_state_conditional"]) - contract["volatile_state_required"]
         assert state["recovered_from"] == "spawns.jsonl line 1"
         assert state["round"] == 2
-        events = (chain_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        volatile = json.loads((runtime_dir / "volatile.json").read_text(encoding="utf-8"))
+        assert set(volatile) == row_keys & contract["volatile_state_required"]
+        events = (runtime_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
         event = json.loads(events[-1])
         assert set(event) == contract["event_keys"]["recovery"]
         assert event["kind"] == "recovery"
@@ -2517,6 +2592,8 @@ class TestAuditFieldContract:
 
     def test_last_refusal_derives_from_spawn_refusals_only(self, tmp_path, capsys):
         chain_dir = tmp_path / ".spec" / "autorun"
+        runtime_dir = tmp_path / ".git" / "spec-chain" / "autorun"
+        runtime_dir.mkdir(parents=True, exist_ok=True)
         chain_dir.mkdir(parents=True, exist_ok=True)
         (chain_dir / "chain.json").write_text(
             json.dumps({"round": 3, "updated_at": "2026-10-07T12:00:00Z"}) + "\n", encoding="utf-8"
@@ -2545,7 +2622,7 @@ class TestAuditFieldContract:
                 "message": "second refusal",
             },
         ]
-        (chain_dir / "events.jsonl").write_text(
+        (runtime_dir / "events.jsonl").write_text(
             "\n".join(json.dumps(record) for record in stream) + "\n", encoding="utf-8"
         )
         assert main(["status", "--root", str(tmp_path), "--format", "json"]) == 0
@@ -2591,8 +2668,6 @@ class TestModelIdentity:
             "max_rounds": 20,
             "updated_at": "2026-10-08T00:00:00Z",
             "shell_command": "cd /p && pi --mode text -- '$spec autorun'",
-            "prev_tty": None,
-            "window_recycle": {},
         }
         if model is not TestModelIdentity.NO_MODEL_KEY:
             state["model"] = model
@@ -2610,7 +2685,7 @@ class TestModelIdentity:
         """One refusal: exit 1, stderr carrying both values, one refusal event."""
         state_file = tmp_path / ".spec" / "autorun" / "chain.json"
         before = state_file.read_bytes()
-        events_file = tmp_path / ".spec" / "autorun" / "events.jsonl"
+        events_file = tmp_path / ".git" / "spec-chain" / "autorun" / "events.jsonl"
         events_before = events_file.read_bytes() if events_file.is_file() else b""
         code = main(argv)
         captured = capsys.readouterr()
@@ -2653,7 +2728,9 @@ class TestModelIdentity:
         state = json.loads((tmp_path / ".spec" / "autorun" / "chain.json").read_text(encoding="utf-8"))
         assert state["model"] == self.IDENTITY
         assert "model_injection" not in state
-        row = json.loads((tmp_path / ".spec" / "autorun" / "spawns.jsonl").read_text(encoding="utf-8").splitlines()[0])
+        row = json.loads(
+            (tmp_path / ".git" / "spec-chain" / "autorun" / "spawns.jsonl").read_text(encoding="utf-8").splitlines()[0]
+        )
         assert row["model"] == self.IDENTITY
         assert row["model_injection"] in AUDIT_FIELD_CONTRACT["model_injection_domain"]
 
@@ -2672,7 +2749,9 @@ class TestModelIdentity:
         json.loads(capsys.readouterr().out)
         state = json.loads((tmp_path / ".spec" / "autorun" / "chain.json").read_text(encoding="utf-8"))
         assert state["model"] is None
-        row = json.loads((tmp_path / ".spec" / "autorun" / "spawns.jsonl").read_text(encoding="utf-8").splitlines()[0])
+        row = json.loads(
+            (tmp_path / ".git" / "spec-chain" / "autorun" / "spawns.jsonl").read_text(encoding="utf-8").splitlines()[0]
+        )
         assert row["model"] is None
         assert row["model_injection"] == "none"
 
@@ -2717,7 +2796,7 @@ class TestModelIdentity:
         state = json.loads((tmp_path / ".spec" / "autorun" / "chain.json").read_text(encoding="utf-8"))
         assert state["round"] == 4
         assert state["model"] == self.IDENTITY  # the lock carried unchanged
-        rows = (tmp_path / ".spec" / "autorun" / "spawns.jsonl").read_text(encoding="utf-8").splitlines()
+        rows = (tmp_path / ".git" / "spec-chain" / "autorun" / "spawns.jsonl").read_text(encoding="utf-8").splitlines()
         row = json.loads(rows[-1])
         assert row["model"] == self.IDENTITY
         assert row["model_injection"] == "full"
@@ -2911,10 +2990,11 @@ class TestModelIdentity:
         monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
         assert main(["spawn", "--root", str(tmp_path), "--host", "pi", "--format", "json", "--dry-run"]) == 0
         payload = json.loads(capsys.readouterr().out)
-        # the pre-F14 literal form: nothing between the worker binary and the prompt
+        # the pre-F14 literal form keeps nothing between the worker binary and
+        # the prompt; F1 appends the effective cap to the prompt tail only
         assert payload["model"] is None
         assert payload["model_injection"] == "none"
-        assert payload["shell_command"] == f"cd {tmp_path} && pi --mode text -- '$spec autorun'"
+        assert payload["shell_command"] == f"cd {tmp_path} && pi --mode text -- '$spec autorun --max-rounds 5'"
 
     # --- the --command bypass ---------------------------------------------------
 
@@ -3029,7 +3109,8 @@ class TestModelIdentity:
     def test_status_renders_the_locked_model_line(self, tmp_path, capsys):
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         self.write_state(tmp_path, self.IDENTITY)
-        spawns_file = tmp_path / ".spec" / "autorun" / "spawns.jsonl"
+        spawns_file = tmp_path / ".git" / "spec-chain" / "autorun" / "spawns.jsonl"
+        spawns_file.parent.mkdir(parents=True, exist_ok=True)
         spawns_file.write_text(
             json.dumps(
                 {
@@ -3102,10 +3183,13 @@ class TestModelIdentity:
 
 
 class TestLegacyStateSamples:
-    """F13 acceptance: every old-format sample (committed bytes or a shape
-    constructed from that era's writer code) reads back through status without
-    a crash and without a rewrite — the corrupt-rebuild (covered above) is the
-    only write a read performs."""
+    """F13 acceptance, F16-step-3 era: every old-format sample (committed
+    bytes or a shape constructed from that era's writer code) reads back
+    through status without a crash. A sample carrying the volatile keys is a
+    legacy-layout summary: the first status migrates it (volatile.json in
+    the runtime tree, summary rewritten volatile-free, one ``state_migrated``
+    event), every value stays readable, and the second status is
+    byte-stable — reads in the new layout never rewrite."""
 
     @staticmethod
     def write_state(root: Path, data) -> Path:
@@ -3123,7 +3207,8 @@ class TestLegacyStateSamples:
         return json.loads(capsys.readouterr().out)
 
     def assert_status_preserves_state_bytes(self, root: Path, capsys, renders=()):
-        """json + text renders succeed and leave chain.json byte-identical."""
+        """json + text renders succeed and leave a volatile-free summary
+        byte-identical (the new-layout read never rewrites)."""
         state_file = root / ".spec" / "autorun" / "chain.json"
         before = state_file.read_bytes()
         payload = self.status_payload(root, capsys)
@@ -3136,9 +3221,38 @@ class TestLegacyStateSamples:
         assert state_file.read_bytes() == before, "reads must never rewrite chain.json"
         return payload
 
+    def assert_status_migrates_legacy_state(self, root: Path, capsys, renders=()):
+        """First status migrates a legacy summary carrying volatile keys:
+        volatile.json appears in the runtime tree, the summary is rewritten
+        volatile-free with one ``state_migrated`` event, every volatile value
+        stays readable, and the second status is byte-stable."""
+        state_file = root / ".spec" / "autorun" / "chain.json"
+        volatile_file = root / ".git" / "spec-chain" / "autorun" / "volatile.json"
+        legacy = json.loads(state_file.read_text(encoding="utf-8"))
+        legacy_volatile = {k: legacy[k] for k in ("prev_tty", "window_recycle") if k in legacy}
+        payload = self.status_payload(root, capsys)
+        assert payload["started"] is True
+        assert payload["state_status"] == "ok"
+        assert set(legacy_volatile).isdisjoint(set(json.loads(state_file.read_text(encoding="utf-8"))))
+        if legacy_volatile:
+            assert volatile_file.is_file()
+            assert json.loads(volatile_file.read_text(encoding="utf-8")) == legacy_volatile
+        events = (root / ".git" / "spec-chain" / "autorun" / "events.jsonl").read_text(encoding="utf-8")
+        migrated = [json.loads(line) for line in events.splitlines() if line.strip()]
+        assert any(event["kind"] == "state_migrated" for event in migrated)
+        assert main(["status", "--root", str(root)]) == 0
+        out = capsys.readouterr().out
+        for fragment in renders:
+            assert fragment in out, fragment
+        after = state_file.read_bytes()
+        # idempotent: the second read performs no further write
+        self.status_payload(root, capsys)
+        assert state_file.read_bytes() == after, "post-migration reads never rewrite chain.json"
+        return payload
+
     def test_committed_f1_state_reads_clean(self, tmp_path, capsys):
         self.write_state(tmp_path, LEGACY_STATE_F1_BYTES)
-        payload = self.assert_status_preserves_state_bytes(
+        payload = self.assert_status_migrates_legacy_state(
             tmp_path,
             capsys,
             renders=("round: 2", "host: custom", "updated_at: 2026-10-07T13:52:10Z"),
@@ -3147,23 +3261,33 @@ class TestLegacyStateSamples:
         assert payload["host"] == "custom"
         assert payload["host_source"] == "custom"
         assert payload["max_rounds"] == 20
+        # the migrated volatile fields render exactly as the sample recorded them
         assert payload["window_recycle"] == {
             "status": "scheduled",
             "window_id": 44468,
             "delay_seconds": 3,
             "close_wait_seconds": 120,
         }
-        # direct read: the parsed state is the file, nothing invented
-        state, read_status = autorun_spawn.read_state(tmp_path / ".spec" / "autorun", "autorun")
+        assert payload["prev_tty"] == "/dev/ttys013"
+        # direct read: the migrated summary is the sample minus the volatile
+        # keys, nothing else invented or dropped
+        state, read_status = chain_support.read_state(
+            tmp_path / ".spec" / "autorun", tmp_path / ".git" / "spec-chain" / "autorun", "autorun"
+        )
         assert read_status == "ok"
-        assert state == json.loads(LEGACY_STATE_F1_BYTES.decode("utf-8"))
+        expected = json.loads(LEGACY_STATE_F1_BYTES.decode("utf-8"))
+        for key in ("prev_tty", "window_recycle"):
+            expected.pop(key)
+        # the legacy read default (window_recycle {}) exists only in memory
+        expected["window_recycle"] = {}
+        assert state == expected
 
     def test_pre_f1_scheduled_form_has_no_close_wait(self, tmp_path, capsys):
         self.write_state(tmp_path, LEGACY_PRE_F1_STATE)
-        payload = self.assert_status_preserves_state_bytes(
+        payload = self.assert_status_migrates_legacy_state(
             tmp_path, capsys, renders=("round: 2", "host: " + LEGACY_PRE_F1_STATE["host"])
         )
-        # the pre-F1 scheduled shape reads as-is: no key invented, none dropped
+        # the pre-F1 scheduled shape migrates as-is: no key invented, none dropped
         assert payload["window_recycle"] == {
             "status": "scheduled",
             "window_id": 44468,
@@ -3178,7 +3302,9 @@ class TestLegacyStateSamples:
         # defaults exist only in memory — the file keeps its two keys
         assert payload["host"] == "unknown"
         assert payload["window_recycle"] == {}
-        state, read_status = chain_support.read_state(tmp_path / ".spec" / "autorun", "autorun")
+        state, read_status = chain_support.read_state(
+            tmp_path / ".spec" / "autorun", tmp_path / ".git" / "spec-chain" / "autorun", "autorun"
+        )
         assert read_status == "ok"
         assert state == {
             "round": 3,
@@ -3189,14 +3315,15 @@ class TestLegacyStateSamples:
 
     def test_forward_compat_unknown_keys_pass_through(self, tmp_path, capsys):
         self.write_state(tmp_path, LEGACY_FORWARD_COMPAT_STATE)
-        payload = self.assert_status_preserves_state_bytes(tmp_path, capsys)
-        # unknown keys ride through reads and renders untouched
+        payload = self.assert_status_migrates_legacy_state(tmp_path, capsys)
+        # unknown keys ride through reads, migration, and renders untouched
         assert payload["model"] == {"id": "gpt-5.2", "reasoning": "high"}
         assert payload["future_field"] == 1
 
     def test_committed_zero_byte_lock_reads_free(self, tmp_path, capsys):
         self.write_state(tmp_path, LEGACY_MINIMAL_STATE)
-        lock_file = tmp_path / ".spec" / "autorun" / "chain.lock"
+        lock_file = tmp_path / ".git" / "spec-chain" / "autorun" / "chain.lock"
+        lock_file.parent.mkdir(parents=True, exist_ok=True)
         lock_file.write_bytes(LEGACY_LOCK_EMPTY_BYTES)
         payload = self.status_payload(tmp_path, capsys)
         assert payload["lock"] == {"status": "free"}
@@ -3205,7 +3332,8 @@ class TestLegacyStateSamples:
 
     def test_stale_holder_line_reports_stale(self, tmp_path, capsys, monkeypatch):
         self.write_state(tmp_path, LEGACY_MINIMAL_STATE)
-        lock_file = tmp_path / ".spec" / "autorun" / "chain.lock"
+        lock_file = tmp_path / ".git" / "spec-chain" / "autorun" / "chain.lock"
+        lock_file.parent.mkdir(parents=True, exist_ok=True)
         lock_file.write_bytes(LEGACY_STALE_HOLDER_LINE)
         monkeypatch.setattr(autorun_spawn, "_pid_alive", lambda pid: False)
         with open(lock_file, "a+", encoding="utf-8") as handle:
@@ -3219,11 +3347,12 @@ class TestLegacyStateSamples:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def test_committed_events_tail_tolerated_and_spawns_index_reads(self, tmp_path, capsys):
-        chain_dir = tmp_path / ".spec" / "autorun"
+        runtime_dir = tmp_path / ".git" / "spec-chain" / "autorun"
+        runtime_dir.mkdir(parents=True, exist_ok=True)
         self.write_state(tmp_path, LEGACY_MINIMAL_STATE)
-        events_file = chain_dir / "events.jsonl"
+        events_file = runtime_dir / "events.jsonl"
         events_file.write_bytes(LEGACY_RECYCLE_CLOSE_BYTES)
-        spawns_file = chain_dir / "spawns.jsonl"
+        spawns_file = runtime_dir / "spawns.jsonl"
         spawns_file.write_bytes(LEGACY_SPAWNS_ROUND1_ROW_BYTES + LEGACY_SPAWNS_ROUND2_ROW_BYTES)
         payload = self.status_payload(tmp_path, capsys)
         # a recycle_close tail is not a refusal
@@ -3245,7 +3374,8 @@ class TestLegacyStateSamples:
 
     def test_glued_events_pair_counts_no_refusals(self, tmp_path, capsys):
         self.write_state(tmp_path, LEGACY_MINIMAL_STATE)
-        events_file = tmp_path / ".spec" / "autorun" / "events.jsonl"
+        events_file = tmp_path / ".git" / "spec-chain" / "autorun" / "events.jsonl"
+        events_file.parent.mkdir(parents=True, exist_ok=True)
         events_file.write_bytes(LEGACY_GLUED_EVENTS_BYTES)
         assert main(["status", "--root", str(tmp_path), "--format", "json"]) == 0
         captured = capsys.readouterr()
@@ -3257,6 +3387,8 @@ class TestLegacyStateSamples:
 
     def test_corrupt_state_without_audit_row_is_never_rewritten(self, tmp_path, capsys):
         chain_dir = tmp_path / ".spec" / "autorun"
+        runtime_dir = tmp_path / ".git" / "spec-chain" / "autorun"
+        runtime_dir.mkdir(parents=True, exist_ok=True)
         chain_dir.mkdir(parents=True, exist_ok=True)
         corrupt_bytes = b"{half-written"
         (chain_dir / "chain.json").write_bytes(corrupt_bytes)
@@ -3268,25 +3400,56 @@ class TestLegacyStateSamples:
         assert "chain: state unreadable (corrupt; see resume)" in capsys.readouterr().out
         # no audit row to rebuild from: the bytes stay exactly as found
         assert (chain_dir / "chain.json").read_bytes() == corrupt_bytes
-        assert not (chain_dir / "events.jsonl").exists()
-        assert not (chain_dir / "spawns.jsonl").exists()
+        assert not (runtime_dir / "events.jsonl").exists()
+        assert not (runtime_dir / "spawns.jsonl").exists()
 
 
-class TestOptInRoundCap:
-    """The round cap is opt-in (the F17 adaptive default was removed): without
-    an explicit flag the chain is unbounded — max_rounds records as null and
-    the next round's prompt carries no cap flag."""
+class TestRoundCap:
+    """F1 (AUD-01): the restored default cap — 5 rounds without a flag, an
+    explicit ``--max-rounds`` overrides, ``--unbounded`` removes (the pre-F1
+    behavior, now opt-in). The effective cap always forwards to the next
+    round's prompt so the decision is self-carrying."""
 
-    def test_no_flag_means_unbounded(self, tmp_path, capsys, monkeypatch):
+    def test_no_flag_means_default_cap(self, tmp_path, capsys, monkeypatch):
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=30)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
         assert main(["spawn", "--root", str(tmp_path), "--host", "pi", "--format", "json", "--dry-run"]) == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["max_rounds"] is None
-        assert "--max-rounds" not in payload["shell_command"]
-        assert "--max-rounds" not in payload["osascript"][2]
+        assert payload["max_rounds"] == 5
+        assert "--max-rounds 5" in payload["shell_command"]
+
+    def test_default_cap_refuses_past_five(self, tmp_path, capsys, monkeypatch):
+        # fail-closed without any flag: a chain at round 5 (the restored
+        # default) refuses its 6th spawn instead of spinning unbounded
+        state = tmp_path / ".spec" / "autorun" / "chain.json"
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text(json.dumps({"round": 5}), encoding="utf-8")
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
+        make_active_package(tmp_path)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+        assert main(["spawn", "--root", str(tmp_path), "--dry-run"]) == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err.strip() == "error: round cap reached: next round 6 exceeds --max-rounds 5"
+        assert json.loads(state.read_text(encoding="utf-8"))["round"] == 5
+        assert not (tmp_path / ".git" / "spec-chain" / "autorun" / "spawns.jsonl").exists()
+
+    def test_unbounded_conflicts_with_max_rounds(self, tmp_path, capsys, monkeypatch):
+        # both flags at once is an ambiguous cap decision — refused before any
+        # state write, with the refusal event recorded
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
+        make_active_package(tmp_path)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+        argv = ["spawn", "--root", str(tmp_path), "--max-rounds", "9", "--unbounded", "--dry-run"]
+        assert main(argv) == 1
+        captured = capsys.readouterr()
+        assert (
+            captured.err.strip() == "error: --unbounded and --max-rounds are mutually exclusive; pick one cap decision"
+        )
+        assert not (tmp_path / ".spec" / "autorun" / "chain.json").exists()
+        assert not (tmp_path / ".git" / "spec-chain" / "autorun" / "spawns.jsonl").exists()
 
     def test_explicit_flag_wins_exactly(self, tmp_path, capsys, monkeypatch):
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=30)
@@ -3301,7 +3464,8 @@ class TestOptInRoundCap:
 
     def test_recorded_cap_is_not_sticky(self, tmp_path, capsys, monkeypatch):
         # a cap recorded by an earlier spawn no longer binds later spawns:
-        # the flag alone decides, so a no-flag continuation goes unbounded
+        # the flag alone decides, so a no-flag continuation re-acquires the
+        # default (5), not the recorded 50
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         state_file = tmp_path / ".spec" / "autorun" / "chain.json"
@@ -3312,5 +3476,218 @@ class TestOptInRoundCap:
         argv = ["spawn", "--root", str(tmp_path), "--host", "pi", "--format", "json", "--dry-run"]
         assert main(argv) == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["max_rounds"] is None
-        assert "--max-rounds" not in payload["shell_command"]
+        assert payload["max_rounds"] == 5
+        assert "--max-rounds 5" in payload["shell_command"]
+
+
+class TestChainPermissionMode:
+    """F1 (AUD-01): the claude worker argv escalates only on an explicit
+    bypass or a probed bypassed parent — the pre-F1 silent escalation is
+    gone. Every spawn records the requested and the effective mode."""
+
+    MARKERS = ("CODEX_SANDBOX", "PI_CODING_AGENT", "CLAUDECODE")
+
+    def clear_markers(self, monkeypatch):
+        for marker in self.MARKERS:
+            monkeypatch.delenv(marker, raising=False)
+
+    def spawn_dry_run(self, tmp_path, capsys, monkeypatch, *extra):
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
+        make_active_package(tmp_path)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
+        argv = ["spawn", "--root", str(tmp_path), "--host", "claude", "--dry-run", "--format", "json", *extra]
+        assert main(argv) == 0
+        return json.loads(capsys.readouterr().out)
+
+    def test_default_inherit_renders_no_escalation_flag(self, tmp_path, capsys, monkeypatch):
+        # the default spawn argv contains no --dangerously-skip-permissions
+        # (the C4 acceptance hook): inherit + undetectable parent ⇒ ask
+        self.clear_markers(monkeypatch)
+        payload = self.spawn_dry_run(tmp_path, capsys, monkeypatch)
+        assert payload["permission_mode"] == "inherit"
+        assert payload["permission_effective"] == "ask"
+        joined = " ".join(payload["osascript"])
+        assert "--dangerously-skip-permissions" not in joined
+        assert payload["shell_command"].endswith("claude '/spec:autorun --max-rounds 5'")
+
+    def test_explicit_bypass_renders_the_flag_and_records(self, tmp_path, capsys, monkeypatch):
+        self.clear_markers(monkeypatch)
+        payload = self.spawn_dry_run(tmp_path, capsys, monkeypatch, "--permission-mode", "bypass")
+        assert payload["permission_mode"] == "bypass"
+        assert payload["permission_effective"] == "bypass"
+        assert "--dangerously-skip-permissions" in " ".join(payload["osascript"])
+
+    def test_ask_stays_unprivileged_even_under_bypassed_parent(self, tmp_path, capsys, monkeypatch):
+        self.clear_markers(monkeypatch)
+        monkeypatch.setattr(autorun_spawn, "parent_session_bypass", lambda env=None: True)
+        payload = self.spawn_dry_run(tmp_path, capsys, monkeypatch, "--permission-mode", "ask")
+        assert payload["permission_effective"] == "ask"
+        assert "--dangerously-skip-permissions" not in " ".join(payload["osascript"])
+
+    def test_inherit_follows_a_probed_bypassed_parent(self, tmp_path, capsys, monkeypatch):
+        # a bypassed claude parent keeps its child bypassed — the inheritance
+        # is what lets an explicit bypass chain survive its own rounds
+        self.clear_markers(monkeypatch)
+        monkeypatch.setattr(autorun_spawn, "parent_session_bypass", lambda env=None: True)
+        payload = self.spawn_dry_run(tmp_path, capsys, monkeypatch)
+        assert payload["permission_mode"] == "inherit"
+        assert payload["permission_effective"] == "bypass"
+        assert "--dangerously-skip-permissions" in " ".join(payload["osascript"])
+
+    def test_non_claude_host_records_mode_without_rendering(self, tmp_path, capsys, monkeypatch):
+        # pi has no escalation flag: the mode is audited, the argv unchanged
+        self.clear_markers(monkeypatch)
+        payload = self.spawn_dry_run(tmp_path, capsys, monkeypatch, "--permission-mode", "bypass", "--host", "pi")
+        assert payload["permission_effective"] == "bypass"
+        assert payload["shell_command"].startswith(f"cd {tmp_path} && pi --mode text")
+
+    def test_render_permission_mode(self, tmp_path, capsys, monkeypatch):
+        # status shows the recorded permission decision (F1 visibility): a
+        # real spawn writes the state, status renders the permission line
+        self.clear_markers(monkeypatch)
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
+        make_active_package(tmp_path)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="4421 /dev/ttys042", stderr=""),
+        )
+        monkeypatch.setattr("autorun_spawn.worker_running_on_tty", lambda worker, tty: True)
+        assert main(["spawn", "--root", str(tmp_path), "--host", "claude", "--format", "json"]) == 0
+        capsys.readouterr()
+        assert main(["status", "--root", str(tmp_path)]) == 0
+        out = capsys.readouterr().out
+        assert "permission: inherit -> ask" in out
+
+    def test_parent_probe_requires_claude_marker(self, monkeypatch):
+        # the probe reuses the host-marker channel: no claude marker, no
+        # escalation — whatever the process chain looks like
+        monkeypatch.delenv("CLAUDECODE", raising=False)
+        monkeypatch.setenv("PI_CODING_AGENT", "1")
+        monkeypatch.setattr(
+            autorun_spawn, "_nearest_ancestor_command", lambda candidates: "claude --dangerously-skip-permissions"
+        )
+        assert autorun_spawn.parent_session_bypass() is False
+
+    def test_parent_probe_reads_the_nearest_claude_command(self, monkeypatch):
+        monkeypatch.delenv("CODEX_SANDBOX", raising=False)
+        monkeypatch.delenv("PI_CODING_AGENT", raising=False)
+        monkeypatch.setenv("CLAUDECODE", "1")
+        monkeypatch.setattr(
+            autorun_spawn, "_nearest_ancestor_command", lambda candidates: "claude --dangerously-skip-permissions"
+        )
+        assert autorun_spawn.parent_session_bypass() is True
+        monkeypatch.setattr(autorun_spawn, "_nearest_ancestor_command", lambda candidates: "claude")
+        assert autorun_spawn.parent_session_bypass() is False
+
+
+class TestFeatureFingerprint:
+    """F1 (AUD-01): the feature-set freeze — a chain refuses to spawn when
+    the planning features changed behind its back; checking a feature off is
+    legitimate progress and never refuses."""
+
+    @staticmethod
+    def make_chain(tmp_path, monkeypatch):
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=2)
+        make_active_package(tmp_path)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
+        state_file = tmp_path / ".spec" / "autorun" / "chain.json"
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        return state_file
+
+    def test_new_feature_refuses_the_spawn(self, tmp_path, capsys, monkeypatch):
+        # freeze on a first (dry-run-computed) fingerprint, then grow the plan:
+        # the next spawn refuses through the standard refusal path — exit 1,
+        # one spawn_refusal event, no state write
+        state_file = self.make_chain(tmp_path, monkeypatch)
+        from chain_spawn_support import feature_fingerprint
+
+        doc = tmp_path / ".spec" / "plans" / "README.md"
+        frozen = feature_fingerprint([doc], tmp_path)
+        state_file.write_text(json.dumps({"round": 1, "feature_fingerprint": frozen}) + "\n", encoding="utf-8")
+        write_plan(doc, unchecked=3)  # one new unchecked feature
+        assert main(["spawn", "--root", str(tmp_path), "--host", "pi", "--dry-run"]) == 1
+        captured = capsys.readouterr()
+        assert "planning features changed since this chain started" in captured.err
+        assert json.loads(state_file.read_text(encoding="utf-8"))["feature_fingerprint"] == frozen
+        assert not (tmp_path / ".git" / "spec-chain" / "autorun" / "spawns.jsonl").exists()
+        events = (
+            (tmp_path / ".git" / "spec-chain" / "autorun" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        )
+        event = json.loads(events[-1])
+        assert event["kind"] == "spawn_refusal"
+        assert event["type"] == "AutorunError"
+
+    def test_checking_off_keeps_the_chain_spawning(self, tmp_path, capsys, monkeypatch):
+        # the fingerprint hashes feature texts, not checkbox states: progress
+        # (a feature checked off) leaves it unchanged and the spawn proceeds
+        self.make_chain(tmp_path, monkeypatch)
+        doc = tmp_path / ".spec" / "plans" / "README.md"
+        from chain_spawn_support import feature_fingerprint
+
+        frozen = feature_fingerprint([doc], tmp_path)
+        state_file = tmp_path / ".spec" / "autorun" / "chain.json"
+        state_file.write_text(json.dumps({"round": 1, "feature_fingerprint": frozen}) + "\n", encoding="utf-8")
+        text = doc.read_text(encoding="utf-8").replace("- [ ]", "- [x]", 1)
+        doc.write_text(text, encoding="utf-8")
+        assert main(["spawn", "--root", str(tmp_path), "--host", "pi", "--dry-run", "--format", "json"]) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["feature_fingerprint"] == frozen
+
+    def test_pre_f1_chain_freezes_on_its_next_spawn(self, tmp_path, capsys, monkeypatch):
+        # a chain state without the field (pre-F1) freezes on this spawn — no
+        # refusal, and the record carries the fingerprint going forward (an
+        # old chain past the restored default cap continues via --unbounded,
+        # the documented migration)
+        self.make_chain(tmp_path, monkeypatch)
+        (tmp_path / ".spec" / "autorun" / "chain.json").write_text(json.dumps({"round": 14}) + "\n", encoding="utf-8")
+        argv = ["spawn", "--root", str(tmp_path), "--host", "pi", "--dry-run", "--format", "json", "--unbounded"]
+        assert main(argv) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert len(payload["feature_fingerprint"]) == 64
+
+
+class TestSpawnEntryMigration:
+    """F16 step 3: spawn migrates the legacy layout before any lock or write —
+    the legacy audit moves to the runtime tree with its content intact, and
+    the new round appends after it."""
+
+    def test_spawn_migrates_legacy_state_then_records(self, tmp_path, capsys, monkeypatch):
+        write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
+        make_active_package(tmp_path)
+        summary = tmp_path / ".spec" / "autorun"
+        summary.mkdir(parents=True, exist_ok=True)
+        legacy_row = json.dumps(
+            {"round": 6, "host": "pi", "prev_tty": "/dev/ttys001", "window_recycle": {"status": "planned"}}
+        )
+        (summary / "spawns.jsonl").write_text(legacy_row + "\n", encoding="utf-8")
+        (summary / "chain.lock").write_text("", encoding="utf-8")
+        state = json.loads(LEGACY_STATE_F1_BYTES.decode("utf-8"))
+        (summary / "chain.json").write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="4421 /dev/ttys042", stderr=""),
+        )
+        monkeypatch.setattr("autorun_spawn.worker_running_on_tty", lambda worker, tty: True)
+        assert main(["spawn", "--root", str(tmp_path), "--command", "sleep 8", "--format", "json"]) == 0
+        capsys.readouterr()
+        runtime = tmp_path / ".git" / "spec-chain" / "autorun"
+        rows = [json.loads(line) for line in (runtime / "spawns.jsonl").read_text(encoding="utf-8").splitlines()]
+        # the legacy line moved intact; the new round appended after it
+        # (the counter continues from the seeded summary, round 2 → 3)
+        assert rows[0]["round"] == 6
+        assert rows[1]["round"] == 3
+        assert not (summary / "spawns.jsonl").exists()
+        # the tracked summary is the new round, volatile-free
+        new_state = json.loads((summary / "chain.json").read_text(encoding="utf-8"))
+        assert new_state["round"] == 3
+        assert "prev_tty" not in new_state and "window_recycle" not in new_state
+        volatile = json.loads((runtime / "volatile.json").read_text(encoding="utf-8"))
+        assert volatile["prev_tty"] == "/dev/ttys012"
+        assert (runtime / "chain.lock").is_file()

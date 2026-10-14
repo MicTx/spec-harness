@@ -72,18 +72,21 @@ from chain_spawn_support import (  # noqa: E402  # type: ignore
     CHAIN_LOCK_FILE,
     CHAIN_SPAWNS_FILE,
     CHAIN_STATE_FILE,
+    CLAUDE_BYPASS_FLAG,
+    DEFAULT_AUTORUN_MAX_ROUNDS,
     OSASCRIPT_TIMEOUT_SECONDS,  # noqa: F401  # re-export: autoplan tests import it from here
+    PERMISSION_MODES,
     WORKER_START_TIMEOUT_SECONDS,
     ChainSpawnError,
     append_audit,
     append_refusal_event,
     apply_window_geometry,
-    atomic_write,
     build_terminal_command,
     build_window_lookup_applescript,  # noqa: F401  # re-export: chain tests use the module attr
     build_worker_command,  # F14: shared render surface; tests + autoplan still import it from here
     close_spawned_window_quietly,
     controlling_tty,
+    feature_fingerprint,
     format_chain_counter,
     model_injection_level,
     next_index_within_cap,
@@ -92,6 +95,7 @@ from chain_spawn_support import (  # noqa: E402  # type: ignore
     read_last_refusal,
     read_state,
     read_window_geometry,  # noqa: F401  # re-export: chain tests import it from here
+    resolve_effective_cap,
     resolve_root,
     run_terminal_open,
     schedule_window_close,
@@ -271,6 +275,11 @@ def _chain_dir(root: Path) -> Path:
     return root / CHAIN_DIR_NAME
 
 
+def _runtime_dir(root: Path) -> Path:
+    """The per-machine runtime tree: lock, audit, events, volatile state."""
+    return chain_support.chain_runtime_dir(root, "autorun")
+
+
 def _read_chain_state(root: Path) -> Optional[Dict[str, object]]:
     return chain_support.read_state_file(
         _chain_dir(root) / CHAIN_STATE_FILE,
@@ -321,14 +330,17 @@ def _active_package_facts(root: Path) -> Tuple[Optional[Dict[str, object]], List
     return (entries[0] if len(entries) == 1 else None), entries
 
 
-def _nearest_ancestor_host(candidates: Tuple[str, ...]) -> Optional[str]:
-    """Walk the parent-process chain and return the nearest ancestor running
-    one of ``candidates`` (the innermost running CLI comes first).
+def _nearest_ancestor_command(candidates: Tuple[str, ...]) -> Optional[str]:
+    """Walk the parent-process chain and return the full command line of
+    the nearest ancestor running one of ``candidates`` (the innermost
+    running CLI comes first).
 
     The walk stops at the first hit — nearest wins, so there is nothing to
     gain from climbing further — and returns ``None`` when no ancestor
     matches or the chain cannot be read. Callers treat ``None`` as "no
-    evidence" and never guess a host from it.
+    evidence" and never guess from it. F1 widened the walk from returning
+    only the host name to the whole command line: the permission probe must
+    inspect the ancestor's flags, not just its binary name.
     """
     pid = os.getpid()
     for _ in range(64):
@@ -354,13 +366,25 @@ def _nearest_ancestor_host(candidates: Tuple[str, ...]) -> Optional[str]:
         for token in parts[1].split():
             name = token.rstrip("/").rsplit("/", 1)[-1]
             if name in candidates:
-                return name
+                return parts[1]
         try:
             pid = int(parts[0])
         except ValueError:
             break
         if pid <= 1:
             break
+    return None
+
+
+def _nearest_ancestor_host(candidates: Tuple[str, ...]) -> Optional[str]:
+    """The host name from :func:`_nearest_ancestor_command` (nearest wins)."""
+    command = _nearest_ancestor_command(candidates)
+    if command is None:
+        return None
+    for token in command.split():
+        name = token.rstrip("/").rsplit("/", 1)[-1]
+        if name in candidates:
+            return name
     return None
 
 
@@ -384,6 +408,40 @@ def detect_session_host(env: Optional[Dict[str, str]] = None) -> Optional[str]:
     if len(marked) > 1:
         return _nearest_ancestor_host(tuple(marked))
     return None
+
+
+def parent_session_bypass(env: Optional[Dict[str, str]] = None) -> bool:
+    """F1 (AUD-01): does the parent CLI session carry an escalation flag?
+
+    Reuses the host-marker channel, nearest-ancestor-wins: the session host
+    must resolve to claude — the only host with an escalation argv surface
+    today — and the nearest claude ancestor's command line must carry
+    ``--dangerously-skip-permissions``. Anything else (another host, no
+    markers, an unreadable process chain) means no escalation: the probe
+    never escalates silently, which is the accepted tightening.
+    """
+    if detect_session_host(env) != "claude":
+        return False
+    command = _nearest_ancestor_command(("claude",))
+    if command is None:
+        return False
+    return CLAUDE_BYPASS_FLAG in command.split()
+
+
+def resolve_permission_mode(requested: str) -> str:
+    """F1: resolve the requested ``--permission-mode`` to the effective mode.
+
+    ``ask`` and ``bypass`` are decisions as given; ``inherit`` probes the
+    parent session (a bypassed claude parent keeps its child bypassed — the
+    inheritance is what makes an explicit bypass chain survive its own
+    rounds; everything undetectable resolves to ``ask``). The effective
+    value is what renders into the worker argv and what the chain records.
+    """
+    if requested not in PERMISSION_MODES:
+        raise AutorunError(f"unknown permission mode: {requested!r} (expected one of {PERMISSION_MODES})")
+    if requested in ("ask", "bypass"):
+        return requested
+    return "bypass" if parent_session_bypass() else "ask"
 
 
 def resolve_worker_host(explicit: Optional[str]) -> Tuple[str, str]:
@@ -429,14 +487,21 @@ def plan_args_for_prompt(plan: Optional[str]) -> List[str]:
     return ["--plan " + shlex.quote(plan)] if plan else []
 
 
-def build_prompt(host: str, plan_args: List[str], max_rounds: Optional[int]) -> str:
+def build_prompt(host: str, plan_args: List[str], max_rounds: Optional[int], unbounded: bool = False) -> str:
     """Build the autorun prompt injected into the next-round session.
 
-    The round cap is opt-in: an explicit ``--max-rounds`` is forwarded to the
-    next round's prompt so a capped chain keeps its bound; an unbounded
-    chain carries no cap flag (nothing to hit mid-chain).
+    The cap decision travels with the prompt (F1): a bounded chain forwards
+    its effective cap — explicit or the restored default — and an explicitly
+    unbounded chain forwards ``--unbounded``; without the forwarding an
+    unbounded chain would silently re-acquire the default cap on the next
+    round and truncate mid-plan.
     """
-    tail_parts = plan_args + ([f"--max-rounds {max_rounds}"] if max_rounds is not None else [])
+    if max_rounds is not None:
+        tail_parts = plan_args + [f"--max-rounds {max_rounds}"]
+    elif unbounded:
+        tail_parts = plan_args + ["--unbounded"]
+    else:
+        tail_parts = list(plan_args)
     tail = " ".join(tail_parts)
     if host == "claude":
         return f"/spec:autorun {tail}".strip()
@@ -694,6 +759,10 @@ def _render_status_model(model: object) -> str:
 def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
     """Run the spawn guards, open an interactive session, and record chain state."""
     backend = chain_support.resolve_terminal_backend(getattr(args, "terminal", "auto"))
+    # F16 step 3: legacy runtime files (and summary volatile fields) migrate
+    # to .git/spec-chain/ before any read or lock — the rename preserves the
+    # inode, so even a racing pre-migration spawn stays flock-excluded.
+    chain_support.migrate_legacy_chain_state(root, "autorun")
     plan = plan_payload(root, args.plan)
     if plan["complete"]:
         raise AutorunError("planning documents report every feature checked; the chain is complete, nothing to spawn")
@@ -704,7 +773,7 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
         )
 
     with chain_support.single_chain_lock(
-        _chain_dir(root),
+        _runtime_dir(root),
         "autorun",
         error=AutorunError,
         busy_message=(f"another autorun chain holds {CHAIN_LOCK_FILE} for this project; parallel chains are refused"),
@@ -712,13 +781,34 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
         state = _read_chain_state(root) or {}
         if getattr(args, "terminal", "auto") == "auto" and state.get("terminal_backend") == "tmux":
             backend = "tmux"
-        # The round cap is opt-in: an explicit --max-rounds bounds the chain
-        # exactly (validated and forwarded to the next round's prompt);
-        # without the flag the chain is unbounded and max_rounds records as
-        # null — the F17 adaptive default caps were removed (2026-10-09).
-        # The strict int gate and the next==cap boundary stay in the shared
-        # guard helper (F12).
-        max_rounds = args.max_rounds
+        # F1 (AUD-01) feature-set fingerprint: freeze the planning features
+        # on the first spawn and refuse any later spawn whose plan grew or
+        # was edited behind the chain's back — a chain must not spin on a
+        # moving plan. Checking a feature off is legitimate progress and
+        # leaves the fingerprint unchanged (the hash covers feature texts,
+        # not checkbox states). A chain without the field (pre-F1) freezes
+        # on this spawn.
+        doc_paths = [root / str(report["path"]) for report in plan["docs"]]
+        fingerprint = feature_fingerprint(doc_paths, root)
+        frozen = state.get("feature_fingerprint")
+        if isinstance(frozen, str) and frozen != fingerprint:
+            raise AutorunError(
+                "planning features changed since this chain started "
+                f"(frozen {frozen[:12]}, current {fingerprint[:12]}): a feature was added, "
+                "removed, or reworded mid-chain — finish this chain and start a new one, or "
+                "restore the planning documents; refusing the spawn"
+            )
+        # F1 (AUD-01) restored default cap: --max-rounds > --unbounded > the
+        # default of 5. The strict int gate and the next==cap boundary stay
+        # in the shared guard helpers (F12); the effective cap is forwarded
+        # to the next round's prompt so the decision is self-carrying.
+        max_rounds = resolve_effective_cap(
+            args.max_rounds,
+            getattr(args, "unbounded", False),
+            DEFAULT_AUTORUN_MAX_ROUNDS,
+            "max-rounds",
+            error=AutorunError,
+        )
         if max_rounds is not None:
             validate_cap(max_rounds, "max-rounds")
         next_round = next_index_within_cap(
@@ -734,6 +824,15 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
         # the post-spawn lock value: on every accepted spawn it equals the
         # existing lock (matched component-wise) or establishes it.
         effective_identity = _resolve_model_identity(args, state)
+
+        # F1 (AUD-01): the permission decision is per-spawn (no lock): each
+        # round's session decides for its child, ``inherit`` probes the
+        # parent session, and both the requested and the effective mode are
+        # recorded for audit. Probing runs on every path — including the
+        # --command bypass, where nothing renders but the audit still shows
+        # what would have applied.
+        permission_mode = getattr(args, "permission_mode", "inherit") or "inherit"
+        permission_effective = resolve_permission_mode(permission_mode)
 
         if args.command:
             host = "custom"
@@ -759,8 +858,10 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
                     "host-namespace-specific; refusing the spawn"
                 )
             plan_args = plan_args_for_prompt(args.plan)
-            prompt = build_prompt(host, plan_args, max_rounds)
-            worker_command = build_worker_command(host, root, prompt, effective_identity)
+            prompt = build_prompt(host, plan_args, max_rounds, unbounded=bool(getattr(args, "unbounded", False)))
+            worker_command = build_worker_command(
+                host, root, prompt, effective_identity, permission_mode=permission_effective
+            )
             worker_name = worker_command[0]
             injection_level = model_injection_level(effective_identity, host)
         # F17 geometry: the new window inherits this session's window place
@@ -775,6 +876,9 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
             "host_source": host_source,
             "plan_docs": [doc["path"] for doc in plan["docs"]],  # type: ignore[index]
             "max_rounds": max_rounds,
+            "feature_fingerprint": fingerprint,
+            "permission_mode": permission_mode,
+            "permission_effective": permission_effective,
             "model": effective_identity,
             "model_injection": injection_level,
             "spawned_at": utc_now(),
@@ -815,7 +919,7 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
                 recovered_tty,
                 worker_name,
                 chain="autorun",
-                events_path=_chain_dir(root) / CHAIN_EVENTS_FILE,
+                events_path=_runtime_dir(root) / CHAIN_EVENTS_FILE,
                 round_index=next_round,
             )
             # An unconfirmable handoff must not strand the chain: the round
@@ -850,17 +954,18 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
                 worker_name=worker_name,
                 chain="autorun",
                 round_index=next_round,
-                events_path=_chain_dir(root) / CHAIN_EVENTS_FILE,
+                events_path=_runtime_dir(root) / CHAIN_EVENTS_FILE,
             )
 
-            state_file = _chain_dir(root) / CHAIN_STATE_FILE
             state = dict(record)
             # F14: the per-spawn injection level is an audit fact (spawns row
             # only); the chain state carries the identity lock, which the
             # effective identity already equals on every accepted spawn.
             state.pop("model_injection")
             state["updated_at"] = state.pop("spawned_at")
-            atomic_write(state_file, json.dumps(state, indent=2, sort_keys=True) + "\n")
+            # F16 step 3: split write — volatile.json in the runtime tree,
+            # the volatile-free summary in the tracked tree.
+            chain_support.write_chain_state(_chain_dir(root), _runtime_dir(root), state)
         except BaseException:
             # 交接未确认 = 不留进程 (2026-10-09): any failure between the
             # confirmed window open and the recorded state leaves an alive
@@ -875,20 +980,24 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
                 new_tty,
                 worker_name,
                 chain="autorun",
-                events_path=_chain_dir(root) / CHAIN_EVENTS_FILE,
+                events_path=_runtime_dir(root) / CHAIN_EVENTS_FILE,
                 round_index=next_round,
             )
             raise
-        append_audit(_chain_dir(root) / CHAIN_SPAWNS_FILE, record)
+        append_audit(_runtime_dir(root) / CHAIN_SPAWNS_FILE, record)
         return {"dry_run": False, "terminal": completed.stdout.strip(), **record}
 
 
 def status_payload(root: Path) -> Dict[str, object]:
-    chain_dir = _chain_dir(root)
-    state, read_status = read_state(chain_dir, chain="autorun")
+    # F16 step 3: migrate before reading so both layouts render identically.
+    chain_support.migrate_legacy_chain_state(root, "autorun")
+    summary_dir = _chain_dir(root)
+    runtime_dir = _runtime_dir(root)
+    state, read_status = read_state(summary_dir, runtime_dir, chain="autorun")
     payload: Dict[str, object] = {
         "project": str(root),
-        "chain_state_file": str(chain_dir / CHAIN_STATE_FILE),
+        "chain_state_file": str(summary_dir / CHAIN_STATE_FILE),
+        "chain_runtime_dir": str(runtime_dir),
         "state_status": read_status,
     }
     if state is None:
@@ -896,11 +1005,17 @@ def status_payload(root: Path) -> Dict[str, object]:
     else:
         payload["started"] = True
         payload.update(state)
+    # F16 step 3: the spawn-moment facts (tty, recycle plan) render from the
+    # runtime volatile file, with the same defaults the summary read applied
+    # when it was a summary field. Read-only overlay — never written back.
+    volatile = chain_support.read_volatile_state(runtime_dir)
+    payload["prev_tty"] = volatile.get("prev_tty")
+    payload["window_recycle"] = volatile.get("window_recycle", {})
     # F14: the derived status model — the identity lock plus the latest
     # injection level from the audit tail when one exists. The injection
     # key is conditional, so a lock without spawns rows (old chains, the
     # F13 unknown-key passthrough sample) keeps its exact shape.
-    audit_tail = read_audit_tail(chain_dir)
+    audit_tail = read_audit_tail(runtime_dir)
     model_lock = state.get("model") if state is not None else None
     if isinstance(model_lock, dict) and model_lock:
         derived_model: Dict[str, object] = dict(model_lock)
@@ -910,8 +1025,8 @@ def status_payload(root: Path) -> Dict[str, object]:
         payload["model"] = derived_model
     else:
         payload["model"] = None
-    payload["lock"] = probe_lock(chain_dir)
-    total_refusals, last_refusal = read_last_refusal(chain_dir / CHAIN_EVENTS_FILE)
+    payload["lock"] = probe_lock(runtime_dir)
+    total_refusals, last_refusal = read_last_refusal(runtime_dir / CHAIN_EVENTS_FILE)
     payload["refusals_recorded"] = total_refusals
     payload["last_refusal"] = last_refusal
     # Plan counts are tolerant for status (a read-only render): no qualifying
@@ -966,6 +1081,11 @@ def _render_spawn(payload: Dict[str, object]) -> str:
         "round: {}".format(format_chain_counter(payload["round"], payload.get("max_rounds"))),
         "host: {}".format(payload["host"]),
     ]
+    permission_mode = payload.get("permission_mode")
+    if isinstance(permission_mode, str):
+        effective = payload.get("permission_effective")
+        suffix = " -> {}".format(effective) if isinstance(effective, str) and effective != permission_mode else ""
+        lines.append("permission: {}{}".format(permission_mode, suffix))
     lines.append("shell_command: {}".format(payload["shell_command"]))
     if payload.get("attach_command"):
         lines.append("attach: {}".format(payload["attach_command"]))
@@ -1057,6 +1177,11 @@ def _render_status(payload: Dict[str, object]) -> str:
         lines.append("round: {}".format(payload.get("round")))
         lines.append("host: {}".format(payload.get("host")))
         lines.append(_render_status_model(payload.get("model")))
+        permission_mode = payload.get("permission_mode")
+        if isinstance(permission_mode, str):
+            effective = payload.get("permission_effective")
+            suffix = " -> {}".format(effective) if isinstance(effective, str) and effective != permission_mode else ""
+            lines.append("permission: {}{}".format(permission_mode, suffix))
         lines.append("updated_at: {}".format(payload.get("updated_at")))
         if payload.get("attach_command"):
             lines.append("attach: {}".format(payload["attach_command"]))
@@ -1137,8 +1262,26 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            "round cap for this chain (opt-in); when omitted the chain is unbounded — no "
-            "cap is computed, recorded, or forwarded"
+            "round cap for this chain (default: 5); an explicit value overrides the default "
+            "and is forwarded to the next round's prompt"
+        ),
+    )
+    spawn_parser.add_argument(
+        "--unbounded",
+        dest="unbounded",
+        action="store_true",
+        help=("remove the round cap entirely (the pre-F1 unbounded behavior; mutually exclusive with --max-rounds)"),
+    )
+    spawn_parser.add_argument(
+        "--permission-mode",
+        dest="permission_mode",
+        choices=PERMISSION_MODES,
+        default="inherit",
+        help=(
+            "chain permission mode (default: inherit — the worker inherits the parent "
+            "session's escalation, probed via the host-marker channel; undetectable means "
+            "no escalation. ask renders no escalation flag; bypass renders the host's "
+            "escalation flag and is recorded in the chain state)"
         ),
     )
     spawn_parser.add_argument(
@@ -1172,8 +1315,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             _emit(plan_payload(root, args.plan), _render_plan, args.format == "json")
         elif args.subcommand == "spawn":
             if args.max_rounds is not None:
-                # the cap is opt-in: only an explicit flag is validated here,
-                # before any lock/state touch
+                # an explicit cap is validated here, before any lock/state
+                # touch; the default cap and the --unbounded interaction
+                # resolve inside the payload (refusal event recorded)
                 validate_cap(args.max_rounds, "max-rounds")
             _emit(spawn_payload(root, args), _render_spawn, args.format == "json")
         else:
@@ -1181,12 +1325,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     except NoPlanError as exc:
         print(f"error: {exc}", file=sys.stderr)
         if args.subcommand == "spawn" and root is not None:
-            append_refusal_event(_chain_dir(root), "autorun", exc)
+            append_refusal_event(_runtime_dir(root), "autorun", exc)
         return EXIT_NO_PLAN
     except ChainSpawnError as exc:
         print(f"error: {exc}", file=sys.stderr)
         if args.subcommand == "spawn" and root is not None:
-            append_refusal_event(_chain_dir(root), "autorun", exc)
+            append_refusal_event(_runtime_dir(root), "autorun", exc)
         return EXIT_FAILURE
     return EXIT_OK
 

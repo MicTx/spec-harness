@@ -18,12 +18,6 @@ from report_spec_package import (
 )
 from route_spec_package import active_packages, route_for_package
 from spec_package_support import write_text
-from update_checkpoint_support import (
-    begin_update_checkpoint,
-    checkpoint_path,
-    complete_update_checkpoint,
-    rollback_update_checkpoint,
-)
 
 
 def _create_package(specs_dir, slug, spec_text="# T\n", tasks_text="# T\n", checklist_text="# T\n"):
@@ -31,7 +25,9 @@ def _create_package(specs_dir, slug, spec_text="# T\n", tasks_text="# T\n", chec
     pkg.mkdir(parents=True, exist_ok=True)
     write_text(pkg / "spec.md", spec_text)
     write_text(pkg / "tasks.md", tasks_text)
-    write_text(pkg / "checklist.md", checklist_text)
+    # checklist_text=None models a v2 package (F11): no checklist.md at all.
+    if checklist_text is not None:
+        write_text(pkg / "checklist.md", checklist_text)
     return pkg
 
 
@@ -73,8 +69,14 @@ COMPLETED_PROJECTION_TASKS = "## 实现\n" + "".join(
 
 
 @pytest.mark.parametrize("ascii_mode,compact", [(False, False), (True, False), (False, True), (True, True)])
-@pytest.mark.parametrize("blocker", [None, (" ", "阻塞：等待外部依赖"), ("!", "等待授权")])
+@pytest.mark.parametrize("blocker", [None, ("!", "等待授权")])
 def test_completed_task_projection_agrees_across_route_and_report(tmp_path, ascii_mode, compact, blocker):
+    """Route and report project structured markers identically.
+
+    AUD-10: only ``!``/status-line blocks are gate-level, and only marker
+    blocks keep the route↔report package-state agreement; title-word
+    samples are covered by test_title_block_word_is_display_only.
+    """
     slug = "2026-09-14_completed-projection"
     tasks_text = COMPLETED_PROJECTION_TASKS
     if blocker:
@@ -144,6 +146,38 @@ def test_completed_task_projection_agrees_across_route_and_report(tmp_path, asci
         assert f"- [!] {blocker[1]}" in task_list
     else:
         assert "- [!]" not in task_list
+
+
+def test_title_block_word_is_display_only(tmp_path):
+    """AUD-10: a title about blocking is not a gate blocker anymore.
+
+    The gate and route health ignore the title; the report row keeps the
+    heuristic tag for human readers (route/progress 展示不动).
+    """
+    slug = "2026-09-14_completed-projection"
+    tasks_text = COMPLETED_PROJECTION_TASKS + "- [ ] 阻塞：等待外部依赖\n  - boundary: 依赖\n  - verify: pytest -q\n"
+    _create_package(
+        tmp_path / ".spec" / "specs",
+        slug,
+        spec_text=COMPLETE_SPEC,
+        tasks_text=tasks_text,
+        checklist_text=COMPLETE_CHECKLIST,
+    )
+    gate = compute_gate_results(COMPLETE_SPEC, tasks_text, COMPLETE_CHECKLIST, slug=slug)
+    assert gate.blocked_tasks is False
+    state = _route_state(tmp_path, slug)
+    assert state["health"] == "正常"
+    sections, tasks = parse_tasks(tasks_text)
+    summary = package_status_summary(slug, tasks_text, COMPLETE_SPEC, COMPLETE_CHECKLIST, sections, tasks)
+    assert summary["blocked"] == "阻塞：等待外部依赖"
+
+    task_list = render_tasks(slug, sections, tasks)
+    route = route_for_package(tmp_path, slug, ascii_mode=False, compact=False)
+    assert "任务受阻：阻塞：等待外部依赖" in route
+    # Display keeps promoting the heuristic tag to a rendered "!" row, but the
+    # source stays "[ ]" and neither the gate nor the route health blocks.
+    assert "- [ ] 阻塞：等待外部依赖" in tasks_text
+    assert "- [!] 阻塞：等待外部依赖" in task_list
 
 
 def test_route_and_status_expose_declared_verification_scope(tmp_path):
@@ -411,10 +445,12 @@ def test_route_markdown_describes_acceptance_gaps_as_project_facts():
         assert "/spec:" not in output
 
 
-# --- update checkpoint blocking ---------------------------------------------
+# --- historical update checkpoint advisory ------------------------------------
 
 
-def test_route_blocks_on_active_update_checkpoint(tmp_path):
+def test_route_advises_on_historical_update_checkpoint(tmp_path, write_historical_checkpoint):
+    """A historical checkpoint is a prominent advisory, not a hard block:
+    routing proceeds (stage from triad state) and health degrades to 风险."""
     slug = "2026-09-13_update-pkg"
     pkg = _create_package(
         tmp_path / ".spec" / "specs",
@@ -423,20 +459,24 @@ def test_route_blocks_on_active_update_checkpoint(tmp_path):
         tasks_text="- [ ] Task A\n  - boundary: x\n  - verify: x\n",
         checklist_text="# C\n**验收结果**：待修复\n",
     )
-    begin_update_checkpoint(pkg, "追加数据导出任务")
+    write_historical_checkpoint(pkg, "追加数据导出任务")
 
     output = route_for_package(tmp_path, slug)
 
-    assert "存在未完成 update checkpoint：更新「追加数据导出任务」尚未确认完成或回滚" in output
+    assert "存在未完成 update checkpoint（历史遗留，机制已退役）" in output
+    assert "更新「追加数据导出任务」未确认完成" in output
+    assert "按 Git 历史确认/恢复三件套后删除 update-checkpoint.json" in output
     assert "## 需要关注" in output
-    assert "处理未完成 update checkpoint：rollback 回滚更新，或 complete 确认保留" in output
     state = _route_state(tmp_path, slug)
-    assert state["stage"] == "status"
-    assert state["health"] == "阻塞"
+    assert state["stage"] == "run"
+    assert state["health"] == "风险"
     assert state["updateCheckpoint"] == "active"
+    # Advisory never hijacks the next step: the natural task work continues.
+    following = output.partition("## 接下来")[2]
+    assert "处理未完成 update checkpoint" not in following
 
 
-def test_route_checkpoint_block_detects_without_modifying_files(tmp_path):
+def test_route_checkpoint_advisory_detects_without_modifying_files(tmp_path, write_historical_checkpoint):
     slug = "2026-09-13_update-pkg"
     pkg = _create_package(
         tmp_path / ".spec" / "specs",
@@ -445,7 +485,7 @@ def test_route_checkpoint_block_detects_without_modifying_files(tmp_path):
         tasks_text="- [ ] Task A\n  - boundary: x\n  - verify: x\n",
         checklist_text="# C\n**验收结果**：待修复\n",
     )
-    begin_update_checkpoint(pkg, "追加任务")
+    write_historical_checkpoint(pkg, "追加任务")
     before = {p.name: p.read_bytes() for p in sorted(pkg.iterdir())}
 
     route_for_package(tmp_path, slug)
@@ -455,7 +495,9 @@ def test_route_checkpoint_block_detects_without_modifying_files(tmp_path):
     assert after == before  # route detects; it never rewrites package state
 
 
-def test_route_checkpoint_block_lifts_after_complete(tmp_path):
+def test_route_checkpoint_advisory_lifts_after_file_removal(tmp_path, write_historical_checkpoint):
+    """Resolution under the retired mechanism is file removal after Git
+    recovery; with the file gone the advisory disappears entirely."""
     slug = "2026-09-13_update-pkg"
     pkg = _create_package(
         tmp_path / ".spec" / "specs",
@@ -464,12 +506,12 @@ def test_route_checkpoint_block_lifts_after_complete(tmp_path):
         tasks_text="- [ ] Task A\n  - boundary: x\n  - verify: x\n",
         checklist_text="# C\n**验收结果**：待修复\n",
     )
-    begin_update_checkpoint(pkg, "追加任务")
+    path = write_historical_checkpoint(pkg, "追加任务")
     write_text(
         pkg / "tasks.md",
         "- [x] Task A\n  - boundary: x\n  - verify: x\n\n- [ ] Task B\n  - boundary: x\n  - verify: x\n",
     )
-    complete_update_checkpoint(pkg)
+    path.unlink()
 
     output = route_for_package(tmp_path, slug)
     state = _route_state(tmp_path, slug)
@@ -480,7 +522,7 @@ def test_route_checkpoint_block_lifts_after_complete(tmp_path):
     assert state["updateCheckpoint"] == "none"
 
 
-def test_route_checkpoint_block_lifts_after_rollback(tmp_path):
+def test_route_advises_on_corrupted_historical_checkpoint(tmp_path, write_historical_checkpoint):
     slug = "2026-09-13_update-pkg"
     pkg = _create_package(
         tmp_path / ".spec" / "specs",
@@ -489,36 +531,16 @@ def test_route_checkpoint_block_lifts_after_rollback(tmp_path):
         tasks_text="- [ ] Task A\n  - boundary: x\n  - verify: x\n",
         checklist_text="# C\n**验收结果**：待修复\n",
     )
-    begin_update_checkpoint(pkg, "追加任务")
-    rollback_update_checkpoint(pkg)
+    write_historical_checkpoint(pkg, "追加任务")
+    (pkg / "update-checkpoint.json").write_text("{ not json", encoding="utf-8")
 
     output = route_for_package(tmp_path, slug)
     state = _route_state(tmp_path, slug)
 
-    assert "存在未完成 update checkpoint" not in output
+    assert "存在未完成 update checkpoint（历史遗留，机制已退役）" in output
+    assert "记录已损坏" in output
     assert state["stage"] == "run"
-    assert state["updateCheckpoint"] == "none"
-
-
-def test_route_blocks_on_corrupted_update_checkpoint(tmp_path):
-    slug = "2026-09-13_update-pkg"
-    pkg = _create_package(
-        tmp_path / ".spec" / "specs",
-        slug,
-        spec_text=COMPLETE_SPEC,
-        tasks_text="- [ ] Task A\n  - boundary: x\n  - verify: x\n",
-        checklist_text="# C\n**验收结果**：待修复\n",
-    )
-    begin_update_checkpoint(pkg, "追加任务")
-    checkpoint_path(pkg).write_text("{ not json", encoding="utf-8")
-
-    output = route_for_package(tmp_path, slug)
-    state = _route_state(tmp_path, slug)
-
-    assert "存在未完成 update checkpoint" in output
-    assert "检查点记录损坏，需人工恢复" in output
-    assert state["stage"] == "status"
-    assert state["health"] == "阻塞"
+    assert state["health"] == "风险"
     assert state["updateCheckpoint"] == "corrupted"
 
 
@@ -561,10 +583,12 @@ def _run_route(root: Path, slug: str, output_format: str = "markdown", *flags: s
 
 
 @pytest.mark.parametrize("state", ["active", "corrupted"])
-@pytest.mark.parametrize("member", ["spec.md", "tasks.md", "checklist.md"])
+@pytest.mark.parametrize("member", ["spec.md", "tasks.md"])
 @pytest.mark.parametrize("damage", ["missing", "invalid-utf8", "directory"])
 @pytest.mark.parametrize("output_format", ["markdown", "json"])
-def test_route_cli_recovers_with_unreadable_triad(tmp_path, state, member, damage, output_format):
+def test_route_cli_recovers_with_unreadable_triad(
+    tmp_path, write_historical_checkpoint, state, member, damage, output_format
+):
     slug = "2026-09-13_update-pkg"
     pkg = _create_package(
         tmp_path / ".spec" / "specs",
@@ -573,9 +597,9 @@ def test_route_cli_recovers_with_unreadable_triad(tmp_path, state, member, damag
         tasks_text="- [x] Task A\n  - boundary: x\n  - verify: x\n",
         checklist_text="**验收结果**：待修复\n",
     )
-    begin_update_checkpoint(pkg, "追加任务")
+    write_historical_checkpoint(pkg, "追加任务")
     if state == "corrupted":
-        checkpoint_path(pkg).write_text("{ not json", encoding="utf-8")
+        (pkg / "update-checkpoint.json").write_text("{ not json", encoding="utf-8")
     path = pkg / member
     path.unlink()
     if damage == "invalid-utf8":
@@ -589,9 +613,10 @@ def test_route_cli_recovers_with_unreadable_triad(tmp_path, state, member, damag
     assert result.returncode == 0, result.stderr
     assert result.stderr == ""
     assert "存在未完成 update checkpoint" in result.stdout
-    assert "rollback" in result.stdout and "complete" in result.stdout
+    assert "Git 历史确认/恢复" in result.stdout or "按 Git 历史恢复" in result.stdout
+    assert "删除 update-checkpoint.json" in result.stdout
     if state == "corrupted":
-        assert "需人工恢复" in result.stdout
+        assert "记录已损坏" in result.stdout
     if output_format == "json":
         payload = json.loads(result.stdout)
         assert payload["slug"] == slug
@@ -602,7 +627,7 @@ def test_route_cli_recovers_with_unreadable_triad(tmp_path, state, member, damag
         assert payload["total"] is None
         assert payload["currentTask"] is None
         assert payload["dependencyErrors"] == []
-        assert "rollback" in payload["nextStep"]
+        assert "update-checkpoint.json" in payload["nextStep"]
     else:
         assert result.stdout.startswith(f"# {slug}\n")
         assert "阻塞" in result.stdout and "status" in result.stdout
@@ -611,6 +636,30 @@ def test_route_cli_recovers_with_unreadable_triad(tmp_path, state, member, damag
         assert "## 需要关注" in result.stdout
         assert "## 接下来" in result.stdout
     assert {p.name: p.read_bytes() if p.is_file() else None for p in pkg.iterdir()} == before
+
+
+@pytest.mark.parametrize("output_format", ["markdown", "json"])
+def test_route_cli_tolerates_missing_checklist_v2(tmp_path, output_format):
+    """v2 packages (F11) ship no checklist.md: its absence switches the
+    acceptance surface, it is never an unreadable-triad recovery — the
+    package routes normally with completed/total intact."""
+    slug = "2026-10-12_v2-no-checklist"
+    _create_package(
+        tmp_path / ".spec" / "specs",
+        slug,
+        spec_text=COMPLETE_SPEC,
+        tasks_text="- [x] Task A\n  - boundary: x\n  - verify: x\n",
+        checklist_text=None,
+    )
+    result = _run_route(tmp_path, slug, output_format, "--ascii", "--compact")
+    assert result.returncode == 0, result.stderr
+    assert "存在未完成 update checkpoint" not in result.stdout
+    assert "已完成：未知" not in result.stdout
+    if output_format == "json":
+        payload = json.loads(result.stdout)
+        assert payload["slug"] == slug
+        assert payload["completed"] == 1
+        assert payload["total"] == 1
 
 
 @pytest.mark.parametrize("damage", ["missing", "invalid-utf8", "directory"])
@@ -639,14 +688,16 @@ def test_route_cli_unreadable_triad_without_checkpoint_keeps_error(tmp_path, dam
 @pytest.mark.parametrize("state", ["active", "corrupted"])
 @pytest.mark.parametrize("output_format", ["markdown", "json"])
 @pytest.mark.parametrize("link_kind", ["package-external", "package-internal", "triad-external"])
-def test_route_checkpoint_does_not_bypass_path_validation(tmp_path, state, output_format, link_kind):
+def test_route_checkpoint_does_not_bypass_path_validation(
+    tmp_path, write_historical_checkpoint, state, output_format, link_kind
+):
     root = tmp_path / "project"
     specs = root / ".spec" / "specs"
     slug = "2026-09-13_update-pkg"
     pkg = _create_package(specs, slug)
-    begin_update_checkpoint(pkg, "追加任务")
+    checkpoint_file = write_historical_checkpoint(pkg, "追加任务")
     if state == "corrupted":
-        checkpoint_path(pkg).write_text("{ not json", encoding="utf-8")
+        checkpoint_file.write_text("{ not json", encoding="utf-8")
     if link_kind.startswith("package-"):
         target_root = root / "storage" if link_kind == "package-internal" else tmp_path / "outside"
         target_root.mkdir(parents=True)
@@ -662,7 +713,7 @@ def test_route_checkpoint_does_not_bypass_path_validation(tmp_path, state, outpu
         (pkg / "tasks.md").unlink()
         (pkg / "tasks.md").symlink_to(target / "tasks.md")
     before = {p.name: p.read_bytes() for p in target.iterdir()}
-    checkpoint_before = checkpoint_path(pkg).read_bytes()
+    checkpoint_before = checkpoint_file.read_bytes()
 
     result = _run_route(root, slug, output_format)
 
@@ -672,18 +723,20 @@ def test_route_checkpoint_does_not_bypass_path_validation(tmp_path, state, outpu
     assert "Traceback" not in result.stderr
     assert "must resolve under specs root" in result.stderr or "must not be a symlink" in result.stderr
     assert {p.name: p.read_bytes() for p in target.iterdir()} == before
-    assert checkpoint_path(pkg).read_bytes() == checkpoint_before
+    assert checkpoint_file.read_bytes() == checkpoint_before
 
 
 @pytest.mark.parametrize("state", ["active", "corrupted"])
-def test_route_checks_checkpoint_before_permission_denied_triad(tmp_path, monkeypatch, state):
+def test_route_checks_checkpoint_before_permission_denied_triad(
+    tmp_path, monkeypatch, state, write_historical_checkpoint
+):
     import route_spec_package as route_module
 
     slug = "2026-09-13_update-pkg"
     pkg = _create_package(tmp_path / ".spec" / "specs", slug)
-    begin_update_checkpoint(pkg, "追加任务")
+    checkpoint_file = write_historical_checkpoint(pkg, "追加任务")
     if state == "corrupted":
-        checkpoint_path(pkg).write_text("{ not json", encoding="utf-8")
+        checkpoint_file.write_text("{ not json", encoding="utf-8")
     before = {p.name: p.read_bytes() for p in pkg.iterdir()}
     calls = []
     detect = route_module.detect_update_checkpoint
@@ -711,13 +764,15 @@ def test_route_checks_checkpoint_before_permission_denied_triad(tmp_path, monkey
     assert payload["health"] == "阻塞"
     assert payload["updateCheckpoint"] == state
     assert payload["completed"] is None and payload["total"] is None
-    assert "rollback" in payload["nextStep"] and "complete" in payload["nextStep"]
+    assert "update-checkpoint.json" in payload["nextStep"]
     assert {p.name: p.read_bytes() for p in pkg.iterdir()} == before
 
 
 @pytest.mark.parametrize("damage", ["deep-json", "intent-surrogate", "snapshot-surrogate"])
 @pytest.mark.parametrize("readable_triad", [True, False])
-def test_route_malformed_checkpoint_keeps_corrupted_recovery(tmp_path, damage, readable_triad):
+def test_route_malformed_checkpoint_keeps_corrupted_recovery(
+    tmp_path, write_historical_checkpoint, damage, readable_triad
+):
     slug = "2026-09-13_update-pkg"
     pkg = _create_package(
         tmp_path / ".spec" / "specs",
@@ -726,28 +781,33 @@ def test_route_malformed_checkpoint_keeps_corrupted_recovery(tmp_path, damage, r
         tasks_text="- [ ] Task A\n  - boundary: x\n  - verify: x\n",
         checklist_text="**验收结果**：待修复\n",
     )
-    begin_update_checkpoint(pkg, "追加任务")
-    path = checkpoint_path(pkg)
+    checkpoint_file = write_historical_checkpoint(pkg, "追加任务")
     if damage == "deep-json":
-        path.write_text("[" * 1100 + "0" + "]" * 1100, encoding="utf-8")
+        checkpoint_file.write_text("[" * 1100 + "0" + "]" * 1100, encoding="utf-8")
     else:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = json.loads(checkpoint_file.read_text(encoding="utf-8"))
         if damage == "intent-surrogate":
             document["intent"] = "\ud800"
         else:
             document["snapshot"]["tasks.md"] = "\ud800"
-        path.write_text(json.dumps(document, ensure_ascii=True), encoding="utf-8")
+        checkpoint_file.write_text(json.dumps(document, ensure_ascii=True), encoding="utf-8")
     if not readable_triad:
         (pkg / "tasks.md").unlink()
     before = {p.name: p.read_bytes() for p in pkg.iterdir()}
 
     output = route_for_package(tmp_path, slug)
-    assert "检查点记录损坏，需人工恢复" in output
-    assert "rollback" in output and "complete" in output
+    assert "记录已损坏" in output
+    assert "按 Git 历史恢复三件套后删除 update-checkpoint.json" in output
     state = _route_state(tmp_path, slug)
     assert state["updateCheckpoint"] == "corrupted"
-    assert state["stage"] == "status"
-    assert state["health"] == "阻塞"
+    if readable_triad:
+        # Readable triad: advisory semantics — routing proceeds, health 风险.
+        assert state["stage"] == "run"
+        assert state["health"] == "风险"
+    else:
+        # Unreadable triad: honest recovery render — progress is unknown.
+        assert state["stage"] == "status"
+        assert state["health"] == "阻塞"
     for output_format in ("markdown", "json"):
         result = _run_route(tmp_path, slug, output_format)
         assert result.returncode == 0, result.stderr
@@ -756,9 +816,9 @@ def test_route_malformed_checkpoint_keeps_corrupted_recovery(tmp_path, damage, r
         if output_format == "json":
             assert json.loads(result.stdout) == state
         else:
-            assert "检查点记录损坏，需人工恢复" in result.stdout
-            assert "rollback" in result.stdout and "complete" in result.stdout
-        assert {p.name: p.read_bytes() for p in pkg.iterdir()} == before
+            assert "记录已损坏" in result.stdout
+            assert "按 Git 历史恢复三件套后删除 update-checkpoint.json" in result.stdout
+    assert {p.name: p.read_bytes() for p in pkg.iterdir()} == before
 
 
 # -- 5.4 route errors must block the run stage, not surface only at check/done.
@@ -882,7 +942,9 @@ ONE_COMPLETED_TASK = "## 实现\n- [x] Task A\n  - boundary: x\n  - verify: x\n"
 
 
 @pytest.mark.parametrize("checkpoint_state", ["active", "corrupted"])
-def test_report_overview_projects_update_checkpoint_as_blocked(tmp_path, checkpoint_state):
+def test_report_overview_projects_historical_checkpoint_as_risk(
+    tmp_path, checkpoint_state, write_historical_checkpoint
+):
     slug = f"2026-09-22_fix-status-checkpoint-{checkpoint_state}"
     pkg = _create_package(
         tmp_path / ".spec" / "specs",
@@ -891,12 +953,12 @@ def test_report_overview_projects_update_checkpoint_as_blocked(tmp_path, checkpo
         tasks_text=ONE_COMPLETED_TASK,
         checklist_text=COMPLETE_CHECKLIST,
     )
-    begin_update_checkpoint(pkg, "修复状态投影")
+    checkpoint_file = write_historical_checkpoint(pkg, "修复状态投影")
     if checkpoint_state == "corrupted":
-        checkpoint_path(pkg).write_text("{ bad json", encoding="utf-8")
+        checkpoint_file.write_text("{ bad json", encoding="utf-8")
 
     route_state = _route_state(tmp_path, slug)
-    assert route_state["health"] == "阻塞"
+    assert route_state["health"] == "风险"
     proc = subprocess.run(
         [sys.executable, str(REPORT_SCRIPT), "--root", str(tmp_path), "--view", "status"],
         capture_output=True,
@@ -905,18 +967,22 @@ def test_report_overview_projects_update_checkpoint_as_blocked(tmp_path, checkpo
     )
     assert proc.returncode == 0, proc.stderr
     assert "update checkpoint" in proc.stdout
-    assert "阻塞" in proc.stdout
     assert "继续推进当前项目任务" not in proc.stdout
+    attention = proc.stdout.split("## 需要关注")[1].split("## 接下来")[0]
+    assert "存在历史遗留 update checkpoint" in attention
+    next_step = proc.stdout.split("## 接下来")[-1]
+    assert "处理历史遗留 update checkpoint" in next_step
+    assert "删除 update-checkpoint.json" in next_step
+    assert "rollback" not in next_step and "complete 确认" not in next_step
     if checkpoint_state == "corrupted":
-        assert "需人工恢复" in proc.stdout.split("## 接下来")[-1]
-        assert "rollback" not in proc.stdout.split("## 接下来")[-1]
-    else:
-        assert "rollback" in proc.stdout.split("## 接下来")[-1]
+        assert "记录已损坏" in next_step
 
 
 @pytest.mark.parametrize("checkpoint_state", ["active", "corrupted"])
-@pytest.mark.parametrize("missing_member", ["spec.md", "tasks.md", "checklist.md"])
-def test_report_overview_discovers_incomplete_checkpoint_package(tmp_path, checkpoint_state, missing_member):
+@pytest.mark.parametrize("missing_member", ["spec.md", "tasks.md"])
+def test_report_overview_discovers_incomplete_checkpoint_package(
+    tmp_path, checkpoint_state, missing_member, write_historical_checkpoint
+):
     slug = f"2026-09-22_fix-status-discovery-{checkpoint_state}-{missing_member[:-3]}"
     pkg = _create_package(
         tmp_path / ".spec" / "specs",
@@ -925,9 +991,9 @@ def test_report_overview_discovers_incomplete_checkpoint_package(tmp_path, check
         tasks_text=ONE_COMPLETED_TASK,
         checklist_text=COMPLETE_CHECKLIST,
     )
-    begin_update_checkpoint(pkg, "修复状态投影")
+    checkpoint_file = write_historical_checkpoint(pkg, "修复状态投影")
     if checkpoint_state == "corrupted":
-        checkpoint_path(pkg).write_text("{ bad json", encoding="utf-8")
+        checkpoint_file.write_text("{ bad json", encoding="utf-8")
     (pkg / missing_member).unlink()
 
     proc = subprocess.run(
@@ -944,7 +1010,9 @@ def test_report_overview_discovers_incomplete_checkpoint_package(tmp_path, check
 
 
 @pytest.mark.parametrize("checkpoint_state", ["active", "corrupted"])
-def test_report_single_status_projects_readable_checkpoint_as_blocked(tmp_path, checkpoint_state):
+def test_report_single_status_projects_historical_checkpoint_as_risk(
+    tmp_path, checkpoint_state, write_historical_checkpoint
+):
     slug = f"2026-09-22_fix-status-single-checkpoint-{checkpoint_state}"
     pkg = _create_package(
         tmp_path / ".spec" / "specs",
@@ -953,9 +1021,9 @@ def test_report_single_status_projects_readable_checkpoint_as_blocked(tmp_path, 
         tasks_text=ONE_COMPLETED_TASK,
         checklist_text=COMPLETE_CHECKLIST,
     )
-    begin_update_checkpoint(pkg, "修复状态投影")
+    checkpoint_file = write_historical_checkpoint(pkg, "修复状态投影")
     if checkpoint_state == "corrupted":
-        checkpoint_path(pkg).write_text("{ bad json", encoding="utf-8")
+        checkpoint_file.write_text("{ bad json", encoding="utf-8")
 
     proc = subprocess.run(
         [
@@ -977,15 +1045,16 @@ def test_report_single_status_projects_readable_checkpoint_as_blocked(tmp_path, 
     assert "存在未完成 update checkpoint" in proc.stdout
     assert "整理交付结果并完成归档" not in proc.stdout
     next_step = proc.stdout.split("## 接下来")[-1]
+    assert "处理历史遗留 update checkpoint" in next_step
+    assert "rollback" not in next_step
     if checkpoint_state == "corrupted":
-        assert "需人工恢复" in next_step
-        assert "rollback" not in next_step
-    else:
-        assert "rollback" in next_step
+        assert "记录已损坏" in proc.stdout.split("## 接下来")[0]
 
 
 @pytest.mark.parametrize("checkpoint_state", ["active", "corrupted"])
-def test_report_single_status_recovers_when_checkpoint_triad_is_unreadable(tmp_path, checkpoint_state):
+def test_report_single_status_recovers_when_checkpoint_triad_is_unreadable(
+    tmp_path, checkpoint_state, write_historical_checkpoint
+):
     slug = f"2026-09-22_fix-status-unreadable-{checkpoint_state}"
     pkg = _create_package(
         tmp_path / ".spec" / "specs",
@@ -994,9 +1063,9 @@ def test_report_single_status_recovers_when_checkpoint_triad_is_unreadable(tmp_p
         tasks_text=ONE_COMPLETED_TASK,
         checklist_text=COMPLETE_CHECKLIST,
     )
-    begin_update_checkpoint(pkg, "修复状态投影")
+    checkpoint_file = write_historical_checkpoint(pkg, "修复状态投影")
     if checkpoint_state == "corrupted":
-        checkpoint_path(pkg).write_text("{ bad json", encoding="utf-8")
+        checkpoint_file.write_text("{ bad json", encoding="utf-8")
     (pkg / "tasks.md").unlink()
 
     proc = subprocess.run(

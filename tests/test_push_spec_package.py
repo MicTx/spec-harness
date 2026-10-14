@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import http.server
+import importlib.util
 import os
 import subprocess
 import sys
@@ -13,6 +14,14 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "push_spec_package.py"
 TEST_SPEC_SLUG = "2026-07-13_fix-push-fixture"
+
+
+def load_push_module():
+    """Import scripts/push_spec_package.py as a module for unit tests."""
+    module_spec = importlib.util.spec_from_file_location("push_spec_package_under_test", SCRIPT)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    return module
 
 
 def write_archived_spec(repo: Path, slug: str = TEST_SPEC_SLUG) -> Path:
@@ -901,8 +910,7 @@ def test_push_repairs_gitea_hooks_and_reruns_plan(tmp_path, gitea_stub):
         "--repair-gitea-hooks",
         "--gitea-url",
         gitea_url,
-        "--gitea-token",
-        "admin-token",
+        env={**os.environ, "SPEC_GITEA_TOKEN": "admin-token"},
     )
 
     assert result.returncode == 0, result.stderr
@@ -923,6 +931,8 @@ def test_push_repair_failure_fails_closed_and_keeps_branch(tmp_path, gitea_stub)
     remote = Path(git(repo, "remote", "get-url", "origin"))
     _write_stateful_broken_hook(remote, state_file)
     _GiteaStubHandler.fail_task = "sync_repo_tags"
+    token_file = tmp_path / "gitea-token"
+    token_file.write_text("admin-token\n", encoding="utf-8")
 
     result = run_push(
         repo,
@@ -933,8 +943,7 @@ def test_push_repair_failure_fails_closed_and_keeps_branch(tmp_path, gitea_stub)
         "--repair-gitea-hooks",
         "--gitea-url",
         gitea_url,
-        "--gitea-token",
-        "admin-token",
+        env={**os.environ, "SPEC_GITEA_TOKEN_FILE": str(token_file)},
     )
 
     assert result.returncode != 0
@@ -967,6 +976,97 @@ def test_push_repair_without_token_fails_closed(tmp_path, gitea_stub):
     assert "credentials are incomplete" in result.stderr
     assert _GiteaStubHandler.requests == []
     assert git(repo, "branch", "--show-current") == branch
+
+
+def test_push_gitea_token_flag_is_refused_without_api_calls(tmp_path, gitea_stub):
+    """AUD-22 (planning F5): --gitea-token is refused loudly before any work."""
+    gitea_url, _state_file = gitea_stub
+    repo, branch = init_repo(tmp_path)
+
+    result = run_push(
+        repo,
+        "--branch",
+        branch,
+        "--main-branch",
+        "main",
+        "--repair-gitea-hooks",
+        "--gitea-url",
+        gitea_url,
+        "--gitea-token",
+        "admin-token",
+    )
+
+    assert result.returncode != 0
+    assert "--gitea-token is deprecated and refused" in result.stderr
+    assert "SPEC_GITEA_TOKEN" in result.stderr
+    assert "SPEC_GITEA_TOKEN_FILE" in result.stderr
+    # Refusal happens at argument parsing: no push, no Gitea admin API call.
+    assert _GiteaStubHandler.requests == []
+
+
+class TestGiteaTokenCarriers:
+    """AUD-22 (planning F5): token resolution via env/file, never argv."""
+
+    def test_token_file_resolves_stripped_value(self, tmp_path, monkeypatch):
+        push_module = load_push_module()
+        token_file = tmp_path / "token"
+        token_file.write_text("  tok-123\n", encoding="utf-8")
+        monkeypatch.delenv("SPEC_GITEA_TOKEN", raising=False)
+        monkeypatch.setenv("SPEC_GITEA_TOKEN_FILE", str(token_file))
+
+        assert push_module._resolve_gitea_token() == "tok-123"
+
+    def test_env_token_wins_over_file(self, tmp_path, monkeypatch):
+        push_module = load_push_module()
+        token_file = tmp_path / "token"
+        token_file.write_text("file-token", encoding="utf-8")
+        monkeypatch.setenv("SPEC_GITEA_TOKEN", "env-token")
+        monkeypatch.setenv("SPEC_GITEA_TOKEN_FILE", str(token_file))
+
+        assert push_module._resolve_gitea_token() == "env-token"
+
+    def test_missing_token_file_fails_loud(self, monkeypatch):
+        push_module = load_push_module()
+        monkeypatch.delenv("SPEC_GITEA_TOKEN", raising=False)
+        monkeypatch.setenv("SPEC_GITEA_TOKEN_FILE", "/nonexistent/spec-token")
+
+        with pytest.raises(push_module.PushError, match="missing file"):
+            push_module._resolve_gitea_token()
+
+    def test_unreadable_token_file_fails_loud(self, tmp_path, monkeypatch):
+        push_module = load_push_module()
+        # A directory path fails read_text() with an OSError regardless of
+        # the test user's privileges — deterministic on every host.
+        monkeypatch.delenv("SPEC_GITEA_TOKEN", raising=False)
+        monkeypatch.setenv("SPEC_GITEA_TOKEN_FILE", str(tmp_path))
+
+        with pytest.raises(push_module.PushError, match="not readable"):
+            push_module._resolve_gitea_token()
+
+    def test_empty_token_file_fails_loud(self, tmp_path, monkeypatch):
+        push_module = load_push_module()
+        token_file = tmp_path / "token"
+        token_file.write_text("   \n", encoding="utf-8")
+        monkeypatch.delenv("SPEC_GITEA_TOKEN", raising=False)
+        monkeypatch.setenv("SPEC_GITEA_TOKEN_FILE", str(token_file))
+
+        with pytest.raises(push_module.PushError, match="empty"):
+            push_module._resolve_gitea_token()
+
+    def test_no_carriers_resolve_to_none(self, monkeypatch):
+        push_module = load_push_module()
+        monkeypatch.delenv("SPEC_GITEA_TOKEN", raising=False)
+        monkeypatch.delenv("SPEC_GITEA_TOKEN_FILE", raising=False)
+
+        assert push_module._resolve_gitea_token() is None
+
+    def test_disabled_repair_resolves_no_token(self, monkeypatch):
+        push_module = load_push_module()
+        monkeypatch.setenv("SPEC_GITEA_TOKEN", "env-token")
+
+        settings = push_module.GiteaRepairSettings(enabled=False, base_url=None)
+
+        assert settings.token is None
 
 
 def test_push_without_repair_flag_keeps_legacy_fail_closed(tmp_path, gitea_stub):
@@ -1041,3 +1141,253 @@ class TestSubprocessBoundedness:
 
         monkeypatch.setattr(self.module.subprocess, "run", hung)
         self.module.run_best_effort(tmp_path, ["git", "push", "--delete", "origin", "x"])  # no raise
+
+
+# -- F9 (AUD-06): footer-attribution interval warnings (observation period) --
+
+OLD_SPEC_SLUG = "2026-08-01_legacy-audit-fixture"
+
+
+def _write_summary_with_interval(package: Path, slug: str, base: str, head: str) -> None:
+    (package / "completion-summary.md").write_text(
+        f"""# {slug} - 完成总结
+## 交付结论
+- 完成
+## 假设回顾
+- verified
+## 交付范围
+- delivered
+## 简化决策
+- simple
+## 变更边界
+- fixture
+## 验证证据
+- pytest
+## 门禁证据
+- passed
+## Git 记录
+- 提交：pending local commit
+- 提交区间：{base}..{head}
+- 推送：not-run
+## 问题处置
+```json
+{{"version":1,"issues":[]}}
+```
+""",
+        encoding="utf-8",
+    )
+
+
+def _footer_push_sandbox(tmp_path: Path) -> tuple[Path, str, str]:
+    """Bare remote + clone whose main already archives OLD_SPEC_SLUG.
+
+    Returns (repo, initial_sha, main_tip). The archived summary records a
+    提交区间 anchored at the initial commit (base == head == the pre-archive
+    tip, both shas known before the archive commit lands — the shape an
+    archive recorded at archive time produces on this history).
+    """
+    remote = tmp_path / "remote.git"
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    subprocess.run(["git", "clone", str(remote), str(repo)], check=True, capture_output=True)
+    git(repo, "config", "user.email", "test@example.com")
+    git(repo, "config", "user.name", "Spec Test")
+    (repo / "README.md").write_text("main\n", encoding="utf-8")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "initial")
+    ancient = git(repo, "rev-parse", "HEAD")
+    package = write_archived_spec(repo, OLD_SPEC_SLUG)
+    _write_summary_with_interval(package, OLD_SPEC_SLUG, ancient, ancient)
+    git(repo, "add", ".spec")
+    git(repo, "commit", "-m", "chore(spec): archive old fixture", "-m", f"Spec: {OLD_SPEC_SLUG}")
+    git(repo, "branch", "-M", "main")
+    git(repo, "push", "-u", "origin", "main")
+    return repo, ancient, git(repo, "rev-parse", "HEAD")
+
+
+def test_push_warns_when_footer_cites_archive_before_window(tmp_path):
+    # EXP-04(c) replay: a code-only commit whose Spec footer cites an archived
+    # package delivered long before this branch's window. Observation period:
+    # the push succeeds and stderr names the evidence triple.
+    repo, ancient, main_tip = _footer_push_sandbox(tmp_path)
+    git(repo, "checkout", "-b", "spec/sneaky-reuse")
+    (repo / "sneaky.py").write_text("import os\nos.system('echo pwned')\n", encoding="utf-8")
+    git(repo, "add", "sneaky.py")
+    git(repo, "commit", "-m", "feat: innocent change", "-m", f"Spec: {OLD_SPEC_SLUG}")
+    result = run_push(repo, "--branch", "spec/sneaky-reuse")
+    assert result.returncode == 0, result.stdout + result.stderr
+    combined = result.stdout + result.stderr
+    assert "spec gate warning: footer attribution cites an archive delivered before this push window" in combined
+    assert f"- slug: {OLD_SPEC_SLUG}" in combined
+    assert f"- archive commit range: {ancient}..{ancient}" in combined
+    assert "- push window base:" in combined
+    assert "hard failure" in combined
+
+
+def test_push_footer_multi_theme_multi_package_delivery_no_warning(tmp_path):
+    # Retro-pack / multi-theme shape: every theme package is archived on the
+    # branch BEFORE the push (commands.md packing path), so the delivery runs
+    # the touched-package channel — several packages, several code commits,
+    # zero interval warnings.
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    subprocess.run(["git", "clone", str(remote), str(repo)], check=True, capture_output=True)
+    git(repo, "config", "user.email", "test@example.com")
+    git(repo, "config", "user.name", "Spec Test")
+    (repo / "README.md").write_text("main\n", encoding="utf-8")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "initial")
+    git(repo, "branch", "-M", "main")
+    git(repo, "push", "-u", "origin", "main")
+    git(repo, "checkout", "-b", "spec/multi-theme")
+    for slug in ("2026-08-01_theme-one", "2026-08-02_theme-two"):
+        write_archived_spec(repo, slug)
+        git(repo, "add", ".spec")
+        git(repo, "commit", "-m", f"chore(spec): archive {slug}", "-m", f"Spec: {slug}")
+        (repo / f"{slug}.txt").write_text("theme work\n", encoding="utf-8")
+        git(repo, "add", f"{slug}.txt")
+        git(repo, "commit", "-m", f"feat: {slug}", "-m", f"Spec: {slug}")
+    result = run_push(repo, "--branch", "spec/multi-theme")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "spec gate warning" not in result.stdout + result.stderr
+
+
+def test_push_footer_cites_legacy_archive_without_interval_no_warning(tmp_path):
+    # Pre-F9 history: an archive without the interval line stays silent.
+    repo, _ancient, _main_tip = _footer_push_sandbox(tmp_path)
+    summary_path = repo / ".spec" / "specs" / "archive" / OLD_SPEC_SLUG / "completion-summary.md"
+    lines = [
+        line for line in summary_path.read_text(encoding="utf-8").splitlines() if not line.startswith("- 提交区间：")
+    ]
+    summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    git(repo, "add", ".spec")
+    git(repo, "commit", "-m", "chore(spec): drop interval line", "-m", f"Spec: {OLD_SPEC_SLUG}")
+    git(repo, "push", "origin", "main")
+    git(repo, "checkout", "-b", "spec/cite-legacy")
+    (repo / "legacy.txt").write_text("cites legacy archive\n", encoding="utf-8")
+    git(repo, "add", "legacy.txt")
+    git(repo, "commit", "-m", "fix: legacy citation", "-m", f"Spec: {OLD_SPEC_SLUG}")
+    result = run_push(repo, "--branch", "spec/cite-legacy")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "spec gate warning" not in result.stdout + result.stderr
+
+
+def test_push_touched_channel_multi_commit_delivery_no_warning(tmp_path):
+    # The touched-package channel (archive + code on the branch) never enters
+    # the footer interval judge: same package, multiple commits, no warnings.
+    repo, _remote = tmp_path / "repo", None
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    subprocess.run(["git", "clone", str(remote), str(repo)], check=True, capture_output=True)
+    git(repo, "config", "user.email", "test@example.com")
+    git(repo, "config", "user.name", "Spec Test")
+    (repo / "README.md").write_text("main\n", encoding="utf-8")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "initial")
+    git(repo, "branch", "-M", "main")
+    git(repo, "push", "-u", "origin", "main")
+    git(repo, "checkout", "-b", "spec/multi-commit")
+    write_archived_spec(repo)
+    git(repo, "add", ".spec")
+    git(repo, "commit", "-m", "chore(spec): archive fixture", "-m", f"Spec: {TEST_SPEC_SLUG}")
+    for name in ("part-one.txt", "part-two.txt"):
+        (repo / name).write_text("delivery\n", encoding="utf-8")
+        git(repo, "add", name)
+        git(repo, "commit", "-m", f"feat: {name}", "-m", f"Spec: {TEST_SPEC_SLUG}")
+    result = run_push(repo, "--branch", "spec/multi-commit")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "spec gate warning" not in result.stdout + result.stderr
+
+
+def test_footer_interval_warnings_judge(tmp_path):
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from check_all_spec_packages import footer_interval_warnings, render_footer_interval_warnings
+
+    repo, ancient, main_tip = _footer_push_sandbox(tmp_path)
+    git(repo, "checkout", "-qb", "spec/judge")
+    (repo / "judge.txt").write_text("judge\n", encoding="utf-8")
+    git(repo, "add", "judge.txt")
+    git(repo, "commit", "-m", "feat: judge probe", "-m", f"Spec: {OLD_SPEC_SLUG}")
+    head = git(repo, "rev-parse", "HEAD")
+
+    # Ancient base strictly older than the window base: warned with evidence.
+    warnings = footer_interval_warnings(repo, [OLD_SPEC_SLUG], revision=head, window_base=main_tip, specs_dirs=[])
+    assert len(warnings) == 1
+    assert warnings[0].slug == OLD_SPEC_SLUG
+    assert warnings[0].base == ancient
+    assert warnings[0].head == ancient
+    rendered = render_footer_interval_warnings(warnings)
+    assert OLD_SPEC_SLUG in rendered and ancient in rendered and main_tip in rendered
+
+    # Window base equal to the interval base: this window delivered it.
+    assert footer_interval_warnings(repo, [OLD_SPEC_SLUG], revision=head, window_base=ancient, specs_dirs=[]) == []
+
+    # Not yet archived at the revision: lifecycle owned elsewhere, silent.
+    missing = footer_interval_warnings(repo, ["2099-01-01_missing"], revision=head, window_base=main_tip, specs_dirs=[])
+    assert missing == []
+
+    # Malformed window base: skip honestly instead of guessing.
+    assert footer_interval_warnings(repo, [OLD_SPEC_SLUG], revision=head, window_base="not-a-sha", specs_dirs=[]) == []
+
+    # No slugs: nothing to judge.
+    assert footer_interval_warnings(repo, [], revision=head, window_base=main_tip, specs_dirs=[]) == []
+
+
+# -- F11 lite channel: `Spec: none (<reason>)` --
+
+
+def _none_channel_repo(tmp_path: Path, *, active_package: bool) -> tuple[Path, str]:
+    repo, branch = init_repo(tmp_path, active_baseline="2026-07-13_fix-active" if active_package else None)
+    git(repo, "checkout", "-B", "spec/lite", "main")
+    (repo / "typo.txt").write_text("typo fix\n", encoding="utf-8")
+    git(repo, "add", "typo.txt")
+    git(repo, "commit", "-m", "fix: trivial typo", "-m", "Spec: none (typo fix with test)")
+    return repo, "spec/lite"
+
+
+def test_push_lite_channel_accepts_none_footer_without_active_package(tmp_path):
+    repo, branch = _none_channel_repo(tmp_path, active_package=False)
+
+    result = run_push(repo, "--branch", branch, "--main-branch", "main")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "lite-channel attribution" in result.stdout
+    assert "none (typo fix with test)" in result.stdout
+
+
+def test_push_lite_channel_refuses_none_footer_without_reason(tmp_path):
+    repo, _ = _none_channel_repo(tmp_path, active_package=False)
+    git(repo, "commit", "--allow-empty", "-m", "no reason", "-m", "Spec: none")
+
+    result = run_push(repo, "--branch", "spec/lite", "--main-branch", "main")
+
+    assert result.returncode != 0
+    assert "requires a non-empty reason" in result.stderr
+
+
+def test_push_lite_channel_refuses_when_active_package_exists(tmp_path):
+    repo, branch = _none_channel_repo(tmp_path, active_package=True)
+
+    result = run_push(repo, "--branch", branch, "--main-branch", "main")
+
+    assert result.returncode != 0
+    assert "lite channel refuses" in result.stderr
+    assert "2026-07-13_fix-active" in result.stderr
+
+
+def test_push_lite_channel_mixed_footers_gate_the_slug_commits(tmp_path):
+    repo, _ = _none_channel_repo(tmp_path, active_package=False)
+    git(repo, "checkout", "-B", "spec/mixed", "main")
+    write_archived_spec(repo, TEST_SPEC_SLUG)
+    (repo / "mixed.txt").write_text("mixed\n", encoding="utf-8")
+    git(repo, "add", "mixed.txt", ".spec")
+    git(repo, "commit", "-m", "feat: packaged work", "-m", f"Spec: {TEST_SPEC_SLUG}")
+    (repo / "more.txt").write_text("more\n", encoding="utf-8")
+    git(repo, "add", "more.txt")
+    git(repo, "commit", "-m", "chore: trivial", "-m", "Spec: none (follow-up tweak)")
+
+    result = run_push(repo, "--branch", "spec/mixed", "--main-branch", "main")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "changed-package attribution" in result.stdout or TEST_SPEC_SLUG in result.stdout

@@ -11,7 +11,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from check_spec_package import compute_gate_results, gate_failure_details
-from spec_package_support import clarification_gaps, extract_pending_questions
+from spec_package_support import (
+    clarification_gaps,
+    extract_pending_questions,
+    spec_format_version,
+)
 
 SLUG = "2026-09-13_fix-address-matching"
 
@@ -55,16 +59,11 @@ def _make_checklist(passed: bool = True) -> str:
     )
 
 
-REAL_MAP_CLOSURE = (
-    "~~地图服务允许源待部署方提供~~ → 2026-09-13 用户追加地图多坐标系授权（见第 11 节）："
-    "不再阻塞前端地图能力；`MAP_SERVICE_ALLOWLIST` 仍为部署侧配置，"
-    "未配置时管理/发现接口如实报 503/错误，内置底图与运行时模板不受影响。"
-)
-
-# Verbatim reported address-matching records; no access to the user package.
+# Verbatim reported address-matching records that close under the generic
+# legacy grammar; the case-specific map closure (AUD-10) is gone from the
+# engine and is locked as pending in test_case_specific_closure_phrases.
 CLOSED_RECORDS = (
     "~~待授权：是否更新旧 NLP 镜像~~ → 已于2026-09-13用户授权（见第10节），已执行完成。",
-    REAL_MAP_CLOSURE,
     "本轮 Docker 前端自身方案无待决策项。",
 )
 
@@ -89,21 +88,11 @@ CLOSED_VARIANTS = (
     RSAI_NO_BLOCKING.replace("（无需阻塞）：", "(无需阻塞):"),
     "无（无需阻塞）:采用保守默认值。",
     "无(无需阻塞)：采用保守默认值。",
-    "~~地图服务允许源待部署方提供~~ → 用户追加授权：不再阻塞前端地图能力；"
-    "MAP_SERVICE_ALLOWLIST仍为部署侧配置，未配置时相关接口如实报503。",
-    "~~旧问题~~ → 2026-09-13 用户追加授权：不再阻塞前端地图能力。",
-    "~~旧问题~~ → 用户追加地图多坐标系授权：不再阻塞前端地图能力。",
-    "~~旧问题~~ → 用户追加授权（见第 11 节）：不再阻塞前端地图能力。",
-    "~~旧问题~~ -> 用户追加地图多坐标系授权(见第11节):不再阻塞前端地图能力。",
-    REAL_MAP_CLOSURE.replace("503/错误", "503"),
-    REAL_MAP_CLOSURE.replace("503/错误", "错误"),
-    REAL_MAP_CLOSURE.replace("，内置底图与运行时模板不受影响", ""),
     "~~是否保留旧接口？~~ → 已解决。",
     "~~旧问题~~ -> 已关闭（见第10节）。",
     "~~旧问题~~ → 已执行完成。",
     "~~旧问题~~ → 已解决(本轮沿用旧接口)。",
     "~~旧问题~~ → 已用户授权，已执行完成。",
-    "~~旧问题~~ → 用户追加授权：不再阻塞前端地图能力。",
     "无待决策项。",
     "本轮方案无待确认问题。",
     "无（已澄清，本轮沿用原方案）。",
@@ -119,6 +108,30 @@ CLOSED_VARIANTS = (
     "none",
     "nothing pending",
     "无",
+)
+
+# The removed case-specific closure (AUD-10): these variants once closed via
+# a bespoke map-scope authorization phrase hard-coded in the engine. The
+# phrase is deleted; every variant now honestly stays pending under legacy,
+# and the v2 checkbox model is the way to close such questions.
+REAL_MAP_CLOSURE = (
+    "~~地图服务允许源待部署方提供~~ → 2026-09-13 用户追加地图多坐标系授权（见第 11 节）："
+    "不再阻塞前端地图能力；`MAP_SERVICE_ALLOWLIST` 仍为部署侧配置，"
+    "未配置时管理/发现接口如实报 503/错误，内置底图与运行时模板不受影响。"
+)
+
+CASE_CLOSED_VARIANTS = (
+    REAL_MAP_CLOSURE,
+    REAL_MAP_CLOSURE.replace("2026-09-13 ", ""),
+    REAL_MAP_CLOSURE.replace("地图多坐标系", ""),
+    REAL_MAP_CLOSURE.replace("503/错误", "503"),
+    REAL_MAP_CLOSURE.replace("503/错误", "错误"),
+    REAL_MAP_CLOSURE.replace("，内置底图与运行时模板不受影响", ""),
+    "~~地图服务允许源待部署方提供~~ → 用户追加授权：不再阻塞前端地图能力；"
+    "MAP_SERVICE_ALLOWLIST仍为部署侧配置，未配置时相关接口如实报503。",
+    "~~旧问题~~ → 2026-09-13 用户追加授权：不再阻塞前端地图能力。",
+    "~~旧问题~~ → 用户追加授权（见第 11 节）：不再阻塞前端地图能力。",
+    "~~旧问题~~ -> 用户追加地图多坐标系授权(见第11节):不再阻塞前端地图能力。",
 )
 
 PENDING_RECORDS = (
@@ -340,3 +353,101 @@ def test_reported_address_matching_records_in_check(tmp_path, residual):
         assert f"需要确认需求：{residual}" in routed.stdout
     else:
         assert routed.stdout == baseline.stdout
+
+
+# --------------------------------------------------------------------------- #
+# AUD-10: v2 checkbox model, case-phrase deletion, format marker
+# --------------------------------------------------------------------------- #
+
+
+SUPPORT_SOURCE = (Path(__file__).resolve().parent.parent / "scripts" / "spec_package_support.py").read_text(
+    encoding="utf-8"
+)
+
+V2_MARKER = "<!-- spec-format: 2 -->"
+
+
+def v2_spec_with_questions(items: list[str]) -> str:
+    bullets = "".join(f"- {item}\n" for item in items)
+    return (
+        _make_spec()
+        .replace(
+            "# 地址匹配 - 项目范围\n",
+            f"# 地址匹配 - 项目范围\n\n{V2_MARKER}\n",
+        )
+        .replace("### 2.3 待确认问题\n- 无\n", f"### 2.3 待确认问题\n{bullets}")
+    )
+
+
+def test_format_marker_defaults_to_legacy_and_reads_v2():
+    assert spec_format_version(_make_spec()) == 1
+    assert spec_format_version(v2_spec_with_questions([])) == 2
+    assert spec_format_version("<!--spec-format:2-->") == 2
+
+
+@pytest.mark.parametrize(
+    "item",
+    (
+        "[x] 是否兼容 3.8 → 已确认不需要",
+        "[X] 是否兼容 3.8",
+        "[x] 不需要兼容 3.8",  # audit sample, structured: tick alone closes
+    ),
+)
+def test_v2_ticked_question_is_closed(item):
+    assert extract_pending_questions(v2_spec_with_questions([item])) == []
+    results = compute_gate_results(v2_spec_with_questions([item]), _make_tasks(), _make_checklist(passed=True))
+    assert results.pending_questions == []
+    assert results.assumptions_ok
+
+
+def test_v2_unticked_question_is_pending_and_keeps_text():
+    spec = v2_spec_with_questions(["[ ] 是否兼容 3.8"])
+    assert extract_pending_questions(spec) == ["是否兼容 3.8"]
+    results = compute_gate_results(spec, _make_tasks(), _make_checklist(passed=True))
+    assert results.pending_questions == ["是否兼容 3.8"]
+    assert not results.assumptions_ok
+
+
+def test_v2_no_pending_declaration_still_closes_section():
+    assert extract_pending_questions(v2_spec_with_questions(["无（结构与判据已收敛）"])) == []
+    assert extract_pending_questions(v2_spec_with_questions(["无"])) == []
+
+
+@pytest.mark.parametrize(
+    "item",
+    (
+        "已确认：不需要兼容 3.8",  # free text is malformed in v2, never phrase-closed
+        "~~旧问题~~ → 已执行完成。",  # legacy strike syntax is not the v2 model
+        "尚未发现阻塞问题",
+    ),
+)
+def test_v2_non_checkbox_bullets_stay_pending(item):
+    assert extract_pending_questions(v2_spec_with_questions([item])) == [item]
+
+
+def test_v2_mixed_section_reports_only_unticked_questions_in_order():
+    spec = v2_spec_with_questions(["[x] 问题甲 → 结论甲", "[ ] 问题乙", "无（补充说明）", "[ ] 问题丙 → 结论仍空"])
+    assert extract_pending_questions(spec) == ["问题乙", "问题丙 → 结论仍空"]
+
+
+@pytest.mark.parametrize("item", CASE_CLOSED_VARIANTS)
+def test_case_specific_closure_phrases_no_longer_close(item):
+    """AUD-10: the deleted map-scope phrase is gone; legacy stays honest.
+
+    These were closed only by case-specific phrases in the engine; the
+    phrases are deleted, so under legacy every variant stays pending. The
+    historical archives that used them remain valid through the
+    baseline-equivalence exemption, and new packages close via v2 ticks.
+    """
+    assert extract_pending_questions(spec_with_questions([item])) == [item]
+
+
+def test_v2_checkbox_is_the_structured_way_to_close_map_question():
+    unticked, ticked = "[ ] 是否允许地图多坐标系", "[x] 是否允许地图多坐标系 → 用户已授权"
+    assert extract_pending_questions(v2_spec_with_questions([unticked])) == ["是否允许地图多坐标系"]
+    assert extract_pending_questions(v2_spec_with_questions([ticked])) == []
+
+
+def test_case_specific_phrases_are_gone_from_source():
+    assert "用户追加" not in SUPPORT_SOURCE
+    assert "仍为部署侧配置" not in SUPPORT_SOURCE

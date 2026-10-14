@@ -7,28 +7,25 @@ This page explains where a fact belongs after a task starts. The rule is simple:
 ```text
 .spec/
 ├── specs/
-│   ├── YYYY-MM-DD_slug/          # active trio
+│   ├── YYYY-MM-DD_slug/          # active package (spec.md + tasks.md)
 │   │   ├── spec.md
 │   │   ├── tasks.md
-│   │   ├── checklist.md
+│   │   ├── checklist.md          # optional: legacy v1 packages only
 │   │   ├── handoff.md            # optional session-boundary handoff log
+│   │   ├── update-checkpoint.json # optional: historical artifact of the retired checkpoint mechanism; new updates never produce one
 │   │   └── orchestration/        # optional orchestration assets: script + run ledger
 │   └── archive/
-│       └── YYYY-MM-DD_slug/      # archived quartet
+│       └── YYYY-MM-DD_slug/      # archived record (+ completion-summary.md)
 │           ├── spec.md
 │           ├── tasks.md
-│           ├── checklist.md
+│           ├── checklist.md      # optional: legacy v1 archives
 │           └── completion-summary.md
 ├── docs/
 │   └── YYYY-MM-DD_slug_topic.md
 ├── autoplan/
-│   ├── chain.json               # latest autoplan pass-chain state (pass, kind, target doc)
-│   ├── spawns.jsonl             # append-only pass-spawn audit log
-│   └── chain.lock               # transient single-chain lock (flock)
+│   └── chain.json               # tracked pass-chain summary (pass, kind, target doc; volatile-free)
 ├── autorun/
-│   ├── chain.json               # latest autorun chain state (round, host, plan docs)
-│   ├── spawns.jsonl             # append-only spawn audit log
-│   └── chain.lock               # transient single-chain lock (flock)
+│   └── chain.json               # tracked chain summary (round, host, plan docs; volatile-free)
 ├── artifacts/
 └── architecture/
     ├── module-index.md
@@ -36,14 +33,21 @@ This page explains where a fact belongs after a task starts. The rule is simple:
     └── module-dag.mmd
 ```
 
+Per-machine chain runtime state lives outside the tracked tree, under `.git/spec-chain/<chain>/` for each chain (`autorun`, `autoplan`): `volatile.json` (the spawn-moment facts — `prev_tty`, `window_recycle`), `chain.lock`, `spawns.jsonl`, `events.jsonl`. It is untracked by construction, machine-local, and never archived or plan-synced; a fresh clone starts with an empty runtime tree and the first status/spawn migrates any legacy files found beside the summary.
+
 - Active packages live only at the `.spec/specs/` root; completed packages move wholesale into `archive/`.
 - A task package has at least the trio; an archive must additionally have `completion-summary.md`.
 - The optional `handoff.md` member is the session-boundary handoff document (`references/handoff.md`): a generated snapshot head plus an append-only entry log, validated by the check gate when present, closed with a terminal entry at `done`, and archived wholesale with the package.
 - An active package may additionally carry `orchestration/` — the workflow script and the run
   ledger (`runs.md`) — written by the main session; it archives wholesale with the package.
+- A package may carry a historical `update-checkpoint.json` from the retired update-checkpoint
+  mechanism: read-only recognized by `scripts/update_checkpoint.py status`, resolved by
+  Git-history recovery plus file deletion (`references/stages/update.md`). New updates never
+  produce one — update rollback safety is the Git WIP commit — and the file archives wholesale
+  with the package as history.
 - `.spec/docs/` holds reusable knowledge only, not task streams; it lives inside the executing project's repository and never mirrors into a global carrier.
-- `.spec/autoplan/` is runtime pass-chain state for `/spec:autoplan` (`scripts/autoplan_spawn.py`): the latest state in `chain.json`, an append-only audit in `spawns.jsonl`, and the transient `chain.lock`. Like `.spec/autorun/` it is never archived with a package.
-- `.spec/autorun/` is runtime chain state for `/spec:autorun` (`scripts/autorun_spawn.py`): the latest state in `chain.json`, an append-only audit in `spawns.jsonl`, and the transient `chain.lock`. It is never archived; each autorun-planned package carries a final plan-sync task whose boundary covers the planning documents and this directory, so checkmarks and audit land on `main` with the round's push and the tree is clean when the next round's `/spec:new` runs.
+- `.spec/autoplan/` holds the tracked pass-chain summary for `/spec:autoplan` (`scripts/autoplan_spawn.py`): `chain.json` only, volatile-free. The per-machine runtime (volatile state, `spawns.jsonl` audit, `events.jsonl`, `chain.lock`) lives under `.git/spec-chain/autoplan/` and is never archived with a package.
+- `.spec/autorun/` holds the tracked chain summary for `/spec:autorun` (`scripts/autorun_spawn.py`): `chain.json` only, volatile-free, never archived. The per-machine runtime (volatile state, `spawns.jsonl` audit, `events.jsonl`, `chain.lock`) lives under `.git/spec-chain/autorun/`. Each autorun-planned package carries a final plan-sync task whose boundary covers the planning documents and this summary, so checkmarks and the chain summary land on `main` with the round's push and the tree is clean when the next round's `/spec:new` runs — while the round's tty/window/pid details stay machine-local and out of every commit.
 - The planning-document tree (the `.spec/plans/` root: index `.spec/plans/README.md`, single-round `<YYYY-MM-DD>_<verb>-<object>.md` plans, multi-round `<slug>/` clusters holding `master.md` plus `NN-<slug>.md` phase details; delivered or retired units move to `.spec/plans/archive/` under the same name) is project content produced or reconciled by `/spec:autoplan` (`scripts/autoplan_gate.py`, pass chain via `scripts/autoplan_spawn.py`): it feeds the autorun chain's feature checkboxes and detail designs, is committed like normal project files, and is never task-package state — `autoplan` writes no `.spec/specs/` package and no `.spec/autorun/` chain state.
 - `.spec/architecture/` is the current module graph and belongs to no single package.
 - `--specs-dir` must be a trusted relative directory under root — never empty, absolute, or containing `..`.

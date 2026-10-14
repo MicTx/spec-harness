@@ -4,6 +4,37 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [0.18.0] - 2026-10-14
+
+### BREAKING
+
+- 无人值守链默认不再提权：worker 继承父会话权限，`--permission-mode bypass` 才显式提权；默认轮数上限恢复为 5（autoplan pass 为 20），`--unbounded` 显式解除；规划特性指纹冻结，链中途新增未勾选特性拒绝接续。
+- Unattended chains no longer escalate by default: the worker inherits the parent session's permissions and `--permission-mode bypass` opts in explicitly; the default round cap returns to 5 (autoplan passes: 20) with `--unbounded` as the explicit opt-out, and a frozen feature-set fingerprint refuses spawns when the plan grows mid-chain.
+- update-checkpoint 机制退役：`/spec:update` 的中断恢复改由 Git WIP 提交承担（历史 checkpoint 文件只读识别不阻断）；`--gitea-token` 旗下线（认证走环境变量/凭据文件）；安装默认只装检测到的宿主并新增 `core/full` 安装 profile；`/spec:goal` 默认停在本地提交、`/spec:organize` 默认只审计。
+- The update-checkpoint mechanism retires in favor of Git WIP commits for mid-flight recovery (historical checkpoint files are detected read-only and never block); the `--gitea-token` flag is gone (auth via environment or credential files); installs default to detected hosts only with new `core/full` profiles; `/spec:goal` stops at the local commit and `/spec:organize` defaults to audit-only.
+
+### Added
+
+- 可执行 verify 证据协议：任务包声明 `evidence: runs` 后，机器任务的 verify 命令由记录器（例如 `spec_verify.py`）真实执行并追加运行记录（例如 `runs.jsonl`，含工作树指纹），check/done 以「最近记录 exit==0 且指纹匹配」判通过——勾选必须真的跑过。
+- Executable-verify evidence: packages declaring `evidence: runs` have machine-task verify commands actually executed and appended to a run log (e.g. `runs.jsonl`, with a worktree fingerprint); check and done pass only on a fresh `exit==0` fingerprint-matched record — a checked box now means a real run.
+- 任务包 v2 格式：成功标准并入 `spec.md`（不再独立 checklist.md）、区块由稳定机器键识别（中英标题与 `<!-- spec:key -->` 锚点三径等价，别名只增不删）、结构化阻塞标记（blocked/blocker）；旧格式包按 legacy 双读，门禁结论不变；归档总结新增「提交区间」交付窗口锚点与 AGENTS.md 增量提议区块。
+- Task-package format v2: success criteria move into `spec.md` (no separate checklist.md), sections resolve by stable machine keys (Chinese/English titles and `<!-- spec:key -->` anchors are equivalent; the alias table only grows), and structured blocked markers ship; legacy packages dual-read with unchanged gate verdicts; archived summaries gain a delivery-window `提交区间` anchor and an AGENTS.md incremental-proposal block.
+
+### Changed
+
+- 阶段契约文档按阶段拆分至 `references/stages/`（命令文档例如 `commands.md` 成为导航索引）；Git 门禁钩子检查器路径只由安装时渲染决定（未渲染模板 fail-closed）；集成分支允许 WIP 提交与交接；链运行时状态移出 Git 追踪。
+- Stage contracts split into `references/stages/` (the command doc, e.g. `commands.md`, becomes a navigation index); gate-hook checker paths come solely from the install-time render (unrendered templates fail closed); integration branches accept WIP commits with handoff; chain runtime state leaves Git tracking.
+
+### Fixed
+
+- 无签名凭据的源码树自动跳过签名并新增 keyless 安装冒烟 CI；测试夹具不再依赖宿主会话环境标记。
+- Keyless checkouts skip signing automatically with a new keyless install-smoke CI; test fixtures no longer depend on host-session environment markers.
+
+### Internal
+
+- 阶段 3 实测基准收官（7 场景 × 5 对照组 × 3 重复，105 真实单元）：全部假完成样本集中于无纪律对照组（2/42 对 0/63），证据纪律在全轴优于或平于旧核心流程——本轮格式与门禁变更由此定向。
+- The stage-3 benchmark closed (7 scenarios × 5 arms × 3 repeats, 105 real units): every false completion landed in the undisciplined arms (2/42 vs 0/63) and the evidence discipline matched or beat the legacy core on every axis — the format and gate changes above are aimed by that data.
+
 ## [0.17.0] - 2026-10-12
 
 ### Fixed

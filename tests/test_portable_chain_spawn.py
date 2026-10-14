@@ -90,8 +90,12 @@ def test_linux_commit_or_rollback(entry, monkeypatch, capsys, failure):
         state = json.loads((chain / "chain.json").read_text())
         assert state["terminal_backend"] == "tmux"
         assert state["tmux_session"] == result["tmux_session"]
-        assert state["window_recycle"]["status"] == "skipped"
+        # F16 step 3: the volatile keys land in the runtime tree, not the summary
+        volatile = json.loads((chain.parent.parent / ".git" / "spec-chain" / chain.name / "volatile.json").read_text())
+        assert volatile["window_recycle"]["status"] == "skipped"
+        assert volatile["prev_tty"] is None
         assert "model_injection" not in state
+        assert "window_recycle" not in state and "prev_tty" not in state
         close_session.assert_not_called()
     open_session.assert_called_once()
 
@@ -167,9 +171,10 @@ def test_failed_launch_keeps_previous_state(entry, monkeypatch, capsys):
     assert module.main(args) == 1
     assert "launch refused" in capsys.readouterr().err
     assert json.loads(state_file.read_text()) == previous
-    assert not (directory / "spawns.jsonl").exists()
+    runtime_dir = directory.parent.parent / ".git" / "spec-chain" / directory.name
+    assert not (runtime_dir / "spawns.jsonl").exists()
     close.assert_called_once()
-    events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+    events = [json.loads(line) for line in (runtime_dir / "events.jsonl").read_text().splitlines()]
     assert {event["kind"] for event in events} == {"refusal_close", "spawn_refusal"}
 
 
@@ -270,7 +275,9 @@ def test_real_entry_tui_and_state_transaction(entry, monkeypatch, capsys, write_
         "time.sleep(30)"
     )
     monkeypatch.setattr(support.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(module, "build_worker_command", lambda *a: [sys.executable, "-c", code, str(evidence), prompt])
+    monkeypatch.setattr(
+        module, "build_worker_command", lambda *a, **k: [sys.executable, "-c", code, str(evidence), prompt]
+    )
     if write_failure:
         monkeypatch.setattr(support, "atomic_write", Mock(side_effect=OSError("disk full")))
     name = None
@@ -284,7 +291,12 @@ def test_real_entry_tui_and_state_transaction(entry, monkeypatch, capsys, write_
         if write_failure:
             assert "disk full" in output.err
             assert not (directory / "chain.json").exists()
-            events = [json.loads(row) for row in (directory / "events.jsonl").read_text().splitlines()]
+            events = [
+                json.loads(row)
+                for row in (directory.parent.parent / ".git" / "spec-chain" / directory.name / "events.jsonl")
+                .read_text()
+                .splitlines()
+            ]
             rollback = next(event for event in events if event["kind"] == "refusal_close")
             name = rollback["tmux_session"]
             assert rollback["cleanup"]["status"] in ("closed", "gone")

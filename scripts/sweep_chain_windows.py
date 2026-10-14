@@ -33,7 +33,19 @@ import chain_spawn_support as support  # noqa: E402  # type: ignore
 
 
 def _chain_dirs(root: Path) -> List[Path]:
-    return [root / ".spec" / "autorun", root / ".spec" / "autoplan"]
+    """Every spawns.jsonl position, runtime tree first, legacy second.
+
+    F16 step 3 moved the audit into ``.git/spec-chain/<chain>/``; a chain
+    that has not been migrated yet (or runs an older script copy) still
+    records under ``.spec/<chain>/``. The union keeps the sweep working
+    across both layouts; duplicates dedupe by tty value.
+    """
+    return [
+        support.chain_runtime_dir(root, "autorun"),
+        support.chain_runtime_dir(root, "autoplan"),
+        root / ".spec" / "autorun",
+        root / ".spec" / "autoplan",
+    ]
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -42,7 +54,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         description="Close dead chain windows (single-tab, idle, tty recorded by a chain spawns row).",
     )
     parser.add_argument(
-        "--root", default=".", help="project root holding .spec/*/spawns.jsonl (default: current directory)"
+        "--root",
+        default=".",
+        help="project root holding the chains' spawns.jsonl (runtime and legacy positions; default: current directory)",
     )
     parser.add_argument(
         "--dry-run",

@@ -695,6 +695,9 @@ def test_doctor_cli_end_to_end_reinstall_claude_commands(isolated_home, tmp_path
     """Full loop: broken claude mount -> --fix reruns install.sh -> stage files exist."""
     skills_dir = isolated_home / ".claude" / "skills"
     install_fake_skill(skills_dir / "spec")
+    # Doctor's command catalog still describes the full 12-stage surface
+    # (profile-aware doctor lands with F16 sub-step 2), so its end-to-end
+    # repair pins INSTALL_PROFILE=full; core is the install default.
     completed = subprocess.run(
         [
             sys.executable,
@@ -707,7 +710,7 @@ def test_doctor_cli_end_to_end_reinstall_claude_commands(isolated_home, tmp_path
         ],
         capture_output=True,
         text=True,
-        env=dict(os.environ),
+        env=dict(os.environ, INSTALL_PROFILE="full"),
     )
     assert "claude.commands" in completed.stdout
     assert (claude_commands_dir() / "spec" / "doctor.md").is_file()
@@ -837,3 +840,125 @@ def test_doctor_requires_runtime_files(tmp_path, missing):
     check = check_by_id(doctor, "skill.layout")
     assert check.status == "fail"
     assert missing in check.detail
+
+
+@requires_git
+def test_project_hooks_missing_hooks_is_warn(tmp_path):
+    """AUD-07: a repository without the disk-truth hooks loses commit/push
+    gate enforcement silently, so the finding is a warning, not an info."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+
+    doctor = Doctor(skill_root=ROOT, project_root=repo)
+    doctor.check_project_hooks(repo.resolve())
+
+    check = check_by_id(doctor, "project.hooks")
+    assert check.status == "warn"
+    assert "未安装磁盘真源 hooks" in check.detail
+
+
+# ---------------------------------------------------------------------------
+# Install-profile awareness (planning F16 sub-step 2, AUD-18)
+# ---------------------------------------------------------------------------
+
+
+def _write_runtime_face(skill: Path, files) -> None:
+    for name in files:
+        path = skill / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("fixture\n", encoding="utf-8")
+
+
+def _core_face_files() -> list:
+    return [name for name in REQUIRED_RUNTIME_FILES if not name.startswith(("agents/", "server/"))]
+
+
+def test_install_profile_defaults_to_full_without_stamp(tmp_path):
+    """Pre-split markers (no profile=) audit as full — existing installs unchanged."""
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / ".spec-skill-install").write_text(
+        "installed_by=spec/install.sh\nsource=/nonexistent\nversion=1.0.0\n", encoding="utf-8"
+    )
+    doctor = Doctor(skill_root=skill, project_root=tmp_path)
+    assert doctor.install_profile() == "full"
+    assert doctor.required_runtime_files() == REQUIRED_RUNTIME_FILES
+    assert doctor.user_stages() == list(Doctor.USER_STAGES)
+
+
+def test_core_marker_selects_core_audit_face(tmp_path):
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / ".spec-skill-install").write_text(
+        "installed_by=spec/install.sh\nsource=/nonexistent\nversion=1.0.0\nprofile=core\n", encoding="utf-8"
+    )
+    doctor = Doctor(skill_root=skill, project_root=tmp_path)
+    assert doctor.install_profile() == "core"
+    face = doctor.required_runtime_files()
+    assert face == tuple(_core_face_files())
+    assert not any(name.startswith(("agents/", "server/")) for name in face)
+    assert doctor.user_stages() == ["new", "run", "check", "done", "push"]
+
+    # A bogus stamp never narrows the audit face silently.
+    (skill / ".spec-skill-install").write_text("installed_by=spec/install.sh\nprofile=bogus\n", encoding="utf-8")
+    assert Doctor(skill_root=skill, project_root=tmp_path).install_profile() == "full"
+
+
+def test_layout_core_face_passes_without_extension_components(tmp_path):
+    """The closed followup from 2026-10-13_add-install-profile: a core install
+    must not be flagged for missing agents/server/slots."""
+    skill = tmp_path / "skill"
+    _write_runtime_face(skill, _core_face_files())
+    (skill / ".spec-skill-install").write_text(
+        "installed_by=spec/install.sh\nsource=/nonexistent\nprofile=core\n", encoding="utf-8"
+    )
+    doctor = Doctor(skill_root=skill, project_root=tmp_path)
+    doctor.check_skill_layout()
+    check = check_by_id(doctor, "skill.layout")
+    assert check.status == "ok"
+    assert "profile=core" in check.detail
+
+    # The same tree without the core stamp still audits as full and fails.
+    (skill / ".spec-skill-install").write_text("installed_by=spec/install.sh\nsource=/nonexistent\n", encoding="utf-8")
+    full_doctor = Doctor(skill_root=skill, project_root=tmp_path)
+    full_doctor.check_skill_layout()
+    full_check = check_by_id(full_doctor, "skill.layout")
+    assert full_check.status == "fail"
+    assert "agents/" in full_check.detail or "server/" in full_check.detail
+
+
+def test_claude_agents_skipped_under_core(isolated_home, monkeypatch):
+    skill = isolated_home / ".claude" / "skills" / "spec"
+    _write_runtime_face(skill, _core_face_files())
+    (skill / ".spec-skill-install").write_text(
+        "installed_by=spec/install.sh\nsource=/nonexistent\nprofile=core\n", encoding="utf-8"
+    )
+    doctor = Doctor(skill_root=skill, project_root=isolated_home)
+    doctor.check_claude_agents()
+    assert all(check.id != "claude.agents" for check in doctor.checks)
+
+
+def test_reinstall_claude_host_preserves_install_profile(isolated_home, monkeypatch):
+    """A markerless reinstall would downgrade a full install to the core
+    default; the repair path must forward the audited profile."""
+    skill = isolated_home / ".claude" / "skills" / "spec"
+    _write_runtime_face(skill, _core_face_files())
+    (skill / ".spec-skill-install").write_text(
+        "installed_by=spec/install.sh\nsource=/nonexistent\nprofile=full\n", encoding="utf-8"
+    )
+    captured: dict = {}
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(argv, **kwargs):
+        captured.update(kwargs.get("env") or {})
+        return FakeCompleted()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    doctor = Doctor(skill_root=skill, project_root=isolated_home)
+    doctor._reinstall_claude_host()  # fixture tree: outcome irrelevant, env is the assertion
+    assert captured.get("INSTALL_PROFILE") == "full"

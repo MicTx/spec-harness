@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -30,8 +31,17 @@ from spec_package_support import (
 
 MAX_SPEC_FILE_BYTES = _spec_support.MAX_SPEC_FILE_BYTES
 
-ACTIVE_REQUIRED_FILES = ("spec.md", "tasks.md", "checklist.md")
-ARCHIVE_REQUIRED_FILES = (*ACTIVE_REQUIRED_FILES, "completion-summary.md")
+ACTIVE_REQUIRED_FILES = ("spec.md", "tasks.md")
+ARCHIVE_REQUIRED_FILES = ("spec.md", "tasks.md", "completion-summary.md")
+# Optional since v2 packages (F11): checklist.md is read when present and its
+# absence moves acceptance to the spec.md §6 success-criteria surface. Legacy
+# packages keep theirs and are gated exactly as before.
+OPTIONAL_PACKAGE_FILES = ("checklist.md",)
+# The legacy archive hash contract is frozen: baseline hashes (and the
+# legacy-compatibility comparison) always digest this exact four-file
+# sequence, regardless of what current archives ship. Changing it would
+# retroactively invalidate every baseline hash and regrade history.
+LEGACY_ARCHIVE_BUNDLE = ("spec.md", "tasks.md", "checklist.md", "completion-summary.md")
 # Directories whose children are trusted as genuine Spec package roots.
 # .spec is the default; .trae is the legacy name.  Other directories with
 # a specs/ subdirectory are NOT automatically treated as Spec roots to avoid
@@ -119,6 +129,144 @@ class CheckFailure:
     reason: str
 
 
+# F9 (AUD-06): the archive commit-interval anchor. The label is deliberately
+# NOT localized with git_record_labels — it is the machine-readable anchor
+# both the interval parser and the acceptance criterion grep for, so every
+# archive (zh or en) records it under the same fixed label.
+COMMIT_INTERVAL_LINE_RE = re.compile(r"^- 提交区间：([0-9a-f]{40})\.\.([0-9a-f]{40})\s*$", re.MULTILINE)
+FOOTER_WINDOW_BASE_RE = re.compile(r"^[0-9a-f]{40,64}$")
+
+
+def archive_commit_interval(summary_text: str) -> tuple[str, str] | None:
+    """Parse the recorded 提交区间 anchor; None when the archive predates F9."""
+    match = COMMIT_INTERVAL_LINE_RE.search(summary_text)
+    if match is None:
+        return None
+    return match.group(1), match.group(2)
+
+
+@dataclass(frozen=True)
+class FooterIntervalWarning:
+    """One footer-attribution anchor judged outside the push window (AUD-06)."""
+
+    specs_identity: str
+    slug: str
+    base: str
+    head: str
+    window_base: str
+
+
+def _revision_file_text(root: Path, revision: str, posix_path: str) -> str | None:
+    """Read one file from a revision tree; None when absent or unreadable."""
+    try:
+        shown = subprocess.run(
+            [trusted_git(), "show", f"{revision}:{posix_path}"],
+            cwd=root,
+            env=clean_git_env(),
+            capture_output=True,
+            timeout=SUBPROCESS_LOCAL_TIMEOUT_SECONDS,
+        )
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+    if shown.returncode != 0:
+        return None
+    try:
+        return _normalized_archive_text(shown.stdout)
+    except UnicodeError:
+        return None
+
+
+def footer_interval_warnings(
+    root: Path,
+    slugs: list[str],
+    *,
+    revision: str,
+    window_base: str,
+    specs_dirs: list[str] | None = None,
+) -> list[FooterIntervalWarning]:
+    """AUD-06 footer-attribution interval judge (observation-period warning).
+
+    For each footer-attributed slug whose ARCHIVED completion-summary records
+    a 提交区间, warn when the interval base is strictly older than the
+    delivery-window base (the fork point of the pushed history): the cited
+    attribution anchor was delivered before this window. Archives without the
+    interval field (pre-F9 history) stay silent, and unresolvable ancestry
+    skips honestly instead of guessing. Warnings never block anything — the
+    observation period collects false-positive data before a later release
+    turns the judgment into a hard failure.
+    """
+    if not slugs or not FOOTER_WINDOW_BASE_RE.match(window_base):
+        return []
+    try:
+        specs_roots = discover_specs_roots(root, specs_dirs)
+    except (OSError, ValueError):
+        return []
+    resolved_root = root.resolve(strict=False)
+    try:
+        git_bin = trusted_git()
+    except ValueError:
+        return []
+    warnings: list[FooterIntervalWarning] = []
+    for specs_root in specs_roots:
+        try:
+            specs_identity = specs_root.relative_to(resolved_root).as_posix()
+        except ValueError:
+            continue
+        for slug in sorted(set(slugs)):
+            text = _revision_file_text(root, revision, f"{specs_identity}/specs/archive/{slug}/completion-summary.md")
+            if text is None:
+                # Not archived at this revision: attribution lifecycle is
+                # owned by the archive gates, not by this warning channel.
+                continue
+            interval = archive_commit_interval(text)
+            if interval is None:
+                continue
+            base, head = interval
+            if base == window_base:
+                # Anchored exactly at this window's fork point: delivered here.
+                continue
+            try:
+                ancestry = subprocess.run(
+                    [git_bin, "merge-base", "--is-ancestor", base, window_base],
+                    cwd=root,
+                    env=clean_git_env(),
+                    capture_output=True,
+                    timeout=SUBPROCESS_LOCAL_TIMEOUT_SECONDS,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if ancestry.returncode == 0:
+                warnings.append(
+                    FooterIntervalWarning(
+                        specs_identity=specs_identity,
+                        slug=slug,
+                        base=base,
+                        head=head,
+                        window_base=window_base,
+                    )
+                )
+    return warnings
+
+
+def render_footer_interval_warnings(warnings: list[FooterIntervalWarning]) -> str:
+    """Render the interval warnings once for every surface (same elements)."""
+    lines = [
+        "spec gate warning: footer attribution cites an archive delivered before "
+        "this push window (observation period: warn-only; a later release turns "
+        "this into a hard failure)"
+    ]
+    for warning in warnings:
+        lines.extend(
+            [
+                f"- slug: {warning.slug}",
+                f"- archive: {warning.specs_identity}/specs/archive/{warning.slug}",
+                f"- archive commit range: {warning.base}..{warning.head}",
+                f"- push window base: {warning.window_base}",
+            ]
+        )
+    return "\n".join(lines)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Validate all active Spec packages under a project root.")
     parser.add_argument(
@@ -156,6 +304,24 @@ def parse_args() -> argparse.Namespace:
         "--require-archived",
         action="store_true",
         help="Fail when any active package remains outside archive",
+    )
+    parser.add_argument(
+        "--lint-only",
+        action="store_true",
+        help=(
+            "Structure-only lint: slug validity, required files, checkpoint state, "
+            "and archive completeness are still enforced; the gate-pass judgment "
+            "(check gates not passed) is skipped. Used by the pre-commit WIP channel "
+            "for in-flight integration-branch commits"
+        ),
+    )
+    parser.add_argument(
+        "--footer-window-base",
+        help=(
+            "AUD-06 footer-attribution interval check: with footer-collected --slug "
+            "values and --revision, warn (never fail) when a cited archive's "
+            "recorded commit interval predates this push-window base"
+        ),
     )
     return parser.parse_args()
 
@@ -232,7 +398,11 @@ def archived_package_dirs(specs_root: Path) -> list[Path]:
 
 def _archive_bundle_sha256(contents: dict[str, str]) -> str:
     digest = hashlib.sha256()
-    for filename in ARCHIVE_REQUIRED_FILES:
+    # Frozen legacy bundle sequence: v2 archives (no checklist.md) digest the
+    # members they have, which can never collide with a baseline hash.
+    for filename in LEGACY_ARCHIVE_BUNDLE:
+        if filename not in contents:
+            continue
         digest.update(filename.encode("utf-8"))
         digest.update(b"\0")
         digest.update(contents[filename].encode("utf-8"))
@@ -253,7 +423,7 @@ def _archive_path_identity(
         length = len(prefix)
         if parts[:length] != prefix or parts[length : length + 2] != ("specs", "archive"):
             continue
-        if len(parts) != length + 4 or parts[-1] not in ARCHIVE_REQUIRED_FILES:
+        if len(parts) != length + 4 or parts[-1] not in (*ARCHIVE_REQUIRED_FILES, *OPTIONAL_PACKAGE_FILES):
             return None
         return Path(*prefix).as_posix(), parts[length + 2], parts[-1]
     return None
@@ -394,10 +564,10 @@ def legacy_archive_hashes(
             bundles.setdefault((specs_name, slug), {})[filename] = _normalized_archive_text(shown.stdout)
     hashes: dict[tuple[str, str], str] = {}
     for identity, bundle in bundles.items():
-        if set(bundle) != set(ARCHIVE_REQUIRED_FILES):
+        if set(bundle) != set(LEGACY_ARCHIVE_BUNDLE):
             continue
         digest = hashlib.sha256()
-        for filename in ARCHIVE_REQUIRED_FILES:
+        for filename in LEGACY_ARCHIVE_BUNDLE:
             digest.update(filename.encode("utf-8"))
             digest.update(b"\0")
             digest.update(bundle[filename].encode("utf-8"))
@@ -429,7 +599,7 @@ def archive_baseline_equivalence(
         try:
             texts = {
                 filename: _normalized_archive_text(_read_archive_file_bytes(package / filename))
-                for filename in ARCHIVE_REQUIRED_FILES
+                for filename in LEGACY_ARCHIVE_BUNDLE
             }
         except (OSError, UnicodeError, ValueError):
             return False
@@ -446,6 +616,7 @@ def _validate_package(
     archived: bool,
     legacy_hashes: dict[tuple[str, str], str],
     specs_identity: str,
+    lint_only: bool = False,
 ) -> list[CheckFailure]:
     slug = package.name
     failures: list[CheckFailure] = []
@@ -458,10 +629,17 @@ def _validate_package(
     try:
         for filename in filenames:
             contents[filename] = read_regular_text(package / filename)
+        for filename in OPTIONAL_PACKAGE_FILES:
+            if (package / filename).is_file():
+                contents[filename] = read_regular_text(package / filename)
         # Hash input goes through the same raw-byte pipeline the baseline side
         # uses, so archive identity never depends on the process locale.
+        # Legacy archives bundle their checklist; v2 archives have none.
         archive_texts = (
-            {filename: _normalized_archive_text(_read_archive_file_bytes(package / filename)) for filename in filenames}
+            {
+                filename: _normalized_archive_text(_read_archive_file_bytes(package / filename))
+                for filename in (*filenames, *(name for name in OPTIONAL_PACKAGE_FILES if (package / name).is_file()))
+            }
             if archived
             else None
         )
@@ -484,12 +662,21 @@ def _validate_package(
     # the evidence captured at their closeout; re-grading them against every
     # later HEAD would make a valid archive fail merely because new work landed.
     check_root = root if not archived else None
-    if not legacy_compatible and not overall_check_passed(
-        contents["spec.md"],
-        contents["tasks.md"],
-        contents["checklist.md"],
-        slug=slug,
-        root=check_root,
+    if (
+        not lint_only
+        and not legacy_compatible
+        and not overall_check_passed(
+            contents["spec.md"],
+            contents["tasks.md"],
+            contents.get("checklist.md"),
+            slug=slug,
+            root=check_root,
+            # Executable-verify gate (evidence: runs) reads runs.jsonl from the
+            # package dir against the live worktree — an active-package gate,
+            # exactly like the anchor above; archived packages keep their frozen
+            # evidence.
+            package_dir=package if not archived else None,
+        )
     ):
         failures.append(CheckFailure(specs_root, slug, "check gates not passed"))
     if archived:
@@ -524,6 +711,7 @@ def check_all_packages(
     require_archived: bool = False,
     slugs: list[str] | None = None,
     legacy_hashes: dict[tuple[str, str], str] | None = None,
+    lint_only: bool = False,
 ) -> list[CheckFailure]:
     failures: list[CheckFailure] = []
     try:
@@ -587,6 +775,7 @@ def check_all_packages(
                     archived=False,
                     legacy_hashes=legacy_hashes,
                     specs_identity=specs_identity,
+                    lint_only=lint_only,
                 )
             )
             if require_archived:
@@ -600,6 +789,7 @@ def check_all_packages(
                     archived=True,
                     legacy_hashes=legacy_hashes,
                     specs_identity=specs_identity,
+                    lint_only=lint_only,
                 )
             )
 
@@ -615,6 +805,7 @@ def check_git_index(
     *,
     slugs: list[str] | None = None,
     legacy_baseline: str | None = None,
+    lint_only: bool = False,
 ) -> list[CheckFailure]:
     with tempfile.TemporaryDirectory(prefix="spec-index-") as temp_dir:
         snapshot = Path(temp_dir)
@@ -637,6 +828,7 @@ def check_git_index(
             explicit,
             slugs=slugs,
             legacy_hashes=legacy_archive_hashes(root, legacy_baseline, explicit),
+            lint_only=lint_only,
         )
 
 
@@ -698,6 +890,7 @@ def check_git_revision(
     require_archived: bool = False,
     slugs: list[str] | None = None,
     legacy_baseline: str | None = None,
+    lint_only: bool = False,
 ) -> list[CheckFailure]:
     try:
         with git_revision_snapshot(root, revision) as snapshot:
@@ -707,6 +900,7 @@ def check_git_revision(
                 require_archived=require_archived,
                 slugs=slugs,
                 legacy_hashes=legacy_archive_hashes(root, legacy_baseline, explicit),
+                lint_only=lint_only,
             )
     except (OSError, ValueError) as exc:
         return [CheckFailure(root, "<git-revision>", str(exc))]
@@ -735,6 +929,25 @@ def main() -> int:
     if args.index and args.revision:
         print("error: --index and --revision are mutually exclusive", file=sys.stderr)
         return 1
+    if args.footer_window_base:
+        if not args.revision:
+            print(
+                "error: --footer-window-base requires --revision (the pushed tree owns the archive state)",
+                file=sys.stderr,
+            )
+            return 1
+        if slug_filter is None:
+            print(
+                "error: --footer-window-base requires the footer-collected --slug list",
+                file=sys.stderr,
+            )
+            return 1
+        if not FOOTER_WINDOW_BASE_RE.match(args.footer_window_base):
+            print(
+                "error: --footer-window-base must be one commit sha (got: " + args.footer_window_base + ")",
+                file=sys.stderr,
+            )
+            return 1
     if args.index:
         if args.require_archived:
             print(
@@ -748,6 +961,7 @@ def main() -> int:
             args.specs_dir,
             slugs=slug_filter,
             legacy_baseline=args.legacy_baseline,
+            lint_only=args.lint_only,
         )
     elif args.revision:
         failures = check_git_revision(
@@ -757,6 +971,7 @@ def main() -> int:
             require_archived=args.require_archived,
             slugs=slug_filter,
             legacy_baseline=args.legacy_baseline,
+            lint_only=args.lint_only,
         )
     else:
         failures = check_all_packages(
@@ -765,7 +980,19 @@ def main() -> int:
             require_archived=args.require_archived,
             slugs=slug_filter,
             legacy_hashes=legacy_archive_hashes(root, specs_dirs=args.specs_dir),
+            lint_only=args.lint_only,
         )
+    if args.footer_window_base:
+        # Observation-period warning (AUD-06): evidence only, never a verdict.
+        interval_warnings = footer_interval_warnings(
+            root,
+            sorted(slug_filter or []),
+            revision=args.revision or "HEAD",
+            window_base=args.footer_window_base,
+            specs_dirs=args.specs_dir,
+        )
+        if interval_warnings:
+            print(render_footer_interval_warnings(interval_warnings), file=sys.stderr)
     if failures:
         print(render_failures(root, failures))
         return 1

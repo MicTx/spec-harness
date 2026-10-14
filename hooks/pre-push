@@ -2,24 +2,18 @@
 set -eu
 
 repo=$(git rev-parse --show-toplevel)
-hook_dir=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 checker="__SPEC_CHECK_ALL_SCRIPT_PLACEHOLDER__"
-checker_placeholder_prefix=__SPEC_CHECK_ALL_
-checker_placeholder="${checker_placeholder_prefix}SCRIPT_PLACEHOLDER__"
-# Checker resolution order:
-#   1. SPEC_CHECK_ALL_SCRIPT environment override (highest priority).
-#   2. The in-project copy at "$repo/scripts/check_all_spec_packages.py"
-#      when it exists and is readable (keeps the spec source repository
-#      self-contained).
-#   3. The absolute path rendered by install_git_hooks.py, already held in
-#      $checker when the placeholder above was replaced.
-#   4. The bootstrap path relative to this hook (unrendered source template).
+# Checker resolution:
+#   1. SPEC_CHECK_ALL_SCRIPT environment override — the explicit operator
+#      escape hatch; the path in effect is echoed to stderr so a swap is
+#      never silent.
+#   2. The absolute path rendered by install_git_hooks.py, already held in
+#      $checker when the placeholder above was replaced. Repository content
+#      can never replace the gate checker; an unrendered template fails
+#      closed below.
 if [ -n "${SPEC_CHECK_ALL_SCRIPT:-}" ]; then
   checker="$SPEC_CHECK_ALL_SCRIPT"
-elif [ -f "$repo/scripts/check_all_spec_packages.py" ] && [ -r "$repo/scripts/check_all_spec_packages.py" ]; then
-  checker="$repo/scripts/check_all_spec_packages.py"
-elif [ "$checker" = "$checker_placeholder" ]; then
-  checker="$hook_dir/../scripts/check_all_spec_packages.py"
+  printf '%s\n' "spec gate: using SPEC_CHECK_ALL_SCRIPT override: $checker" >&2
 fi
 
 if [ ! -f "$checker" ]; then
@@ -105,10 +99,23 @@ index=0
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ -n "${local_sha:-}" ] || continue
   [ "$local_sha" = "$zero" ] && continue
+  case "$remote_ref" in
+    refs/heads/spec/*)
+      # AUD-07: in-flight handoff. Integration branches carry work in
+      # progress (WIP commits, handoff.md) through the remote; the
+      # irreversible path is the main-branch merge, which keeps the full
+      # gate below.
+      printf '%s\n' \
+        "spec gate: releasing in-flight push of $remote_ref (integration-branch handoff);" \
+        "the full gate applies when this work merges to the main branch" >&2
+      continue
+      ;;
+  esac
   index=$((index + 1))
   files_path=$tmp_dir/files-$index
   commits_path=$tmp_dir/commits-$index
   footer_slugs=$tmp_dir/footer-slugs-$index
+  footer_window_base=""
   : >"$files_path"
   : >"$commits_path"
   : >"$footer_slugs"
@@ -135,15 +142,35 @@ while read -r local_ref local_sha remote_ref remote_sha; do
       [ -n "$commit" ] || continue
       message=$(git show -s --format=%B "$commit" 2>/dev/null || true)
       slugs=$(printf '%s\n' "$message" | sed -nE 's/^Spec:[[:space:]]*([a-z0-9][a-z0-9_-]*[a-z0-9]|[a-z0-9])[[:space:]]*$/\1/p')
+      if printf '%s\n' "$message" | grep -qE '^Spec:[[:space:]]*none[[:space:]]*(\([[:space:]]*\))?[[:space:]]*$'; then
+        printf '%s\n' \
+          "error: pushed commit ${commit}: 'Spec: none' lite channel requires a non-empty reason" \
+          "  Write 'Spec: none (<reason>)' in the commit footer and retry." >&2
+        exit 1
+      fi
       if [ -z "$slugs" ]; then
+        # F11 lite channel: `Spec: none (<non-empty reason>)` attributes a
+        # trivial unpackaged commit. It contributes no package slug, so a
+        # none-only push skips the package gate below; the full gate still
+        # applies to every slug-attributed commit in the same ref.
+        if printf '%s\n' "$message" | grep -qE '^Spec:[[:space:]]*none[[:space:]]*\([^()]+\)[[:space:]]*$'; then
+          continue
+        fi
         printf '%s\n' \
           "error: pushed commit ${commit} has no Spec: <slug> attribution" \
-          "  Retro-pack the work into a completed Development Record, amend the commit with its Spec footer, and retry." >&2
+          "  Retro-pack the work into a completed Development Record and amend the commit with its Spec footer," \
+          "  or attribute trivial unpackaged work with 'Spec: none (<reason>)', and retry." >&2
         exit 1
       fi
       printf '%s\n' "$slugs" >>"$footer_slugs"
     done <"$commits_path"
     touched_slugs=$(sort -u "$footer_slugs")
+    # F9 (AUD-06): footer-attributed pushes carry the push-window base so the
+    # single judge inside check_all can warn (observation period) when a cited
+    # archive's recorded commit interval predates this delivery window.
+    if [ "$remote_sha" != "$zero" ]; then
+      footer_window_base=$(git merge-base "$remote_sha" "$local_sha" 2>/dev/null || true)
+    fi
   fi
 
   # A ref deletion, or a ref with no new commits/files, has nothing to gate.
@@ -154,6 +181,9 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     for slug in $touched_slugs; do
       set -- "$@" --slug "$slug"
     done
+  fi
+  if [ -n "$footer_window_base" ]; then
+    set -- "$@" --footer-window-base "$footer_window_base"
   fi
   # shellcheck disable=SC2086
   set -- "$@" $specs_args

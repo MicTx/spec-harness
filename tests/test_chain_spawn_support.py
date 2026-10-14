@@ -27,6 +27,7 @@ from chain_spawn_support import (  # noqa: E402  # type: ignore
     append_event,
     append_refusal_event,
     chain_dir,
+    chain_runtime_dir,
     lock_holder,
     read_last_refusal,
     read_state,
@@ -427,43 +428,48 @@ class TestAuditAppends:
 class TestReadState:
     def test_missing_state_is_fresh_even_with_audit(self, chain_root):
         chain = chain_dir(chain_root, "autorun")
+        runtime = chain_runtime_dir(chain_root, "autorun")
         chain.mkdir(parents=True)
-        append_audit(chain / "spawns.jsonl", {"round": 3})
-        state, status = read_state(chain, "autorun")
+        append_audit(runtime / "spawns.jsonl", {"round": 3})
+        state, status = read_state(chain, runtime, "autorun")
         assert state is None
         assert status == "missing"
 
     def test_ok_state_normalized_with_defaults(self, chain_root):
         chain = chain_dir(chain_root, "autorun")
+        runtime = chain_runtime_dir(chain_root, "autorun")
         write_state(chain, {"round": 2})
-        state, status = read_state(chain, "autorun")
+        state, status = read_state(chain, runtime, "autorun")
         assert status == "ok"
         assert state["round"] == 2
+        # legacy in-memory read default (the file itself stays two-key)
         assert state["window_recycle"] == {}
         assert state["host"] == "unknown"
 
     def test_corrupt_state_rebuilt_from_audit_tail(self, chain_root, capsys):
         chain = chain_dir(chain_root, "autoplan")
+        runtime = chain_runtime_dir(chain_root, "autoplan")
         chain.mkdir(parents=True)
-        append_audit(chain / "spawns.jsonl", {"pass": 1, "kind": "framework"})
+        append_audit(runtime / "spawns.jsonl", {"pass": 1, "kind": "framework"})
         write_state(chain, "{half-written")
-        state, status = read_state(chain, "autoplan")
+        state, status = read_state(chain, runtime, "autoplan")
         assert status == "recovered"
         assert state["pass"] == 1
         assert state["recovered_from"] == "spawns.jsonl line 1"
-        # written back atomically as valid JSON
+        # written back atomically as valid JSON, split volatile-free
         rewritten = json.loads((chain / "chain.json").read_text(encoding="utf-8"))
         assert rewritten["pass"] == 1
-        # one recovery event appended
-        event = json.loads((chain / "events.jsonl").read_text(encoding="utf-8").splitlines()[0])
+        # one recovery event appended in the runtime tree
+        event = json.loads((runtime / "events.jsonl").read_text(encoding="utf-8").splitlines()[0])
         assert event["kind"] == "recovery"
         assert event["action"] == "recovered_state"
         assert event["chain"] == "autoplan"
 
     def test_corrupt_state_without_rebuildable_audit_stays_corrupt(self, chain_root):
         chain = chain_dir(chain_root, "autorun")
+        runtime = chain_runtime_dir(chain_root, "autorun")
         write_state(chain, "{nope")
-        state, status = read_state(chain, "autorun")
+        state, status = read_state(chain, runtime, "autorun")
         assert state is None
         assert status == "corrupt"
         # the corrupt file is left exactly as found
@@ -471,13 +477,15 @@ class TestReadState:
 
     def test_partial_audit_tail_lines_do_not_hide_rebuild(self, chain_root):
         chain = chain_dir(chain_root, "autoplan")
+        runtime = chain_runtime_dir(chain_root, "autoplan")
         chain.mkdir(parents=True)
-        (chain / "spawns.jsonl").write_text(
+        runtime.mkdir(parents=True, exist_ok=True)
+        (runtime / "spawns.jsonl").write_text(
             json.dumps({"pass": 4, "kind": "detail"}) + "\n" + json.dumps({"pass": 5})[:8],
             encoding="utf-8",
         )
         write_state(chain, "not json at all")
-        state, status = read_state(chain, "autoplan")
+        state, status = read_state(chain, runtime, "autoplan")
         assert status == "recovered"
         assert state["pass"] == 4
         assert state["recovered_from"] == "spawns.jsonl line 1"
@@ -549,8 +557,8 @@ class TestOptInCaps:
         assert support.validate_cap(1, "max-rounds") == 1
 
     def test_next_index_with_none_cap_is_unbounded(self):
-        # no cap (the no-flag default): the counter advances past any
-        # boundary without ever refusing
+        # no cap (only via --unbounded since F1): the counter advances past
+        # any boundary without ever refusing
         for state_value in (None, 0, 7, 30, 10000):
             assert _next_pass(state_value, None) == (state_value or 0) + 1
 
@@ -1060,3 +1068,248 @@ class TestRefusalCloseHelpers:
         )
         parsed = subprocess.run(["/bin/sh", "-n"], input=argv[2], text=True, capture_output=True, timeout=10)
         assert parsed.returncode == 0, parsed.stderr
+
+
+class TestWorkerPermissionModes:
+    """F1 (AUD-01): the render surface escalates claude only on an effective
+    bypass — the pre-F1 argv always escalated; ask (the new default) never
+    does, and the other hosts have no escalation flag to render."""
+
+    def test_ask_default_renders_no_escalation_flag(self, tmp_path):
+        argv = support.build_worker_command("claude", tmp_path, "PROMPT")
+        assert argv == ["claude", "PROMPT"]
+        assert support.CLAUDE_BYPASS_FLAG not in argv
+
+    def test_bypass_renders_the_claude_flag(self, tmp_path):
+        argv = support.build_worker_command("claude", tmp_path, "PROMPT", permission_mode="bypass")
+        assert argv == ["claude", support.CLAUDE_BYPASS_FLAG, "PROMPT"]
+
+    def test_inherit_is_resolved_before_rendering(self, tmp_path):
+        # inherit is a spawn-script decision; the render surface only knows
+        # the two effective modes and refuses the raw one
+        with pytest.raises(ChainSpawnError, match="unknown worker permission mode: 'inherit'"):
+            support.build_worker_command("claude", tmp_path, "PROMPT", permission_mode="inherit")
+
+    def test_other_hosts_accept_the_mode_without_rendering(self, tmp_path):
+        for host in ("codex", "pi"):
+            argv = support.build_worker_command(host, tmp_path, "PROMPT", permission_mode="bypass")
+            assert support.CLAUDE_BYPASS_FLAG not in argv
+        with pytest.raises(ChainSpawnError, match="unknown worker permission mode: 'yolo'"):
+            support.build_worker_command("pi", tmp_path, "PROMPT", permission_mode="yolo")
+
+    def test_mode_does_not_disturb_the_model_identity_segment(self, tmp_path):
+        argv = support.build_worker_command("claude", tmp_path, "PROMPT", {"id": "opus"}, permission_mode="bypass")
+        assert argv == ["claude", "--model", "opus", support.CLAUDE_BYPASS_FLAG, "PROMPT"]
+
+
+class TestResolveEffectiveCap:
+    """F1 (AUD-01): --max-rounds/--max-passes > --unbounded > the restored
+    default; both flags at once refuse."""
+
+    def test_default_applies_without_flags(self):
+        assert support.resolve_effective_cap(None, False, 5, "max-rounds") == 5
+        assert support.resolve_effective_cap(None, False, 20, "max-passes") == 20
+
+    def test_explicit_overrides_the_default(self):
+        assert support.resolve_effective_cap(9, False, 5, "max-rounds") == 9
+
+    def test_unbounded_removes_the_cap(self):
+        assert support.resolve_effective_cap(None, True, 5, "max-rounds") is None
+
+    def test_both_flags_refuse(self):
+        with pytest.raises(ChainSpawnError, match="--unbounded and --max-rounds are mutually exclusive"):
+            support.resolve_effective_cap(9, True, 5, "max-rounds")
+        with pytest.raises(ChainSpawnError, match="--unbounded and --max-passes are mutually exclusive"):
+            support.resolve_effective_cap(9, True, 20, "max-passes")
+
+    def test_chain_default_constants(self):
+        # the restored defaults are part of the safety contract, not tuning
+        assert support.DEFAULT_AUTORUN_MAX_ROUNDS == 5
+        assert support.DEFAULT_AUTOPLAN_MAX_PASSES == 20
+
+
+class TestFeatureFingerprint:
+    """F1 (AUD-01): the frozen feature set — checkbox state never moves the
+    fingerprint; membership, wording, and the doc set do."""
+
+    def test_checking_off_leaves_the_fingerprint_unchanged(self, tmp_path):
+        doc = tmp_path / "plan.md"
+        doc.write_text("- [ ] F1 alpha\n- [ ] F2 beta\n", encoding="utf-8")
+        before = support.feature_fingerprint([doc], tmp_path)
+        doc.write_text("- [x] F1 alpha\n- [ ] F2 beta\n", encoding="utf-8")
+        assert support.feature_fingerprint([doc], tmp_path) == before
+
+    def test_new_feature_changes_the_fingerprint(self, tmp_path):
+        doc = tmp_path / "plan.md"
+        doc.write_text("- [ ] F1 alpha\n", encoding="utf-8")
+        before = support.feature_fingerprint([doc], tmp_path)
+        doc.write_text("- [ ] F1 alpha\n- [ ] F2 beta\n", encoding="utf-8")
+        assert support.feature_fingerprint([doc], tmp_path) != before
+
+    def test_rewording_changes_the_fingerprint(self, tmp_path):
+        doc = tmp_path / "plan.md"
+        doc.write_text("- [ ] F1 alpha\n", encoding="utf-8")
+        before = support.feature_fingerprint([doc], tmp_path)
+        doc.write_text("- [ ] F1 renamed\n", encoding="utf-8")
+        assert support.feature_fingerprint([doc], tmp_path) != before
+
+    def test_path_relative_and_absolute_agree(self, tmp_path):
+        doc = tmp_path / "plan.md"
+        doc.write_text("- [ ] F1 alpha\n", encoding="utf-8")
+        assert support.feature_fingerprint([doc], tmp_path) == support.feature_fingerprint(
+            [tmp_path / "plan.md"], tmp_path
+        )
+        # a doc outside the root hashes under its absolute path
+        outside = tmp_path.parent / "outside-plan.md"
+        outside.write_text("- [ ] F1 alpha\n", encoding="utf-8")
+        assert support.feature_fingerprint([outside], tmp_path) != support.feature_fingerprint([doc], tmp_path)
+
+    def test_doc_order_is_deterministic(self, tmp_path):
+        one = tmp_path / "a.md"
+        two = tmp_path / "b.md"
+        one.write_text("- [ ] F1 alpha\n", encoding="utf-8")
+        two.write_text("- [ ] F2 beta\n", encoding="utf-8")
+        assert support.feature_fingerprint([one, two], tmp_path) != support.feature_fingerprint([two, one], tmp_path)
+        assert support.feature_fingerprint([one, two], tmp_path) == support.feature_fingerprint([one, two], tmp_path)
+
+    def test_unreadable_doc_keeps_its_path_in_the_digest(self, tmp_path):
+        doc = tmp_path / "plan.md"
+        doc.write_text("- [ ] F1 alpha\n", encoding="utf-8")
+        with_path = support.feature_fingerprint([doc], tmp_path)
+        doc.unlink()
+        empty = support.feature_fingerprint([doc], tmp_path)
+        # an unreadable doc still contributes (path with no items), so the
+        # fingerprint moves — a vanished plan never silently unfreezes
+        assert empty != with_path
+
+
+class TestLegacyMigration:
+    """F16 step 3: the legacy→runtime migration primitive — atomic moves,
+    volatile strip, one audit event, idempotent re-entry, failure saves the
+    legacy bytes."""
+
+    @staticmethod
+    def seed_legacy(root, chain, *, volatile=True):
+        summary = support.chain_dir(root, chain)
+        summary.mkdir(parents=True, exist_ok=True)
+        state = {"round": 4, "host": "pi", "updated_at": "t0"}
+        if volatile:
+            state["prev_tty"] = "/dev/ttys007"
+            state["window_recycle"] = {"status": "skipped", "reason": "no window"}
+        (summary / "chain.json").write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        (summary / "chain.lock").write_text('{"pid": 1, "chain": "%s"}\n' % chain, encoding="utf-8")
+        (summary / "spawns.jsonl").write_text(json.dumps({"round": 3, "prev_tty": None}) + "\n", encoding="utf-8")
+        (summary / "events.jsonl").write_text(
+            json.dumps({"kind": "spawn_refusal", "at": "t", "chain": chain, "type": "T", "message": "m"}) + "\n",
+            encoding="utf-8",
+        )
+        return summary
+
+    def test_moves_files_and_strips_volatile(self, tmp_path):
+        summary = self.seed_legacy(tmp_path, "autorun")
+        runtime = support.chain_runtime_dir(tmp_path, "autorun")
+        report = support.migrate_legacy_chain_state(tmp_path, "autorun")
+        assert report["moved"] == ["chain.lock", "spawns.jsonl", "events.jsonl"]
+        assert report["skipped"] == []
+        assert report["volatile_stripped"] is True
+        # files live in the runtime tree with byte-identical content
+        assert (runtime / "chain.lock").read_text(encoding="utf-8") == '{"pid": 1, "chain": "autorun"}\n'
+        assert json.loads((runtime / "spawns.jsonl").read_text(encoding="utf-8"))["round"] == 3
+        assert (runtime / "events.jsonl").is_file()
+        # the summary is rewritten volatile-free; volatile.json carries the keys
+        assert not (summary / "chain.lock").exists()
+        migrated_state = json.loads((summary / "chain.json").read_text(encoding="utf-8"))
+        assert migrated_state == {"round": 4, "host": "pi", "updated_at": "t0"}
+        assert json.loads((runtime / "volatile.json").read_text(encoding="utf-8")) == {
+            "prev_tty": "/dev/ttys007",
+            "window_recycle": {"status": "skipped", "reason": "no window"},
+        }
+        # one state_migrated event in the runtime events stream
+        events = [json.loads(line) for line in (runtime / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+        kinds = [event["kind"] for event in events]
+        assert "state_migrated" in kinds
+        migrated_event = next(event for event in events if event["kind"] == "state_migrated")
+        assert migrated_event["chain"] == "autorun"
+        assert set(migrated_event) == {"kind", "at", "chain", "detail"}
+        # the legacy spawns line moved intact, before the migration event
+        assert kinds[0] == "spawn_refusal"
+
+    def test_idempotent_second_run_is_a_noop(self, tmp_path):
+        self.seed_legacy(tmp_path, "autorun")
+        support.migrate_legacy_chain_state(tmp_path, "autorun")
+        summary_state = (support.chain_dir(tmp_path, "autorun") / "chain.json").read_bytes()
+        runtime_files = sorted(path.name for path in support.chain_runtime_dir(tmp_path, "autorun").iterdir())
+        report = support.migrate_legacy_chain_state(tmp_path, "autorun")
+        assert report == {"chain": "autorun", "moved": [], "skipped": [], "volatile_stripped": False}
+        assert (support.chain_dir(tmp_path, "autorun") / "chain.json").read_bytes() == summary_state
+        assert sorted(path.name for path in support.chain_runtime_dir(tmp_path, "autorun").iterdir()) == runtime_files
+
+    def test_failure_preserves_legacy_bytes(self, tmp_path):
+        summary = self.seed_legacy(tmp_path, "autoplan")
+        before = {path.name: path.read_bytes() for path in summary.iterdir()}
+        # a file blocking the runtime directory makes every move fail
+        blocker = tmp_path / ".git" / "spec-chain" / "autoplan"
+        blocker.parent.mkdir(parents=True, exist_ok=True)
+        blocker.write_text("not a directory", encoding="utf-8")
+        report = support.migrate_legacy_chain_state(tmp_path, "autoplan")
+        assert report["moved"] == []
+        assert {path.name: path.read_bytes() for path in summary.iterdir()} == before
+        # the volatile strip is reported in the same skipped list: its
+        # volatile.json write cannot land either
+        assert [skip["file"] for skip in report["skipped"]] == [
+            "chain.lock",
+            "spawns.jsonl",
+            "events.jsonl",
+            "volatile.json",
+        ]
+        # the volatile strip also fails safely (its atomic write cannot land)
+        assert report["volatile_stripped"] is False
+        assert json.loads((summary / "chain.json").read_text(encoding="utf-8"))["prev_tty"] == "/dev/ttys007"
+
+    def test_both_positions_populated_keeps_legacy_and_reports(self, tmp_path):
+        summary = self.seed_legacy(tmp_path, "autorun")
+        runtime = support.chain_runtime_dir(tmp_path, "autorun")
+        runtime.mkdir(parents=True, exist_ok=True)
+        (runtime / "spawns.jsonl").write_text('{"round": 9}\n', encoding="utf-8")
+        report = support.migrate_legacy_chain_state(tmp_path, "autorun")
+        assert report["moved"] == ["chain.lock", "events.jsonl"]
+        assert report["skipped"] == [{"file": "spawns.jsonl", "reason": "target already exists"}]
+        # the legacy spawns line is untouched, the runtime line authoritative
+        assert (summary / "spawns.jsonl").read_text(encoding="utf-8") == '{"round": 3, "prev_tty": null}\n'
+        assert json.loads((runtime / "spawns.jsonl").read_text(encoding="utf-8"))["round"] == 9
+
+    def test_existing_volatile_json_is_authoritative(self, tmp_path):
+        summary = self.seed_legacy(tmp_path, "autorun")
+        runtime = support.chain_runtime_dir(tmp_path, "autorun")
+        runtime.mkdir(parents=True, exist_ok=True)
+        (runtime / "volatile.json").write_text('{"prev_tty": "/dev/ttys999"}\n', encoding="utf-8")
+        support.migrate_legacy_chain_state(tmp_path, "autorun")
+        # the existing volatile file wins; the stale summary copies are dropped
+        assert json.loads((runtime / "volatile.json").read_text(encoding="utf-8")) == {"prev_tty": "/dev/ttys999"}
+        assert "prev_tty" not in (summary / "chain.json").read_text(encoding="utf-8")
+
+    def test_noop_on_fresh_and_volatile_free_layouts(self, tmp_path):
+        # fresh tree: nothing to do, no event, no directories invented
+        report = support.migrate_legacy_chain_state(tmp_path, "autorun")
+        assert report == {"chain": "autorun", "moved": [], "skipped": [], "volatile_stripped": False}
+        assert not (tmp_path / ".git" / "spec-chain").exists()
+        # new-layout tree: summary volatile-free → nothing moves, nothing strips
+        summary = support.chain_dir(tmp_path, "autoplan")
+        runtime = support.chain_runtime_dir(tmp_path, "autoplan")
+        summary.mkdir(parents=True)
+        runtime.mkdir(parents=True)
+        (summary / "chain.json").write_text('{"pass": 1}\n', encoding="utf-8")
+        report = support.migrate_legacy_chain_state(tmp_path, "autoplan")
+        assert report == {"chain": "autoplan", "moved": [], "skipped": [], "volatile_stripped": False}
+        assert not (runtime / "events.jsonl").exists()
+
+    def test_corrupt_summary_is_left_alone(self, tmp_path):
+        summary = self.seed_legacy(tmp_path, "autorun")
+        (summary / "chain.json").write_text("{half-written", encoding="utf-8")
+        report = support.migrate_legacy_chain_state(tmp_path, "autorun")
+        assert report["volatile_stripped"] is False
+        assert (summary / "chain.json").read_text(encoding="utf-8") == "{half-written"
+
+    def test_unknown_chain_refuses(self, tmp_path):
+        with pytest.raises(support.ChainSpawnError, match="unknown chain"):
+            support.migrate_legacy_chain_state(tmp_path, "bogus")

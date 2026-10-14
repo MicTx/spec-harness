@@ -98,6 +98,50 @@ def test_cli_help_lists_vocabulary():
     assert "local" in proc.stdout and "external" in proc.stdout
 
 
+# -- F12（AUD-11）：零信号路由与文本长度无关，一律 local。
+
+
+def test_zero_signal_long_text_stays_local(mod):
+    """零信号一律 local：超长全零文本不再按字数分流到 explore。"""
+    result = mod.decide("a" * 10000)
+    assert result["route"] == "local"
+    assert result["score"] == 0
+    assert result["lanes"] == []
+
+
+def test_same_fix_short_and_long_descriptions_route_identically(mod):
+    """长短描述同路由：同一修复的简述与详述必须得到相同 route（AUD-01 实测
+    复现对：详述曾因 len>=40 被分流到 explore，删字数回退后两端一致）。"""
+    pairs = [
+        # 带局部信号：错别字修复的长短两种说法
+        (
+            "修复 README 中的一个错别字",
+            "修复 README 快速开始一节中的一个错别字：把「安装」写成了「按装」，"
+            "涉及标题、正文与代码注释共三处，改完检查渲染无差异，不要动其他章节",
+        ),
+        # 带局部信号：顺手小配置改动
+        (
+            "顺手改个配置",
+            "顺手在默认配置里把超时从 30 秒改成 60 秒，只动这一处数值；注释、格式"
+            "与相邻配置项保持原样，改完在本地跑一遍冒烟确认行为符合预期后收工",
+        ),
+        # 零信号：同一参数调整的简述与详述，两端都必须落 local
+        (
+            "调整缓存参数",
+            "调整缓存参数：把 L1 的容量上限从 256 调到 512，同时把过期时间从 60 秒"
+            "拉长到 5 分钟，观察命中率变化并记录前后对比数据，如果命中率先升后降"
+            "就回退到原值并说明原因",
+        ),
+    ]
+    for short, long in pairs:
+        short_result = mod.decide(short)
+        long_result = mod.decide(long)
+        assert short_result["route"] == long_result["route"], (
+            f"同一修复长短描述路由漂移: {short!r} -> {short_result['route']} / {long!r} -> {long_result['route']}"
+        )
+        assert short_result["route"] == "local", short
+
+
 def test_lanes_are_suggested_for_parallel_shapes(mod):
     result = mod.decide("并行探索 API、前端和测试三个面")
     assert result["route"] == "explore"
@@ -242,8 +286,12 @@ def test_cli_package_context_changes_decision_when_open_tasks_change(tmp_path):
     copy_payload = json.loads(run_cli("--text", "更新接口", "--root", str(tmp_path), "--slug", slug).stdout)
     _write_package(tmp_path, slug, _PACKAGE_SPEC, auth_tasks)
     auth_payload = json.loads(run_cli("--text", "更新接口", "--root", str(tmp_path), "--slug", slug).stdout)
-    assert copy_payload != auth_payload, "open-task context must change the decision"
-    assert "认证 / 信任边界" in auth_payload["risks"] or "安全评审" in auth_payload["lanes"]
+    assert copy_payload != auth_payload, "open-task structure must change the decision"
+    assert copy_payload["route"] == "local", "单任务小包零强结构信号应落 local"
+    assert auth_payload["route"] == "review", "boundary 命中认证风险标签应落 review"
+    assert "认证 / 信任边界" in auth_payload["risks"]
+    assert "安全评审" in auth_payload["lanes"]
+    assert auth_payload["basis"] == "package-structure"
 
 
 def test_cli_package_explicit_54_route_overrides_heuristic(tmp_path):
@@ -254,3 +302,186 @@ def test_cli_package_explicit_54_route_overrides_heuristic(tmp_path):
     payload = json.loads(run_cli("--text", "梳理结构不清的代码库", "--root", str(tmp_path), "--slug", slug).stdout)
     assert payload["route"] == "review"
     assert payload.get("override") is True
+
+
+# -- F12（AUD-11）：单一入口按包结构决策；--text 只读诊断 --
+
+
+def _write_structure_package(root: Path, slug: str, task_rows: list[tuple[str, str, str, str]]) -> None:
+    """Build a package from (title, boundary, verify, depends-on) rows."""
+    chunks = []
+    for title, boundary, verify, deps in task_rows:
+        block = f"- [ ] {title}\n  - boundary: {boundary}\n  - verify: {verify}\n"
+        if deps:
+            block += f"  - depends-on: {deps}\n"
+        chunks.append(block)
+    _write_package(root, slug, _PACKAGE_SPEC, "".join(chunks))
+
+
+def _run_package(root: Path, slug: str, *extra: str) -> dict:
+    proc = run_cli("--root", str(root), "--slug", slug, *extra)
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+def test_package_mode_multi_task_wide_boundary_routes_explore(tmp_path):
+    """多任务宽边界 → explore：结构指标可解释，输出带依据=包结构字段。"""
+    slug = "2026-10-12_structure-route-probe"
+    rows = [
+        ("实现入口", "只改 scripts/entry.py", "pytest -q scripts", ""),
+        ("补测试", "只改 tests/test_entry.py", "pytest -q tests", "task_0001"),
+        ("同步文档", "只改 references/entry.md", "rg -c entry references", "task_0001"),
+        ("服务端适配", "只改 server/entry_api.py", "pytest -q server", "task_0001"),
+        ("清理旧接口", "只改 scripts/legacy.py", "python3 -m compileall scripts", ""),
+        ("回归", "只改 tests/test_legacy.py", "pytest -q tests", "task_0005"),
+    ]
+    _write_structure_package(tmp_path, slug, rows)
+    payload = _run_package(tmp_path, slug)
+    assert payload["route"] == "explore"
+    assert payload["basis"] == "package-structure"
+    assert payload["reason"].startswith("依据=包结构")
+    assert payload["structure"]["task_count"] == 6
+    assert payload["structure"]["module_count"] == 4
+    assert set(payload["structure"]["boundary_modules"]) == {"scripts", "tests", "references", "server"}
+    assert payload["lanes"], "explore 路由应给出 boundary 模块 lane 草案"
+
+
+def test_package_mode_mid_size_clean_slices_route_build(tmp_path):
+    """中等规模可切分（≥4 任务 × ≥3 模块 × 依赖宽度≤2）→ build。"""
+    slug = "2026-10-12_structure-route-probe"
+    rows = [
+        ("实现核心", "只改 scripts/core.py", "pytest -q scripts", ""),
+        ("补测试", "只改 tests/test_core.py", "pytest -q tests", "task_0001"),
+        ("同步文档", "只改 references/core.md", "rg -c core references", "task_0001"),
+        ("清理", "只改 scripts/old.py", "python3 -m compileall scripts", ""),
+    ]
+    _write_structure_package(tmp_path, slug, rows)
+    payload = _run_package(tmp_path, slug)
+    assert payload["route"] == "build"
+    assert payload["basis"] == "package-structure"
+    assert payload["structure"]["dep_width"] == 1
+
+
+def test_package_mode_dep_tangle_routes_explore(tmp_path):
+    """依赖纠缠（单任务依赖 ≥3）→ explore：宽依赖说明切片不干净，理解先行。"""
+    slug = "2026-10-12_structure-route-probe"
+    rows = [
+        ("基础", "只改 scripts/a.py", "pytest -q", ""),
+        ("次级", "只改 scripts/b.py", "pytest -q", ""),
+        ("文档", "只改 references/a.md", "rg -c a references", ""),
+        ("汇合", "只改 tests/test_all.py", "pytest -q tests", "task_0001, task_0002, task_0003"),
+    ]
+    _write_structure_package(tmp_path, slug, rows)
+    payload = _run_package(tmp_path, slug)
+    assert payload["route"] == "explore"
+    assert payload["structure"]["dep_width"] == 3
+    assert "纠缠" in payload["reason"]
+
+
+def test_package_mode_small_package_routes_local(tmp_path):
+    slug = "2026-10-12_structure-route-probe"
+    rows = [("小修", "只改 scripts/one.py", "pytest -q scripts", "")]
+    _write_structure_package(tmp_path, slug, rows)
+    payload = _run_package(tmp_path, slug)
+    assert payload["route"] == "local"
+    assert payload["lanes"] == []
+    assert "无强结构信号" in payload["reason"]
+
+
+def test_package_mode_ignores_text_diagnostic_input(tmp_path):
+    """--text 不是路由输入：小包即使配探索体描述也落 local（AUD-11 核心裁定）。"""
+    slug = "2026-10-12_structure-route-probe"
+    _write_structure_package(tmp_path, slug, [("小修", "只改 scripts/one.py", "pytest -q scripts", "")])
+    payload = _run_package(tmp_path, slug, "--text", "梳理支付失败链路：这个代码库结构不清，需要多面并行探索")
+    assert payload["route"] == "local"
+    assert payload["basis"] == "package-structure"
+
+
+def test_package_mode_counts_only_open_tasks(tmp_path):
+    """已完成任务不计入剩余工作形状：勾完 6/7 后只剩单任务小边界应落 local。"""
+    slug = "2026-10-12_structure-route-probe"
+    rows = [
+        ("实现入口", "只改 scripts/entry.py", "pytest -q", ""),
+        ("补测试", "只改 tests/test_entry.py", "pytest -q", "task_0001"),
+        ("同步文档", "只改 references/entry.md", "rg -c entry", "task_0001"),
+        ("服务端适配", "只改 server/entry_api.py", "pytest -q", "task_0001"),
+        ("清理旧接口", "只改 scripts/legacy.py", "python3 -m compileall", ""),
+        ("回归", "只改 tests/test_legacy.py", "pytest -q", "task_0005"),
+        ("收尾", "只改 scripts/final.py", "pytest -q", ""),
+    ]
+    _write_structure_package(tmp_path, slug, rows)
+    pkg = tmp_path / ".spec" / "specs" / slug
+    tasks = (pkg / "tasks.md").read_text(encoding="utf-8")
+    # 勾掉前 6 个任务，只留「收尾」
+    for title in ("实现入口", "补测试", "同步文档", "服务端适配", "清理旧接口", "回归"):
+        tasks = tasks.replace(f"- [ ] {title}", f"- [x] {title}")
+    (pkg / "tasks.md").write_text(tasks, encoding="utf-8")
+    payload = _run_package(tmp_path, slug)
+    assert payload["structure"]["task_count"] == 1
+    assert payload["route"] == "local"
+
+
+def test_package_mode_requires_root_and_slug_together():
+    proc = run_cli("--root", "/tmp")
+    assert proc.returncode == 2
+    assert "together" in proc.stderr
+
+
+def test_cli_without_any_input_fails_closed():
+    proc = run_cli()
+    assert proc.returncode == 2
+    assert "nothing to route" in proc.stderr
+
+
+def test_package_mode_missing_package_fails_closed(tmp_path):
+    """包不可读时 fail closed：绝不退回猜文本（那正是 AUD-11 要消除的语义）。"""
+    proc = run_cli("--root", str(tmp_path), "--slug", "2026-99-99_no-such-package")
+    assert proc.returncode == 1
+    assert "refusing to route from text" in proc.stderr
+
+
+def test_text_mode_is_marked_diagnostic():
+    proc = run_cli("--text", "多代理并行评审这个风险改动")
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["basis"] == "text-diagnostic"
+    assert payload["route"] == "review"
+
+
+# -- F12：历史 5.4 兼容——显式 route / opt-out 声明与结构路由的共存结论不变 --
+
+
+def test_package_mode_54_local_override_beats_structure(tmp_path):
+    """显式 `- route: local` 仍可把强结构信号（多任务宽边界）收回 local。"""
+    slug = "2026-10-12_structure-route-probe"
+    spec = _PACKAGE_SPEC + "\n## 5. 技术决策\n### 5.4 编排策略\n- route: local\n- ownership: 主线程\n"
+    rows = [
+        ("实现入口", "只改 scripts/entry.py", "pytest -q", ""),
+        ("补测试", "只改 tests/test_entry.py", "pytest -q", "task_0001"),
+        ("同步文档", "只改 references/entry.md", "rg -c entry", "task_0001"),
+        ("服务端适配", "只改 server/entry_api.py", "pytest -q", "task_0001"),
+        ("清理旧接口", "只改 scripts/legacy.py", "python3 -m compileall", ""),
+        ("回归", "只改 tests/test_legacy.py", "pytest -q", "task_0005"),
+    ]
+    _write_structure_package(tmp_path, slug, rows)
+    pkg = tmp_path / ".spec" / "specs" / slug
+    (pkg / "spec.md").write_text(spec, encoding="utf-8")
+    payload = _run_package(tmp_path, slug)
+    assert payload["route"] == "local"
+    assert payload["override"] is True
+    assert payload["source"] == "package-5.4"
+    assert payload["lanes"] == []
+
+
+def test_package_mode_54_optout_declarations_do_not_override_or_crash(tmp_path):
+    """未启用/适用外等 opt-out 声明不是 route token：路由器不覆盖、不抛错，按结构
+    决策（opt-out 的合法性结论由 run 门禁的 orchestration_strategy_errors 判定，
+    该层语义本包不动）。"""
+    slug = "2026-10-12_structure-route-probe"
+    tasks = "- [ ] 小修\n  - boundary: scripts/one.py\n  - verify: pytest -q\n"
+    for decl in ("- 未启用：单线执行。", "- 适用外：单会话执行，未启用编排。"):
+        spec = _PACKAGE_SPEC + f"\n## 5. 技术决策\n### 5.4 编排策略\n{decl}\n"
+        _write_package(tmp_path, slug, spec, tasks)
+        payload = _run_package(tmp_path, slug)
+        assert payload["route"] == "local", decl
+        assert payload["override"] is False, decl

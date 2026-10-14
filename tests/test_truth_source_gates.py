@@ -3,7 +3,7 @@
 Boundary (F8, plans/02 §F8): these tests pin only contracts that are
 mechanically checkable between shipped documents and module constants —
 
-  Gate A  references/commands.md /spec:doctor check catalog  <->  PROBE_IDS
+  Gate A  references/stages/doctor.md /spec:doctor check catalog  <->  PROBE_IDS
   Gate B  catalog "all N runtime files" count               <->  len(REQUIRED_RUNTIME_FILES)
   Gate C  smoke assert_runtime_layout required_paths/expected_slots <-> doctor constants
   Gate D  pyproject.toml public description                 <->  README-en.md first prose paragraph
@@ -35,7 +35,7 @@ from doctor_spec_environment import (  # noqa: E402  # type: ignore
     REQUIRED_RUNTIME_FILES,
 )
 
-REFERENCES_COMMANDS = ROOT / "references" / "commands.md"
+REFERENCES_COMMANDS = ROOT / "references" / "stages" / "doctor.md"
 SMOKE_SCRIPT = ROOT / "scripts" / "smoke_test_spec_skill.py"
 PYPROJECT = ROOT / "pyproject.toml"
 README_EN = ROOT / "README-en.md"

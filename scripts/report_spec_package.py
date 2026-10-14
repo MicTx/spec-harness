@@ -25,14 +25,15 @@ from dashboard_support import (
 )
 from handoff_support import handoff_brief
 from spec_package_support import (
+    acceptance_complete,
     active_package_slugs,
     add_specs_dir_arg,
-    checklist_complete,
     count_tasks,
     extract_title_from_content,
     read_regular_text,
     resolve_specs_child,
     resolve_specs_root,
+    task_title_signals_blocked,
     validate_slug,
 )
 from update_checkpoint_support import CheckpointStatus, detect_update_checkpoint
@@ -41,7 +42,8 @@ PENDING_TOKEN = " "
 COMPLETED_TOKEN = "x"
 IN_PROGRESS_TOKEN = ">"
 BLOCKED_TOKEN = "!"
-META_SECTION_TITLE = "使用规则"
+# tasks.md meta/rule block, bilingual: only task checkboxes outside it count.
+META_SECTION_TITLES = ("使用规则", "Usage Rules")
 
 
 @dataclass
@@ -59,7 +61,7 @@ class Task:
 
     @property
     def is_blocked(self) -> bool:
-        return not self.is_completed and (self.marker == BLOCKED_TOKEN or "阻塞" in self.text)
+        return not self.is_completed and (self.marker == BLOCKED_TOKEN or task_title_signals_blocked(self.text))
 
     @property
     def is_explicit_in_progress(self) -> bool:
@@ -97,7 +99,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def status_package_slugs(specs_dir: Path) -> list[str]:
-    """Discover complete packages plus interrupted updates with an incomplete triad."""
+    """Discover complete packages plus historical checkpoints with an
+    incomplete triad (retired mechanism, read-only recognition)."""
     packages = set(active_package_slugs(specs_dir))
     if not specs_dir.exists():
         return []
@@ -123,12 +126,12 @@ def parse_tasks(tasks_content: str) -> tuple[list[str], list[Task]]:
         line = raw_line.rstrip()
         if line.startswith("## "):
             current_section = line[3:].strip()
-            if current_section != META_SECTION_TITLE:
+            if current_section not in META_SECTION_TITLES:
                 sections.append(current_section)
             continue
 
         task_match = re.match(r"^(\s*)-\s\[(.)\]\s+(.*)$", line)
-        if task_match and current_section and current_section != META_SECTION_TITLE:
+        if task_match and current_section and current_section not in META_SECTION_TITLES:
             indent = len(task_match.group(1))
             marker = task_match.group(2)
             text = task_match.group(3).strip()
@@ -174,8 +177,9 @@ def section_progress(section_tasks: list[Task]) -> tuple[int, int]:
 def overall_state(
     tasks: list[Task],
     pending_questions: list[str],
-    checklist_content: str,
+    checklist_content: str | None,
     gate_gap_detected: bool,
+    spec_content: str = "",
 ) -> str:
     all_completed = all(task.is_completed for task in tasks) if tasks else False
     if any(task.is_blocked for task in tasks):
@@ -184,7 +188,7 @@ def overall_state(
         return HEALTH_RISK
     if pending_questions:
         return HEALTH_RISK
-    if all_completed and not checklist_complete(checklist_content):
+    if all_completed and not acceptance_complete(checklist_content, spec_content):
         return HEALTH_RISK
     return HEALTH_OK
 
@@ -194,23 +198,21 @@ def status_next_step(
     blocked_tasks: list[Task],
     pending_questions: list[str],
     all_completed: bool,
-    checklist_content: str,
+    checklist_content: str | None,
     gate_gaps: list[str],
     *,
     standalone_blocked: str | None = None,
     dependency_errors_list: list[str] | None = None,
     orchestration_errors_list: list[str] | None = None,
     checkpoint_pending: bool = False,
-    checkpoint_status: CheckpointStatus | None = None,
     gate_passed: bool = True,
+    spec_content: str = "",
 ) -> str:
-    """Priority ordering mirrors route_spec_package: checkpoint > blocked >
-    pending > definition gaps (incl. dependency errors) > orchestration >
-    acceptance/execution."""
-    if checkpoint_pending:
-        if checkpoint_status is not None and checkpoint_status.state == "corrupted":
-            return "处理未完成 update checkpoint：检查点记录损坏，需人工恢复"
-        return "处理未完成 update checkpoint：rollback 回滚更新，或 complete 确认保留"
+    """Priority ordering mirrors route_spec_package: blocked > pending >
+    definition gaps (incl. dependency errors) > orchestration >
+    acceptance/execution. A historical checkpoint is advisory-only here: the
+    recovery guidance rides the alert line, not the next step (check/done
+    still refuse while the file exists)."""
     if blocked_tasks:
         return f"解除阻塞：{blocked_tasks[0].text}"
     if standalone_blocked:
@@ -226,27 +228,40 @@ def status_next_step(
         return f"修正编排策略：{orchestration_errors_list[0]}"
     if primary_task and not all_completed:
         return primary_task.text
-    if all_completed and not checklist_complete(checklist_content):
+    if all_completed and not acceptance_complete(checklist_content, spec_content):
         return "完成剩余验收项"
     if all_completed and not gate_passed:
         return "修复验收未通过项"
+    if checkpoint_pending:
+        # Converged except for the historical checkpoint: resolving it is the
+        # only step left (check/done refuse while the file exists).
+        return "处理历史遗留 update checkpoint：按 Git 历史确认/恢复三件套后删除 update-checkpoint.json，再继续归档"
     return "整理交付结果并完成归档"
 
 
 def checkpoint_alert(status: CheckpointStatus | None) -> str:
+    """Advisory line for a historical unresolved checkpoint (Git recovery)."""
     if status is not None and status.state == "active" and status.checkpoint is not None:
-        return f"存在未完成 update checkpoint：更新「{status.checkpoint.intent}」尚未确认完成或回滚"
+        return (
+            f"存在未完成 update checkpoint（历史遗留，机制已退役）：更新「{status.checkpoint.intent}」"
+            "未确认完成；按 Git 历史确认/恢复三件套后删除 update-checkpoint.json，再继续 check/done"
+        )
     if status is not None and status.state == "corrupted":
-        return "存在未完成 update checkpoint：检查点记录损坏，需人工恢复"
-    return "存在未完成 update checkpoint：需确认完成、回滚或人工恢复"
+        return (
+            "存在未完成 update checkpoint（历史遗留，机制已退役）：记录已损坏；"
+            "按 Git 历史恢复三件套后删除 update-checkpoint.json，再重跑 check"
+        )
+    return "存在未完成 update checkpoint（历史遗留，机制已退役）：需按 Git 历史恢复后删除该文件"
 
 
 def render_unreadable_checkpoint(slug: str, status: CheckpointStatus) -> str:
     alert = checkpoint_alert(status)
     next_step = (
-        "处理未完成 update checkpoint：rollback 回滚更新，或 complete 确认保留"
+        "处理未完成 update checkpoint（历史遗留）：按 Git 历史确认/恢复三件套后"
+        "删除 update-checkpoint.json，再重跑 status"
         if status.state == "active"
-        else "处理未完成 update checkpoint：检查点记录损坏，需人工恢复"
+        else "处理未完成 update checkpoint（历史遗留）：记录已损坏；"
+        "按 Git 历史恢复三件套后删除 update-checkpoint.json，再重跑 status"
     )
     return (
         f"# {slug}\n\n"
@@ -262,7 +277,7 @@ def render_status(
     title: str,
     tasks_content: str,
     spec_content: str,
-    checklist_content: str,
+    checklist_content: str | None,
     sections: list[str],
     tasks: list[Task],
     *,
@@ -289,9 +304,12 @@ def render_status(
             "阻塞",
         )
 
-    health = overall_state(tasks, pending_questions, checklist_content, bool(ordered_gate_gaps))
-    if checkpoint_pending or r.blocked_tasks:
+    health = overall_state(tasks, pending_questions, checklist_content, bool(ordered_gate_gaps), spec_content)
+    if r.blocked_tasks:
         health = worst_health(health, HEALTH_BLOCKED)
+    if checkpoint_pending:
+        # Advisory-level attention mirroring route; gates still refuse.
+        health = worst_health(health, HEALTH_RISK)
     if orchestration_errors or (r.all_tasks_done and not r.overall_ok):
         health = worst_health(health, HEALTH_RISK)
 
@@ -315,7 +333,7 @@ def render_status(
         alerts.append("项目尚未满足最终验收要求")
 
     all_completed = r.all_tasks_done
-    if checkpoint_pending or r.blocked_tasks:
+    if r.blocked_tasks:
         active_stage = "run"
     elif all_completed and r.overall_ok:
         active_stage = "done"
@@ -337,8 +355,8 @@ def render_status(
         dependency_errors_list=dependency_errors_list,
         orchestration_errors_list=orchestration_errors,
         checkpoint_pending=checkpoint_pending,
-        checkpoint_status=checkpoint_status,
         gate_passed=r.overall_ok,
+        spec_content=spec_content,
     )
 
     dash = Dashboard(
@@ -415,7 +433,7 @@ def package_status_summary(
     slug: str,
     tasks_content: str,
     spec_content: str,
-    checklist_content: str,
+    checklist_content: str | None,
     sections: list[str],
     tasks: list[Task],
     *,
@@ -431,9 +449,12 @@ def package_status_summary(
     checkpoint_pending = bool(checkpoint_status and checkpoint_status.interrupted)
     standalone_blocked = bool(r.blocked_tasks) and not blocked_tasks
 
-    state = overall_state(tasks, pending_questions, checklist_content, bool(ordered_gate_gaps))
-    if checkpoint_pending or r.blocked_tasks:
+    state = overall_state(tasks, pending_questions, checklist_content, bool(ordered_gate_gaps), spec_content)
+    if r.blocked_tasks:
         state = worst_health(state, HEALTH_BLOCKED)
+    if checkpoint_pending:
+        # Advisory-level attention mirroring route; gates still refuse.
+        state = worst_health(state, HEALTH_RISK)
     if r.orchestration_errors or (r.all_tasks_done and not r.overall_ok):
         state = worst_health(state, HEALTH_RISK)
 
@@ -517,7 +538,9 @@ def render_multi_status(
         try:
             spec_content = read_regular_text(package_dir / "spec.md")
             tasks_content = read_regular_text(package_dir / "tasks.md")
-            checklist_content = read_regular_text(package_dir / "checklist.md")
+            # checklist.md is optional since v2 packages (F11).
+            checklist_path = package_dir / "checklist.md"
+            checklist_content: str | None = read_regular_text(checklist_path) if checklist_path.exists() else None
         except (OSError, UnicodeError, ValueError) as exc:
             if checkpoint_status.interrupted:
                 rows.append(f"- {slug}：已完成 未知；阻塞 {checkpoint_alert(checkpoint_status)}；任务记录不可读")
@@ -537,7 +560,7 @@ def render_multi_status(
         if not tasks:
             row = f"- {title}：尚未拆出可执行任务"
             if checkpoint_status.interrupted:
-                row += f"；阻塞 {checkpoint_alert(checkpoint_status)}"
+                row += f"；历史遗留 {checkpoint_alert(checkpoint_status)}"
                 checkpoint_packages += 1
                 if checkpoint_status.state == "corrupted":
                     corrupted_checkpoint_packages += 1
@@ -582,7 +605,7 @@ def render_multi_status(
         if summary["primary"] != "无":
             row += f"；当前 {summary['primary']}"
         if summary["checkpoint"] != "无":
-            row += f"；阻塞 {summary['checkpoint']}"
+            row += f"；历史遗留 {summary['checkpoint']}"
         if summary["blocked"] != "无":
             row += f"；阻塞 {summary['blocked']}"
         if summary["pending"] != "无":
@@ -605,7 +628,9 @@ def render_multi_status(
 
     alerts = []
     if checkpoint_packages:
-        alerts.append(f"{checkpoint_packages} 个项目存在未完成 update checkpoint")
+        alerts.append(
+            f"{checkpoint_packages} 个项目存在历史遗留 update checkpoint（机制已退役）：按 Git 历史恢复后删除该文件"
+        )
     if read_failure_packages:
         alerts.append(f"{read_failure_packages} 个项目状态读取失败或尚无可执行任务")
     if task_blocked_packages:
@@ -620,9 +645,9 @@ def render_multi_status(
         alerts.append(f"{dependency_packages} 个项目任务依赖存在错误")
 
     if corrupted_checkpoint_packages:
-        next_step = "处理未完成 update checkpoint：检查点记录损坏，需人工恢复"
+        next_step = "处理历史遗留 update checkpoint：记录已损坏；按 Git 历史恢复三件套后删除 update-checkpoint.json"
     elif checkpoint_packages:
-        next_step = "处理未完成 update checkpoint：rollback 回滚更新，或 complete 确认保留"
+        next_step = "处理历史遗留 update checkpoint：按 Git 历史确认/恢复三件套后删除 update-checkpoint.json"
     elif read_failure_packages:
         next_step = "修复项目记录读取失败或补齐可执行任务"
     elif task_blocked_packages:
@@ -708,7 +733,7 @@ def main() -> int:
         return 1
 
     checkpoint_status = detect_update_checkpoint(spec_path.parent) if args.view == "status" else None
-    for path in (spec_path, tasks_path, checklist_path):
+    for path in (spec_path, tasks_path):
         if not path.exists():
             if checkpoint_status is not None and checkpoint_status.interrupted:
                 print(render_unreadable_checkpoint(slug, checkpoint_status))
@@ -719,7 +744,8 @@ def main() -> int:
     try:
         spec_content = read_regular_text(spec_path)
         tasks_content = read_regular_text(tasks_path)
-        checklist_content = read_regular_text(checklist_path)
+        # checklist.md is optional since v2 packages (F11).
+        checklist_content: str | None = read_regular_text(checklist_path) if checklist_path.exists() else None
     except (OSError, UnicodeError, ValueError) as exc:
         if checkpoint_status is not None and checkpoint_status.interrupted:
             print(render_unreadable_checkpoint(slug, checkpoint_status))

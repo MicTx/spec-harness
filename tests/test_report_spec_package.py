@@ -49,11 +49,14 @@ def test_task_pending():
 
 @pytest.mark.parametrize("marker", [" ", ">"])
 def test_task_blocked_by_text(marker):
+    """Display keeps the title tag for task rows; the gate reads markers only."""
     t = Task(section="S", text="task 阻塞：waiting", indent=0, marker=marker)
     assert not t.is_completed
     assert t.is_blocked
     assert not t.is_pending
-    assert has_blocked_tasks(f"- [{marker}] {t.text}")
+    # AUD-10: the gate no longer reads titles (structured markers only);
+    # only the status/task-view row tagging keeps the heuristic.
+    assert not has_blocked_tasks(f"- [{marker}] {t.text}")
 
 
 def test_status_reports_unchecked_checklist_as_risk_and_check_next_step():
@@ -74,9 +77,9 @@ def test_status_reports_unchecked_checklist_as_risk_and_check_next_step():
 - assumption
 ### 2.3 待确认问题
 - 无
-    ## 3. 功能范围
-    ### 3.3 不在范围内
-    - none
+## 3. 功能范围
+### 3.3 不在范围内
+- exclusion: everything outside this fixture's boundary
 
 ## 4. 最小实现路径
 - one
@@ -117,7 +120,7 @@ VALID_STATUS_SPEC = """\
 - 无
 ## 3. 功能范围
 ### 3.3 不在范围内
-- none
+- exclusion: everything outside this fixture's boundary
 ## 4. 最小实现路径
 - one
 - two

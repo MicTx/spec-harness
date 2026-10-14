@@ -1,11 +1,12 @@
 """Tests for scripts/verify_install_parity.py (install-vs-repo parity contract).
 
 The three by-design asymmetries between a checkout and an installed copy —
-the export-time \\u2063 signature, the maintainer SCRIPT_BLACKLIST, and the
-ROOT_FILES-only install root — are pinned as PASS conditions here, plus the
-failure shapes that must go red: version drift, content drift, missing
-shipped files, stale maintainer scripts, unsigned installs, and a signature
-leaked into the repo source.
+the export-time \\u2063 signature riding in NOTICE, the maintainer
+SCRIPT_BLACKLIST, and the ROOT_FILES-only install root — are pinned as PASS
+conditions here, plus the failure shapes that must go red: version drift,
+content drift, missing shipped files, stale maintainer scripts, a NOTICE
+without a signature, and a signature leaked into the repo source or into
+the entry SKILL.md.
 """
 
 from __future__ import annotations
@@ -57,11 +58,10 @@ def build_install(
         target = install / source.relative_to(repo)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(source.read_bytes())
-    skill_path = install / "SKILL.md"
     if sign:
-        # the real watermark shape: MARK + PAD-bitstream + MARK
-        skill_path.write_text(
-            skill_path.read_text(encoding="utf-8") + "\u2063\u2060\u200b\u2060\u200b\u2063", encoding="utf-8"
+        # the real watermark shape: NOTICE = visible text + MARK + PAD-bitstream + MARK
+        (install / "NOTICE").write_text(
+            "distribution notice\n" + "\u2063\u2060\u200b\u2060\u200b\u2063", encoding="utf-8"
         )
     if mutate:
         mutate(install)
@@ -90,10 +90,12 @@ class TestParityContract:
         assert report["warnings"] == ["extra file in install (user-owned?): notes.md"]
         # the installer sidecar is expected, never a warning
         assert all(".spec-skill-install" not in w for w in report["warnings"])
-        # the three asymmetries are by design and never produce failures
+        # the asymmetries are by design and never produce failures
         assert not (install / "RELEASE.md").exists()
         assert not (install / "scripts" / "build_release.py").exists()
-        assert "\u2063" in (install / "SKILL.md").read_text(encoding="utf-8")
+        # the entry file stays plain text; the signature rides in NOTICE
+        assert "\u2063" not in (install / "SKILL.md").read_text(encoding="utf-8")
+        assert "\u2063" in (install / "NOTICE").read_text(encoding="utf-8")
 
     def test_version_drift_fails(self, tmp_path, capsys):
         repo = build_repo(tmp_path)
@@ -125,22 +127,41 @@ class TestParityContract:
             in parity.audit_install(install, repo)["failures"]
         )
 
-    def test_unsigned_install_fails(self, tmp_path):
+    def test_notice_without_signature_fails(self, tmp_path):
+        # a NOTICE carrier that lost its mark is a broken signed install
+        repo = build_repo(tmp_path)
+        install = build_install(repo)
+
+        def strip_mark(install: Path) -> None:
+            notice = install / "NOTICE"
+            notice.write_text("distribution notice\n", encoding="utf-8")
+
+        strip_mark(install)
+        assert any(
+            "NOTICE carries no distribution signature" in f for f in parity.audit_install(install, repo)["failures"]
+        )
+
+    def test_signature_in_entry_file_fails(self, tmp_path):
+        # stale pre-AUD-17 install: the mark still sits in SKILL.md
         repo = build_repo(tmp_path)
         install = build_install(repo, sign=False)
-        assert any("no distribution signature" in f for f in parity.audit_install(install, repo)["failures"])
+        skill = install / "SKILL.md"
+        skill.write_text(skill.read_text(encoding="utf-8") + "\u2063\u2060\u200b\u2060\u200b\u2063", encoding="utf-8")
+        failures = parity.audit_install(install, repo)["failures"]
+        assert any("install SKILL.md carries a distribution signature" in f for f in failures)
+        assert any("content drift: SKILL.md" in f for f in failures)
 
     def test_signature_leaked_into_repo_fails(self, tmp_path):
         repo = build_repo(tmp_path, stamped_skill=True)
         install = build_install(repo)
         assert any("repo SKILL.md is signature-stamped" in f for f in parity.audit_install(install, repo)["failures"])
 
-    def test_skill_drift_beyond_the_signature_fails(self, tmp_path):
-        # tampering that survives signature-stripping is real content drift
+    def test_skill_drift_fails(self, tmp_path):
+        # the entry file is byte-compared now — any tampering is real drift
         repo = build_repo(tmp_path)
 
         def mutate(install: Path) -> None:
-            (install / "SKILL.md").write_text("# tampered skill\n" + "\u2063\u2060\u2063", encoding="utf-8")
+            (install / "SKILL.md").write_text("# tampered skill\n", encoding="utf-8")
 
         install = build_install(repo, mutate=mutate)
         assert "content drift: SKILL.md" in parity.audit_install(install, repo)["failures"]

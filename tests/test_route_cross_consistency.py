@@ -12,22 +12,24 @@
     升级为泛化不变量：黄金语料全集（GOLDEN_TRIPLES + workflow slot POSITIVES/
     REVIEWER_REPRO_CASES（按名动态读取，slot 新增正例自动入不变量语料）+
     INVARIANT_CORPUS）逐条实测，非显式、非登记共存的 workflowRecommended=True 行
-    route ∈ {explore, build, review}。两类例外层显式登记、各自单独钉住：显式
+    route ∈ {explore, build, review}。三类例外层显式登记、各自单独钉住：显式
     workflow 请求（WORKFLOW_EXPLICIT 词表命中）route=local + wf=True 是已知有意
     的例外（用户显式指定执行面，advisory 建议不改写五路由判定）；panel 最小形状
     探针的 local 共存按 spec §8 回写裁定（2026-10-08）登记为
-    PANEL_LOCAL_COEXISTENCE_TEXTS 冻结共层——advisory 建议在书面激活域外不激活，
+    PANEL_LOCAL_COEXISTENCE_TEXTS 冻结共层；fan-out 英文正例的 local 共存按
+    F12/AUD-11 删字数回退裁定（2026-10-12）登记为 FANOUT_LOCAL_COEXISTENCE_TEXTS
+    冻结共层（文本零路由信号一律 local，advisory 建议在书面激活域外不激活，
     是合法设计态（与 local+loop 共存同构）。
 
 (b) 显式负分支——空/乱码文本 ⇒ route=local 且 score=0（tests/test_route_decision.py
     空文本先例）、loopRecommended=False 且 mode=none（loop_route.py 空文本分支）、
     workflowRecommended=False 且 mode=none（workflow_route.py 空文本分支）。
-    超长全零文本按 route_decision.py「全零信号按字数粗分」落到 explore（score 仍 0），
+    超长全零文本同样落 local（F12/AUD-11 删除字数回退后零信号一律 local，score 仍 0），
     一并钉住。
 
 (c) 组合语义黄金白名单——冻结实测三元组 (route, loopRecommended, workflowRecommended)，
     显式含 local+True 共存例：这是合法语义而非矛盾（slot 激活独立于编排路由，
-    见 SKILL.md「Activation rule」与 commands.md `/spec:run` 第 3 步）。
+    见 SKILL.md「Activation rule」与 stages/run.md 第 3 步）。
     任一决策器行为漂移即红，强制有意识复核而非静默语义变更。
     更新白名单必须是显式 diff 评审：改动本文件语料表的提交须单独可读、注明
     复核结论，禁止顺手重录。
@@ -212,6 +214,17 @@ PANEL_LOCAL_COEXISTENCE_TEXTS = [
     ("judge panel 评一下三个方案", "local", False, True, "perspective-panel"),
 ]
 
+# F12（2026-10-12）fan-out 共存冻结层（AUD-11 删字数回退的裁定收口）：该 slot 正例
+# 自带 fan-out 组合形态信号（wf 强推荐 batch-fanout）但无任何五路由文本信号——旧版
+# 靠 len>=40 的字数回退偶然落 explore，删回退后文本零信号一律 local。wf=True 与
+# route=local 共存是合法设计态（与 local+loop、panel+local 同构；advisory 建议不改写
+# 五路由判定，路由真源是包结构决策面）。成员须仍在 slot 语料库（登记过期即红）；
+# 改任一冻结值或成员集须显式 diff 评审（复核结论随 F12 提交单独可读）。
+# (text, route, loopRecommended, workflowRecommended, mode) 2026-10-12 实测。
+FANOUT_LOCAL_COEXISTENCE_TEXTS = [
+    ("fan out one reviewer per changed file, then synthesize", "local", False, True, "batch-fanout"),
+]
+
 
 def test_invariant_corpus_stays_loop_form_free():
     for text in INVARIANT_CORPUS:
@@ -308,6 +321,24 @@ def test_panel_minimal_probes_stay_registered_local_advisory_coexistence(
         assert workflow_payload["mode"] == expected_mode, f"{text!r} panel 共存层 mode 漂移: {workflow_payload['mode']}"
 
 
+def test_fanout_local_coexistence_layer_stays_frozen(route_decision, loop_route, workflow_route, workflow_slot_corpus):
+    """F12 fan-out 共存冻结层钉：文本零路由信号 + wf 强推荐的 slot 正例与 route=local
+    共存是合法设计态；成员须仍在 slot 语料库。改任一值、成员增删或登记过期即红，
+    须显式 diff 复核。"""
+    slot_texts = set(workflow_slot_corpus["positives"]) | set(workflow_slot_corpus["reviewer_repro"])
+    for text, expected_route, expected_loop, expected_workflow, expected_mode in FANOUT_LOCAL_COEXISTENCE_TEXTS:
+        assert text in slot_texts, f"登记成员已不在 slot 语料库（登记过期，须复核收口）: {text!r}"
+        actual = _triple(route_decision, loop_route, workflow_route, text)
+        assert actual == (expected_route, expected_loop, expected_workflow), (
+            f"fan-out 共存层冻结值漂移: {text!r} "
+            f"expected={(expected_route, expected_loop, expected_workflow)} actual={actual}"
+        )
+        workflow_payload = workflow_route.route(text)
+        assert workflow_payload["mode"] == expected_mode, (
+            f"{text!r} fan-out 共存层 mode 漂移: {workflow_payload['mode']!r}"
+        )
+
+
 def test_nonexplicit_workflow_recommendation_stays_inside_written_activation_domain(
     route_decision, workflow_route, workflow_slot_corpus
 ):
@@ -322,9 +353,10 @@ def test_nonexplicit_workflow_recommendation_stays_inside_written_activation_dom
     corpus += workflow_slot_corpus["reviewer_repro"]
     corpus += INVARIANT_CORPUS
     registered_panels = {row[0] for row in PANEL_LOCAL_COEXISTENCE_TEXTS}
+    registered_fanout = {row[0] for row in FANOUT_LOCAL_COEXISTENCE_TEXTS}
     offenders = []
     for text in dict.fromkeys(corpus):  # 去重保序：跨源重复文本只测一次
-        if _explicit_hits(workflow_route, text) or text in registered_panels:
+        if _explicit_hits(workflow_route, text) or text in registered_panels or text in registered_fanout:
             continue
         workflow_payload = workflow_route.route(text)
         if workflow_payload["workflowRecommended"] is not True:
@@ -358,11 +390,29 @@ def test_negative_text_fails_closed_on_all_three_layers(route_decision, loop_rou
         assert workflow_payload["mode"] == "none", f"{text!r}: 负样本 mode 必须为 none"
 
 
-def test_long_unclassifiable_text_falls_back_to_explore_with_zero_score(route_decision):
-    """route_decision.py「全零信号按字数粗分」分支：超长全零文本 explore（理解先行）、score 仍 0。"""
+def test_long_unclassifiable_text_stays_local_with_zero_score(route_decision):
+    """F12/AUD-11 删字数回退钉：超长全零文本一律 local（无字数分流）、score 仍 0。"""
     payload = route_decision.decide("a" * 10000)
-    assert payload["route"] == "explore"
+    assert payload["route"] == "local"
     assert payload["score"] == 0
+
+
+def test_loop_weak_words_alone_never_recommend(loop_route):
+    """F12 loop 触发域收敛钉：裸循环词（循环/多轮/迭代/反复/loop）与团队词单独
+    或共现都不推荐（确定性降级为普通 sidecar 编排）；收敛绑定语义/显式轮数仍推荐。"""
+    for text in (
+        "修复事件循环里的空指针",
+        "重构这个迭代器",
+        "多轮谈判后定方案",
+        "多代理循环处理这批任务",
+        "event loop 崩溃修复",
+    ):
+        payload = loop_route.route(text)
+        assert payload["loopRecommended"] is False, f"{text!r} 弱信号不得单独推荐: {payload!r}"
+        assert payload["mode"] == "none", text
+    for text in ("循环重试直至通过", "迭代收敛这个方案", "分 3 轮推进重构"):
+        payload = loop_route.route(text)
+        assert payload["loopRecommended"] is True, f"{text!r} 强信号必须仍在推荐域: {payload!r}"
 
 
 # -- (c) 组合语义黄金白名单：冻结实测三元组 --
@@ -395,6 +445,11 @@ GOLDEN_TRIPLES = [
     ("实现支付失败修复，模块边界清晰可并行开发，前端/后端/测试可拆分", "build", False, False),
     # 纯局部负例
     ("修复 README 中的一个错别字", "local", False, False),
+    # F12（2026-10-12）loop 触发域收敛新增：裸循环词不再单独推荐（确定性降级为
+    # 普通 sidecar 编排）；组合收敛语义仍由 team-loop 承接。实测入库，改判须显式 diff 复核。
+    ("修复事件循环里的空指针", "local", False, False),
+    ("多代理循环处理这批任务", "build", False, False),
+    ("方案多轮打磨后收敛", "local", True, False),
 ]
 
 
@@ -468,7 +523,7 @@ def test_decision_table_documents_loop_local_coexistence_legality():
     section = _section(ORCHESTRATION_DOC.read_text(encoding="utf-8"), DECISION_TABLE_HEADING)
     assert "共存" in section and "合法" in section, "判定表必须写明共存合法性"
     assert "SKILL.md" in section, "共存说明须引用 SKILL.md Activation rule"
-    assert "commands.md" in section, "共存说明须引用 commands.md /spec:run 第 3 步"
+    assert "stages/run.md" in section, "共存说明须引用 stages/run.md 第 3 步（阶段契约拆分后的新址）"
 
 
 def test_workflow_readme_plan_step_carries_self_contained_delegation_package():

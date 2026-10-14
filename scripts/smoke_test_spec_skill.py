@@ -6,6 +6,7 @@ Behavior-level smoke test for the spec skill scripts.
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import json
 import os
@@ -51,6 +52,7 @@ def mark_all_tasks_done(path: Path) -> None:
 
 
 def mark_checklist_passed(path: Path) -> None:
+    """Legacy v1 fixture helper; v2 packages have no checklist.md at all."""
     content = path.read_text(encoding="utf-8")
     content = content.replace("- [ ]", "- [x]")
     content = content.replace("**验收结果**：待修复", "**验收结果**：通过")
@@ -71,6 +73,39 @@ def mark_checklist_passed(path: Path) -> None:
     path.write_text(content, encoding="utf-8")
 
 
+def mark_success_criteria_passed(path: Path) -> None:
+    """v2 acceptance surface: tick every §6 success-criterion checkbox."""
+    content = path.read_text(encoding="utf-8")
+    section_start = content.index("## 6. 成功标准与验证方式")
+    section_end = content.index("## 7.", section_start)
+    section = content[section_start:section_end].replace("- [ ]", "- [x]")
+    path.write_text(content[:section_start] + section + content[section_end:], encoding="utf-8")
+
+
+def success_criteria_unchecked(path: Path) -> int:
+    content = path.read_text(encoding="utf-8")
+    section_start = content.index("## 6. 成功标准与验证方式")
+    section_end = content.index("## 7.", section_start)
+    return content[section_start:section_end].count("- [ ]")
+
+
+def record_runs(slug: str, root: Path, specs_dir: str = ".spec") -> None:
+    """Execute the machine verifies so the evidence: runs gate is satisfiable."""
+    completed = run_result(
+        str(SCRIPTS_DIR / "spec_verify.py"),
+        "run",
+        "--root",
+        str(root),
+        "--specs-dir",
+        specs_dir,
+        "--slug",
+        slug,
+        "--all",
+    )
+    if completed.returncode != 0:
+        raise AssertionError(f"spec_verify run must succeed:\n{completed.stdout}\n{completed.stderr}")
+
+
 def populate_spec(path: Path) -> None:
     replace_all(
         path,
@@ -80,7 +115,9 @@ def populate_spec(path: Path) -> None:
             "完成后能持续提供什么价值": "让 route/status/check 输出可依赖",
             "- 事实 A": "- 已确认 fresh package 需要先澄清而不是直接执行",
             "- 假设 A": "- 保持标准库实现，不引入第三方依赖",
-            "- 问题 A": "- 无",
+            # v2 template ships the 2.3 question as an unchecked checkbox; the
+            # smoke package has no open questions, so fill the 无 declaration.
+            "- [ ] 问题 A": "- 无",
             # spec.md functional boxes must be checked once delivered — the
             # checker's spec.md checkbox gate fails any unchecked box.
             "- [ ] 功能 A：描述": "- [x] 功能 A：收敛模板源并修补状态机判断",
@@ -103,6 +140,24 @@ def populate_spec(path: Path) -> None:
                 "或 package/integration 检查暴露跨边界回归时，才把范围升级并记录理由"
             ): "- 升级触发：共享基础设施或发布载荷变化时记录理由并升级",
             "- 风险点：xxx -> 缓解措施": "- 风险点：修复破坏旧输出 -> 缓解措施：用 smoke test 覆盖关键分支",
+        },
+    )
+
+
+def populate_tasks(path: Path, slug: str, specs_dir: str = ".spec") -> None:
+    """Replace template task verify commands with real, passing probes.
+
+    The template ships example commands that fail unless replaced
+    (fail-closed by construction); the smoke swaps each for a command that
+    actually verifies the package fixture exists.
+    """
+    probe = f"python3 -c \"from pathlib import Path; assert Path('{specs_dir}/specs/{slug}/tasks.md').exists()\""
+    replace_all(
+        path,
+        {
+            "`python3 -m pytest -q tests/test_skeleton.py`（替换为本项目真实初始化验证命令）": f"`{probe}`",
+            "`python3 -m pytest -q tests/test_core_feature_a.py`（替换为本项目真实测试命令）": f"`{probe}`",
+            "`python3 -m pytest -q tests/test_critical_path.py`（替换为本项目真实集成验证命令）": f"`{probe}`",
         },
     )
 
@@ -161,7 +216,6 @@ def assert_runtime_layout(root: Path) -> None:
         "agents/planner.md",
         "hooks/pre-commit",
         "hooks/pre-push",
-        "hooks/spec_disk_truth_gate.py",
         "scripts/safe_open_support.py",
         "scripts/issue_closure_support.py",
         "scripts/init_spec_package.py",
@@ -338,7 +392,139 @@ def assert_orchestration_runtime() -> None:
     log("orchestration runtime ok")
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Behavior-level smoke test for the spec skill scripts.")
+    parser.add_argument(
+        "--profile",
+        choices=("core", "full"),
+        default="full",
+        help=(
+            "core: kernel subset for INSTALL_PROFILE=core installs — core layout plus the "
+            "init->check->done gate chain; full (default): the complete sequence"
+        ),
+    )
+    return parser.parse_args()
+
+
+def assert_core_layout(root: Path) -> None:
+    """F16 core profile: the kernel runtime tree without extension components.
+
+    The core profile is meaningful on an installed tree; the authoring
+    checkout always carries slots/ and agents/ and fails this check by
+    design.
+    """
+    required_paths = (
+        "SKILL.md",
+        "install.sh",
+        "hooks/pre-commit",
+        "hooks/pre-push",
+        "scripts/init_spec_package.py",
+        "scripts/route_spec_package.py",
+        "scripts/check_spec_package.py",
+        "scripts/check_all_spec_packages.py",
+        "scripts/complete_spec_package.py",
+        "scripts/push_spec_package.py",
+        "scripts/spec_verify.py",
+        "scripts/spec_package_support.py",
+        "references/commands.md",
+        "references/output-contracts.md",
+    )
+    for relative in required_paths:
+        if not (root / relative).exists():
+            raise AssertionError(f"missing core runtime file: {root / relative}")
+    for excluded in ("slots", "agents", "server"):
+        if (root / excluded).exists():
+            raise AssertionError(f"core profile must not ship {excluded}/: {root / excluded}")
+    # Chain-family scripts are extension surface (F16 sub-step 2): the
+    # kernel gates never import them. payload_contract is maintainer-side
+    # (never shipped), so the smoke pins the same list inline.
+    for excluded in (
+        "autorun_spawn.py",
+        "autoplan_spawn.py",
+        "autoplan_gate.py",
+        "chain_spawn_support.py",
+        "chain_recovery.py",
+        "sweep_chain_windows.py",
+    ):
+        if (root / "scripts" / excluded).exists():
+            raise AssertionError(f"core profile must not ship scripts/{excluded}")
+
+
+def run_core_gate_chain() -> None:
+    """Core subset: init -> populate -> check gate passes -> done stage.
+
+    Mirrors the full smoke's package lifecycle trimmed to the kernel chain
+    the core profile promises, skipping the orchestration, slot-registry,
+    and export blocks owned by the full tree.
+    """
+    temp_root = Path(tempfile.mkdtemp(prefix="spec-smoke-core-"))
+    try:
+        run(
+            str(SCRIPTS_DIR / "init_spec_package.py"),
+            "--root",
+            str(temp_root),
+            "--slug",
+            "2026-06-12_smoke-test",
+            "--title",
+            "Smoke Test",
+        )
+        package_dir = temp_root / ".spec" / "specs" / "2026-06-12_smoke-test"
+        # The worktree fingerprint behind runs.jsonl needs a Git workspace;
+        # same promotion the full sequence does before its recordings.
+        setup_git_repo(temp_root)
+        populate_spec(package_dir / "spec.md")
+        populate_tasks(package_dir / "tasks.md", "2026-06-12_smoke-test")
+        active_route_state = run(
+            str(SCRIPTS_DIR / "route_spec_package.py"),
+            "--root",
+            str(temp_root),
+            "--slug",
+            "2026-06-12_smoke-test",
+            "--format",
+            "json",
+        )
+        assert_contains(active_route_state, '"stage": "run"')
+        mark_all_tasks_done(package_dir / "tasks.md")
+        mark_success_criteria_passed(package_dir / "spec.md")
+        record_runs("2026-06-12_smoke-test", temp_root)
+        passed_check_result = run_result(
+            str(SCRIPTS_DIR / "check_spec_package.py"),
+            "--root",
+            str(temp_root),
+            "--slug",
+            "2026-06-12_smoke-test",
+        )
+        if passed_check_result.returncode != 0:
+            raise AssertionError(
+                f"core check gate must pass:\n{passed_check_result.stdout}\n{passed_check_result.stderr}"
+            )
+        assert_contains(passed_check_result.stdout, "验收结果：通过")
+        done_route_state = run(
+            str(SCRIPTS_DIR / "route_spec_package.py"),
+            "--root",
+            str(temp_root),
+            "--slug",
+            "2026-06-12_smoke-test",
+            "--format",
+            "json",
+        )
+        assert_contains(done_route_state, '"stage": "done"')
+        log("core gate chain ok (init -> run -> check -> done)")
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def main() -> int:
+    args = parse_args()
+    if args.profile == "core":
+        assert_core_layout(REPO_ROOT)
+        log("core layout ok")
+        assert_doctor_self_check(REPO_ROOT)
+        assert_gate_counterexamples()
+        run_core_gate_chain()
+        log("OK")
+        return 0
+
     temp_root = Path(tempfile.mkdtemp(prefix="spec-smoke-"))
     try:
         assert_runtime_layout(REPO_ROOT)
@@ -365,7 +551,9 @@ def main() -> int:
         package_dir = temp_root / ".spec" / "specs" / "2026-06-12_smoke-test"
         spec_path = package_dir / "spec.md"
         tasks_path = package_dir / "tasks.md"
-        checklist_path = package_dir / "checklist.md"
+        # v2 packages ship no checklist.md (F11); acceptance lives in spec §6.
+        if (package_dir / "checklist.md").exists():
+            raise AssertionError("v2 init must not render checklist.md")
 
         run(
             str(SCRIPTS_DIR / "init_spec_package.py"),
@@ -398,8 +586,8 @@ def main() -> int:
             "status",
         )
         assert_contains(multi_status, "## 项目概览")
-        assert_contains(multi_status, "Smoke Test：已完成 0/7")
-        assert_contains(multi_status, "Second Pack：已完成 0/7")
+        assert_contains(multi_status, "Smoke Test：已完成 0/3")
+        assert_contains(multi_status, "Second Pack：已完成 0/3")
         log("multi-package status overview ok")
 
         fresh_route = run(
@@ -497,6 +685,7 @@ def main() -> int:
         log("fresh package routes to status (clarification-first)")
 
         populate_spec(spec_path)
+        populate_tasks(tasks_path, "2026-06-12_smoke-test")
         active_route = run(
             str(SCRIPTS_DIR / "route_spec_package.py"),
             "--root",
@@ -504,7 +693,7 @@ def main() -> int:
             "--slug",
             "2026-06-12_smoke-test",
         )
-        assert_contains(active_route, "固化问题定义、关键假设与非目标：进行")
+        assert_contains(active_route, "初始化最小项目骨架：进行")
         assert "/spec:" not in active_route
         active_route_state = run(
             str(SCRIPTS_DIR / "route_spec_package.py"),
@@ -525,8 +714,8 @@ def main() -> int:
             "--slug",
             "2026-06-12_smoke-test",
         )
-        unchecked = checklist_path.read_text().count("- [ ]")
-        assert_contains(check_route, f"项目尚有 {unchecked} 项验收未完成")
+        unchecked_criteria = success_criteria_unchecked(spec_path)
+        assert_contains(check_route, f"项目尚有 {unchecked_criteria} 项成功标准未达成")
         check_route_state = run(
             str(SCRIPTS_DIR / "route_spec_package.py"),
             "--root",
@@ -539,15 +728,26 @@ def main() -> int:
         assert_contains(check_route_state, '"stage": "check"')
         log("populated spec -> run; tasks done -> check")
 
-        mark_checklist_passed(checklist_path)
+        # v2 acceptance: §6 criteria ticked + machine verifies recorded. All
+        # edits after the recording stay under .spec/, which the worktree
+        # fingerprint excludes, so the runs gate stays fresh.
+        mark_success_criteria_passed(spec_path)
         populate_spec(custom_package / "spec.md")
+        populate_tasks(custom_package / "tasks.md", "2026-06-12_custom-specs", specs_dir="spec-state")
         mark_all_tasks_done(custom_package / "tasks.md")
-        mark_checklist_passed(custom_package / "checklist.md")
+        mark_success_criteria_passed(custom_package / "spec.md")
         # Second package must also pass repo-wide check.
         second = temp_root / ".spec" / "specs" / "2026-06-12_second-pack"
         populate_spec(second / "spec.md")
+        populate_tasks(second / "tasks.md", "2026-06-12_second-pack")
         mark_all_tasks_done(second / "tasks.md")
-        mark_checklist_passed(second / "checklist.md")
+        mark_success_criteria_passed(second / "spec.md")
+        # Every spec-state (tracked, non-.spec) edit precedes the recordings:
+        # the worktree fingerprint is global, so one late edit would stale
+        # every package's runs evidence.
+        record_runs("2026-06-12_smoke-test", temp_root)
+        record_runs("2026-06-12_second-pack", temp_root)
+        record_runs("2026-06-12_custom-specs", temp_root, specs_dir="spec-state")
         passed_check_result = run_result(
             str(SCRIPTS_DIR / "check_spec_package.py"),
             "--root",
@@ -560,7 +760,7 @@ def main() -> int:
                 f"passed spec check must return zero:\n{passed_check_result.stdout}\n{passed_check_result.stderr}"
             )
         assert_contains(passed_check_result.stdout, "验收结果：通过")
-        assert_contains(passed_check_result.stdout, "有效证据：4 项")
+        assert_contains(passed_check_result.stdout, "有效证据：运行证据 runs.jsonl 满足")
         assert "## 需要关注" not in passed_check_result.stdout
         passed_all_result = run_result(
             str(SCRIPTS_DIR / "check_all_spec_packages.py"),
@@ -581,7 +781,7 @@ def main() -> int:
             "--slug",
             "2026-06-12_smoke-test",
         )
-        assert_contains(done_route, "- 已完成：7/7")
+        assert_contains(done_route, "- 已完成：3/3")
         assert_contains(done_route, "整理交付结果并完成归档")
         done_route_state = run(
             str(SCRIPTS_DIR / "route_spec_package.py"),
@@ -593,7 +793,7 @@ def main() -> int:
             "json",
         )
         assert_contains(done_route_state, '"stage": "done"')
-        log("checklist passed -> done")
+        log("success criteria + runs evidence -> done")
 
         export_script = SCRIPTS_DIR / "export_skill_package.py"
         if export_script.exists():

@@ -113,10 +113,18 @@ PROTOCOL_ARTIFACT_NAMES = frozenset(
         "plan.json",
         "run.json",
         "runs.md",
+        "runs.jsonl",
         "evidence.json",
         "spec.md",
         "tasks.md",
         "checklist.md",
+        "handoff.md",
+        "completion-summary.md",
+        "update-checkpoint.json",
+        "chain.json",
+        "volatile.json",
+        "MANIFEST.md",
+        "path.json",
         "workflow_fanout.py",
     }
 )

@@ -4,6 +4,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -88,12 +89,16 @@ def test_export_end_to_end():
         assert (output / "SKILL.md").exists()
         assert (output / "agents" / "openai.yaml").exists()
         assert (output / "references" / "templates.md").exists()
-        assert (output / "hooks" / "spec_disk_truth_gate.py").exists()
         assert (output / "hooks" / "pre-commit").exists()
         assert (output / "hooks" / "pre-push").exists()
         assert (output / "scripts" / "spec_package_support.py").exists()
         assert (output / "scripts" / "issue_closure_support.py").is_file()
         assert (output / "scripts" / "init_spec_package.py").exists()
+        # full keeps the chain-family scripts (extension surface under core
+        # only — planning F16 sub-step 2).
+        assert (output / "scripts" / "autorun_spawn.py").is_file()
+        assert (output / "scripts" / "autoplan_spawn.py").is_file()
+        assert (output / "scripts" / "chain_recovery.py").is_file()
         assert (output / "scripts" / "route_decision.py").is_file()
         assert (output / "agents" / "orchestrator.md").is_file()
         assert (output / "agents" / "planner.md").is_file()
@@ -113,6 +118,8 @@ def test_export_end_to_end():
         exported = (output / "SKILL.md").read_text(encoding="utf-8")
         assert "\u2063" not in exported
         assert exported == (skill_root / "SKILL.md").read_text(encoding="utf-8")
+        # Unsigned export: no NOTICE carrier either.
+        assert not (output / "NOTICE").exists()
         # __pycache__ must not leak into the export
         assert not any(output.rglob("__pycache__")), "__pycache__ leaked into export"
         assert not any(output.rglob("*.pyc")), "*.pyc leaked into export"
@@ -213,7 +220,7 @@ def test_release_and_plugin_require_watermark(tmp_path: Path):
     assert "signing identity" in plugin.stderr
 
 
-def test_export_stamps_entry_without_leaking_identity(tmp_path: Path):
+def test_export_stamps_notice_carrier_without_leaking_identity(tmp_path: Path):
     skill_root = Path(__file__).resolve().parent.parent
     identity = {
         "holder": "Rights Holder Example",
@@ -246,11 +253,15 @@ def test_export_stamps_entry_without_leaking_identity(tmp_path: Path):
     )
     assert result.returncode == 0, result.stderr
 
+    # AUD-17: the entry SKILL.md stays byte-identical plain text; the
+    # invisible signature rides in NOTICE.
     exported = (output / "SKILL.md").read_text(encoding="utf-8")
-    visible = exported.split("\u2063", 1)[0]
-    assert visible == (skill_root / "SKILL.md").read_text(encoding="utf-8")
-    assert "Rights Holder Example" not in exported
-    assert "holder@example.invalid" not in exported
+    assert exported == (skill_root / "SKILL.md").read_text(encoding="utf-8")
+    assert not any(unicodedata.category(ch) == "Cf" for ch in exported)
+    notice = (output / "NOTICE").read_text(encoding="utf-8")
+    assert "\u2063" in notice
+    assert "Rights Holder Example" not in notice
+    assert "holder@example.invalid" not in notice
     shipped = "\n".join(
         path.read_text(encoding="utf-8", errors="ignore") for path in output.rglob("*") if path.is_file()
     )
@@ -263,7 +274,8 @@ def test_export_stamps_entry_without_leaking_identity(tmp_path: Path):
     sys.path.insert(0, str(skill_root / "scripts"))
     from skill_watermark import verify
 
-    assert verify(exported, key_path.read_bytes())["channel"] == "example-channel-only"
+    # the signature is verifiable, now from the NOTICE carrier
+    assert verify(notice, key_path.read_bytes())["channel"] == "example-channel-only"
 
 
 TREE_MARKER = re.compile(r"^([ │├└─]*)[├└]──\s*(.+?)\s*$")
@@ -294,7 +306,8 @@ def _readme_export_tree_files(readme: str) -> set[str]:
 
 
 def _exporter_expected_files() -> set[str]:
-    from export_skill_package import COPY_DIRS, IGNORE_PATTERNS, ROOT_FILES, SCRIPT_FILES
+    from export_skill_package import IGNORE_PATTERNS, NOTICE_CARRIER, ROOT_FILES, SCRIPT_FILES
+    from payload_contract import COPY_DIRS
 
     def ignored(path: Path) -> bool:
         if "__pycache__" in path.parts:
@@ -303,6 +316,9 @@ def _exporter_expected_files() -> set[str]:
 
     skill_root = Path(__file__).resolve().parent.parent
     expected: set[str] = set(ROOT_FILES)
+    # NOTICE is generated at export time as the signature carrier (signed
+    # release layout — the layout the README tree documents).
+    expected.add(NOTICE_CARRIER)
     for name in COPY_DIRS:
         for path in sorted((skill_root / name).rglob("*")):
             if path.is_file() and not ignored(path):

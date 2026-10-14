@@ -4,7 +4,12 @@ set -euo pipefail
 
 REPO_URL="${REPO_URL:-}"
 REPO_REF="${REPO_REF:-}"
-INSTALL_HOSTS="${INSTALL_HOSTS:-all}"
+INSTALL_HOSTS="${INSTALL_HOSTS:-}"
+# Install profile (planning F16, sub-step 1): empty means core (the default),
+# `full` restores the complete component set. Validated in validate_inputs.
+INSTALL_PROFILE="${INSTALL_PROFILE:-}"
+# Empty INSTALL_HOSTS means auto-detect (only hosts with a real presence on
+# this machine); an explicit value, including `all`, always bypasses probing.
 CLAUDE_SKILLS_DIR="${CLAUDE_SKILLS_DIR:-${INSTALL_DIR:-$HOME/.claude/skills}}"
 CLAUDE_COMMANDS_DIR="${CLAUDE_COMMANDS_DIR:-$HOME/.claude/commands}"
 CLAUDE_AGENTS_DIR="${CLAUDE_AGENTS_DIR:-$HOME/.claude/agents}"
@@ -107,6 +112,26 @@ resolve_python() {
 # User-facing stages for Claude command files. Single source: the stage list
 # documented in SKILL.md and references/commands.md.
 USER_STAGES=(new goal autoplan autorun run check done push update status doctor organize)
+# Core stage surface under INSTALL_PROFILE=core (planning F16): the kernel
+# command files every install ships. The internal route/tasks views ride the
+# scripts tree regardless of profile. Extended stages (USER_STAGES minus
+# CORE_STAGES) install only under `full`; membership may move back based on
+# usage evidence in later rounds.
+CORE_STAGES=(new run check done push)
+# Extension components excluded under INSTALL_PROFILE=core (planning F16
+# sub-step 2, AUD-18): mirrors payload_contract.py CORE_EXCLUDED_DIRS and
+# CORE_EXCLUDED_SCRIPTS. Release trees ship no exporter (SCRIPT_BLACKLIST),
+# so the copy path prunes them here; alignment with the contract is pinned
+# by tests/test_install_profile.py.
+CORE_EXCLUDED_DIRS=(agents server slots)
+CORE_EXCLUDED_SCRIPTS=(
+  autorun_spawn.py
+  autoplan_spawn.py
+  autoplan_gate.py
+  chain_spawn_support.py
+  chain_recovery.py
+  sweep_chain_windows.py
+)
 
 format_stage_aliases() {
   local prefix="$1"
@@ -198,11 +223,88 @@ host_trigger_hint() {
   esac
 }
 
+# Default-path host probes (AUD-16): a host installs only with a real
+# presence on this machine. CLI on PATH is the strongest signal;
+# claude-desktop has no CLI of its own (directory-only host) and zcode's
+# CLI is optional — the directory probe catches those.
+host_cli_for() {
+  case "$1" in
+    claude|codex|gemini|grok|opencode|openclaw|hermes|pi|zcode) printf '%s\n' "$1" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Directory probes use the host's DEFAULT root, never an env override: an
+# explicit directory override is an installer routing choice, not evidence
+# that the host is in use. The marker probe below stays env-resolved so an
+# upgrade keeps exactly the hosts this installer installed before.
+host_dir_probe_root() {
+  case "$1" in
+    claude) printf '%s\n' "$HOME/.claude" ;;
+    claude-desktop) printf '%s\n' "$HOME/.claude-desktop" ;;
+    codex) printf '%s\n' "$HOME/.codex" ;;
+    gemini) printf '%s\n' "$HOME/.gemini" ;;
+    grok) printf '%s\n' "$HOME/.grok" ;;
+    opencode) printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/opencode" ;;
+    openclaw) printf '%s\n' "$HOME/.openclaw" ;;
+    hermes) printf '%s\n' "$(default_hermes_home)" ;;
+    pi) printf '%s\n' "$HOME/.pi/agent" ;;
+    zcode) printf '%s\n' "$HOME/.zcode" ;;
+    *) return 1 ;;
+  esac
+}
+
+host_marker_owned() {
+  local target
+  # claude is not in skill_dir_for (that table is the skill-only hosts); its
+  # skill target comes from CLAUDE_SKILLS_DIR directly.
+  case "$1" in
+    claude) target="$CLAUDE_SKILLS_DIR/$SKILL_NAME" ;;
+    *) target="$(skill_dir_for "$1")/$SKILL_NAME" ;;
+  esac
+  # is_installer_owned succeeds for a non-existent target (nothing to
+  # replace); an upgrade marker only counts when the target is really there.
+  target_exists "$target" || return 1
+  is_installer_owned "$target"
+}
+
+host_detected() {
+  local cli root
+  if cli="$(host_cli_for "$1")" && command -v "$cli" >/dev/null 2>&1; then
+    return 0
+  fi
+  if root="$(host_dir_probe_root "$1")" && [ -d "$root" ]; then
+    return 0
+  fi
+  # Upgrade path: a skill target this installer owns keeps its host in the
+  # set even when the CLI later left PATH and the root moved.
+  host_marker_owned "$1"
+}
+
+resolve_default_hosts() {
+  local host hits="" skipped="" sep=""
+  for host in claude "${SKILL_ONLY_HOSTS[@]}"; do
+    if host_detected "$host"; then
+      hits="${hits}${sep}${host}"
+      sep=","
+    else
+      [ -z "$skipped" ] || skipped="$skipped, "
+      skipped="$skipped$(host_label_for "$host")"
+    fi
+  done
+  [ -n "$hits" ] || return 1
+  INSTALL_HOSTS="$hits"
+  log "No INSTALL_HOSTS given; detected hosts: $hits"
+  log "Skipping hosts not detected on this machine: $skipped"
+  log "Set INSTALL_HOSTS=all to install every host, or INSTALL_HOSTS=<tokens> to pick hosts."
+}
+
 host_enabled() {
   local host="$1" tokens token
   case ",$INSTALL_HOSTS," in
     *,all,*) return 0 ;;
   esac
+  [ -n "$INSTALL_HOSTS" ] || return 1
   case "$host" in
     # Claude Code writes the skill plus the /spec:<stage> command files.
     claude) tokens="claude desktop rpi" ;;
@@ -222,6 +324,9 @@ host_enabled() {
 }
 
 validate_hosts() {
+  # Empty INSTALL_HOSTS is the auto-detect path, resolved in main(); only
+  # explicit values are validated as token lists here.
+  [ -n "$INSTALL_HOSTS" ] || return 0
   local IFS=','
   local host enabled=0
   for host in $INSTALL_HOSTS; do
@@ -234,8 +339,42 @@ validate_hosts() {
   [ "$enabled" = "1" ] || fail "INSTALL_HOSTS must include a supported host: all, claude, claude-desktop, codex, codex-desktop, desktop, gemini, grok, grokbuild, opencode, openclaw, hermes, pi, rpi, or zcode"
 }
 
+# Extended stages = USER_STAGES minus CORE_STAGES, computed so a future
+# USER_STAGES addition lands in the extended set by default (core stays the
+# stable kernel surface until deliberately widened).
+extended_stage_list() {
+  local stage out=""
+  for stage in "${USER_STAGES[@]}"; do
+    case " ${CORE_STAGES[*]} " in
+      *" $stage "*) ;;
+      *) out="$out $stage" ;;
+    esac
+  done
+  printf '%s' "${out# }"
+}
+
+validate_stage_profiles() {
+  local stage
+  for stage in "${CORE_STAGES[@]}"; do
+    case " ${USER_STAGES[*]} " in
+      *" $stage "*) ;;
+      *) fail "CORE_STAGES entry missing from USER_STAGES: $stage" ;;
+    esac
+  done
+}
+
+validate_profile() {
+  case "$INSTALL_PROFILE" in
+    "") INSTALL_PROFILE="core" ;;
+    core|full) ;;
+    *) fail "unknown INSTALL_PROFILE: $INSTALL_PROFILE (expected core or full)" ;;
+  esac
+}
+
 validate_inputs() {
   [ "$SKILL_NAME" = "spec" ] || fail "SKILL_NAME must be spec; custom skill names would break /spec:xx aliases"
+  validate_profile
+  validate_stage_profiles
   validate_hosts
   validate_backup_root
 }
@@ -301,24 +440,52 @@ prepare_source() {
 export_runtime() {
   local source_dir="$1"
   local output_dir="$2"
+  local skip_signing=""
   if [ -n "${PYTHON_BIN:-}" ] && [ -f "$source_dir/scripts/export_skill_package.py" ]; then
+    # 签名只在 release 构建路径强制；源码树不带凭据是常态（.gitignore 忽略
+    # .watermark-*）。凭据全缺时自动跳过签名并打印说明，安装不再是死路。
     if [ "${SPEC_SKIP_SIGNING:-}" = "1" ]; then
-      "$PYTHON_BIN" "$source_dir/scripts/export_skill_package.py" --root "$source_dir" --output "$output_dir" --force --skip-signing >/dev/null
-    else
-      "$PYTHON_BIN" "$source_dir/scripts/export_skill_package.py" --root "$source_dir" --output "$output_dir" --force >/dev/null
+      skip_signing="--skip-signing"
+    elif signing_credentials_absent "$source_dir"; then
+      skip_signing="--skip-signing"
+      log "no signing credentials found - exporting an unsigned skill package (auto --skip-signing; distribution signing happens at release build)"
     fi
+    "$PYTHON_BIN" "$source_dir/scripts/export_skill_package.py" --root "$source_dir" --output "$output_dir" --force --profile "$INSTALL_PROFILE" ${skip_signing:+"$skip_signing"} >/dev/null
     return 0
   fi
 
-  # 分发包出厂即带发布签名；签名缺失且本地无签发凭据时拒绝，避免装出来源不明的副本。
+  # 复制路径即 release 布局：分发包出厂自带发布签名，签名在场直接安装。
+  # 签名载体是 NOTICE（AUD-17：入口 SKILL.md 保持纯文本，不被模型加载）。
   # 存在性判断不走 grep：签名行超长，行截断会误判为缺失。
-  if ! "$PYTHON_BIN" -c 'import pathlib,sys; sys.exit(0 if "\u2063" in pathlib.Path(sys.argv[1]).read_text(encoding="utf-8") else 1)' "$source_dir/SKILL.md"; then
-    if [ -z "${SPEC_SIGNING_IDENTITY:-}" ] || [ -z "${SPEC_SIGNING_KEY:-}" ] || [ -z "${PYTHON_BIN:-}" ]; then
-      fail "exported skill package has no distribution signature and no local signing credentials are available"
+  if ! "$PYTHON_BIN" -c 'import pathlib,sys; sys.exit(0 if "\u2063" in pathlib.Path(sys.argv[1]).read_text(encoding="utf-8") else 1)' "$source_dir/NOTICE"; then
+    if signing_credentials_absent "$source_dir"; then
+      log "no signing credentials found - installing the unsigned source tree as-is (distribution signing happens at release build)"
+    elif [ -z "${SPEC_SIGNING_IDENTITY:-}" ] || [ -z "${SPEC_SIGNING_KEY:-}" ]; then
+      fail "unsigned source tree with incomplete signing credentials: set both SPEC_SIGNING_IDENTITY and SPEC_SIGNING_KEY, or clear both to install unsigned"
     fi
   fi
   mkdir -p "$output_dir"
   cp -R "$source_dir/." "$output_dir/"
+  # Release trees ship no exporter (SCRIPT_BLACKLIST), so core filtering on
+  # this path prunes the staged copy — the staging dir is never user-visible,
+  # which keeps the single-exit rule meaningful where an exit exists.
+  if [ "$INSTALL_PROFILE" = "core" ]; then
+    local excluded_dir excluded_script
+    for excluded_dir in "${CORE_EXCLUDED_DIRS[@]}"; do
+      rm -rf -- "$output_dir/$excluded_dir"
+    done
+    for excluded_script in "${CORE_EXCLUDED_SCRIPTS[@]}"; do
+      rm -f -- "$output_dir/scripts/$excluded_script"
+    done
+  fi
+}
+
+# 凭据「全缺」= 身份与密钥两维的环境变量与默认文件四者全部缺席；
+# 部分配置不算全缺：交给响亮失败，绝不静默跳过签名。
+signing_credentials_absent() {
+  local source_dir="$1"
+  [ -z "${SPEC_SIGNING_IDENTITY:-}" ] && [ ! -f "$source_dir/.watermark-identity.json" ] \
+    && [ -z "${SPEC_SIGNING_KEY:-}" ] && [ ! -f "$source_dir/.watermark-key" ]
 }
 
 backup_namespace() {
@@ -442,6 +609,7 @@ copy_runtime() {
 installed_by=spec/install.sh
 source=${PREPARED_SOURCE_DIR:-$source_dir}
 version=${runtime_version}
+profile=${INSTALL_PROFILE}
 EOF_MARKER
   backup_existing "$target_dir"
   if ! mv "$staging" "$target_dir"; then
@@ -485,21 +653,21 @@ EOF_BODY
       cat <<EOF_BODY
 # /$command_name
 
-Run the one-shot goal workflow: plan the task package, execute every task in this session, independently verify each delivery, archive and commit scoped changes after gates pass, then use the safe spec:push flow. Stop at any failed gate.
+Run the one-shot goal workflow: plan the task package, execute every task in this session, self-verify each delivery at the package's declared verification level, and archive and commit scoped changes after gates pass. Default: stop at the local commit and print the spec:push command as the next step; run the safe spec:push flow only when the invocation carried --push or the user explicitly asks to push in this session. Stop at any failed gate.
 EOF_BODY
       ;;
     autoplan)
       cat <<EOF_BODY
 # /$command_name
 
-Run the interactive planning workflow: interrogate the user in themed rounds (goal, scope, technology, priorities, risks) to pin down the project, delegate framework and detail planning to the planner sidecar until every feature reaches autorun granularity, gate the planning-document cluster for structural consistency, then report autorun readiness and stop. Never spawn the chain from autoplan.
+Run the interactive planning workflow: interrogate the user in themed rounds (goal, scope, technology, priorities, risks) to pin down the project, run the planning passes as a serial fresh-session chain with no in-process subagent delegation until every feature reaches autorun granularity, gate the planning-document cluster for structural consistency, then report autorun readiness and stop. Never spawn the chain from autoplan.
 EOF_BODY
       ;;
     autorun)
       cat <<EOF_BODY
 # /$command_name
 
-Run the recursive autorun chain: finish the active task package goal-style through run, check, done, and push; after a successful push, discover the project planning documents, plan the next round with spec:new from the next unchecked feature, then open a fresh interactive session in the same path with the autorun prompt injected for the next round (macOS Terminal.app; Linux/Windows WSL2 tmux >=3.2, no graphical desktop needed). Native Windows users must run Python, the worker CLI, and Spec Harness inside WSL2. Recursion continues until every feature checkbox in the planning documents is checked; the first failure or a planning-document gap stops the chain with the recovery action. Safety rails: round cap, single-chain lock, sequential spawn only.
+Run the recursive autorun chain: finish the active task package goal-style through run, check, done, and push; after a successful push, discover the project planning documents, plan the next round with spec:new from the next unchecked feature, then open a fresh interactive session in the same path with the autorun prompt injected for the next round (macOS Terminal.app; Linux/Windows WSL2 tmux >=3.2, no graphical desktop needed). Native Windows users must run Python, the worker CLI, and Spec Harness inside WSL2. Recursion continues until every feature checkbox in the planning documents is checked; the first failure or a planning-document gap stops the chain with the recovery action. Safety rails: round cap on by default (5 rounds unless flagged; --unbounded explicitly removes it), single-chain lock, sequential spawn only.
 EOF_BODY
       ;;
     run)
@@ -557,7 +725,7 @@ EOF_BODY
       cat <<EOF_BODY
 # /$command_name
 
-Run the spec structure organize audit from \`scripts/organize_project_structure.py\`: top-level inventory, the external reference graph (live vs historical), deprecated-structure candidates, and declared-architecture consistency. Default: create a new task package in the target project before any move or doc fix (default new package). Do not append findings to an unrelated active package. Audit-only is an explicit opt-out, not the default. never delete; archive confirmed orphans under archive/retired, and disposition every member of a confirmed class. Report facts and actual archive moves; do not restate the audit report by hand.
+Run the spec structure organize audit from \`scripts/organize_project_structure.py\`: top-level inventory, the external reference graph (live vs historical), deprecated-structure candidates, and declared-architecture consistency. Default: audit-only — output the report, touch nothing on disk, and state the next step at the end of the report. Applying is an explicit opt-in (--apply or an explicit user instruction): only then create a new task package in the target project before any move or doc fix, and never append findings to an unrelated active package. never delete; archive confirmed orphans under archive/retired, and disposition every member of a confirmed class. Report facts and actual archive moves; do not restate the audit report by hand.
 EOF_BODY
       ;;
     new)
@@ -644,6 +812,21 @@ preflight_claude_targets() {
   for stage in "${CLAUDE_ALIASES[@]}"; do
     alias_command="$CLAUDE_COMMANDS_DIR/$SKILL_NAME/$stage.md"
     ensure_replaceable "$alias_command"
+  done
+}
+
+# F16 core profile: a previous full install leaves extended-stage command
+# files and native agents outside the skill tree, where copy_runtime's
+# whole-tree replace cannot reach them. A core upgrade sweeps them the same
+# way retired stages are swept — backed up, never deleted outright.
+sweep_core_excluded_claude_artifacts() {
+  local stage name
+  for stage in $(extended_stage_list); do
+    remove_installer_owned "$CLAUDE_COMMANDS_DIR/$SKILL_NAME/$stage.md"
+    remove_installer_owned "$CLAUDE_COMMANDS_DIR/$SKILL_NAME:$stage.md"
+  done
+  for name in orchestrator planner reviewer confirmer; do
+    remove_installer_owned "$CLAUDE_AGENTS_DIR/$name.md"
   done
 }
 
@@ -753,7 +936,9 @@ preflight_targets() {
     require_allowed_root "Claude Code commands" "$CLAUDE_COMMANDS_DIR" "$HOME/.claude/commands"
     require_allowed_root "Claude Code agents" "$CLAUDE_AGENTS_DIR" "$HOME/.claude/agents"
     preflight_claude_targets
-    preflight_claude_agent_targets
+    if [ "$INSTALL_PROFILE" = "full" ]; then
+      preflight_claude_agent_targets
+    fi
   fi
   for host in "${SKILL_ONLY_HOSTS[@]}"; do
     host_enabled "$host" || continue
@@ -819,7 +1004,11 @@ install_claude() {
     write_claude_command "$SKILL_NAME:$stage" "$alias_command" "$stage"
   done
 
-  install_claude_agents "$runtime_dir"
+  if [ "$INSTALL_PROFILE" = "full" ]; then
+    install_claude_agents "$runtime_dir"
+  else
+    sweep_core_excluded_claude_artifacts
+  fi
 }
 
 install_skill_only_host() {
@@ -855,12 +1044,30 @@ main() {
   trap cleanup_temp EXIT
 
   local runtime_dir
+  if [ -z "$INSTALL_HOSTS" ]; then
+    if ! resolve_default_hosts; then
+      log "No INSTALL_HOSTS given and no spec host detected on this machine; nothing was installed."
+      log "Re-run with INSTALL_HOSTS=all to install every host, or INSTALL_HOSTS=<tokens> to pick hosts."
+      return 0
+    fi
+  fi
   prepare_source
   INSTALL_TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/spec-skill-install.XXXXXX")"
   runtime_dir="$INSTALL_TEMP_DIR/runtime"
 
+  if [ "$INSTALL_PROFILE" = "core" ]; then
+    log "Install profile: core (default) — kernel stage commands ($(printf '%s ' "${CORE_STAGES[@]}" | sed 's/ $//')), hooks, and scripts only"
+    log "Not installed under core: extension components (slots/, agents/) and extended stage commands ($(extended_stage_list)) — set INSTALL_PROFILE=full to install everything"
+  else
+    log "Install profile: full — installing the complete component set"
+  fi
+
   export_runtime "$PREPARED_SOURCE_DIR" "$runtime_dir"
-  CLAUDE_ALIASES=("${USER_STAGES[@]}")
+  if [ "$INSTALL_PROFILE" = "core" ]; then
+    CLAUDE_ALIASES=("${CORE_STAGES[@]}")
+  else
+    CLAUDE_ALIASES=("${USER_STAGES[@]}")
+  fi
   check_name_collisions
   preflight_targets
 

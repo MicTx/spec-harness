@@ -2,7 +2,7 @@
 
 Parallel work is useful only when each item can be understood and checked on its own. This file defines the boundary between the main session, a bounded sidecar, and a managed slot. The main session is always the orchestrator: it owns routing, acceptance, and the `done`/`push` gates. Delegation is allowed only after a route decision and an assignment contract are written down.
 
-This file is the source of truth for the five-route vocabulary, assignment contracts, waiting/merge rules, and the optional `### 5.4 编排策略` section. Stage steps live in `commands.md`; slot-specific loop protocol lives in `slots/team-loop/README.md`.
+This file is the source of truth for the five-route vocabulary, assignment contracts, waiting/merge rules, and the optional `### 5.4 编排策略` section. Stage contracts live in `references/stages/<stage>.md` (`commands.md` is their index); slot-specific loop protocol lives in `slots/team-loop/README.md`.
 
 ## When to use
 
@@ -29,9 +29,9 @@ Exactly one of these five tokens. Never concatenate, never annotate in the token
 | `review` | Code mostly exists; the priority is risk | `code-reviewer` + `security-reviewer` + `e2e-runner` in parallel when relevant |
 | `external` | Isolation, long-running execution, or multiple terminals are actually required | upgrade only; this round does not ship an external backend |
 
-Machine entry: `python3 scripts/route_decision.py --text "<goal>"`. Output is JSON `{route, score, reason, lanes, risks, override, channel_profile}` — `channel_profile` is an advisory shared-pool hint that `check_spec_package.py` never gates on (see Constrained-channel dispatch below). Lane suggestions are drafts; the main session still writes the assignment contract before delegating. `--route <token>` overrides the heuristic and must still be one of the five tokens (exit 2 otherwise); overridden results recompute lanes/score/reason from the final route, so the payload is never self-contradictory. With `--root <project> --slug <slug>` the decision consumes package context: the package title, the open task titles and their `boundary`/`verify` lines join the text, and a valid `### 5.4 编排策略` route acts as an explicit override (invalid or missing routes are left to the run gate, which blocks `stage=run` and projects `orchestrationErrors`).
+Machine entry: `python3 scripts/route_decision.py --root <project> --slug <slug>` — the single routing entry, and its only routing input is package structure: the open task count, boundary module coverage, dependency-graph width, and risk labels. Output is JSON `{route, basis, structure, score, reason, lanes, risks, override, channel_profile}` — `basis: package-structure` names the decision evidence, `structure` echoes the metrics the route is explained by, and `channel_profile` is an advisory shared-pool hint that `check_spec_package.py` never gates on (see Constrained-channel dispatch below). Zero structural signal routes `local` (there is no text-length fallback — the same task worded short or long routes identically); risk labels route `review`; a wide multi-surface package or a dependency tangle routes `explore`; a cleanly sliced mid-size package routes `build`; `external` is an upgrade condition the structure decision never auto-emits. Lane suggestions are drafts derived from the boundary modules — disjoint ownership surfaces, which is the deterministic ownership check any delegation builds on; the main session still writes the assignment contract before delegating. `--route <token>` overrides the structure decision and must still be one of the five tokens (exit 2 otherwise); overridden results recompute lanes/reason from the final route, so the payload is never self-contradictory. A valid `### 5.4 编排策略` route acts as an explicit override (`source: package-5.4`; invalid or missing routes are left to the run gate, which blocks `stage=run` and projects `orchestrationErrors`). An unreadable package fails closed — the router never falls back to guessing from text. `--text "<goal>"` remains a read-only diagnostic for side-by-side comparison and is never a routing input.
 
-Heuristic scoring is explicit and testable; it is not a substitute for the main session's judgment. When in doubt, stay `local`.
+Structure routing is explicit and testable; it is not a substitute for the main session's judgment. When in doubt, stay `local`.
 
 ## Operating model
 
@@ -44,6 +44,8 @@ Heuristic scoring is explicit and testable; it is not a substitute for the main 
 7. Escalate to `external` only when isolation or long-running execution is actually needed; if no external backend is installed, downgrade to in-process or serial handoff — never invent a control plane mid-task
 
 The `team-loop` slot remains the managed protocol for loop-until-converged / batch fan-out / review-fix loops. Orchestration routing and the team-loop protocol are complementary: routing chooses topology; the slot owns disk-truth loop state when its triggers hit. Routing-level triggering of batch fan-out and review-fix-loop shapes belongs to `workflow-runner` (`workflow_route.py`): `loop_route.py` explicitly defers those shapes instead of recommending them, so same-shape triggers no longer hit both slots. The team-loop state machine still supports `batch-fanout` as explicit initialization (`loop_state.py init --mode batch-fanout`), and it remains the degradation face for batch fan-out / review-fix loops when `workflow-runner` is unavailable (worker CLI missing or driver unusable) — `slots/workflow-runner/README.md` holds the authoritative disambiguation.
+
+Sidecar orchestration is a documented optional mode: the routing scripts make no delegation decisions — they surface deterministic facts only (package-structure metrics, risk labels, and disjoint boundary-module ownership surfaces, which is the ownership-conflict check any lane split builds on). Turning those facts into parallel work always goes through the main session's written assignment contract; a session that cannot write the contract cleanly stays on the main thread.
 
 ## Assignment contract
 
@@ -68,15 +70,15 @@ Host registration: hosts do not discover named subagents from a skill's own `age
 
 | 任务形状 | 执行面（token） | 决策脚本 | 前置条件 | 降级路径 |
 | --- | --- | --- | --- | --- |
-| 局部 | `local` | `scripts/route_decision.py --text` | 小而耦合、单文件、无并行收益；启发式弱信号不构成升级理由 | 误判可用 `--route` 显式覆盖回正确 token |
-| 探索 | `explore` + 2-3 条定向探察 sidecar | `scripts/route_decision.py --text` | 理解缺失/结构不清，且 assignment contract 五字段可写清 | 契约写不清就收回主线程串行探察 |
-| 并行扇出 | `explore` / `build` / `review` × workflow-runner（`batch-fanout` / `parallel-review` / `perspective-panel` / `review-fix-loop`） | `slots/workflow-runner/scripts/workflow_route.py --text`，且 `route_decision.py` 判定 ∈ `explore` / `build` / `review` | route ∈ `explore` / `build` / `review`（README 书面激活域）；仓库驱动可读且选定 worker CLI 在 PATH | 前置不满足即降级为普通 sidecar 或 team-loop（workflow-runner README Hard preconditions），不静默伪造结果 |
-| 循环收敛 | 任意 route × team-loop（`until-converged` / `fixed-rounds`）；评审-修复组合形态由 workflow-runner 承接（loop_route 显式让出） | `slots/team-loop/scripts/loop_route.py --text` | `loopRecommended=true`（命中即移交执行段）；agents-team 工具面已加载 | 工具面缺失时显式报错，不静默降级为单会话循环 |
-| 外部隔离 | `external` | `scripts/route_decision.py --text` | 实际需要隔离 git 状态/长时运行/多终端；本轮无外部后端 | 无外部后端时降级为 in-process 或串行交接，绝不中途发明控制面 |
+| 局部 | `local` | `scripts/route_decision.py --root --slug` | 小而耦合、无跨模块并行收益；零结构信号一律 local（无文本长度回退） | 误判可用 `--route` 显式覆盖回正确 token |
+| 探索 | `explore` + 2-3 条定向探察 sidecar | `scripts/route_decision.py --root --slug` | 多任务宽边界或依赖纠缠（依据=包结构，指标可解释），且 assignment contract 五字段可写清 | 契约写不清就收回主线程串行探察 |
+| 并行扇出 | `explore` / `build` / `review` × workflow-runner（`batch-fanout` / `parallel-review` / `perspective-panel` / `review-fix-loop`） | `slots/workflow-runner/scripts/workflow_route.py`（仅强信号），且 `route_decision.py --root --slug` 判定 ∈ `explore` / `build` / `review` | route ∈ `explore` / `build` / `review`（README 书面激活域）；仓库驱动可读且选定 worker CLI 在 PATH | 前置不满足即降级为普通 sidecar 或 team-loop（workflow-runner README Hard preconditions），不静默伪造结果 |
+| 循环收敛 | 任意 route × team-loop（`until-converged` / `fixed-rounds`）；评审-修复组合形态由 workflow-runner 承接（loop_route 显式让出） | `slots/team-loop/scripts/loop_route.py`（仅强信号：收敛绑定语义或显式轮数） | `loopRecommended=true`（命中即移交执行段）；弱信号单独不推荐，确定性降级为普通 sidecar 编排；agents-team 工具面已加载 | 工具面缺失时显式报错，不静默降级为单会话循环 |
+| 外部隔离 | `external` | `scripts/route_decision.py --root --slug`（结构路由不自动给 external） | 实际需要隔离 git 状态/长时运行/多终端；由显式 5.4 route / `--route` 覆盖到达；本轮无外部后端 | 无外部后端时降级为 in-process 或串行交接，绝不中途发明控制面 |
 
 共存合法性：`loopRecommended=true` 与 `route=local` 共存是合法语义，不是矛盾——
 slot 激活与编排路由相互独立（SKILL.md「Activation rule」），`loopRecommended=true`
-命中即把执行段移交受管 loop 协议（commands.md `/spec:run` 第 3 步）。同理
+命中即把执行段移交受管 loop 协议（stages/run.md 第 3 步，阶段契约已按文件拆分）。同理
 `workflowRecommended=true` 只是建议：实际激活受 workflow-runner README 书面激活域
 （只激活 `explore` / `build` / `review` 的执行段）与驱动前置检查约束，行为现状由
 `tests/test_route_cross_consistency.py` 的组合语义回归钉守护。

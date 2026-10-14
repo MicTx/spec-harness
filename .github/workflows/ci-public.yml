@@ -12,6 +12,30 @@ on:
   pull_request:
 
 jobs:
+  keyless-install-smoke:
+    # AUD-04 regression guard: the public export tree must install with a
+    # bare `bash install.sh` — fresh checkout, empty HOME, no signing
+    # credentials anywhere (auto --skip-signing with a visible notice) —
+    # and the keyless smoke must pass without the ephemeral credentials
+    # the main job provisions for its release-parity steps.
+    if: github.repository == 'MicTx/spec-harness'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install from bare export with no signing credentials
+        run: |
+          set -eu
+          empty_home="$(mktemp -d)"
+          env -u SPEC_SIGNING_IDENTITY -u SPEC_SIGNING_KEY -u SPEC_SKIP_SIGNING \
+            HOME="$empty_home" INSTALL_HOSTS=claude bash install.sh > keyless-install.log 2>&1
+          grep -q "no signing credentials found" keyless-install.log
+          test -f "$empty_home/.claude/skills/spec/SKILL.md"
+      - name: Run smoke test (keyless)
+        run: python3 scripts/smoke_test_spec_skill.py
+
   verify:
     # GitHub-hosted runners exist only for the public repository. The
     # development Gitea instance shares this file through the public

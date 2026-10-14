@@ -22,6 +22,7 @@ Decide what you want to accomplish first, then pick the one document that does i
 - [Releases](../RELEASE.md): versions, archives, checksums, and rollback.
 - [Security](../SECURITY.md): vulnerability reports and the server-mode security boundary.
 - [Support](../SUPPORT.md): what to include when installation or a run fails.
+- Architecture decision records (the `adr/` directory): [session spawn & window lifecycle](adr/0001-terminal-spawn-window-lifecycle.md), [stage contracts by file](adr/0002-stage-contracts-by-file.md), [push-gate attribution & in-flight split](adr/0003-push-gate-attribution-and-inflight-split.md). Not part of the runtime export tree.
 
 ## Entry classes
 

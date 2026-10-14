@@ -96,7 +96,6 @@ def _minimal_runtime_tree(root: Path) -> None:
         "agents/planner.md",
         "hooks/pre-commit",
         "hooks/pre-push",
-        "hooks/spec_disk_truth_gate.py",
         "scripts/safe_open_support.py",
         "scripts/issue_closure_support.py",
         "scripts/init_spec_package.py",
