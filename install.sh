@@ -23,6 +23,10 @@ GROK_SKILLS_DIR="${GROK_SKILLS_DIR:-$HOME/.grok/skills}"
 OPENCODE_SKILLS_DIR="${OPENCODE_SKILLS_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills}"
 OPENCLAW_SKILLS_DIR="${OPENCLAW_SKILLS_DIR:-$HOME/.openclaw/skills}"
 PI_SKILLS_DIR="${PI_SKILLS_DIR:-${PI_DIR:-$HOME/.pi}/agent/skills}"
+# Pi prompt templates (F4): files under <pi-root>/agent/prompts register as
+# native / commands (filename minus .md); PI_DIR relocations apply the same
+# way as PI_SKILLS_DIR.
+PI_PROMPTS_DIR="${PI_PROMPTS_DIR:-${PI_DIR:-$HOME/.pi}/agent/prompts}"
 SKILL_NAME="${SKILL_NAME:-spec}"
 BACKUP_ROOT="${BACKUP_ROOT:-$HOME/.spec-skill-backups}"
 KEEP_TEMP="${KEEP_TEMP:-0}"
@@ -167,8 +171,10 @@ abs_path() {
 }
 
 # Skill-directory-only hosts: the runtime skill lands in the host's skills
-# directory and no host-specific command files are written.
-SKILL_ONLY_HOSTS=(claude-desktop codex gemini grok opencode openclaw hermes pi zcode)
+# directory and no host-specific command files are written. Pi left this
+# list in F4: it now also receives native prompt-template commands
+# (install_pi) alongside the skill copy.
+SKILL_ONLY_HOSTS=(claude-desktop codex gemini grok opencode openclaw hermes zcode)
 
 skill_dir_for() {
   case "$1" in
@@ -283,7 +289,11 @@ host_detected() {
 
 resolve_default_hosts() {
   local host hits="" skipped="" sep=""
-  for host in claude "${SKILL_ONLY_HOSTS[@]}"; do
+  # Pi left SKILL_ONLY_HOSTS in F4 (it now receives native prompt-template
+  # commands via install_pi), but it stays in the auto-detect candidate set:
+  # the documented contract installs any host with a CLI on PATH, an
+  # existing default root, or an installer-owned marker.
+  for host in claude pi "${SKILL_ONLY_HOSTS[@]}"; do
     if host_detected "$host"; then
       hits="${hits}${sep}${host}"
       sep=","
@@ -622,6 +632,7 @@ EOF_MARKER
 stage_description() {
   case "$1" in
     route) printf '%s\n' "Spec auto-routing" ;;
+    base) printf '%s\n' "Spec: resolve the next action" ;;
     new) printf '%s\n' "Spec: create a task package" ;;
     goal) printf '%s\n' "Spec: one-shot goal chain" ;;
     autoplan) printf '%s\n' "Spec: interactive planning rounds" ;;
@@ -929,6 +940,16 @@ backup_orphan_native_marker() {
   fi
 }
 
+preflight_pi_targets() {
+  local target="$PI_SKILLS_DIR/$SKILL_NAME"
+  local stage
+  ensure_replaceable "$target"
+  ensure_replaceable "$(pi_template_file "base")"
+  for stage in "${CLAUDE_ALIASES[@]}"; do
+    ensure_replaceable "$(pi_template_file "$stage")"
+  done
+}
+
 preflight_targets() {
   local host dir name
   if host_enabled claude; then
@@ -939,6 +960,11 @@ preflight_targets() {
     if [ "$INSTALL_PROFILE" = "full" ]; then
       preflight_claude_agent_targets
     fi
+  fi
+  if host_enabled pi; then
+    require_allowed_root "Pi" "$PI_SKILLS_DIR" "$HOME/.pi/agent/skills"
+    require_allowed_root "Pi prompts" "$PI_PROMPTS_DIR" "$HOME/.pi/agent/prompts"
+    preflight_pi_targets
   fi
   for host in "${SKILL_ONLY_HOSTS[@]}"; do
     host_enabled "$host" || continue
@@ -1011,6 +1037,90 @@ install_claude() {
   fi
 }
 
+# --- Pi native command surface (F4) -----------------------------------------
+# Pi registers <pi-root>/agent/prompts/*.md as native / commands: the
+# filename minus .md is the command name and the body substitutes $@
+# mechanically (Pi 1.2.0; end-to-end empirics in the F4 package evidence).
+# The colon layout spec:<stage>.md -> /spec:<stage> was validated on the
+# real binary; Pi loads direct .md children only, so Claude's subdirectory
+# workaround does not apply here. Frontmatter values are double-quoted
+# because stage descriptions contain ": " which breaks unquoted YAML
+# scalars and silently drops the whole template. Pi has no native Windows
+# support, so the NTFS colon restriction is a recorded limitation, not a
+# blocker. Templates are installer-generated artifacts and never enter the
+# export tree (same rule as Claude command files).
+pi_template_file() {
+  local stage="$1"
+  if [ "$stage" = "base" ]; then
+    printf '%s/%s.md\n' "$PI_PROMPTS_DIR" "$SKILL_NAME"
+  else
+    printf '%s/%s:%s.md\n' "$PI_PROMPTS_DIR" "$SKILL_NAME" "$stage"
+  fi
+}
+
+pi_write_template() {
+  local stage="$1"
+  local target_file description
+  target_file="$(pi_template_file "$stage")"
+  description="$(stage_description "$stage")"
+  backup_existing "$target_file"
+  if [ "$stage" = "base" ]; then
+    write_file_from_stdin "$target_file" <<EOF_TEMPLATE
+---
+description: "$description"
+argument-hint: "[query]"
+---
+Use the installed skill \`$SKILL_NAME\` for this request. Follow the stage
+index in the skill's references/commands.md.
+Forward user arguments unchanged: \$@
+EOF_TEMPLATE
+  else
+    write_file_from_stdin "$target_file" <<EOF_TEMPLATE
+---
+description: "$description"
+argument-hint: "[stage arguments]"
+---
+Use the installed skill \`$SKILL_NAME\` for this request. Follow the /$SKILL_NAME:$stage
+stage contract in the skill's references/stages/ (index: references/commands.md).
+Forward user arguments unchanged: \$@
+EOF_TEMPLATE
+  fi
+  write_file_from_stdin "$target_file.spec-skill-install" <<EOF_MARKER
+installed_by=spec/install.sh
+target=spec
+stage=$stage
+EOF_MARKER
+}
+
+pi_sweep_stale_templates() {
+  # Downgrade (full->core) and stage retirement both leave installer-owned
+  # templates behind. The candidate list reuses the truth-source stage
+  # lists (USER_STAGES + the retired Claude stage lists) instead of a
+  # private copy; user-owned files never carry our marker and are left
+  # untouched.
+  local stage active=" base ${CLAUDE_ALIASES[*]} "
+  for stage in "${USER_STAGES[@]}" "${STALE_CLAUDE_ALIASES[@]}" "${STALE_CLAUDE_SUBDIR_STAGES[@]}"; do
+    case "$active" in
+      *" $stage "*) ;;
+      *) remove_installer_owned "$(pi_template_file "$stage")" ;;
+    esac
+  done
+}
+
+install_pi() {
+  local runtime_dir="$1"
+  local target="$PI_SKILLS_DIR/$SKILL_NAME"
+  local stage
+  log "Installing Pi skill to $target"
+  copy_runtime "$runtime_dir" "$target"
+  log "Installing Pi prompt templates to $PI_PROMPTS_DIR (/spec, $(format_stage_aliases '/spec:' ', '))"
+  pi_sweep_stale_templates
+  pi_write_template "base"
+  for stage in "${CLAUDE_ALIASES[@]}"; do
+    pi_write_template "$stage"
+  done
+}
+
 install_skill_only_host() {
   local host="$1"
   local runtime_dir="$2"
@@ -1074,6 +1184,9 @@ main() {
   if host_enabled claude; then
     install_claude "$runtime_dir"
   fi
+  if host_enabled pi; then
+    install_pi "$runtime_dir"
+  fi
   local host
   for host in "${SKILL_ONLY_HOSTS[@]}"; do
     host_enabled "$host" || continue
@@ -1089,6 +1202,10 @@ main() {
   if host_enabled claude; then
     log "  $PYTHON_BIN $CLAUDE_SKILLS_DIR/$SKILL_NAME/scripts/smoke_test_spec_skill.py"
     log "  Claude Code commands: /spec, $(format_stage_aliases '/spec:' ', ')"
+  fi
+  if host_enabled pi; then
+    log "  $PYTHON_BIN $PI_SKILLS_DIR/$SKILL_NAME/scripts/smoke_test_spec_skill.py"
+    log "  Pi commands: /spec, $(format_stage_aliases '/spec:' ', ') — run /reload in Pi to pick up new prompts"
   fi
   for host in "${SKILL_ONLY_HOSTS[@]}"; do
     host_enabled "$host" || continue

@@ -57,6 +57,8 @@ def isolated_home(monkeypatch, tmp_path):
         "BACKUP_ROOT",
         "SPEC_HUD_BIN_DIR",
         "CLAUDE_SETTINGS_FILE",
+        "PI_PROMPTS_DIR",
+        "AGENTS_SKILLS_DIR",
     ):
         monkeypatch.delenv(var, raising=False)
     return home
@@ -120,6 +122,8 @@ def test_probe_ids_registry_is_ordered_complete_and_unique():
         "hosts.installed",
         "claude.commands",
         "claude.agents",
+        "pi.prompts",
+        "migration.wrappers",
         "zcode.symlink",
         "project.git",
         "project.spec",
@@ -143,7 +147,14 @@ def test_check_catalog_is_stable_on_repo_root(tmp_path, isolated_home):
         "project.hooks",
     }
     assert guaranteed <= ids
-    optional = {"claude.commands", "claude.agents", "zcode.symlink", "skill.channels"}
+    optional = {
+        "claude.commands",
+        "claude.agents",
+        "pi.prompts",
+        "migration.wrappers",
+        "zcode.symlink",
+        "skill.channels",
+    }
     assert ids <= guaranteed | optional
     assert check_by_id(doctor, "python.runtime").status == "ok"
     assert check_by_id(doctor, "skill.layout").status == "ok"
@@ -730,6 +741,175 @@ ORCHESTRATION_RUNTIME_FILES = (
 def test_doctor_requires_orchestration_runtime_files():
     missing = [name for name in ORCHESTRATION_RUNTIME_FILES if name not in REQUIRED_RUNTIME_FILES]
     assert missing == [], f"doctor runtime catalog omitted orchestration assets: {missing}"
+
+
+# ------------------------------------------------------------- pi.prompts
+
+
+def write_pi_template(prompts_dir: Path, name: str, *, marker: bool = True) -> Path:
+    """A well-formed installer template: quoted frontmatter + literal $@."""
+    from doctor_spec_environment import pi_prompts_dir
+
+    prompts_dir = prompts_dir or pi_prompts_dir()
+    prompts_dir.mkdir(parents=True, exist_ok=True)
+    target = prompts_dir / name
+    if name == "spec.md":
+        body = (
+            "---\n"
+            'description: "Spec: resolve the next action"\n'
+            'argument-hint: "[query]"\n'
+            "---\n"
+            "Use the installed skill `spec` for this request. Follow the stage\n"
+            "index in the skill's references/commands.md.\n"
+            "Forward user arguments unchanged: $@\n"
+        )
+    else:
+        stage = name[len("spec:") : -len(".md")]
+        body = (
+            "---\n"
+            f'description: "Spec: {stage}"\n'
+            'argument-hint: "[stage arguments]"\n'
+            "---\n"
+            f"Use the installed skill `spec` for this request. Follow the /spec:{stage}\n"
+            "stage contract in the skill's references/stages/ (index: references/commands.md).\n"
+            "Forward user arguments unchanged: $@\n"
+        )
+    target.write_text(body, encoding="utf-8")
+    if marker:
+        Path(f"{target}.spec-skill-install").write_text("installed_by=spec/install.sh\ntarget=spec\n", encoding="utf-8")
+    return target
+
+
+def test_pi_prompts_skipped_when_host_unused(isolated_home):
+    doctor = Doctor(skill_root=ROOT, project_root=ROOT)
+    assert doctor.check_pi_prompts() is True
+    assert doctor.checks == []
+
+
+def test_pi_prompts_skipped_when_host_filter_excludes_pi(isolated_home):
+    install_fake_skill(isolated_home / ".pi" / "agent" / "skills" / "spec")
+    doctor = Doctor(skill_root=ROOT, project_root=ROOT, host_filter=["claude"])
+    assert doctor.check_pi_prompts() is None
+    assert doctor.checks == []
+
+
+def test_pi_prompts_ok_when_full_set_present(isolated_home):
+    from doctor_spec_environment import pi_prompts_dir
+
+    install_fake_skill(isolated_home / ".pi" / "agent" / "skills" / "spec")
+    prompts = pi_prompts_dir()
+    write_pi_template(prompts, "spec.md")
+    for stage in Doctor.USER_STAGES:
+        write_pi_template(prompts, f"spec:{stage}.md")
+    doctor = Doctor(skill_root=ROOT, project_root=ROOT)
+    assert doctor.check_pi_prompts() is True
+    check = check_by_id(doctor, "pi.prompts")
+    assert check.status == "ok"
+    assert f"{len(Doctor.USER_STAGES) + 1} 个模板" in check.detail
+
+
+def test_pi_prompts_fail_when_templates_missing(isolated_home):
+    install_fake_skill(isolated_home / ".pi" / "agent" / "skills" / "spec")
+    doctor = Doctor(skill_root=ROOT, project_root=ROOT)
+    assert doctor.check_pi_prompts() is False
+    check = check_by_id(doctor, "pi.prompts")
+    assert check.status == "fail"
+    assert "缺少模板" in check.detail
+    assert "spec:check.md" in check.detail
+    assert "spec.md" in check.detail
+
+
+def test_pi_prompts_warn_on_shape_and_marker_drift(isolated_home):
+    from doctor_spec_environment import pi_prompts_dir
+
+    install_fake_skill(isolated_home / ".pi" / "agent" / "skills" / "spec")
+    prompts = pi_prompts_dir()
+    write_pi_template(prompts, "spec.md")
+    for stage in Doctor.USER_STAGES:
+        write_pi_template(prompts, f"spec:{stage}.md")
+    # Unquoted description, no argument-hint, no literal $@, no index
+    # pointer, no marker: every shape rule fires without blocking (the file
+    # exists and is non-empty, so this is drift, not a missing template).
+    broken = prompts / "spec:new.md"
+    broken.write_text(
+        "---\ndescription: Spec: create a task package\n---\n# /spec:new\nRun the workflow.\n",
+        encoding="utf-8",
+    )
+    Path(f"{broken}.spec-skill-install").unlink()
+    doctor = Doctor(skill_root=ROOT, project_root=ROOT)
+    assert doctor.check_pi_prompts() is False
+    check = check_by_id(doctor, "pi.prompts")
+    assert check.status == "warn"
+    assert "未加引号" in check.detail
+    assert "argument-hint 缺失" in check.detail
+    assert "参数透传 $@" in check.detail
+    assert "未指向阶段契约索引" in check.detail
+    assert "缺少安装器 marker" in check.detail
+
+
+def test_pi_prompts_flags_installer_owned_leftovers_not_user_files(isolated_home):
+    from doctor_spec_environment import pi_prompts_dir
+
+    skill_dir = isolated_home / ".pi" / "agent" / "skills" / "spec"
+    install_fake_skill(skill_dir)
+    # core-profile marker: the expected set shrinks to CORE stages.
+    (skill_dir / ".spec-skill-install").write_text(
+        "installed_by=spec/install.sh\nsource=/nonexistent-source\nprofile=core\n", encoding="utf-8"
+    )
+    prompts = pi_prompts_dir()
+    write_pi_template(prompts, "spec.md")
+    # Profile expectations follow the RUNNING skill copy's marker (same rule
+    # as check_claude_commands), so bind the doctor to the core fixture.
+    doctor = Doctor(skill_root=skill_dir, project_root=isolated_home)
+    for stage in doctor.user_stages():
+        write_pi_template(prompts, f"spec:{stage}.md")
+    # Installer-owned leftover beyond the core set (marker sidecar present).
+    write_pi_template(prompts, "spec:organize.md")
+    # User-authored extended-stage file without a marker: never flagged.
+    write_pi_template(prompts, "spec:goal.md", marker=False)
+    assert doctor.check_pi_prompts() is False
+    check = check_by_id(doctor, "pi.prompts")
+    assert check.status == "warn"
+    assert "阶段集外安装器残留模板：spec:organize.md" in check.detail
+    assert "spec:goal.md" not in check.detail
+
+
+# ------------------------------------------------------- migration.wrappers
+
+
+def test_migration_wrappers_silent_when_none_present(isolated_home):
+    (isolated_home / ".agents" / "skills").mkdir(parents=True)
+    doctor = Doctor(skill_root=ROOT, project_root=ROOT)
+    assert doctor.check_migration_wrappers() is True
+    assert doctor.checks == []
+
+
+def test_migration_wrappers_reports_fingerprints_and_never_removes(isolated_home):
+    from doctor_spec_environment import agents_skills_dir
+
+    base = agents_skills_dir()
+    for stage in ("autoplan", "run"):
+        wrapper = base / f"source-command-spec-{stage}"
+        wrapper.mkdir(parents=True)
+        (wrapper / "SKILL.md").write_text(
+            f'---\nname: "source-command-spec-{stage}"\n'
+            f'description: "Migrated source command `spec-{stage}`"\n---\n# wrapper\n',
+            encoding="utf-8",
+        )
+    alien = base / "source-command-spec-alien"
+    alien.mkdir()
+    (alien / "SKILL.md").write_text("# not a migrated spec wrapper\n", encoding="utf-8")
+    doctor = Doctor(skill_root=ROOT, project_root=ROOT, fix=True)
+    assert doctor.check_migration_wrappers() is False
+    check = check_by_id(doctor, "migration.wrappers")
+    assert check.status == "warn"
+    assert "source-command-spec-autoplan" in check.detail
+    assert "指纹不匹配" in check.detail
+    assert "alien" in check.detail
+    assert "只报告不删除" in check.fix_note
+    # Report-only holds even with --fix: nothing was touched.
+    assert alien.exists()
+    assert (base / "source-command-spec-run").exists()
 
 
 def test_claude_agents_skipped_when_host_unused(isolated_home):

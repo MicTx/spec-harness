@@ -161,6 +161,36 @@ def test_tasks_writing_requirements_forbid_boilerplate_tasks():
     )
 
 
+def _tasks_writing_requirements_block() -> str:
+    """The Writing requirements block after the tasks fence (F2 recipe home)."""
+    content = _read("templates.md")
+    start = content.index("Writing requirements:", content.index("# [项目名称] - 任务拆解"))
+    return content[start : content.index("## Success criteria")]
+
+
+def test_tasks_writing_requirements_carry_the_complete_verify_recipe():
+    """F2: the five-element verify recipe lives in the writing requirements,
+    existence-based — never a five-item form."""
+    block = _tasks_writing_requirements_block()
+    for element in ("运行目录", "前置条件与依赖", "完整可执行命令", "成功判定", "失败处理"):
+        assert element in block, f"complete-verify recipe missing element: {element}"
+    assert "copy-and-run" in block, "recipe must demand a copy-and-run first backtick span"
+    assert "never a five-item form" in block, "recipe must stay existence-based, not a form"
+
+
+def test_tasks_writing_requirements_carry_the_granularity_law():
+    """F2: one task = one passable verification; merging unrelated boundaries
+    to shrink rounds is banned, and the ban is the only 轮次-shrinking talk."""
+    block = _tasks_writing_requirements_block()
+    assert "one passable verification" in block, "granularity law must pin the one-task-one-verification unit"
+    assert "禁止合并无关 boundary 减少轮次" in block, "granularity law must carry the merge ban"
+    content = _read("templates.md")
+    assert content.count("减少轮次") == 1, (
+        "轮次-shrinking talk must exist only inside the granularity-law ban — "
+        "a second occurrence reads as advice to merge tasks"
+    )
+
+
 def test_success_criteria_section_documents_v2_acceptance_contract():
     content = _read("templates.md")
     section = _section(content, "## Success criteria")

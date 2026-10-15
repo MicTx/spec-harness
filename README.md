@@ -78,7 +78,7 @@ Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.18.0
+git checkout v0.19.0
 bash install.sh
 ```
 
@@ -98,7 +98,7 @@ bash install.sh
 | `opencode` | OpenCode | `${XDG_CONFIG_HOME:-~/.config}/opencode/skills` | |
 | `openclaw` | OpenClaw | `~/.openclaw/skills` | |
 | `hermes` | Hermes | `~/.hermes/skills` | 可用 `HERMES_HOME` 重定位 |
-| `pi` | Pi agent | `~/.pi/agent/skills` | 可用 `PI_DIR` 重定位 |
+| `pi` | Pi agent | `~/.pi/agent/skills` + `~/.pi/agent/prompts` | 可用 `PI_DIR` 重定位；同时写入 `/spec` 与 `/spec:<stage>` 原生命令模板（`PI_PROMPTS_DIR` 重定位，`/reload` 后生效） |
 | `zcode` | ZCode | `~/.zcode/skills` | 项目自有宿主 |
 | `desktop`、`rpi` | Claude Code + Codex | 两套默认目录 | 组合目标 |
 | `all` | 全部宿主 | 按上表写入 | 显式全量 |
@@ -129,7 +129,7 @@ python3 scripts/export_skill_package.py --output /tmp/spec --force
 
 手动直调导出器不会自动跳过签名：无凭据环境需显式加 `--skip-signing`（安装器在同样条件下会自动附加并提示）。导出器同样接受 `--profile core|full`（缺省 `full`，与 release 载荷字节等价）。
 
-把导出的 `spec/` 目录放入宿主的 Skill 根目录，然后在 Codex/Pi/ZCode 中触发 `$spec`，或在 Claude Code 中使用 `/spec:goal`。
+把导出的 `spec/` 目录放入宿主的 Skill 根目录，然后在 Codex/ZCode 中触发 `$spec`，在 Pi 中使用 `/spec`、`/spec:<stage>` 原生命令（参数经 `$@` 原样透传），或在 Claude Code 中使用 `/spec:goal`。
 
 ## 快速开始
 
@@ -234,6 +234,7 @@ spec/
 │   ├── install_git_hooks.py
 │   ├── install_slot_hooks.py
 │   ├── issue_closure_support.py
+│   ├── measure_skill_surface.py
 │   ├── organize_project_structure.py
 │   ├── gitea_hook_repair.py
 │   ├── push_spec_package.py

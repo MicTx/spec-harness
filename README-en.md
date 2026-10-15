@@ -78,7 +78,7 @@ Run the installer from a checked-out source or release tree:
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.18.0
+git checkout v0.19.0
 bash install.sh
 ```
 
@@ -98,7 +98,7 @@ Installing from a source tree needs no signing credentials: when none are found 
 | `opencode` | OpenCode | `${XDG_CONFIG_HOME:-~/.config}/opencode/skills` | |
 | `openclaw` | OpenClaw | `~/.openclaw/skills` | |
 | `hermes` | Hermes | `~/.hermes/skills` | relocatable with `HERMES_HOME` |
-| `pi` | Pi agent | `~/.pi/agent/skills` | relocatable with `PI_DIR` |
+| `pi` | Pi agent | `~/.pi/agent/skills` + `~/.pi/agent/prompts` | relocatable with `PI_DIR`; also writes `/spec` and `/spec:<stage>` native prompt templates (`PI_PROMPTS_DIR` relocation, effective after `/reload`) |
 | `zcode` | ZCode | `~/.zcode/skills` | project-owned host |
 | `desktop`, `rpi` | Claude Code + Codex | both default directories | combined targets |
 | `all` | all hosts | as listed above | explicit full set |
@@ -129,7 +129,7 @@ python3 scripts/export_skill_package.py --output /tmp/spec --force
 
 Calling the exporter directly never auto-skips signing: in a keyless environment add `--skip-signing` explicitly (the installer applies it automatically under the same conditions). The exporter also accepts `--profile core|full` (default `full`, byte-identical to the release payload).
 
-Place the exported `spec/` directory in the host's Skill directory. Trigger it with `$spec` in Codex/Pi/ZCode or `/spec:goal` in Claude Code.
+Place the exported `spec/` directory in the host's Skill directory. Trigger it with `$spec` in Codex/ZCode, use the native `/spec` and `/spec:<stage>` commands in Pi (arguments forwarded verbatim via `$@`), or `/spec:goal` in Claude Code.
 
 ## Quick Start
 
@@ -234,6 +234,7 @@ spec/
 │   ├── install_git_hooks.py
 │   ├── install_slot_hooks.py
 │   ├── issue_closure_support.py
+│   ├── measure_skill_surface.py
 │   ├── organize_project_structure.py
 │   ├── gitea_hook_repair.py
 │   ├── push_spec_package.py

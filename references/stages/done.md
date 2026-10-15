@@ -10,21 +10,21 @@ Preconditions:
 - The `check` gate passed and the acceptance surface satisfied: legacy `checklist.md` fully checked and passing; v2 every `spec.md` §6 checkbox checked with executable evidence in force.
 - On this record's integration branch; never a protected branch (`main`, `master`, `develop`, `release/*`, remote default).
 - At least one script/test/build evidence item (or the `evidence: runs` gate for v2); optional gate headings present have their sections passed.
-- `spec.md` declares a verification level and the evidence records commands from that level; `done` reuses the declared `package`/`integration`/`project` scope, never widening it implicitly; enforcement applies to `--archive` — a non-archive draft records the level without blocking (the draft is local, the archive is the gate).
+- `spec.md` declares a verification level; `done` reuses the declared `package`/`integration`/`project` scope and its evidence, never widening it implicitly (enforced at `--archive` — a non-archive draft records the level without blocking, the draft is local, the archive is the gate).
 - `evidence: runs` packages archive only on fresh executed proof: `--archive` recomputes the worktree fingerprint and refuses when any machine task's latest `runs.jsonl` record is not `exit == 0` or no longer matches the tree (未验证/证据过期 — re-run `scripts/spec_verify.py` after the last tree change, before archiving). The archived `completion-summary.md` gains a 机器验证率 line (`通过/机器任务总数`, manual tasks excluded), and `runs.jsonl` archives with the package.
 - Actionable issues found this round have been written back and completed; no executable leftovers enter the archive.
 
 Execution order:
 
 1. Re-verify the package state; no unfinished high-priority items.
-2. Distill as an incremental `AGENTS.md` proposal inside `completion-summary.md` (`## AGENTS.md 增量提议` diff fence; `无` if nothing reusable) — never standalone, never auto-applied to host instruction files or global carriers (`~/.claude/CLAUDE.md`, user-level `AGENTS.md`, memory). Existing `.spec/docs/` files stay as history.
+2. Distill as an incremental `AGENTS.md` proposal inside `completion-summary.md` (`## AGENTS.md 增量提议` diff fence; `无` if nothing reusable) — never standalone, never auto-applied to host instruction files or global carriers (full contract: [`../templates.md`](../templates.md), AGENTS.md proposal section).
 3. Prefer running:
 
 ```bash
 python3 scripts/complete_spec_package.py --root <project> --slug YYYY-MM-DD_<slug> --archive
 ```
 
-With non-empty issue dispositions, pass repeatable `--issue-disposition '<json>'` or `@path.json`. Only the five types are allowed (`resolved_current`, `resolved_followup`, `accepted_risk`, `external_blocked`, `non_actionable`); a `resolved_followup` target must already be accepted and archived. `--follow-up` / `--open-risk` / `--not-delivered` / `--deviation` apply only to unarchived drafts. `--test-evidence` / `--build-evidence` / `--manual-evidence` are free-text notes into the summary's `备注` block, never gating the archive (machine evidence is `runs.jsonl`; legacy checklists keep their evidence gates). Distillation: repeatable `--agents-proposal` (one line per value; omitted → `无`). For an English Git record, add `--git-record-language en` (default `auto` detects from the `spec.md` title); fields: `date-time | scope | feature | operation | outcome | commit | push`.
+With non-empty issue dispositions, pass repeatable `--issue-disposition '<json>'` or `@path.json` (only the five disposition types of SKILL rule 4; a `resolved_followup` target must already be accepted and archived). `--follow-up` / `--open-risk` / `--not-delivered` / `--deviation` apply only to unarchived drafts. `--test-evidence` / `--build-evidence` / `--manual-evidence` are free-text notes into the summary's `备注` block, never gating the archive (machine evidence is `runs.jsonl`; legacy checklists keep their evidence gates). Distillation: repeatable `--agents-proposal` (one line per value; omitted → `无`). For an English Git record, add `--git-record-language en` (default `auto` detects from the `spec.md` title); fields: `date-time | scope | feature | operation | outcome | commit | push`.
 
 4. Generate/update `completion-summary.md`, moving it to `.spec/specs/archive/YYYY-MM-DD_<slug>/` when needed; a `handoff.md` gets its terminal `close` entry (`status: done`) appended before the move.
 5. Draft an atomic commit message per Conventional Commits (see [`../naming-and-commits.md`](../naming-and-commits.md)):
@@ -42,10 +42,10 @@ Spec: YYYY-MM-DD_<slug>
 
 Knowledge distillation records first:
 
-- Project-specific engineering facts only — technical difficulties and solutions, architecture decisions and trade-offs, pitfalls, reusable operational patterns; spec process mechanics live in the skill, never in distillations.
+- Project-specific engineering facts only (difficulties and solutions, decisions and trade-offs, pitfalls, reusable patterns); spec process mechanics live in the skill, never in distillations.
 - Credential hygiene: 蒸馏文本不得含真实凭证值 — reference credentials by name and injection path (env file / host-side injection, per the assignment contract's Excluded areas in [`../orchestration.md`](../orchestration.md)); examples use placeholders such as `<admin-token>`.
 
 Output contract:
 
 - Render the `/spec:done` dashboard per [`../output-contracts.md`](../output-contracts.md) — that file is the single source of truth for content requirements; no field lists repeated here. State whether a script-generated summary passed gate validation.
-- `Open items` carries no free-text follow-ups; the archive must contain the v1 `## Issue dispositions` JSON (`resolved_current` → the completed task; `resolved_followup` → an archived follow-up; risk/external/non-actionable carry owner + trigger fields).
+- `Open items` carries no free-text follow-ups; the archive must contain the v1 `## Issue dispositions` JSON (five types, owner + trigger fields where required).

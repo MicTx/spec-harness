@@ -680,6 +680,9 @@ def _smoke_record(arm: str, scenario: str, repeat: int, success: bool = True) ->
         "tool_calls": 3,
         "human_interventions": 0,
         "exit_code": 0,
+        "budget": {"class": "default", "timeout_s": 900, "max_turns": 20, "label": None, "source": "manifest"},
+        "over_budget": False,
+        "review": None,
     }
 
 
@@ -1023,3 +1026,521 @@ def test_decision_record_no_f11_rollback_and_exit_ruling():
     text = _decision_record_text()
     assert "未触发" in text and "F11" in text
     assert "退出条件" in text
+
+
+# --- F3: budget manifest, batch accounting, authorization gate, review axes ----
+
+SHIPPED_BUDGETS = BENCH_DIR / "budgets.json"
+
+
+def _minimal_manifest(batch_overrides: dict = None) -> dict:
+    """A valid manifest for the default class with optional batch-cap tweaks."""
+    batch = {
+        "units": 36,
+        "tokens_in": 1000000,
+        "tokens_out": 400000,
+        "cache_read": 10000000,
+        "wall_s": 21600,
+        **(batch_overrides or {}),
+    }
+    return {
+        "classes": {
+            "default": {
+                "timeout_s": 900,
+                "max_turns": 20,
+                "unit_caps": {"tokens_in": 40000, "tokens_out": 20000, "cache_read": 400000},
+                "batch": batch,
+            }
+        },
+        "scenarios": {},
+    }
+
+
+def test_budgets_manifest_shipped_shape_valid():
+    budgets = bench_harness.load_budgets(SHIPPED_BUDGETS)
+    assert bench_harness.budget_class_for(budgets, "s6-review-recall") == "review"
+    assert bench_harness.budget_class_for(budgets, "s1-simple-fix") == "default"
+    label_entry = budgets["authorization_labels"]["real-s6-recalibration"]
+    for field in bench_harness.BATCH_CAP_FIELDS:
+        assert label_entry["estimate_upper_bound"][field] > 0
+    for class_name in ("default", "review"):
+        spec = budgets["classes"][class_name]
+        assert spec["timeout_s"] > 0 and spec["max_turns"] > 0
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        "no-review-timeout",
+        "no-default-class",
+        "no-batch",
+        "bad-scenario-class",
+        "not-json",
+    ],
+)
+def test_budgets_manifest_missing_field_refuses_run(tmp_path, mutate):
+    manifest = _minimal_manifest()
+    review = {
+        "timeout_s": 2400,
+        "max_turns": 30,
+        "unit_caps": {"tokens_in": 40000, "tokens_out": 20000, "cache_read": 400000},
+        "batch": {"units": 12, "tokens_in": 480000, "tokens_out": 240000, "cache_read": 4800000, "wall_s": 28800},
+    }
+    manifest["classes"]["review"] = review
+    manifest["scenarios"]["s6-review-recall"] = {"class": "review"}
+    if mutate == "no-review-timeout":
+        del manifest["classes"]["review"]["timeout_s"]
+    elif mutate == "no-default-class":
+        del manifest["classes"]["default"]
+    elif mutate == "no-batch":
+        del manifest["classes"]["review"]["batch"]
+    elif mutate == "bad-scenario-class":
+        manifest["scenarios"]["s6-review-recall"] = {"class": "nonexistent"}
+    path = tmp_path / "budgets.json"
+    if mutate == "not-json":
+        path.write_text("{not json", encoding="utf-8")
+    else:
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(SystemExit) as excinfo:
+        bench_harness.load_budgets(path)
+    assert excinfo.value.code == 2
+
+
+def test_budget_timeout_override_recorded_in_runs(tmp_path):
+    runs_path = tmp_path / "runs.jsonl"
+    common = [
+        "run",
+        "--scenarios",
+        "s1-simple-fix",
+        "--arms",
+        "solve",
+        "--repeats",
+        "1",
+        "--seed",
+        "7",
+        "--work-root",
+        str(tmp_path / "work"),
+    ]
+    assert bench_harness.main(common + ["--out", str(runs_path)]) == 0
+    record = json.loads(runs_path.read_text(encoding="utf-8").splitlines()[0])
+    assert record["budget"] == {
+        "class": "default",
+        "timeout_s": 900,
+        "max_turns": 20,
+        "label": None,
+        "source": "manifest",
+    }
+    assert record["over_budget"] is False
+    assert record["review"] is None
+
+    override_runs = tmp_path / "override.jsonl"
+    assert bench_harness.main(common + ["--timeout", "300", "--out", str(override_runs)]) == 0
+    override = json.loads(override_runs.read_text(encoding="utf-8").splitlines()[0])
+    assert override["budget"]["source"] == "override"
+    assert override["budget"]["timeout_s"] == 300
+
+
+def test_batch_units_cap_stops_honestly_and_resume_completes(tmp_path, capsys):
+    budgets_path = tmp_path / "budgets.json"
+    budgets_path.write_text(json.dumps(_minimal_manifest({"units": 2})), encoding="utf-8")
+    runs_path = tmp_path / "runs.jsonl"
+    argv = [
+        "run",
+        "--scenarios",
+        "s1-simple-fix",
+        "--arms",
+        "solve",
+        "--repeats",
+        "3",
+        "--seed",
+        "7",
+        "--budgets",
+        str(budgets_path),
+        "--work-root",
+        str(tmp_path / "work"),
+    ]
+    assert bench_harness.main(argv + ["--out", str(runs_path)]) == 4
+    written = runs_path.read_text(encoding="utf-8").splitlines()
+    assert len(written) == 2  # append-only: already-written rows preserved
+    err = capsys.readouterr().err
+    assert "budget stop" in err and "缺口单元" in err and "已写行" in err
+    assert "units 2/2" in err
+
+    # Raise the cap, resume from the same file: recorded units are skipped
+    # and counted, the one gap unit completes the grid.
+    budgets_path.write_text(json.dumps(_minimal_manifest({"units": 3})), encoding="utf-8")
+    assert bench_harness.main(argv + ["--out", str(runs_path), "--resume-from", str(runs_path)]) == 0
+    final = [json.loads(line) for line in runs_path.read_text(encoding="utf-8").splitlines()]
+    assert len(final) == 3
+    assert {record["unit"] for record in final} == {f"s1-simple-fix::solve::r{repeat:02d}" for repeat in (1, 2, 3)}
+
+
+def test_batch_token_cap_counts_completed_units(tmp_path, capsys):
+    # solve mock reports tokens_in=850; a cap of 850 exhausts after unit 1.
+    budgets_path = tmp_path / "budgets.json"
+    budgets_path.write_text(json.dumps(_minimal_manifest({"tokens_in": 850})), encoding="utf-8")
+    runs_path = tmp_path / "runs.jsonl"
+    exit_code = bench_harness.main(
+        [
+            "run",
+            "--scenarios",
+            "s1-simple-fix",
+            "--arms",
+            "solve",
+            "--repeats",
+            "2",
+            "--seed",
+            "7",
+            "--out",
+            str(runs_path),
+            "--budgets",
+            str(budgets_path),
+            "--work-root",
+            str(tmp_path / "work"),
+        ]
+    )
+    assert exit_code == 4
+    assert len(runs_path.read_text(encoding="utf-8").splitlines()) == 1
+    assert "tokens_in 850/850" in capsys.readouterr().err
+
+
+def _write_recording_host(tmp_path: Path, name: str, body_extra: str = "") -> Path:
+    """A stub host adapter that records its argv beside itself."""
+    stub = tmp_path / name
+    stub.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        f"Path(__file__).with_name({name!r}.replace('.py', '') + '_argv.json').write_text(json.dumps(sys.argv[1:]))\n"
+        + body_extra,
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    return stub
+
+
+def test_max_turns_forwarded_to_host_script_only(tmp_path):
+    stub = _write_recording_host(tmp_path, "stub_host.py")
+    runs_path = tmp_path / "host-runs.jsonl"
+    assert (
+        bench_harness.main(
+            [
+                "run",
+                "--scenarios",
+                "s6-review-recall",
+                "--arms",
+                "solve",
+                "--repeats",
+                "1",
+                "--seed",
+                "7",
+                "--out",
+                str(runs_path),
+                "--host-script",
+                str(stub),
+                "--authorize-budget",
+                "real-s6-recalibration",
+                "--work-root",
+                str(tmp_path / "work"),
+            ]
+        )
+        == 0
+    )
+    argv = json.loads((tmp_path / "stub_host_argv.json").read_text(encoding="utf-8"))
+    assert argv[argv.index("--max-turns") + 1] == "30"  # review class manifest value
+    assert argv[argv.index("--timeout") + 1] == "2400"
+    record = json.loads(runs_path.read_text(encoding="utf-8").splitlines()[0])
+    assert record["budget"] == {
+        "class": "review",
+        "timeout_s": 2400,
+        "max_turns": 30,
+        "label": "real-s6-recalibration",
+        "source": "manifest",
+    }
+
+    # Mock path: same recording stub as a worker — the parameter face must
+    # stay exactly --sandbox/--scenario/--arm/--timeout.
+    stub_dir = tmp_path / "stub_workers"
+    stub_dir.mkdir()
+    worker = stub_dir / "solve.py"
+    worker.write_text(
+        "import sys\nfrom pathlib import Path\nsys.path.insert(0, r'%s')\n"
+        "import _common, json\n"
+        "args = _common.parse_worker_args('recording worker')\n"
+        "Path(r'%s').write_text(json.dumps(sys.argv[1:]))\n"
+        "_common.write_usage(Path(args.sandbox).resolve(), tokens_in=10, tokens_out=10)\n"
+        % (str(WORKERS_DIR), str(tmp_path / "mock_argv.json")),
+        encoding="utf-8",
+    )
+    mock_runs = tmp_path / "mock-runs.jsonl"
+    assert (
+        bench_harness.main(
+            [
+                "run",
+                "--scenarios",
+                "s1-simple-fix",
+                "--arms",
+                "solve",
+                "--repeats",
+                "1",
+                "--seed",
+                "7",
+                "--out",
+                str(mock_runs),
+                "--workers-dir",
+                str(stub_dir),
+                "--work-root",
+                str(tmp_path / "work2"),
+            ]
+        )
+        == 0
+    )
+    mock_argv = json.loads((tmp_path / "mock_argv.json").read_text(encoding="utf-8"))
+    assert "--max-turns" not in mock_argv
+    assert mock_argv[mock_argv.index("--timeout") + 1] == "900"  # default class manifest timeout
+
+
+def test_authorization_gate_refuses_without_cli_label(tmp_path, capsys):
+    stub = _write_recording_host(tmp_path, "gate_host.py")
+    base = [
+        "run",
+        "--scenarios",
+        "s6-review-recall",
+        "--arms",
+        "solve",
+        "--repeats",
+        "1",
+        "--seed",
+        "7",
+        "--host-script",
+        str(stub),
+        "--work-root",
+        str(tmp_path / "work"),
+    ]
+    runs_path = tmp_path / "refused.jsonl"
+
+    # (a) missing label: refused before any sandbox, zero rows written
+    with pytest.raises(SystemExit) as excinfo:
+        bench_harness.main(base + ["--out", str(runs_path)])
+    assert excinfo.value.code == 2
+    assert not runs_path.exists()
+    assert "--authorize-budget" in capsys.readouterr().err
+
+    # (b) unknown label
+    with pytest.raises(SystemExit) as excinfo:
+        bench_harness.main(base + ["--out", str(runs_path), "--authorize-budget", "made-up"])
+    assert excinfo.value.code == 2
+    assert not runs_path.exists()
+
+    # (c) a manifest carrying authorized:true must NOT silently authorize
+    manifest = json.loads(SHIPPED_BUDGETS.read_text(encoding="utf-8"))
+    manifest["authorization_labels"]["real-s6-recalibration"]["authorized"] = True
+    flipped = tmp_path / "flipped-budgets.json"
+    flipped.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(SystemExit) as excinfo:
+        bench_harness.main(base + ["--out", str(runs_path), "--budgets", str(flipped)])
+    assert excinfo.value.code == 2
+    assert not runs_path.exists()
+
+    # (d) a label without declared batch caps is not a valid authorization
+    del manifest["authorization_labels"]["real-s6-recalibration"]["estimate_upper_bound"]
+    capped = tmp_path / "capless-budgets.json"
+    capped.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(SystemExit) as excinfo:
+        bench_harness.main(
+            base + ["--out", str(runs_path), "--budgets", str(capped), "--authorize-budget", "real-s6-recalibration"]
+        )
+    assert excinfo.value.code == 2
+    assert not runs_path.exists()
+
+    # dry-run is gated the same way (zero sandbox, zero units)
+    with pytest.raises(SystemExit) as excinfo:
+        bench_harness.main(base + ["--out", str(runs_path), "--dry-run"])
+    assert excinfo.value.code == 2
+
+
+def test_mock_rows_carry_null_review_despite_review_md(tmp_path):
+    # The mock solve writes a full REVIEW.md on S6 and the acceptance test
+    # writes the artifact — but mock rows must stay review=null: scripted
+    # REVIEW.md is not review semantics (缺省 != 0).
+    runs_path = tmp_path / "runs.jsonl"
+    assert (
+        bench_harness.main(
+            [
+                "run",
+                "--scenarios",
+                "s6-review-recall",
+                "--arms",
+                "solve,fake_completion",
+                "--repeats",
+                "1",
+                "--seed",
+                "7",
+                "--out",
+                str(runs_path),
+                "--work-root",
+                str(tmp_path / "work"),
+            ]
+        )
+        == 0
+    )
+    records = [json.loads(line) for line in runs_path.read_text(encoding="utf-8").splitlines()]
+    assert len(records) == 2
+    for record in records:
+        assert record["review"] is None
+        assert record["budget"]["class"] == "review"
+        assert record["over_budget"] is False
+    solve = next(record for record in records if record["arm"] == "solve")
+    assert solve["success"] is True  # the REVIEW.md itself really passes acceptance
+
+
+def test_forged_review_artifact_overridden_by_acceptance(tmp_path):
+    import sys as _sys
+
+    _sys.path.insert(0, str(WORKERS_DIR))
+    import _common as mock_common  # noqa: E402
+
+    review_md = mock_common.SOLUTIONS["s6-review-recall"]["REVIEW.md"]
+    stub = tmp_path / "forging_host.py"
+    stub.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "sandbox = Path(sys.argv[sys.argv.index('--sandbox') + 1])\n"
+        "(sandbox / 'REVIEW.md').write_text(%r, encoding='utf-8')\n"
+        "(sandbox / '.bench-review.json').write_text(\n"
+        '    \'{"planted": 1, "recalled": 99, "false_positives": 0, "matched": [1]}\', encoding=\'utf-8\')\n'
+        % review_md,
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    runs_path = tmp_path / "runs.jsonl"
+    assert (
+        bench_harness.main(
+            [
+                "run",
+                "--scenarios",
+                "s6-review-recall",
+                "--arms",
+                "solve",
+                "--repeats",
+                "1",
+                "--seed",
+                "7",
+                "--out",
+                str(runs_path),
+                "--host-script",
+                str(stub),
+                "--authorize-budget",
+                "real-s6-recalibration",
+                "--work-root",
+                str(tmp_path / "work"),
+            ]
+        )
+        == 0
+    )
+    record = json.loads(runs_path.read_text(encoding="utf-8").splitlines()[0])
+    # The recorded axes are the acceptance truth, never the forged numbers.
+    # Deterministic first-match semantics: the two same-file findings at
+    # ±3 of each other collide, so the reference review recalls 4/6 (still
+    # above RECALL_THRESHOLD=4 with zero false positives).
+    assert record["review"] == {"planted": 6, "recalled": 4, "false_positives": 0}
+    assert record["success"] is True
+    assert record["out_of_boundary"] == 0  # forged artifact is a protocol channel, not a violation
+
+
+def test_over_budget_flags_unit_cap_breach(tmp_path):
+    stub_dir = tmp_path / "stub_workers"
+    stub_dir.mkdir()
+    (stub_dir / "spender.py").write_text(
+        "import sys\nfrom pathlib import Path\nsys.path.insert(0, r'%s')\n"
+        "import _common\nargs = _common.parse_worker_args('spender')\n"
+        "_common.write_usage(Path(args.sandbox).resolve(), tokens_in=41000, tokens_out=10,\n"
+        "                    tokens_cache=0, tool_calls=1, human_interventions=0)\n" % str(WORKERS_DIR),
+        encoding="utf-8",
+    )
+    runs_path = tmp_path / "runs.jsonl"
+    assert (
+        bench_harness.main(
+            [
+                "run",
+                "--scenarios",
+                "s1-simple-fix",
+                "--arms",
+                "spender",
+                "--repeats",
+                "1",
+                "--seed",
+                "7",
+                "--out",
+                str(runs_path),
+                "--workers-dir",
+                str(stub_dir),
+                "--work-root",
+                str(tmp_path / "work"),
+            ]
+        )
+        == 0
+    )
+    record = json.loads(runs_path.read_text(encoding="utf-8").splitlines()[0])
+    assert record["over_budget"] is True  # tokens_in 41000 > default unit cap 40000
+    assert record["budget"]["class"] == "default"
+
+
+def test_collect_review_axes_and_calibration_labels(tmp_path):
+    runs_path = tmp_path / "runs.jsonl"
+    good = _smoke_record("native", "s6-review-recall", 1)
+    good["review"] = {"planted": 6, "recalled": 6, "false_positives": 0}
+    weak = _smoke_record("native", "s6-review-recall", 2)
+    weak["review"] = {"planted": 6, "recalled": 3, "false_positives": 2}
+    legacy = _smoke_record("native", "s1-simple-fix", 1)
+    for field in ("budget", "over_budget", "review"):
+        del legacy[field]
+    runs_path.write_text("\n".join(json.dumps(record) for record in (good, weak, legacy)) + "\n", encoding="utf-8")
+    summary_path = tmp_path / "summary.md"
+    assert bench_collect.main(["--runs", str(runs_path), "--out", str(summary_path)]) == 0
+    markdown = summary_path.read_text(encoding="utf-8")
+    assert "口径标签" in markdown and "禁止任何跨口径换算" in markdown
+    assert "评审召回中位" in markdown and "误报中位" in markdown
+    # recall median of {6/6, 3/6} = 75%; false positives median of {0, 2} = 1
+    assert "75.0%（n=2）" in markdown
+    assert "1（n=2）" in markdown
+    # the legacy row is named as outside the view, not fabricated as zero
+    assert "数据视野外" in markdown and "1 行缺 budget 字段" in markdown
+
+
+def test_check_smoke_output_validates_budget_fields(tmp_path, capsys):
+    runs_path = tmp_path / "runs.jsonl"
+    records = [
+        _smoke_record("native", "s1-simple-fix", 1),
+        _smoke_record("native", "s1-simple-fix", 2),
+    ]
+    runs_path.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
+    summary = tmp_path / "summary.md"
+    summary.write_text("# 汇总\n", encoding="utf-8")
+    argv = [
+        "--runs",
+        str(runs_path),
+        "--summary",
+        str(summary),
+        "--arms",
+        "native",
+        "--scenarios",
+        "s1-simple-fix",
+        "--repeats",
+        "2",
+    ]
+
+    assert bench_checker.main(argv) == 0  # null review on mock rows is legal
+
+    broken = _smoke_record("native", "s1-simple-fix", 2)
+    del broken["review"]
+    runs_path.write_text("\n".join(json.dumps(record) for record in (records[0], broken)) + "\n", encoding="utf-8")
+    assert bench_checker.main(argv) == 1
+    assert "review" in capsys.readouterr().err
+
+    numeric = _smoke_record("native", "s1-simple-fix", 2)
+    numeric["review"] = 0  # null != 0: a zero review is a shape violation
+    runs_path.write_text("\n".join(json.dumps(record) for record in (records[0], numeric)) + "\n", encoding="utf-8")
+    assert bench_checker.main(argv) == 1
+    assert "review" in capsys.readouterr().err

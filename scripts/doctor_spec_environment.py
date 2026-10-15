@@ -150,6 +150,8 @@ PROBE_IDS: Tuple[str, ...] = (
     "hosts.installed",
     "claude.commands",
     "claude.agents",
+    "pi.prompts",
+    "migration.wrappers",
     "zcode.symlink",
     "project.git",
     "project.spec",
@@ -209,6 +211,22 @@ def claude_commands_dir() -> Path:
     if override:
         return Path(override)
     return _home() / ".claude" / "commands"
+
+
+def pi_prompts_dir() -> Path:
+    """Pi prompt-template dir (F4): same override pattern as the installer."""
+    override = os.environ.get("PI_PROMPTS_DIR")
+    if override:
+        return Path(override)
+    return _pi_home() / "agent" / "prompts"
+
+
+def agents_skills_dir() -> Path:
+    """Cross-host Agent Skills scan dir; override for sandbox tests only."""
+    override = os.environ.get("AGENTS_SKILLS_DIR")
+    if override:
+        return Path(override)
+    return _home() / ".agents" / "skills"
 
 
 def backup_root() -> Path:
@@ -907,6 +925,136 @@ class Doctor:
         commands_dir = claude_commands_dir()
         return all((commands_dir / "spec" / f"{stage}.md").is_file() for stage in stages)
 
+    def check_pi_prompts(self) -> Optional[bool]:
+        """Native Pi prompt templates (F4): /spec + /spec:<stage> forwarders.
+
+        Pi registers <pi-root>/agent/prompts/*.md as slash commands; the
+        installer owns spec.md and spec:<stage>.md with sidecar markers.
+        This probe reports presence, stage-set/profile consistency, markers,
+        and the thin-forwarder shape (quoted frontmatter, literal $@,
+        contract-index pointer). Repair is an installer rerun (fix_note),
+        never an inline patch.
+        """
+        if self.host_filter is not None and "pi" not in {name.strip() for name in self.host_filter}:
+            return None
+        pi_dir = self.host_skill_dir(self._find_host("pi"))
+        prompts_dir = pi_prompts_dir()
+        stages = self.user_stages()
+        expected = [prompts_dir / "spec.md"] + [prompts_dir / f"spec:{stage}.md" for stage in stages]
+        has_skill = pi_dir.exists() or pi_dir.is_symlink()
+        has_templates = any(path.exists() or path.is_symlink() for path in expected)
+        if not has_skill and not has_templates and not prompts_dir.exists():
+            # Host not in use: nothing owned by us to verify.
+            return True
+        if self.is_foreign_skill(pi_dir):
+            self.record(
+                "pi.prompts",
+                "Pi 命令模板",
+                "info",
+                f"{pi_dir} 被外来同名 skill 占用；模板检查跳过",
+            )
+            return True
+
+        problems: List[str] = []
+        for path in expected:
+            if not path.is_file():
+                problems.append(f"缺少模板：{path.name}（/{path.stem} 无法触发）")
+                continue
+            if path.stat().st_size == 0:
+                problems.append(f"模板为空：{path.name}")
+                continue
+            marker = Path(f"{path}.spec-skill-install")
+            if not marker.is_file():
+                problems.append(f"缺少安装器 marker：{path.name}")
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if 'description: "' not in text:
+                problems.append(f"frontmatter description 缺失或未加引号：{path.name}")
+            if "argument-hint:" not in text:
+                problems.append(f"argument-hint 缺失：{path.name}")
+            if "$@" not in text:
+                problems.append(f"正文缺少参数透传 $@：{path.name}")
+            if "references/commands.md" not in text:
+                problems.append(f"正文未指向阶段契约索引：{path.name}")
+
+        # Installer-owned templates beyond the current profile/stage set:
+        # downgrade (full->core) and stage retirement both leave these
+        # behind. Ownership evidence is the sidecar marker; user-authored
+        # same-shape files are never flagged.
+        expected_names = {path.name for path in expected}
+        stale: List[str] = []
+        if prompts_dir.is_dir():
+            for candidate in sorted(prompts_dir.glob("spec:*.md")):
+                if candidate.name in expected_names:
+                    continue
+                if Path(f"{candidate}.spec-skill-install").is_file():
+                    stale.append(candidate.name)
+        if stale:
+            problems.append("阶段集外安装器残留模板：" + "、".join(stale[:5]) + ("…" if len(stale) > 5 else ""))
+
+        if not problems:
+            self.record(
+                "pi.prompts",
+                "Pi 命令模板",
+                "ok",
+                f"{len(expected)} 个模板齐全（/spec + {len(stages)} 阶段），形状与 marker 一致",
+            )
+            return True
+        blocking = any(item.startswith(("缺少模板", "模板为空")) for item in problems)
+        self.record(
+            "pi.prompts",
+            "Pi 命令模板",
+            "fail" if blocking else "warn",
+            "；".join(problems),
+            f"INSTALL_HOSTS=pi bash {self.skill_root / 'install.sh'}（阶段集随 INSTALL_PROFILE core/full）",
+        )
+        return False
+
+    def check_migration_wrappers(self) -> bool:
+        """Report foreign source-command-spec-* migration wrappers (F4).
+
+        Codex CLI's command_migration plugin once converted spec-<stage>
+        command sources into Agent Skills under ~/.agents/skills. The sources
+        are gone, the wrappers embed stale stage semantics, and Pi surfaces
+        them as duplicate /skill:source-command-spec-<stage> commands.
+        Report-only by design, --fix included: removal belongs to the F5
+        explicit checklist, never to the doctor.
+        """
+        base = agents_skills_dir()
+        if not base.is_dir():
+            return True
+        wrappers = sorted(entry for entry in base.glob("source-command-spec-*") if entry.is_dir())
+        if not wrappers:
+            return True
+        matched: List[str] = []
+        unmatched: List[str] = []
+        for wrapper in wrappers:
+            try:
+                text = (wrapper / "SKILL.md").read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                text = ""
+            stage = wrapper.name.removeprefix("source-command-spec-")
+            if f"Migrated source command `spec-{stage}`" in text:
+                matched.append(wrapper.name)
+            else:
+                unmatched.append(wrapper.name)
+        detail = (
+            f"发现 {len(matched)} 个 spec 迁移包装（Codex CLI command_migration 产物，"
+            "内嵌旧阶段语义，在 Pi 补全面重复暴露）"
+        )
+        if matched:
+            shown = "、".join(matched[:6]) + ("…" if len(matched) > 6 else "")
+            detail += f"：{shown}"
+        if unmatched:
+            detail += f"；指纹不匹配需人工确认：{'、'.join(unmatched[:4])}"
+        self.record(
+            "migration.wrappers",
+            "迁移包装",
+            "warn",
+            detail,
+            "只报告不删除；处置走 F5 显式清单（逐目录指纹核对后移除，本检查永不自动清理）",
+        )
+        return False
+
     def check_zcode_symlink(self) -> None:
         zcode_dir = self.host_skill_dir(self._find_host("zcode"))
         if not zcode_dir.is_symlink():
@@ -1107,6 +1255,8 @@ class Doctor:
         if layout_ok:
             self.check_claude_commands()
             self.check_claude_agents()
+            self.check_pi_prompts()
+        self.check_migration_wrappers()
         self.check_zcode_symlink()
         git_toplevel = self.check_project_git()
         self.check_project_spec()

@@ -29,10 +29,12 @@ Check catalog:
 7. `hosts.installed`: ten-host directory scan (same environment variables and default paths), versions, partial installs, foreign same-name collisions
 8. `claude.commands`: all user-stage command files exist; legacy layout leftovers (`spec:<stage>.md` colon files, `spec:<stage>` alias directories, the `spec.md` base file); claude-side probe — skipped unless claude is in the `--host` scope
 9. `claude.agents`: the four orchestration sidecar contracts (orchestrator/planner/reviewer/confirmer) are published as installer-owned native copies in `~/.claude/agents` and stay in sync with the skill source; claude-side probe — skipped unless claude is in the `--host` scope
-10. `zcode.symlink`: dangling `~/.zcode/skills/spec` links
-11. `project.git`: whether the target project is a Git work tree
-12. `project.spec`: the `.spec/specs/` and `.spec/specs/archive/` structure
-13. `project.hooks`: whether rendered checker pointers still target existing scripts or drifted to another skill copy
+10. `pi.prompts`: native Pi prompt templates (`/spec` + `/spec:<stage>`) — presence, stage-set/profile consistency, installer markers, thin-forwarder shape (quoted frontmatter, literal `$@`, contract-index pointer), and installer-owned leftovers beyond the current stage set; pi-side probe — skipped unless pi is in the `--host` scope
+11. `migration.wrappers`: foreign `~/.agents/skills/source-command-spec-*` migration wrappers (Codex CLI command_migration artifacts) — report-only, never auto-removed
+12. `zcode.symlink`: dangling `~/.zcode/skills/spec` links
+13. `project.git`: whether the target project is a Git work tree
+14. `project.spec`: the `.spec/specs/` and `.spec/specs/archive/` structure
+15. `project.hooks`: whether rendered checker pointers still target existing scripts or drifted to another skill copy
 
 Repair actions (`--fix`, all idempotent):
 

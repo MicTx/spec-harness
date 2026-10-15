@@ -29,9 +29,8 @@ Execution requirements:
 2. Confirm a clean tree, a deletable branch, and passing preflight. A transport-layer outage (unreachable remote, refused connection, timeout, HTTP 502) degrades to local-only: merge into local `main`, keep the branch as retry anchor, re-run after recovery; auth/permission failures, conflicts, lease changes, protected branches, and broken hooks never enter local-only.
 3. Merge → push main → confirm containment in remote main → delete the remote branch (remote lease), then the local branch. A local-only branch publishes first with `git push -u`; recovery finishes push and deletion when the remote returns.
 4. Never delete long-lived branches: `main`, `master`, `develop`, `release/*`, or the remote default.
-5. Unarchived active packages hard-fail by default (see Archive gate); scope defaults to the packages this push touches.
-6. Being checked out on main is fine as long as `--branch` names a deletable working branch.
-7. Broken remote Git hooks: treat the remote hook state as untrusted — stop all branch deletion; leave repair to the maintainer. Opt-in, for a user-administered Gitea: rerun with `--repair-gitea-hooks --gitea-url <base>` and the site-admin token via `SPEC_GITEA_TOKEN` or `SPEC_GITEA_TOKEN_FILE` (env wins; the `--gitea-token` flag is refused — a command-line token leaks in process listings). The script runs the Gitea admin cron tasks (`sync_repo_branches`, `sync_repo_tags`, `resync_all_hooks`) and reruns the push once; a second broken-hooks report or a failed repair keeps fail-closed.
+5. Being checked out on main is fine as long as `--branch` names a deletable working branch.
+6. Broken remote Git hooks: treat the remote hook state as untrusted — stop all branch deletion; leave repair to the maintainer. Opt-in, for a user-administered Gitea: rerun with `--repair-gitea-hooks --gitea-url <base>` and the site-admin token via `SPEC_GITEA_TOKEN` or `SPEC_GITEA_TOKEN_FILE` (env wins; the `--gitea-token` flag is refused — a command-line token leaks in process listings). The script runs the Gitea admin cron tasks (`sync_repo_branches`, `sync_repo_tags`, `resync_all_hooks`) and reruns the push once; a second broken-hooks report or a failed repair keeps fail-closed.
 
 Output contract:
 

@@ -4,14 +4,7 @@ Templates are executable contracts in prose. Read only the two init fences below
 
 When changing the init templates, change only these two fences.
 
-Section identity is language-neutral: every heading the engine parses carries a stable machine key (defined centrally in `scripts/spec_package_support.py`, `PACKAGE_SECTION_KEYS`), matched through its Chinese or English alias or through an HTML key anchor such as `<!-- spec:open-questions -->` placed on the heading line or directly above it. Chinese-titled packages (including every archived record) and English-titled packages get identical gate verdicts; display titles are localization, never contract. The default fences below stay Chinese; the English-title variant lives further down this page.
-
-New packages carry the `<!-- spec-format: 2 -->` marker (spec.md fence): the
-`### 2.3 待确认问题` section is checkbox-structured — `- [ ]` is an open
-question, and ticking the line (optionally with an inline `→ 结论`) closes it.
-Packages without the marker keep the legacy free-text parsing. v2 packages do
-not get a `checklist.md`: acceptance is judged from `spec.md` §6 success
-criteria plus the executable evidence protocol.
+Section identity is language-neutral: every gated heading carries a stable machine key (`scripts/spec_package_support.py`, `PACKAGE_SECTION_KEYS`), matched through its Chinese or English alias or through an HTML key anchor such as `<!-- spec:open-questions -->` placed on the heading line or directly above it. Chinese-titled packages (including every archived record) and English-titled packages get identical gate verdicts; display titles are localization, never contract. New packages carry the `<!-- spec-format: 2 -->` marker (spec.md fence): `### 2.3 待确认问题` is checkbox-structured — `- [ ]` is an open question, and ticking the line (optionally with an inline `→ 结论`) closes it; packages without the marker keep legacy free-text parsing. v2 packages get no `checklist.md`: acceptance is judged from `spec.md` §6 success criteria plus the executable evidence protocol.
 
 ## `spec.md`
 
@@ -118,19 +111,19 @@ When tasks depend on each other, declare `- depends-on: task_0001, task_0002` (c
 
 Writing requirements:
 
-- The template ships only implementation tasks. Branch creation is init's job, document sync happens at `done`, and the minimal-review point is a §6 success criterion — never re-add boilerplate tasks for them.
-- Stage names express delivery order. One task + one pair of `boundary` / `verify`.
-- Verify is two-way by construction: a machine task writes its command as the first backtick span of `verify` (later spans are prose and never execute); a task that cannot be machine-verified must instead write `verify: manual: <reason>`. In `evidence: runs` packages (the template default) a verify line that is neither — no command span and no `manual:` marker — is a contract error the check gate reports instead of guessing intent.
-- Executable evidence (`evidence: runs`, declared by the template): the package binds machine verifications to executed proof. Run them with `python3 scripts/spec_verify.py run --root <project> --slug <slug> --task <id>` (or `--all`); each run appends one JSON line `{task, cmd, exit, duration_s, stdout_tail_sha256, tree_fp, at}` to the package's `runs.jsonl`. `check` and `done` then require every machine task's latest record to be `exit == 0` with a `tree_fp` equal to the current worktree fingerprint (HEAD + tracked diff + untracked content, with every `.spec/` path excluded, so package documents never invalidate evidence): a missing record fails as 未验证, a tree that moved after capture fails as 证据过期, and re-running the recorder after the last change restores the gate. Hollow commands (`true`, `:`, `exit 0`, bare `echo` without redirect/pipe) are refused before execution, and a machine verify command must never invoke this package's own check gate — a self-referential command reads its own missing/stale record while it runs and is unsatisfiable under latest-record semantics (the done archive gate itself proves the package-level check pass, so no task needs to duplicate it). The archived completion summary records the machine-verification rate with manual tasks kept out of the denominator. A v2 package that removes the `evidence: runs` declaration keeps the §6 gate but falls back to command-span evidence (see below).
-- The paths and commands above are pre-project examples and authorize nothing for arbitrary projects; replace them with real boundaries and verification commands that prove delivery before execution. A left-in-place template command fails (`exit != 0`) instead of passing vacuously — that is deliberate.
-- Run the `verify`-described verification independently before checking a task off; never check off an unrun verification.
-- Migration/upgrade tasks (moving, merging, renaming modules or upgrading dependencies) must carry at least one runtime behavioral evidence item in `verify` (an executed command, a test run, a build) — a pure `rg`/static scan may only supplement it and never proves the migration complete on its own.
+- The template ships only implementation tasks: branch creation is init's job, document sync happens at `done`, and the minimal-review point is a §6 success criterion — never re-add boilerplate tasks for them. Stage names express delivery order; one task carries one `boundary` / `verify` pair.
+- Verify is two-way by construction: a machine task writes its command as the first backtick span of `verify` (later spans are prose and never execute); a task that cannot be machine-verified writes `verify: manual: <reason>`. In `evidence: runs` packages a verify line that is neither is a contract error the check gate reports, never guessed intent.
+- Complete verify recipe (write the probe away at authoring time — a verify line carries everything the executor needs, so execution never guesses the environment): ① 运行目录 run directory — where the command runs, or the command `cd`s itself; ② 前置条件与依赖 preconditions and dependencies — env vars, services, fixtures, prior tasks (`depends-on`); ③ 完整可执行命令 full executable command — the first backtick span is copy-and-run, no `<todo>`, no ellipses; ④ 成功判定 success criteria beyond exit 0 — expected output or assertions, when they exist; ⑤ 失败处理 failure handling — expected failure shape and where to look, when it exists. Existence-based, never a five-item form: a missing element must genuinely not exist.
+- Task granularity law: one task equals one passable verification; prerequisites belong in the task line, never left for the executor to probe. 禁止合并无关 boundary 减少轮次 — shrinking rounds by merging unrelated boundaries is forbidden (the `new` stage's directory-audit split rule stays in force).
+- Executable evidence (`evidence: runs`, the template default): run machine verifications with `python3 scripts/spec_verify.py run --root <project> --slug <slug> --task <id>` (or `--all`); each run appends one JSON line to the package's `runs.jsonl`. `check` and `done` require every machine task's latest record `exit == 0` with a `tree_fp` equal to the current worktree fingerprint (`.spec/` paths excluded): a missing record fails 未验证, a moved tree fails 证据过期 — re-run the recorder after the last change to restore the gate. Hollow commands (`true`, `:`, bare `echo`) and a verify that invokes this package's own check gate are refused before they can fake a pass; full gate contract: `references/stages/check.md`.
+- The paths and commands above are pre-project examples and authorize nothing for arbitrary projects; replace them with real boundaries and verification commands that prove delivery before execution — a left-in-place template command fails instead of passing vacuously, which is deliberate. Run the `verify`-described check independently before ticking a task; never check off an unrun verification.
+- Migration/upgrade tasks (moving, merging, renaming modules, upgrading dependencies) must carry at least one runtime behavioral evidence item in `verify` (executed command, test run, build); a pure `rg`/static scan may only supplement it and never proves migration complete alone.
 - Credential hygiene: `boundary` / `verify` lines and acceptance evidence carry the same secret-exclusion rule as the assignment contract (`references/orchestration.md`) — real credential values never enter package documents, verification command lines, or recorded evidence; inject them via env files / host-side injection, and write examples with placeholders (`<admin-token>`), never real values.
-- The optional `id: task-name` gives a task a stable identity (a lowercase `task-` prefixed string); `depends-on` accepts both positional IDs (`task_0001`) and explicit IDs. Never delete or reorder checked tasks so positional IDs drift; appended tasks go into a new heading section at the file end with explicit IDs.
+- The optional `id: task-name` gives a task a stable identity (a lowercase `task-` prefixed string); `depends-on` accepts positional IDs (`task_0001`) and explicit IDs. Never delete or reorder checked tasks so positional IDs drift; appended tasks go into a new heading section at the file end with explicit IDs.
 
 ## English-title variant
 
-The default init fences stay Chinese. This variant carries the same contract with English display titles and explicit key anchors on every gated heading — copy it instead of the Chinese fences when the project's working language is English. Gates resolve either form identically (keys, not titles, are the contract); `scripts/init_spec_package.py` still renders the Chinese default, so an English package starts from these fences by hand or by copying them verbatim. Keep exactly one language per gated section: the uniqueness gates count a section headed twice in either language as a duplicate.
+The default init fences stay Chinese and `scripts/init_spec_package.py` renders the Chinese default, so an English-language project starts from this variant by copying it verbatim. It carries the same contract with English display titles plus explicit key anchors — the anchors are optional belt-and-braces (titles alone already resolve every key); they stay as the reference spelling of each key. Keep exactly one language per gated section: a section headed twice in either language counts as a duplicate. Placeholder, verdict, and blocking vocabularies are bilingual with the same semantics: `None`/`无`, `**Result**: pass`/`**验收结果**：通过`, `blocked`/`blocker`/阻塞; field labels inside §1 and §5.1 accept their English aliases, and `route` plus the task detail keys (`boundary`, `verify`, `depends-on`, `manual:`) were never localized.
 
 ### `spec.md` (English)
 
@@ -237,42 +230,23 @@ The default init fences stay Chinese. This variant carries the same contract wit
 **Progress**: computed by the scripts, never maintained by hand
 ```
 
-Notes on this variant:
-
-- The anchors are optional belt-and-braces: the English titles alone already resolve every key. They stay in the fence as the reference spelling of each key.
-- Field labels inside §1 and §5.1 accept their English aliases (`Goal` / `scope` / `quick check` / …); §5's `route` and the task detail keys (`boundary`, `verify`, `depends-on`, `manual:`) were never localized and are unchanged.
-- `None` is the English twin of `无` (and `**Result**: pass` of `**验收结果**：通过`; `blocked` / `blocker` of 阻塞) — the placeholder, verdict, and blocking vocabularies are bilingual with the same semantics.
-
 ## Success criteria (`spec.md` §6, v2 packages)
 
-`## 6. 成功标准与验证方式` is the acceptance surface for packages without a
-`checklist.md`:
+`## 6. 成功标准与验证方式` is the acceptance surface for the checklist-free package:
 
-- Every criterion is a checkbox: `- [ ] <criterion> -> verify: task_XXXX`,
-  where the referenced task is the one whose `verify` proves it. Tick a
-  criterion only after the referenced verification actually ran and passed —
-  same discipline as every other checkbox in the harness.
-- `check` and `done` for a checklist-free package require: all §6 criteria
-  checked, all tasks done, and executable evidence — the `evidence: runs` gate
-  when declared, otherwise at least one real command span among the §6 lines.
-- A package whose §6 carries no checkboxes, or whose criteria reference
-  nothing verifiable, fails closed: the success-criteria surface must be
-  non-empty and machine-checkable.
-- The minimal-review point lives here as one criterion (对照 spec §4「暂不引入」
-  清单在验收记录中列出被拒绝的扩展点或确认无) instead of a boilerplate task.
+- Every criterion is a checkbox `- [ ] <criterion> -> verify: task_XXXX` naming the task whose `verify` proves it. Tick a criterion only after the referenced verification actually ran and passed — same discipline as every other checkbox in the harness.
+- `check` and `done` for a checklist-free package require: all §6 criteria checked, all tasks done, and executable evidence — the `evidence: runs` gate when declared, otherwise at least one real command span among the §6 lines. A §6 with no checkboxes, or whose criteria reference nothing verifiable, fails closed: the success-criteria surface must be non-empty and machine-checkable.
+- The minimal-review point lives here as one criterion (对照 spec §4「暂不引入」清单在验收记录中列出被拒绝的扩展点或确认无) instead of a boilerplate task.
 
 ## Legacy `checklist.md` (v1 packages only)
 
-`init_spec_package.py` no longer renders `checklist.md`. Packages that already
-carry one keep the exact legacy gates — never rewritten, never regraded:
+`init_spec_package.py` no longer renders `checklist.md`. Packages that already carry one keep the exact legacy gates — never rewritten, never regraded:
 
 - Base gates: every checkbox checked and `**验收结果**：通过`.
-- `## 验收证据` (acceptance evidence) must fill at least one non-placeholder field among
-  `外部对标` / `脚本验证` / `旧新对比` / `差异边界` / `行为成效`, with one real command under
-  `脚本验证` (script verification), `测试` (tests), or `构建` (build).
-- Truncated evidence discipline: command output that was truncated, paged, or timed out must be marked `truncated` and re-captured with a narrower scope (filter, single target, longer timeout) until the full relevant output is in evidence; an unmarked or un-recaptured truncated output never counts as a passing basis — success is not completeness.
-- Evidence freshness anchor (optional, Git projects): record `- 证据锚点：HEAD <sha> @ <ISO-8601 时间>` under `## 验收证据` when evidence is captured. Once present, `check_spec_package.py` fails the check with 证据过期需重跑取证 when the project repo's HEAD has moved; no anchor keeps the legacy behavior (advisory only). In `evidence: runs` packages the runs worktree fingerprint takes over this duty.
-- Verification scope: `### 5.1 验证策略` declares one level — `package` (default, changed modules and their focused checks), `integration` (package checks plus directly affected cross-module paths), or `project` (the full project suite). `check` runs the declared level; a legacy checklist's `验证范围` label must match `spec.md`. `done` reuses the same scope and evidence.
+- `## 验收证据` must fill at least one non-placeholder field among `外部对标` / `脚本验证` / `旧新对比` / `差异边界` / `行为成效`, with one real command under `脚本验证` (script verification), `测试` (tests), or `构建` (build).
+- Truncated evidence: command output that was truncated, paged, or timed out must be marked `truncated` and re-captured with a narrower scope (filter, single target, longer timeout) until the full relevant output is in evidence; an unmarked or un-recaptured truncated output never counts as a passing basis.
+- Evidence freshness anchor (optional, Git projects): `- 证据锚点：HEAD <sha> @ <ISO-8601 时间>` under `## 验收证据`; once present, `check_spec_package.py` fails the check with 证据过期需重跑取证 when the project repo's HEAD moved; no anchor keeps the legacy behavior (advisory only). In `evidence: runs` packages the runs worktree fingerprint takes over this duty.
+- Verification scope: `### 5.1 验证策略` declares one level — `package` (default), `integration`, or `project`; `check` runs the declared level (a legacy checklist's `验证范围` label must match `spec.md`), and `done` reuses the same scope and evidence.
 - Decisive-check line (optional, appears in force): `裁决性检查：<命令> @ <时间>` under `## 验收证据` records the strongest check at the declared verification level; marking it 适用外 requires the factual basis that 该检查在本项目不存在 — 以慢为由 is never a valid reason. An absent line keeps the legacy behavior.
 - The optional sections `## 跨载体一致性`, `## 项目结构与文档可信度`, and `## 边界回归` activate additional gates once present: every box must be checked to pass; a row that does not apply is still checked off with an inline `N/A：<理由>` annotation.
 
@@ -289,9 +263,9 @@ Generated by `scripts/complete_spec_package.py` — never hand-write a second fu
 
 Field order: delivery conclusion → assumption review → delivery scope → simplification decisions → change boundaries → verification evidence (notes) → verification scope → Git record → AGENTS.md incremental proposal → gate evidence → process metrics (optional) → open items → issue dispositions. Non-empty issues use `--issue-disposition`; `resolved_followup` may only point at an already-archived Development Record.
 
-`## 过程指标` (process metrics) is an optional section between `## 门禁证据` and `## 遗留事项`: it renders only when `complete_spec_package.py` receives at least one `--process-metric` entry (repeatable), carrying check-loop measurements such as check rounds, rework counts, and human-escalation marks (`转人工`); with no entry passed the section is absent so the legacy field order is unchanged.
+`## 过程指标` (process metrics) renders only when `complete_spec_package.py` receives at least one `--process-metric` entry (repeatable), placed between `## 门禁证据` and `## 遗留事项`; with no entry the section is absent so the legacy field order is unchanged.
 
-## `.spec/docs` and the Module DAG
+## AGENTS.md proposal and the Module DAG
 
 Distillation is an incremental proposal, not a document pipeline: when a round produces a new reusable project-specific fact, `done` renders it as an `## AGENTS.md 增量提议` diff fence in `completion-summary.md` (`--agents-proposal`, repeatable, one line per value; no reusable fact records 无). The proposal targets the executing project's own `AGENTS.md` or host-equivalent instruction file, is never applied automatically — landing it stays a human decision — and never writes into global carriers (`~/.claude/CLAUDE.md`, user-level `AGENTS.md`, user-level memory). Standalone knowledge documents are no longer produced by default; existing `.spec/docs/YYYY-MM-DD_<slug>_<topic>.md` files are retained unchanged as history.
 

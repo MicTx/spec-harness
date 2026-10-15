@@ -14,17 +14,11 @@ The contract is intentionally small. Every task says what it may change (`bounda
 
 ## When to use
 
-Use spec when:
-- Multi-step or cross-session development tasks
-- Work requiring tracked scope, tasks, and acceptance criteria
-- User explicitly requests spec mode or task packages
-- Project start or phase boundary needing an interactive planning pass before the autonomous chain
-
-Skip it for a small reversible fix, a one-off experiment, or work whose complete plan and proof fit in one short command sequence. When the entry point meets an obviously small task (one-line reversible fix with its test, typo, copy tweak), advise against opening a package and offer the lightweight path instead: fix + test directly, then push with a `Spec: none (<非空理由>)` footer; the user decides whether they want the record anyway.
+Use spec for multi-step or cross-session development that needs tracked scope, tasks, and acceptance criteria, when the user explicitly requests spec mode or task packages, or at a project start / phase boundary that needs an interactive planning pass before the autonomous chain. Skip it for small reversible fixes, one-off experiments, or work whose plan and proof fit one short command sequence. For an obviously small task (one-line reversible fix with its test, typo, copy tweak), advise against a package and offer the lightweight path instead — fix + test directly, then push with a `Spec: none (<非空理由>)` footer; the user decides whether they want the record anyway.
 
 ## Commands
 
-Read only the relevant stage file under `references/stages/` for your current stage. Do not read entire reference files upfront.
+Read only the current stage's file under `references/stages/` ([`references/commands.md`](references/commands.md) is their index). Do not read entire reference files upfront.
 
 ### Core workflow
 
@@ -32,56 +26,43 @@ Read only the relevant stage file under `references/stages/` for your current st
 | --- | --- |
 | `/spec` | Resolve the next action from the current package |
 | `/spec:new` | Create task package with scope, tasks, and acceptance criteria |
-| `/spec:run` | Execute all tasks; resumes from package state if interrupted |
-| `/spec:check` | Human-AI review round; writes actionable issues back to package |
-| `/spec:done` | Archive completed work and create the Git commit |
-| `/spec:push` | Merge to main, push, and delete merged branch (after `done` only) |
+| `/spec:run` | Execute all tasks; resumes from `tasks.md` state |
+| `/spec:check` | Review round; actionable issues are written back and fixed in-round |
+| `/spec:done` | Archive work and create the package commit |
+| `/spec:push` | Merge to main, push, and delete the merged branch (after `done` only) |
 | `/spec:update` | Modify scope or tasks mid-flight |
-| `/spec:status` | Show overview of all packages, progress, and blockers |
+| `/spec:status` | Overview of packages, progress, and blockers |
 
 ### Optional entry points
-
-Read the stage files under `references/stages/` (the `references/commands.md` index links each) for details if using these:
 
 | Command | Purpose |
 | --- | --- |
 | `/spec:goal` | one-shot: plan, execute, review, archive, and commit |
-| `/spec:autoplan` | interactive planning: interrogate the user in themed rounds, then run framework/detail/review passes as a serial fresh-session chain with the same spawn discipline as autorun, down to autorun granularity, gate consistency, and report autorun readiness |
-| `/spec:autorun` | recursive chain: finish the active package, plan the next round from the project planning documents, and spawn a fresh interactive session (macOS Terminal.app or Linux/Windows WSL2 tmux) with the autorun prompt until every planned feature is done |
-| `/spec:doctor` | Environment self-check and repair |
-| `/spec:organize` | First-principles structure audit, audit-only by default; `--apply` or an explicit instruction creates the package and applies fixes; never delete, archive under `archive/retired`; disposition covers every member of a confirmed class |
+| `/spec:autoplan` | interactive planning rounds, then framework/detail/review passes as a serial fresh-session chain, gated to autorun readiness |
+| `/spec:autorun` | recursive chain: finish the active package, plan the next round, spawn a fresh session — until every planned feature is done |
+| `/spec:doctor` | environment self-check and repair |
+| `/spec:organize` | structure audit; audit-only by default, `--apply` creates the package; never delete, archive under `archive/retired` |
 
-Install profile boundary: `new / run / check / done / push` are the kernel stage commands every install ships. The extended stages (`goal`, `autoplan`, `autorun`, `update`, `status`, `doctor`, `organize`) belong to `INSTALL_PROFILE=full`. On a core install (the default), an extended-stage invocation is answered with the install hint — reinstall with `INSTALL_PROFILE=full bash install.sh` — not executed as if the command were present.
+Install profile: `new / run / check / done / push` ship in every install; the extended stages (`goal`, `autoplan`, `autorun`, `update`, `status`, `doctor`, `organize`) belong to `INSTALL_PROFILE=full`, and a core install answers them with the reinstall hint instead of executing them.
 
 ## Core capability: single-orchestrator execution
 
-The main session is the orchestrator and owns routing, acceptance, and the `done`/`push` gates. It does the critical path itself — planning, integration, independent verification, acceptance, and all shared glue files. Bounded sidecar work may be delegated to in-process subagents only after a machine route decision (`python3 scripts/route_decision.py --root <project> --slug <slug>`, decided from package structure) and a written assignment contract (goal / scope / excluded areas / output / verification; see [`references/orchestration.md`](references/orchestration.md)). Delegation never moves routing, acceptance, or gate authorization out of the main session, and one session still owns one package on one integration branch at a time; two sessions must not write the same package. When the route decision flags `channel_profile.shared_pool` (single gateway/model pool), keep fanning out in parallel — apply the constrained-channel protocol in [`references/orchestration.md`](references/orchestration.md) (slice minimization + lane-death salvage + burst backoff); never clamp lane count.
+The main session is the orchestrator and owns routing, acceptance, and the `done`/`push` gates; it does planning, integration, independent verification, and all shared glue files itself. Bounded sidecar work may go to in-process subagents only after a machine route decision (`python3 scripts/route_decision.py --root <project> --slug <slug>`) and a written assignment contract (goal / scope / excluded areas / output / verification); delegation never moves routing, acceptance, or gate authorization out of the main session, and one session owns one package on one integration branch. With `channel_profile.shared_pool`, keep fanning out under the constrained-channel protocol in [`references/orchestration.md`](references/orchestration.md); never clamp lane count. The full delegation contract (five routes, lane ownership, `### 5.4 编排策略`) lives there and is never restated here.
 
 ### Managed paths
 
-- Default: `local` — the main session executes on its own.
-- Sidecar lanes: for `explore` / `build` / `review` routes with clean ownership slices, the main session spawns bounded in-process subagents under the assignment contract, then merges results and runs final verification itself. Claude Code publishes installer-owned copies of `agents/orchestrator.md` and `agents/planner.md` into `~/.claude/agents/`; on hosts without those names, read the portable contract and inject it into an available general-purpose agent.
-- Slot protocol: when the task matches a registered slot's triggers, hand the execution segment to that slot's README protocol (see [Extension slots](#extension-slots)); no fake task results.
-- Invariants that never change: task-level `boundary`/`verify` discipline, honest checkbox verification, check gates, and `done`/`push` authorization all stay with the main session. Outsourcing work outside these managed paths remains forbidden.
-
-The full delegation contract — five-route vocabulary, assignment-contract fields, lane ownership, and the `### 5.4 编排策略` section — lives in [`references/orchestration.md`](references/orchestration.md) and is never restated here.
+- `local` (default): the main session executes on its own.
+- Sidecar lanes: `explore` / `build` / `review` with clean ownership slices → bounded in-process subagents under the assignment contract; the main session merges and verifies. Orchestrator/planner contracts: `agents/orchestrator.md`, `agents/planner.md`.
+- Slot protocol: slot-trigger shapes hand the execution segment to the slot's README protocol (see [Extension slots](#extension-slots)); no fake task results.
+- Invariants that never move: `boundary`/`verify` discipline, honest checkbox verification, check gates, and `done`/`push` authorization.
 
 ## Execution loop
 
-1. Route/read the current package and verify its integration branch. Fill `tasks.md` so every task carries `boundary` (what may change) and `verify` (how completion is proven), plus explicit `depends-on` when order matters. Optional stable `id: task-name` gives a task an identity that survives reordering.
-2. Produce a route decision with `python3 scripts/route_decision.py --root <project> --slug <slug>` — a single entry decided from package structure, never goal wording (`references/stages/run.md` step 3 is the contract) — and write `### 5.4 编排策略` when the route is not `local`. Work ready tasks in dependency order; before checking a task off, actually run the verification its `verify` line describes — a checkbox without a run verification is not done. For `explore`/`build`/`review` with clean ownership, spawn bounded sidecar lanes under the assignment contract in `references/orchestration.md`; slot-trigger shapes go to the slot's managed protocol (see [Extension slots](#extension-slots)). Merge sidecar results on the main thread before editing shared boundaries.
-3. Keep going until all tasks are checked, then run the check gates, finish `checklist.md` with real evidence, and continue to `done`/`push` as authorized.
-4. If something is blocked, record the blocker on the task (a `!` marker or a blocked status line) and surface it to the user; do not silently skip or fake completion.
+Route first (`scripts/route_spec_package.py`; no active package → `new`), verify the integration branch, and give every task a `boundary` (what may change) and a `verify` (how completion is proven), with `depends-on` when order matters. Produce the route decision (`python3 scripts/route_decision.py --root <project> --slug <slug>`; contract: `references/stages/run.md` step 3) and write `### 5.4 编排策略` when the route is not `local`, then work ready tasks in dependency order — a task is checked off only after its `verify` actually ran. Converge: all tasks checked → check gates → `checklist.md` with real evidence → `done`/`push` as authorized; a blocked task gets a `!` marker and surfaces to the user, never a silent skip.
 
 ## Progress and continuation
 
-Continuation is the `/spec:run` instruction itself: read the package, do the next ready task, verify, check it off, repeat until the package converges. If a session is interrupted, re-running `/spec:run` resumes from `tasks.md` state — checked tasks stay done, the next unchecked ready task is where work continues.
-
-When the boundary is cross-collaborator — the same human returning later, a teammate taking over, a fresh agent session, or an agent-cluster lane — the package's optional `handoff.md` carries the transfer: append one entry on pause/takeover/escalation/lane-end (`python3 scripts/spec_handoff.py update --slug <slug> ...`), and a resuming session reads it first (`show`) plus the route 交接 hint. The document is a generated snapshot head (branch/HEAD/task anchors) plus an append-only entry log whose required slots adapt to the collaboration mode (`solo|team|agent|cluster`); the check gate validates it when present and `done` closes it with a terminal entry. Full contract: `references/handoff.md`.
-
-Pause/abort by the user, pending user messages, and project trust prompts always take priority over continuing an execution loop.
-
-The optional Claude Stop hook (`hooks/claude_stop_guard.py`) checks package convergence. Binding failures and outstanding gaps remain explicit. Hooks never expand Git authorization.
+Continuation is `/spec:run` itself: next ready task → verify → check off → repeat; after an interruption, re-running `/spec:run` resumes from `tasks.md` state. Cross-collaborator boundaries (pause, takeover, agent-cluster lanes) go through the optional `handoff.md` (`python3 scripts/spec_handoff.py`; contract: [`references/handoff.md`](references/handoff.md)). User pause/abort, pending user messages, and project trust prompts always outrun the loop; the optional `hooks/claude_stop_guard.py` keeps convergence explicit and never expands Git authorization.
 
 ## Execution rules
 
@@ -97,46 +78,33 @@ The optional Claude Stop hook (`hooks/claude_stop_guard.py`) checks package conv
 
 4. **Issue handling**: Actionable issues found during `check` must be written back to the current package and fixed in the same round. Do not output executable fixes as user deliverables. Only ask the user about a project-shaping constraint, a decision that cannot be reasonably assumed, or an external dependency the agent cannot resolve. Closed issues must have one of: `resolved_current`, `resolved_followup`, `accepted_risk`, `external_blocked`, `non_actionable`.
 
-5. **Validation**: each new package declares a verification level in `spec.md`: `package` (default, focused checks for the changed boundary), `integration` (focused checks plus directly affected cross-module paths), or `project` (full project suite). `check` and `done` use the declared level and evidence; they do not require a whole-project suite for every package. `scripts/check_spec_package.py` remains the single source of truth for package state, while `check_all_spec_packages.py` validates package records before commit/push. Verbal "passed" doesn't count.
+5. **Validation**: declare the verification level in `spec.md` (`package` / `integration` / `project`); `check`/`done` run that declared level with real evidence — a verbal "passed" never counts (contract: `references/stages/check.md`).
 
-6. **Commit/push separation**:
-   - Only `done` archives work and creates the package commit
-   - `goal` reuses `done` for archive+commit; it does not skip it
-   - Only `push` merges, pushes, and deletes branches
-   - Never combine file changes and commits in one bash call
-   - Never use `--no-verify`
+6. **Commit/push separation**: only `done` archives and commits; only `push` merges, pushes, and deletes branches; never combine file changes and a commit in one bash call; never `--no-verify` (contract: `references/stages/done.md`, `references/stages/push.md`).
 
-7. **Branch safety**: Active unarchived packages block `push` by default. Branch mutation only happens on the package's own recorded integration branch.
+7. **Branch safety**: active unarchived packages block `push` by default; branch mutation happens only on the package's recorded integration branch (contract: `references/stages/push.md`).
 
-8. **Branch naming and binding**: All branches created by this skill must use the `spec/` prefix (e.g., `spec/feature-name`). Each active Development Record records exactly one integration branch, and initialization refuses a branch already bound to another active package. The `push` command only merges branches with the `spec/` prefix to main; legacy branches whose work started before 2026-08-27 UTC stay pushable during the grace window with a rename advisory. This prevents pollution of other normal branches, keeps spec workflow isolated, and prevents two live packages from sharing one branch.
+8. **Branch naming and binding**: spec branches use the `spec/` prefix, each active package binds exactly one integration branch, and initialization refuses a branch already bound; `push` merges only `spec/` branches (legacy pre-2026-08-27 branches stay pushable in the grace window with a rename advisory; contract: [`references/naming-and-commits.md`](references/naming-and-commits.md)).
 
-9. **Changelog generation** (optional tooling): `scripts/generate_changelog.py` converts Git history into standardized changelog entries on demand (`--from`/`--to`, `--spec-only`, `--output`, `--prepend`). It is a manual helper for release notes, not an automatic step of `done`/`push`.
+9. **Changelog generation**: `scripts/generate_changelog.py` converts Git history into changelog entries on demand — a manual release-notes helper, never an automatic `done`/`push` step (guide: [`references/changelog-guide.md`](references/changelog-guide.md)).
 
-10. **Distillation destination**: Knowledge distilled at `done`/`goal` renders as an incremental `AGENTS.md` proposal inside `completion-summary.md` — a single `## AGENTS.md 增量提议` diff fence (`--agents-proposal`, repeatable, one line per value; `无` when the round has no reusable fact) — and that summary is the only channel. Never apply the proposal automatically: `AGENTS.md` and host-equivalent instruction files are human-maintained, and landing a proposal is a human decision. Never write spec experience, process rules, or any memory into global carriers (`~/.claude/CLAUDE.md`, user-level `AGENTS.md`, or any user-level memory file). Distill only project-specific engineering facts; spec process mechanics live in this skill, not in distillations. Standalone `.spec/docs/` knowledge documents are no longer produced; existing ones are retained unchanged as history.
-
-Read the stage contracts under [`references/stages/`](references/stages/) — [`references/commands.md`](references/commands.md) is their index. See [`references/storage-and-archive.md`](references/storage-and-archive.md) for directory structure and archiving.
+10. **Distillation destination**: `done`/`goal` distillation lands only as the incremental `AGENTS.md` proposal inside `completion-summary.md` — never applied automatically, never written to global carriers or user-level memory files; distill project-specific engineering facts only (contract: `references/stages/done.md`).
 
 ## Extension slots
 
-Pluggable capability mechanism for spec: each `slots/<name>/` is a self-contained directory with a manifest declaration, validated by the registry, and shipped by `install.sh`. The full contract lives in [`references/slots.md`](references/slots.md).
-
-- Enumerate/validate: `python3 scripts/slot_registry.py list|validate`
-- Hook install/remove: `python3 scripts/install_slot_hooks.py --slot <name> [--remove]`
-- Activation rule: when a task's shape matches a slot's triggers, the execution segment is handed to that slot's README protocol (see the Managed paths under Core capability). Orchestration routing (`scripts/route_decision.py`) is independent of slot activation.
-- Currently built in: `team-loop` — agents-team loop-until-converged execution (→ see `slots/team-loop/README.md`). When the run loop matches its triggers, decide with `slots/team-loop/scripts/loop_route.py --text "<package goal>"` and then follow its protocol for the execution segment; routing, acceptance, and the done/push gates never move out of the main session.
-- Also built in: `workflow-runner` — delegating an execution segment to the repository-owned deterministic driver: batch fan-out, multi-dimension parallel review, perspective panels, review-fix loops (→ see `slots/workflow-runner/README.md`). Decide with `slots/workflow-runner/scripts/workflow_route.py --text "<package goal>"` — its `suggestedSurface` always names the repository-owned driver; unavailable backends degrade to ordinary sidecar orchestration or `team-loop`. Routing, acceptance, and the done/push gates never move out of the main session.
+Slots are self-contained `slots/<name>/` directories (manifest declaration + README protocol) validated by `python3 scripts/slot_registry.py list|validate` and shipped by `install.sh`; the full contract lives in [`references/slots.md`](references/slots.md). Activation rule: when a task's shape matches a slot's triggers, hand the execution segment to that slot's README protocol (`team-loop` → `slots/team-loop/scripts/loop_route.py`; `workflow-runner` → `slots/workflow-runner/scripts/workflow_route.py`); orchestration routing (`scripts/route_decision.py`) is independent of slot activation, and routing, acceptance, and the `done`/`push` gates never move out of the main session.
 
 ## Reference documentation
 
-[`references/00-readme.md`](references/00-readme.md) is the reading index — start there when the current stage's page is unclear. Read these files only when needed for your current task:
+[`references/00-readme.md`](references/00-readme.md) is the reading index — start there when the current stage's page is unclear. Read these only when the current task needs them:
 
-- [`references/commands.md`](references/commands.md) — detailed stage execution (read only your current stage section)
+- [`references/commands.md`](references/commands.md) — stage index and detailed stage execution
 - [`references/output-contracts.md`](references/output-contracts.md) — required output format per stage
 - [`references/templates.md`](references/templates.md) — task package templates
-- [`references/orchestration.md`](references/orchestration.md) — multi-agent routing contract (five-route vocabulary, assignment contract, 5.4 section)
-- [`references/slots.md`](references/slots.md) — extension slot contract (manifest/registry/installer)
+- [`references/orchestration.md`](references/orchestration.md) — multi-agent routing contract
+- [`references/slots.md`](references/slots.md) — extension slot contract
 - [`references/storage-and-archive.md`](references/storage-and-archive.md) — directory structure and archiving
-- [`references/handoff.md`](references/handoff.md) — session-boundary handoff document (snapshot + append-only entry log, mode-adaptive slots)
+- [`references/handoff.md`](references/handoff.md) — session-boundary handoff document
 - [`references/naming-and-commits.md`](references/naming-and-commits.md) — slug naming and commit conventions
 - [`references/changelog-guide.md`](references/changelog-guide.md) — changelog generation and integration
 - [`references/engineering-philosophy.md`](references/engineering-philosophy.md) — four core principles

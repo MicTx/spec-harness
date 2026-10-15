@@ -135,6 +135,58 @@ def test_auto_detect_installs_directory_only_host(tmp_path):
 
 
 @requires_bash
+def test_auto_detect_includes_pi_directory_probe(tmp_path):
+    # Pi left SKILL_ONLY_HOSTS in F4 (skill + native prompt-template
+    # commands), but the default-detect candidate loop must still visit it:
+    # the documented contract installs any host whose default root exists.
+    home = tmp_path / "home"
+    (home / ".pi" / "agent").mkdir(parents=True)
+    result = run_installer(home)
+    assert result.returncode == 0, result.stderr
+    roots = install_roots(home)
+    assert roots == [".pi/agent"], roots
+    assert (home / ".pi" / "agent" / "skills" / "spec" / "SKILL.md").is_file()
+    # The native prompt-template command surface came along (F4 layout).
+    assert (home / ".pi" / "agent" / "prompts" / "spec.md").is_file()
+
+
+@requires_bash
+def test_auto_detect_includes_pi_marker_upgrade_path(tmp_path):
+    # An earlier pi install into an env-overridden root leaves the default
+    # probe root absent and no pi CLI on PATH; the ownership marker alone
+    # must keep pi in the upgrade set, like every other host.
+    home = tmp_path / "home"
+    home.mkdir()
+    custom = home / "custom" / "pi-skills"
+    first = run_installer(
+        home,
+        extra_env={
+            "INSTALL_HOSTS": "pi",
+            "PI_SKILLS_DIR": str(custom),
+            "PI_DIR": str(home / "custom" / "pi-root"),
+            "FORCE": "1",
+        },
+    )
+    assert first.returncode == 0, first.stderr
+    assert (custom / "spec" / "SKILL.md").is_file()
+    assert ".pi" not in install_roots(home)
+
+    second = run_installer(
+        home,
+        extra_env={
+            "PI_SKILLS_DIR": str(custom),
+            "PI_DIR": str(home / "custom" / "pi-root"),
+            "FORCE": "1",
+        },
+    )
+    assert second.returncode == 0, second.stderr
+    assert (custom / "spec" / "SKILL.md").is_file(), "marker-owned pi must be reinstalled"
+    assert ".pi" not in install_roots(home)
+    # Detection reports the marker-rescued host instead of skipping it.
+    assert "detected hosts: pi" in second.stdout
+
+
+@requires_bash
 def test_auto_detect_no_host_installs_nothing_with_guidance(tmp_path):
     home = tmp_path / "home"
     home.mkdir()

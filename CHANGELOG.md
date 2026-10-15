@@ -4,6 +4,28 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [0.19.0] - 2026-10-15
+
+### Added
+
+- Pi 宿主原生命令面：安装器为 Pi 装配 prompt 模板命令（`/spec` 与全阶段 `/spec:<stage>` colon 布局，用户参数原样透传），`$spec` 文本约定升级为可补全的原生入口；doctor 新增 `pi.prompts`（模板存在性/阶段集/marker/形状）与 `migration.wrappers`（Codex CLI 迁移包装只报告）两查。
+- Pi hosts gain a native command surface: the installer ships prompt-template commands (`/spec` plus every `/spec:<stage>` in the colon layout, forwarding user arguments verbatim), upgrading the `$spec` text convention to completable native entries; doctor adds `pi.prompts` (template presence, stage-set, markers, shape) and `migration.wrappers` (Codex CLI migration wrappers, report-only) checks.
+
+### Changed
+
+- SKILL 常载面精简：去除模板重复措辞并收紧引用清单，载面纳入棘轮基线，后续改动不再无声回涨；任务粒度与 verify 指引完善——每个任务的 boundary/verify 按完整配方（运行目录/前置条件/完整命令/成功判定/失败处理）填写。
+- The always-loaded SKILL surface drops duplicated template wording and tightens its reference list behind a ratchet baseline so edits cannot silently regrow it; task granularity and verify guidance now spell out the complete recipe (working directory / preconditions / full command / success criteria / failure handling) for every task.
+
+### Fixed
+
+- 安装器自动探测修复：Pi 移出纯 skill 宿主清单后默认探测循环漏掉 Pi（无 `INSTALL_HOSTS` 安装不覆盖 Pi）——已修复并以目录探针与 marker 升级路径双测试钉死。
+- Installer auto-detect fix: after Pi left the skill-only host list the default detection loop skipped it (a no-`INSTALL_HOSTS` install never covered Pi) — fixed and pinned by both directory-probe and marker-upgrade tests.
+
+### Internal
+
+- S6 评审场景独立预算与验收口径入基准套件；三处全量回归（SKILL organize 合同短语、bench 悬垂提及、计划文档链接提取器围栏盲区）由全量守卫拦截并修复；链轮次实测拦截探测缺口（撤包→修复→重规划先例入档）。
+- The S6 review scenario gains its own benchmark budget and acceptance bars; three full-suite regressions (the SKILL organize contract phrase, dangling bench mentions, the plan-link extractor's code-fence blind spot) were caught by the full guard and fixed; and a live chain round caught the detection gap (withdraw → fix → re-plan precedent archived).
+
 ## [0.18.0] - 2026-10-14
 
 ### BREAKING

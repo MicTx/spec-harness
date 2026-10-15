@@ -120,6 +120,7 @@ PROTOCOL_ARTIFACT_NAMES = frozenset(
         "checklist.md",
         "handoff.md",
         "completion-summary.md",
+        "REVIEW.md",
         "update-checkpoint.json",
         "chain.json",
         "volatile.json",
