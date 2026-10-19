@@ -44,8 +44,9 @@ def sum_account(*texts: str) -> tuple[int, int, int]:
     return tuple(sum(values) for values in zip(*(account(text) for text in texts)))
 
 
-def synth_tree(tmp: Path, *, skill: str = SKILL_TEXT, stages: dict[str, str] | None = None,
-               templates: str = TEMPLATES_MD) -> Path:
+def synth_tree(
+    tmp: Path, *, skill: str = SKILL_TEXT, stages: dict[str, str] | None = None, templates: str = TEMPLATES_MD
+) -> Path:
     root = tmp / "tree"
     (root / "references" / "stages").mkdir(parents=True)
     # raw-bytes writes: exact newline control on every Python the project supports (>=3.9)
@@ -59,7 +60,8 @@ def synth_tree(tmp: Path, *, skill: str = SKILL_TEXT, stages: dict[str, str] | N
 def run_cli(root: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(SCRIPT), "--root", str(root), *args],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
 
 
@@ -70,6 +72,7 @@ def account(text: str) -> tuple[int, int, int]:
 
 # --- four-dimension compatibility -------------------------------------------------
 
+
 def test_four_dim_exact_values_on_synthetic_tree(tmp_path):
     root = synth_tree(tmp_path)
     result = run_cli(root, "--json")
@@ -77,16 +80,20 @@ def test_four_dim_exact_values_on_synthetic_tree(tmp_path):
     report = json.loads(result.stdout)
     surfaces = {s["name"]: s for s in report["surfaces"]}
     metadata = "---\nname: demo\n---\n"
-    assert (surfaces["metadata"]["bytes"], surfaces["metadata"]["chars"],
-            surfaces["metadata"]["lines"]) == account(metadata)
-    assert (surfaces["skill"]["bytes"], surfaces["skill"]["chars"],
-            surfaces["skill"]["lines"]) == account(SKILL_TEXT)
-    stages_text = STAGE_NEW + STAGE_RUN  # per-file sum == concatenation here (files end with \n)
-    assert (surfaces["stages"]["bytes"], surfaces["stages"]["chars"],
-            surfaces["stages"]["lines"]) == sum_account(STAGE_NEW, STAGE_RUN)
+    assert (surfaces["metadata"]["bytes"], surfaces["metadata"]["chars"], surfaces["metadata"]["lines"]) == account(
+        metadata
+    )
+    assert (surfaces["skill"]["bytes"], surfaces["skill"]["chars"], surfaces["skill"]["lines"]) == account(SKILL_TEXT)
+    # per-file sum == concatenation here (files end with a newline)
+    assert (surfaces["stages"]["bytes"], surfaces["stages"]["chars"], surfaces["stages"]["lines"]) == sum_account(
+        STAGE_NEW, STAGE_RUN
+    )
     # frozen: each captured fence drops its trailing newline; totals sum per file, not concatenation
-    assert (surfaces["templates"]["bytes"], surfaces["templates"]["chars"],
-            surfaces["templates"]["lines"]) == sum_account(SPEC_FENCE[:-1], TASKS_FENCE[:-1])
+    assert (
+        surfaces["templates"]["bytes"],
+        surfaces["templates"]["chars"],
+        surfaces["templates"]["lines"],
+    ) == sum_account(SPEC_FENCE[:-1], TASKS_FENCE[:-1])
     # the four surface names and their order are frozen
     assert [s["name"] for s in report["surfaces"]] == ["metadata", "skill", "stages", "templates"]
 
@@ -122,6 +129,7 @@ def test_missing_template_fence_fails(tmp_path):
 
 
 # --- newline / encoding semantics (frozen) ----------------------------------------
+
 
 def test_crlf_sources_normalize_to_lf_accounting(tmp_path):
     crlf_skill = SKILL_TEXT.replace("\n", "\r\n")
@@ -172,6 +180,7 @@ def test_bad_utf8_never_reports_zero(tmp_path):
 
 
 # --- committed manifest fixture contract ------------------------------------------
+
 
 def load_manifest() -> dict:
     return json.loads(MANIFEST.read_text(encoding="utf-8"))
@@ -242,11 +251,16 @@ def test_manifest_dimension_coverage():
     assert {"cold", "warm", "resumed"} <= {s["session_mode"] for s in scenarios}
     assert {"v1", "v2"} <= {s["package_format"] for s in scenarios}
     assert {"core", "full"} <= {s["profile"] for s in scenarios}
-    assert {"small-package", "large-package", "failure-repair", "long-log",
-            "session-resume"} <= {s["task_class"] for s in scenarios}
+    assert {"small-package", "large-package", "failure-repair", "long-log", "session-resume"} <= {
+        s["task_class"] for s in scenarios
+    }
     core = [s for s in scenarios if s["profile"] == "core"]
     assert core and core[0]["stage"] in set(user_stages()) - {
-        "new", "run", "check", "done", "push",
+        "new",
+        "run",
+        "check",
+        "done",
+        "push",
     }, "core refusal scenario must target an extended stage"
 
 
@@ -277,6 +291,7 @@ def test_manifest_public_safe():
 
 def test_manifest_digests_match_current_worktree():
     import hashlib
+
     manifest = load_manifest()
     for rel, digest in manifest["sources"].items():
         actual = hashlib.sha256((REPO / rel).read_bytes()).hexdigest()
@@ -292,8 +307,9 @@ def test_manifest_digests_match_current_worktree():
 import hashlib  # noqa: E402
 
 
-def make_manifest(tmp: Path, scenarios: list[dict], sources: dict[str, str] | None = None,
-                  schema_version: int = 1) -> Path:
+def make_manifest(
+    tmp: Path, scenarios: list[dict], sources: dict[str, str] | None = None, schema_version: int = 1
+) -> Path:
     """Write a manifest next to a synthetic tree, computing digests unless pinned."""
     if sources is None:
         events = [e for s in scenarios for e in s["events"]]
@@ -302,22 +318,33 @@ def make_manifest(tmp: Path, scenarios: list[dict], sources: dict[str, str] | No
             candidate = tmp / "tree" / e["source"]
             # missing files get a pinned placeholder digest: the metering must
             # reject the read itself, not the manifest build
-            sources[e["source"]] = (hashlib.sha256(candidate.read_bytes()).hexdigest()
-                                     if candidate.is_file()
-                                     else hashlib.sha256(b"declared-but-absent").hexdigest())
+            sources[e["source"]] = (
+                hashlib.sha256(candidate.read_bytes()).hexdigest()
+                if candidate.is_file()
+                else hashlib.sha256(b"declared-but-absent").hexdigest()
+            )
     path = tmp / "manifest.json"
-    path.write_text(json.dumps(
-        {"schema_version": schema_version, "sources": sources, "scenarios": scenarios},
-        ensure_ascii=False, indent=2), encoding="utf-8")
+    path.write_text(
+        json.dumps(
+            {"schema_version": schema_version, "sources": sources, "scenarios": scenarios}, ensure_ascii=False, indent=2
+        ),
+        encoding="utf-8",
+    )
     return path
 
 
-def scenario(sid: str, events: list[dict], expected: list[str] | None = None,
-             context: list[dict] | None = None, **overrides) -> dict:
+def scenario(
+    sid: str, events: list[dict], expected: list[str] | None = None, context: list[dict] | None = None, **overrides
+) -> dict:
     base = {
-        "id": sid, "stage": "run", "profile": "full", "package_format": "v2",
-        "session_mode": "cold", "task_class": "small-package",
-        "preconditions": "synthetic", "success_condition": "synthetic",
+        "id": sid,
+        "stage": "run",
+        "profile": "full",
+        "package_format": "v2",
+        "session_mode": "cold",
+        "task_class": "small-package",
+        "preconditions": "synthetic",
+        "success_condition": "synthetic",
         "expected": expected if expected is not None else ["k"],
         "events": events,
     }
@@ -327,12 +354,25 @@ def scenario(sid: str, events: list[dict], expected: list[str] | None = None,
     return base
 
 
-def event(eid: str, source: str, ranges, *, consumer: str = "model",
-          load_class: str = "conditional", call_id: str | None = None,
-          repeat: int | None = None, expected_keys: list[str] | None = None) -> dict:
+def event(
+    eid: str,
+    source: str,
+    ranges,
+    *,
+    consumer: str = "model",
+    load_class: str = "conditional",
+    call_id: str | None = None,
+    repeat: int | None = None,
+    expected_keys: list[str] | None = None,
+) -> dict:
     base = {
-        "id": eid, "consumer": consumer, "load_class": load_class, "source": source,
-        "ranges": ranges, "reason": "synthetic", "contract_anchor": "synthetic",
+        "id": eid,
+        "consumer": consumer,
+        "load_class": load_class,
+        "source": source,
+        "ranges": ranges,
+        "reason": "synthetic",
+        "contract_anchor": "synthetic",
         "call_id": call_id or f"call-{eid}",
     }
     if repeat:
@@ -363,19 +403,20 @@ def test_read_chain_mode_repo_fixture_success_envelope():
 
 def test_read_chain_mode_attribution_math(tmp_path):
     root = synth_tree(tmp_path)
-    sc = scenario("math", [
-        event("a", "SKILL.md", [[1, 3]], call_id="c1", expected_keys=["k"]),
-        event("a-again", "SKILL.md", [[1, 3]], call_id="c1", repeat=2, expected_keys=["k"]),
-        event("k", "SKILL.md", "whole", call_id="c2", load_class="trigger_loaded",
-              expected_keys=["k"]),
-        event("s", "references/stages/new.md", "whole", consumer="script", call_id="c3"),
-    ])
+    sc = scenario(
+        "math",
+        [
+            event("a", "SKILL.md", [[1, 3]], call_id="c1", expected_keys=["k"]),
+            event("a-again", "SKILL.md", [[1, 3]], call_id="c1", repeat=2, expected_keys=["k"]),
+            event("k", "SKILL.md", "whole", call_id="c2", load_class="trigger_loaded", expected_keys=["k"]),
+            event("s", "references/stages/new.md", "whole", consumer="script", call_id="c3"),
+        ],
+    )
     manifest = make_manifest(tmp_path, [sc])
     result = read_chain_report(root, manifest)
     assert result.returncode == 0, result.stderr
     out = json.loads(result.stdout)["read_chains"]["scenarios"][0]
-    line_bytes = [len(line.encode("utf-8"))
-                  for line in SKILL_TEXT.splitlines(keepends=True)]
+    line_bytes = [len(line.encode("utf-8")) for line in SKILL_TEXT.splitlines(keepends=True)]
     front3 = sum(line_bytes[0:3])
     result_and_assert = out
     assert result_and_assert["read_events"] == 1 + 2 + 1 + 1  # repeat expanded
@@ -389,10 +430,13 @@ def test_read_chain_mode_attribution_math(tmp_path):
 
 def test_read_chain_mode_identical_content_not_deduped_across_files(tmp_path):
     root = synth_tree(tmp_path, stages={"a.md": "same text\n", "b.md": "same text\n"})
-    sc = scenario("dupe", [
-        event("a", "references/stages/a.md", "whole", call_id="c1", expected_keys=["k"]),
-        event("b", "references/stages/b.md", "whole", call_id="c2", expected_keys=["k"]),
-    ])
+    sc = scenario(
+        "dupe",
+        [
+            event("a", "references/stages/a.md", "whole", call_id="c1", expected_keys=["k"]),
+            event("b", "references/stages/b.md", "whole", call_id="c2", expected_keys=["k"]),
+        ],
+    )
     manifest = make_manifest(tmp_path, [sc])
     out = json.loads(read_chain_report(root, manifest).stdout)["read_chains"]["scenarios"][0]
     both = 2 * len("same text\n".encode("utf-8"))
@@ -426,8 +470,9 @@ def test_read_chain_mode_stable_projection_across_runs_and_roots(tmp_path):
 
 def test_read_chain_mode_coverage_partial_is_reported_not_hidden(tmp_path):
     root = synth_tree(tmp_path)
-    sc = scenario("gap", [event("k", "SKILL.md", "whole", call_id="c1", expected_keys=["k"])],
-                  expected=["k", "uncovered-need"])
+    sc = scenario(
+        "gap", [event("k", "SKILL.md", "whole", call_id="c1", expected_keys=["k"])], expected=["k", "uncovered-need"]
+    )
     manifest = make_manifest(tmp_path, [sc])
     result = read_chain_report(root, manifest)
     assert result.returncode == 0, result.stderr  # partial coverage is a state, not an error
@@ -458,8 +503,7 @@ def test_read_chain_mode_bad_json_rejected(tmp_path):
 
 def test_read_chain_mode_vocabulary_rejected(tmp_path):
     root = synth_tree(tmp_path)
-    sc = scenario("voc", [event("k", "SKILL.md", "whole", consumer="llm",
-                                call_id="c1", expected_keys=["k"])])
+    sc = scenario("voc", [event("k", "SKILL.md", "whole", consumer="llm", call_id="c1", expected_keys=["k"])])
     manifest = make_manifest(tmp_path, [sc])
     result = read_chain_report(root, manifest)
     assert result.returncode == 2
@@ -468,8 +512,7 @@ def test_read_chain_mode_vocabulary_rejected(tmp_path):
 
 def test_read_chain_mode_missing_source_rejected(tmp_path):
     root = synth_tree(tmp_path)
-    sc = scenario("miss", [event("k", "references/stages/gone.md", "whole",
-                                 call_id="c1", expected_keys=["k"])])
+    sc = scenario("miss", [event("k", "references/stages/gone.md", "whole", call_id="c1", expected_keys=["k"])])
     manifest = make_manifest(tmp_path, [sc])
     result = read_chain_report(root, manifest)
     assert result.returncode == 2
@@ -490,9 +533,11 @@ def test_read_chain_mode_digest_drift_rejected(tmp_path):
 def test_read_chain_mode_context_digest_drift_rejected(tmp_path):
     root = synth_tree(tmp_path)
     good = hashlib.sha256(SKILL_TEXT.encode("utf-8")).hexdigest()
-    sc = scenario("ctx", [event("s", "references/stages/new.md", "whole",
-                                call_id="c1", expected_keys=["k"])],
-                  context=[{"source": "SKILL.md", "sha256": "0" * 64}])
+    sc = scenario(
+        "ctx",
+        [event("s", "references/stages/new.md", "whole", call_id="c1", expected_keys=["k"])],
+        context=[{"source": "SKILL.md", "sha256": "0" * 64}],
+    )
     manifest = make_manifest(tmp_path, [sc], sources={"SKILL.md": good})
     result = read_chain_report(root, manifest)
     assert result.returncode == 2
@@ -502,8 +547,7 @@ def test_read_chain_mode_context_digest_drift_rejected(tmp_path):
 def test_read_chain_mode_range_validation_rejected(tmp_path):
     root = synth_tree(tmp_path)
     for ranges in ([[0, 3]], [[2, 1]], [[1, 99999]], [[1, 3], [3, 5]], [[4, 6], [1, 2]]):
-        sc = scenario(f"r{ranges}", [event("k", "SKILL.md", ranges, call_id="c1",
-                                           expected_keys=["k"])])
+        sc = scenario(f"r{ranges}", [event("k", "SKILL.md", ranges, call_id="c1", expected_keys=["k"])])
         manifest = make_manifest(tmp_path, [sc])
         result = read_chain_report(root, manifest)
         assert result.returncode == 2, ranges
@@ -525,10 +569,10 @@ def test_read_chain_mode_unsafe_paths_rejected(tmp_path):
 @pytest.mark.skipif(not hasattr(__import__("os"), "symlink"), reason="platform without symlink")
 def test_read_chain_mode_symlink_rejected(tmp_path):
     import os
+
     root = synth_tree(tmp_path)
     os.symlink(root / "SKILL.md", root / "references" / "stages" / "link.md")
-    sc = scenario("sym", [event("k", "references/stages/link.md", "whole",
-                                call_id="c1", expected_keys=["k"])])
+    sc = scenario("sym", [event("k", "references/stages/link.md", "whole", call_id="c1", expected_keys=["k"])])
     manifest = make_manifest(tmp_path, [sc])
     result = read_chain_report(root, manifest)
     assert result.returncode == 2
@@ -549,8 +593,7 @@ def test_read_chain_mode_manifest_budget_rejected(tmp_path):
 
 def test_read_chain_mode_input_budget_rejected(tmp_path):
     root = synth_tree(tmp_path, stages={"huge.md": "x" * (8 * 1024 * 1024 + 1)})
-    sc = scenario("huge", [event("k", "references/stages/huge.md", "whole",
-                                 call_id="c1", expected_keys=["k"])])
+    sc = scenario("huge", [event("k", "references/stages/huge.md", "whole", call_id="c1", expected_keys=["k"])])
     manifest = make_manifest(tmp_path, [sc])
     result = read_chain_report(root, manifest)
     assert result.returncode == 2
@@ -559,10 +602,9 @@ def test_read_chain_mode_input_budget_rejected(tmp_path):
 
 def test_read_chain_mode_event_count_budget_rejected(tmp_path):
     root = synth_tree(tmp_path)
-    sc = scenario("many", [
-        event(f"e{i}", "SKILL.md", [[1, 1]], call_id=f"c{i}", expected_keys=["k"])
-        for i in range(4097)
-    ])
+    sc = scenario(
+        "many", [event(f"e{i}", "SKILL.md", [[1, 1]], call_id=f"c{i}", expected_keys=["k"]) for i in range(4097)]
+    )
     manifest = make_manifest(tmp_path, [sc])
     result = read_chain_report(root, manifest)
     assert result.returncode == 2
@@ -573,8 +615,7 @@ def test_read_chain_mode_bad_utf8_input_exit_2(tmp_path):
     root = synth_tree(tmp_path)
     broken = root / "references" / "stages" / "broken.md"
     broken.write_bytes(b"# ok\n\xff\xfe broken\n")
-    sc = scenario("enc", [event("k", "references/stages/broken.md", "whole",
-                                call_id="c1", expected_keys=["k"])])
+    sc = scenario("enc", [event("k", "references/stages/broken.md", "whole", call_id="c1", expected_keys=["k"])])
     manifest = make_manifest(tmp_path, [sc])  # digest computed over raw bytes: valid
     result = read_chain_report(root, manifest)
     assert result.returncode == 2
@@ -585,12 +626,18 @@ def test_read_chain_mode_no_write_side_effects(tmp_path):
     root = synth_tree(tmp_path)
     sc = scenario("ro", [event("k", "SKILL.md", "whole", call_id="c1", expected_keys=["k"])])
     manifest = make_manifest(tmp_path, [sc])
-    before = {p: (p.stat().st_mtime_ns, hashlib.sha256(p.read_bytes()).hexdigest())
-              for p in sorted(root.rglob("*")) if p.is_file()}
+    before = {
+        p: (p.stat().st_mtime_ns, hashlib.sha256(p.read_bytes()).hexdigest())
+        for p in sorted(root.rglob("*"))
+        if p.is_file()
+    }
     result = read_chain_report(root, manifest)
     assert result.returncode == 0, result.stderr
-    after = {p: (p.stat().st_mtime_ns, hashlib.sha256(p.read_bytes()).hexdigest())
-             for p in sorted(root.rglob("*")) if p.is_file()}
+    after = {
+        p: (p.stat().st_mtime_ns, hashlib.sha256(p.read_bytes()).hexdigest())
+        for p in sorted(root.rglob("*"))
+        if p.is_file()
+    }
     assert before == after
 
 
@@ -614,21 +661,32 @@ def test_read_chain_mode_absent_flag_leaves_default_report_alone(tmp_path):
 
 # --- default four-dim command runs inside exported trees (no tests/ or .spec) ------
 
+
 @pytest.mark.parametrize("profile", ["core", "full"])
 def test_default_measure_runs_in_export_trees(tmp_path, profile):
     output = tmp_path / f"spec-export-{profile}"
     result = subprocess.run(
-        [sys.executable, str(REPO / "scripts" / "export_skill_package.py"),
-         "--output", str(output), "--force", "--skip-signing",
-         "--root", str(REPO), "--profile", profile],
-        capture_output=True, text=True,
+        [
+            sys.executable,
+            str(REPO / "scripts" / "export_skill_package.py"),
+            "--output",
+            str(output),
+            "--force",
+            "--skip-signing",
+            "--root",
+            str(REPO),
+            "--profile",
+            profile,
+        ],
+        capture_output=True,
+        text=True,
     )
     assert result.returncode == 0, result.stderr
     assert not (output / "tests").exists() and not (output / ".spec").exists()
     measure = subprocess.run(
-        [sys.executable, str(output / "scripts" / "measure_skill_surface.py"),
-         "--root", str(output), "--json"],
-        capture_output=True, text=True,
+        [sys.executable, str(output / "scripts" / "measure_skill_surface.py"), "--root", str(output), "--json"],
+        capture_output=True,
+        text=True,
     )
     assert measure.returncode == 0, measure.stderr
     surfaces = [s["name"] for s in json.loads(measure.stdout)["surfaces"]]

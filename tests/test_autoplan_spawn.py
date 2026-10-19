@@ -2945,6 +2945,9 @@ class TestSpawnEntryMigration:
         state = json.loads(LEGACY_AUTOPLAN_STATE_BYTES.decode("utf-8"))
         (summary / "chain.json").write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         monkeypatch.setattr("autoplan_spawn.session_tty", lambda: "/dev/ttys012")
+        # Containers have no worker CLI on PATH; resolve via the documented
+        # env override instead of depending on the dev machine's PATH.
+        monkeypatch.setenv("SPEC_AUTORUN_HOST", "pi")
         monkeypatch.setattr(
             subprocess,
             "run",

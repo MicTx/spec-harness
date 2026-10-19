@@ -25,6 +25,8 @@ All notable user-facing changes to Spec Harness are recorded here. Internal deve
 
 ### Internal
 
+- 自托管 release runner 兼容：预检全量套件预算 600→1800s，链锁持有者探活改用 POSIX `os.kill(pid, 0)`（busybox `ps` 不支持 `-p` 时不再把活持有者误判 stale）；同步清偿发布门禁 lint/format 债并硬化容器差异测试（fixture 本地 git 身份、worker host 环境解析、测试替身 timeout 契约、`TODO.md` 协议工件标签）。
+- Self-hosted release runner compatibility: the pre-build full-suite budget widens from 600s to 1800s and chain-lock holder liveness now probes via POSIX `os.kill(pid, 0)` (busybox `ps` lacks `-p`, which used to degrade live holders to "stale"); release-gate lint/format debt is cleared and container-divergent tests hardened (fixture-local git identity, worker-host env resolution, test-double timeout contract, the `TODO.md` protocol-artifact label).
 - 发布候选以锁定记录冻结（候选 commit、95 载荷文件树摘要、四臂消融报告与沙箱导出矩阵回执）；本轮发布只消费锁定候选，不重测、不回写实现结论。
 - The release candidate is frozen as a lock record (candidate commit, 95-file payload tree digest, four-arm ablation report, sandbox export matrix receipts); this release consumes the lock record only and neither re-measures nor rewrites implementation conclusions.
 

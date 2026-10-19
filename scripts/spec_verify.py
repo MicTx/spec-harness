@@ -301,7 +301,8 @@ def _runs_gate_states(
     try:
         records = read_runs_records(package_dir)
     except (OSError, UnicodeError, ValueError) as exc:
-        return False, [f"runs 证据不可读：{exc}"], "runs 证据不可读", {task_id: "unverified" for task_id, _c, _v in machine}
+        unverified = {task_id: "unverified" for task_id, _c, _v in machine}
+        return False, [f"runs 证据不可读：{exc}"], "runs 证据不可读", unverified
     fingerprint = compute_tree_fingerprint(root)
     if fingerprint is None:
         return None, [], "适用外：非 Git 工作区或指纹不可计算，跳过 runs 比对", {}
@@ -613,9 +614,7 @@ def show_evidence(args: argparse.Namespace) -> int:
             ]
     elif args.failures_only:
         freshness = _show_freshness(spec_content, tasks_content, package_dir, root)
-        failing = {
-            task for task, state in freshness["per_task"].items() if state in {"stale", "unverified"}
-        }
+        failing = {task for task, state in freshness["per_task"].items() if state in {"stale", "unverified"}}
         view = [entry for entry in view if entry.record.get("task") in failing]
     if task_filter is not None:
         view = [entry for entry in view if entry.record.get("task") in task_filter]
@@ -740,8 +739,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     show_parser.add_argument(
         "--failures-only", action="store_true", help="Latest view filtered to failing or stale tasks"
     )
-    show_parser.add_argument("--history", action="store_true", help="All records in file order instead of latest-per-task")
-    show_parser.add_argument("--page-token", default=None, help="Opaque continuation token from a prior envelope's `next`")
+    show_parser.add_argument(
+        "--history", action="store_true", help="All records in file order instead of latest-per-task"
+    )
+    show_parser.add_argument(
+        "--page-token", default=None, help="Opaque continuation token from a prior envelope's `next`"
+    )
     show_parser.add_argument(
         "--max-bytes",
         type=int,

@@ -632,15 +632,17 @@ class TestLockObservability:
 
     def test_pid_alive_for_live_and_exited_processes(self):
         assert autorun_spawn._pid_alive(os.getpid()) is True
-        exited = subprocess.Popen(["/usr/bin/true"], stdout=subprocess.DEVNULL)
+        # Portability: minimal images (Alpine/busybox) may lack /usr/bin/true;
+        # the interpreter itself is always available.
+        exited = subprocess.Popen([sys.executable, "-c", "pass"], stdout=subprocess.DEVNULL)
         exited.wait()
         assert autorun_spawn._pid_alive(exited.pid) is False
 
-    def test_pid_alive_unverifiable_on_ps_failure(self, monkeypatch):
-        def fake_run(*a, **k):
-            raise subprocess.TimeoutExpired(a[0], 5)
+    def test_pid_alive_unverifiable_on_probe_failure(self, monkeypatch):
+        def fake_kill(pid, sig):
+            raise OSError("probe unavailable")
 
-        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(os, "kill", fake_kill)
         assert autorun_spawn._pid_alive(4242) is None
 
     def test_status_renders_lock_states(self, tmp_path, capsys):

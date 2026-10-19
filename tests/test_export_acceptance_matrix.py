@@ -116,6 +116,7 @@ def claude_stage_commands(home: Path) -> list:
     commands_dir = home / ".claude" / "commands" / "spec"
     return sorted(path.name for path in commands_dir.glob("*.md")) if commands_dir.is_dir() else []
 
+
 FIXTURE_SLUG = "2026-10-19-matrix-fixture"
 FIXTURE_SPEC = """# 沙箱矩阵夹具包 - 项目范围
 
@@ -185,7 +186,17 @@ def run_parity(install: Path, profile: str) -> subprocess.CompletedProcess:
 def capability_envelopes(root: Path) -> dict:
     """brief (--slug) and show envelopes from the tree's own scripts, relative root."""
     brief = subprocess.run(
-        [sys.executable, "scripts/route_spec_package.py", "--root", ".", "--format", "json", "--brief", "--slug", FIXTURE_SLUG],
+        [
+            sys.executable,
+            "scripts/route_spec_package.py",
+            "--root",
+            ".",
+            "--format",
+            "json",
+            "--brief",
+            "--slug",
+            FIXTURE_SLUG,
+        ],
         cwd=str(root),
         capture_output=True,
         text=True,

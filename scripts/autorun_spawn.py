@@ -1324,8 +1324,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         root = _resolve_root(args.root)
         if args.subcommand == "close":
-            _emit(chain_lifecycle.close_chain(root, "autorun", dry_run=args.dry_run),
-                  chain_lifecycle.render_close, args.format == "json")
+            _emit(
+                chain_lifecycle.close_chain(root, "autorun", dry_run=args.dry_run),
+                chain_lifecycle.render_close,
+                args.format == "json",
+            )
         elif args.subcommand == "plan":
             _emit(plan_payload(root, args.plan), _render_plan, args.format == "json")
         elif args.subcommand == "spawn":

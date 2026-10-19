@@ -297,6 +297,22 @@ class TestSingleChainLock:
             thread.join(timeout=5)
 
 
+def test_pid_alive_never_shells_out_on_posix(monkeypatch):
+    """POSIX liveness must not depend on an external ``ps`` binary.
+
+    busybox ``ps`` (the self-hosted release runner image) rejects
+    ``-p <pid>``; a shell-out probe there degrades every live lock holder
+    to "stale". The regression pin: probing with subprocess sabotaged must
+    still answer for a live pid.
+    """
+
+    def explode(*args, **kwargs):
+        raise AssertionError("pid_alive must not shell out on POSIX")
+
+    monkeypatch.setattr(subprocess, "run", explode)
+    assert support.pid_alive(os.getpid()) is True
+
+
 class TestLockHolderProbe:
     def test_free_when_no_lock_file(self, chain_root):
         assert lock_holder(chain_dir(chain_root, "autorun")) == {"status": "free"}

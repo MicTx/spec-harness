@@ -18,8 +18,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 REPO = Path(__file__).resolve().parents[1]
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "internal_surface"
@@ -27,9 +25,7 @@ FIXTURE_SLUG = "2099-01-01_test-internal-surface"
 
 sys.path.insert(0, str(SCRIPTS))
 
-from route_spec_package import route_for_package  # noqa: E402
 from spec_verify import RUNS_FILENAME  # noqa: E402
-
 
 # --------------------------------------------------------------------------- #
 # sandbox helpers
@@ -323,9 +319,7 @@ def test_route_json_unbound_branch_is_machine_readable(tmp_path):
         package = root / ".spec" / "specs" / slug
         package.mkdir(parents=True)
         (package / "spec.md").write_text(
-            (FIXTURES / "pkg" / "spec.md").read_text(encoding="utf-8").replace(
-                f"spec/{FIXTURE_SLUG}", f"spec/{slug}"
-            ),
+            (FIXTURES / "pkg" / "spec.md").read_text(encoding="utf-8").replace(f"spec/{FIXTURE_SLUG}", f"spec/{slug}"),
             encoding="utf-8",
         )
         (package / "tasks.md").write_text("# T\n- [ ] 任务\n  - boundary: b\n  - verify: `v`\n", encoding="utf-8")
@@ -358,9 +352,7 @@ def test_brief_covers_no_package_and_unbound_branches(tmp_path):
         package = multi / ".spec" / "specs" / slug
         package.mkdir(parents=True)
         (package / "spec.md").write_text(
-            (FIXTURES / "pkg" / "spec.md").read_text(encoding="utf-8").replace(
-                f"spec/{FIXTURE_SLUG}", f"spec/{slug}"
-            ),
+            (FIXTURES / "pkg" / "spec.md").read_text(encoding="utf-8").replace(f"spec/{FIXTURE_SLUG}", f"spec/{slug}"),
             encoding="utf-8",
         )
         (package / "tasks.md").write_text("# T\n- [ ] 任务\n  - boundary: b\n  - verify: `v`\n", encoding="utf-8")
@@ -404,7 +396,8 @@ def make_runs_package(
     if not runs_protocol:
         spec_text = spec_text.replace("本包启用 evidence: runs 协议。", "")
     (package / "spec.md").write_text(spec_text, encoding="utf-8")
-    (package / "tasks.md").write_text(tasks_text or (FIXTURES / "pkg" / "tasks.md").read_text(encoding="utf-8"), encoding="utf-8")
+    fallback_tasks = (FIXTURES / "pkg" / "tasks.md").read_text(encoding="utf-8")
+    (package / "tasks.md").write_text(tasks_text or fallback_tasks, encoding="utf-8")
     if records is not None:
         write_runs(package / RUNS_FILENAME, records)
     git(root, "checkout", "-qb", f"spec/{slug}")
@@ -415,7 +408,12 @@ def write_runs(path: Path, records: list[dict]) -> None:
     path.write_text("".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records), encoding="utf-8")
 
 
-def synthetic_records(count: int, *, task_ids: tuple[str, ...] = ("task_0001",), fail_at: set[int] = frozenset()) -> list[dict]:
+def synthetic_records(
+    count: int,
+    *,
+    task_ids: tuple[str, ...] = ("task_0001",),
+    fail_at: set[int] = frozenset(),
+) -> list[dict]:
     """Deterministic public-safe records with multibyte text and long lines."""
     records = []
     for index in range(count):
@@ -506,7 +504,8 @@ def test_show_page_tokens_resume_from_exact_line(tmp_path):
     first = json.loads(show_cli(root, FIXTURE_SLUG, "--history", "--max-lines", "5").stdout)
     assert first["truncated_reason"] == "line_budget"
     assert len(first["items"]) == 5
-    second = json.loads(show_cli(root, FIXTURE_SLUG, "--history", "--max-lines", "5", "--page-token", first["next"]).stdout)
+    second_cmd = show_cli(root, FIXTURE_SLUG, "--history", "--max-lines", "5", "--page-token", first["next"])
+    second = json.loads(second_cmd.stdout)
     assert second["items"][0]["line"] == 6
     assert [item["line"] for item in second["items"][:5]] == [6, 7, 8, 9, 10]
 
@@ -522,9 +521,7 @@ def test_show_oversized_line_is_marked_not_faked(tmp_path):
     marker = payload["items"][0]
     assert marker["oversized"] is True
     assert marker["length_bytes"] == len((json.dumps(records[0], ensure_ascii=False) + "\n").encode("utf-8")) - 1
-    assert marker["sha256"] == hashlib.sha256(
-        (json.dumps(records[0], ensure_ascii=False)).encode("utf-8")
-    ).hexdigest()
+    assert marker["sha256"] == hashlib.sha256((json.dumps(records[0], ensure_ascii=False)).encode("utf-8")).hexdigest()
     assert payload["complete"] is False
     assert payload["truncated_reason"] == "oversized_line"
     # continuation progresses past the oversized line, and a bigger budget recovers it
@@ -581,17 +578,28 @@ def test_show_failures_only_lists_failed_and_stale(tmp_path):
 
 def test_show_freshness_tri_state_matches_evaluate_runs_gate(tmp_path):
     sys.path.insert(0, str(SCRIPTS))
-    from spec_verify import evaluate_runs_gate, compute_tree_fingerprint
+    from spec_verify import compute_tree_fingerprint, evaluate_runs_gate
 
     root = init_repo(tmp_path / "project")
-    fingerprint = subprocess.run(
-        ["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True
-    ).stdout.strip()
     records = [
-        {"task": "task_0001", "cmd": "c", "exit": 0, "duration_s": 1.0,
-         "stdout_tail_sha256": "x", "tree_fp": "STALE-NOT-CURRENT", "at": "2026-10-19T00:00:00+00:00"},
-        {"task": "task_0002", "cmd": "c", "exit": 1, "duration_s": 1.0,
-         "stdout_tail_sha256": "x", "tree_fp": "STALE-NOT-CURRENT", "at": "2026-10-19T00:00:01+00:00"},
+        {
+            "task": "task_0001",
+            "cmd": "c",
+            "exit": 0,
+            "duration_s": 1.0,
+            "stdout_tail_sha256": "x",
+            "tree_fp": "STALE-NOT-CURRENT",
+            "at": "2026-10-19T00:00:00+00:00",
+        },
+        {
+            "task": "task_0002",
+            "cmd": "c",
+            "exit": 1,
+            "duration_s": 1.0,
+            "stdout_tail_sha256": "x",
+            "tree_fp": "STALE-NOT-CURRENT",
+            "at": "2026-10-19T00:00:01+00:00",
+        },
     ]
     tasks_text = (
         "# T\n## A\n"
@@ -603,8 +611,15 @@ def test_show_freshness_tri_state_matches_evaluate_runs_gate(tmp_path):
     # a genuinely fresh record: real current fingerprint
     fresh_fp = compute_tree_fingerprint(root)
     records.append(
-        {"task": "task_0001", "cmd": "c", "exit": 0, "duration_s": 1.0,
-         "stdout_tail_sha256": "x", "tree_fp": fresh_fp, "at": "2026-10-19T00:00:02+00:00"}
+        {
+            "task": "task_0001",
+            "cmd": "c",
+            "exit": 0,
+            "duration_s": 1.0,
+            "stdout_tail_sha256": "x",
+            "tree_fp": fresh_fp,
+            "at": "2026-10-19T00:00:02+00:00",
+        }
     )
     write_runs(runs_path, records)
 
@@ -736,11 +751,13 @@ class TestSchedulingDecisionTable:
         # negative: neither host CLI grew a generic file-read surface
         route_help = subprocess.run(
             [sys.executable, str(SCRIPTS / "route_spec_package.py"), "--help"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         ).stdout
         verify_help = subprocess.run(
             [sys.executable, str(SCRIPTS / "spec_verify.py"), "--help"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         ).stdout
         for text in (route_help, verify_help):
             assert "--read" not in text and "--file" not in text and "--cat" not in text
@@ -775,9 +792,9 @@ class TestSchedulingDecisionTable:
             package = root / ".spec" / "specs" / slug
             package.mkdir(parents=True)
             (package / "spec.md").write_text(
-                (FIXTURES / "pkg" / "spec.md").read_text(encoding="utf-8").replace(
-                    f"spec/{FIXTURE_SLUG}", f"spec/{slug}"
-                ),
+                (FIXTURES / "pkg" / "spec.md")
+                .read_text(encoding="utf-8")
+                .replace(f"spec/{FIXTURE_SLUG}", f"spec/{slug}"),
                 encoding="utf-8",
             )
             (package / "tasks.md").write_text("# T\n- [ ] 任务\n  - boundary: b\n  - verify: `v`\n", encoding="utf-8")
@@ -876,7 +893,8 @@ class TestExportTreeCallability:
         exported_route = export / "scripts" / "route_spec_package.py"
         brief = subprocess.run(
             [sys.executable, str(exported_route), "--root", str(consumer), "--format", "json", "--brief"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         assert brief.returncode == 0, brief.stderr
         payload = json.loads(brief.stdout)
@@ -887,7 +905,8 @@ class TestExportTreeCallability:
         exported_verify = export / "scripts" / "spec_verify.py"
         show = subprocess.run(
             [sys.executable, str(exported_verify), "show", "--root", str(consumer), "--slug", FIXTURE_SLUG],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         assert show.returncode == 0, show.stderr
         assert json.loads(show.stdout)["capability"] == "evidence"
@@ -896,13 +915,15 @@ class TestExportTreeCallability:
         # default markdown panel and the `run` subcommand still exist
         panel = subprocess.run(
             [sys.executable, str(exported_route), "--root", str(consumer)],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         assert panel.returncode == 0
         assert panel.stdout.startswith("# 合成包")
         run_help = subprocess.run(
             [sys.executable, str(exported_verify), "run", "--help"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         assert run_help.returncode == 0
         assert "--task" in run_help.stdout and "--all" in run_help.stdout

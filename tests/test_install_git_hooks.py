@@ -28,6 +28,21 @@ print("SPEC stub-slug")
 
 def init_repo(root: Path) -> None:
     subprocess.run(["git", "init", "-q", str(root)], check=True)
+    # Containers ship no global git identity: a bare `git merge` there exits
+    # 128 ("unable to auto-detect email address"). Give every fixture repo a
+    # local identity so commits and merges never depend on ambient config.
+    subprocess.run(
+        ["git", "config", "user.email", "spec@example.com"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Spec Test"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
 
 
 def run_install(root: Path, env=None):

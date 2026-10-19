@@ -36,9 +36,7 @@ def _safe_path(root: Path, path: Path) -> Path:
     return path
 
 
-def recorded_plan(
-    root: Path, state: Dict[str, object], *, require_fingerprint: bool = True
-) -> Dict[str, object]:
+def recorded_plan(root: Path, state: Dict[str, object], *, require_fingerprint: bool = True) -> Dict[str, object]:
     """Strict proof for exactly the recorded scope, never a fresh global scan.
 
     Lazy import keeps the shared support independent of the CLI import graph.
@@ -49,9 +47,7 @@ def recorded_plan(
 
     names = state.get("plan_docs")
     frozen = state.get("feature_fingerprint")
-    if not isinstance(names, list) or not names or any(
-        not isinstance(name, str) or not name.strip() for name in names
-    ):
+    if not isinstance(names, list) or not names or any(not isinstance(name, str) or not name.strip() for name in names):
         raise support.ChainSpawnError("chain has no valid recorded plan_docs; cannot prove its scope")
     if len(set(names)) != len(names):
         raise support.ChainSpawnError("duplicate recorded plan_docs")
@@ -145,18 +141,27 @@ def close_chain(root: Path, chain: str, *, dry_run: bool = False) -> Dict[str, o
                 if tail.get("lifecycle") == "closed":
                     matches = tail.get("previous_digest") == digest
                 else:
-                    matches = all(tail.get(key) == state.get(key) for key in (
-                        counter_key, "feature_fingerprint", "plan_docs", "model", "host"
-                    ))
+                    matches = all(
+                        tail.get(key) == state.get(key)
+                        for key in (counter_key, "feature_fingerprint", "plan_docs", "model", "host")
+                    )
                 if not matches:
                     raise support.ChainSpawnError("chain summary and audit diverged; inspect/recover before close")
             archive = _safe_path(root, history / f"{digest}.json")
-            payload = {"status": "would_close", "chain": chain,
-                       "archive": str(archive.relative_to(root)), "checked": proof["totals"]["checked"]}
+            payload = {
+                "status": "would_close",
+                "chain": chain,
+                "archive": str(archive.relative_to(root)),
+                "checked": proof["totals"]["checked"],
+            }
             if dry_run:
                 return payload
-            snapshot = {"previous_state": state, "previous_state_text": raw,
-                        "proof": proof, "closed_at": support.utc_now()}
+            snapshot = {
+                "previous_state": state,
+                "previous_state_text": raw,
+                "proof": proof,
+                "closed_at": support.utc_now(),
+            }
             if archive.exists():
                 existing = json.loads(archive.read_text(encoding="utf-8"))
                 if (
@@ -169,8 +174,13 @@ def close_chain(root: Path, chain: str, *, dry_run: bool = False) -> Dict[str, o
             else:
                 _safe_path(root, archive.with_name(f".{archive.name}.tmp"))
                 support.atomic_write(archive, json.dumps(snapshot, indent=2, sort_keys=True) + "\n")
-            marker = {"lifecycle": "closed", "chain": chain, "archive": payload["archive"],
-                      "closed_at": snapshot["closed_at"], "previous_digest": digest}
+            marker = {
+                "lifecycle": "closed",
+                "chain": chain,
+                "archive": payload["archive"],
+                "closed_at": snapshot["closed_at"],
+                "previous_digest": digest,
+            }
             # Commit order matters: an audit failure must not clear active state.
             _append_closure(audit_path, marker)
             _safe_path(root, state_path.with_name(f".{state_path.name}.tmp"))

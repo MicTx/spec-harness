@@ -647,6 +647,21 @@ def test_marker_adjacent_mention_is_classified_as_example(tmp_path):
     assert "manifest.json" not in report.dangling_doc_groups
 
 
+def test_bare_todo_label_is_protocol_artifact_not_dangling(tmp_path):
+    """The bench sandbox task-list label never becomes a dangling repo path.
+
+    On case-sensitive filesystems the bare ``TODO.md`` mention in
+    ``bench/arms/*.md`` used to dangle (macOS only passed via its
+    case-insensitive resolution to ``bench/arms/todo.md``); as a protocol
+    artifact label it is prose unless a real file exists at the repo root.
+    """
+    root = make_sweep_repo(tmp_path)
+    doc = root / "guide" / "a.md"
+    doc.write_text("完成后在 TODO.md 记录并全部勾选。\n", encoding="utf-8")
+    report = collect_facts(root, ".spec", stale_days=90, large_bytes=512 * 1024)
+    assert "TODO.md" not in report.dangling_doc_groups
+
+
 def test_real_reference_next_to_examples_stays_dangling(tmp_path):
     """Classification never shields a real broken reference on the same line."""
     root = make_sweep_repo(tmp_path)

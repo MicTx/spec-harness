@@ -24,6 +24,7 @@ def _read(*parts: str) -> str:
 
 # Each check runs over a text string so the mutation negatives reuse it.
 
+
 def _d1_skill_intro(skill: str) -> None:
     assert "checklist.md` holds acceptance" not in skill, (
         "SKILL trio description must not present legacy checklist.md as a current default member"

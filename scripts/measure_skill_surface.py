@@ -41,8 +41,8 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from spec_package_support import load_reference_templates  # noqa: E402
 from safe_open_support import SafeOpenError, open_regular_read  # noqa: E402
+from spec_package_support import load_reference_templates  # noqa: E402
 
 FRONTMATTER_PATTERN = re.compile(r"\A---\n(.*?)\n---\n", re.S)
 
@@ -135,6 +135,7 @@ def measure_templates(root: Path) -> tuple[dict[str, int], list[dict[str, object
 
 # --- read-chain attribution mode --------------------------------------------------
 
+
 def _safe_relative(rel: str) -> Path:
     """Validate a manifest-declared relative path; refuse absolutes, `..`, escapes."""
     if not isinstance(rel, str) or not rel or rel.startswith("/"):
@@ -158,13 +159,15 @@ def _read_bytes_pinned(root: Path, rel: str, max_bytes: int) -> bytes:
                     break
                 total += len(chunk)
                 if total > max_bytes:
-                    raise MeasurementError(
-                        f"input exceeds budget of {max_bytes} bytes while reading: {rel}")
+                    raise MeasurementError(f"input exceeds budget of {max_bytes} bytes while reading: {rel}")
                 chunks.append(chunk)
             return b"".join(chunks)
     except SafeOpenError as exc:
-        reason = {"missing": "missing", "untrusted": "untrusted path (symlink/non-regular/oversize)",
-                  "unsupported": "platform lacks O_NOFOLLOW; safe reads unsupported"}[exc.reason]
+        reason = {
+            "missing": "missing",
+            "untrusted": "untrusted path (symlink/non-regular/oversize)",
+            "unsupported": "platform lacks O_NOFOLLOW; safe reads unsupported",
+        }[exc.reason]
         raise MeasurementError(f"cannot safely read manifest input {rel}: {reason}") from exc
 
 
@@ -181,7 +184,7 @@ def _line_bytes(text: str) -> list[int]:
 
 
 def _range_bytes(line_sizes: list[int], ranges) -> int:
-    return sum(sum(line_sizes[start - 1:end]) for start, end in ranges)
+    return sum(sum(line_sizes[start - 1 : end]) for start, end in ranges)
 
 
 def _merge_intervals(ranges: list[list[int]]) -> list[list[int]]:
@@ -212,13 +215,11 @@ def _load_manifest(manifest_path: Path) -> tuple[dict, str]:
                     break
                 total += len(chunk)
                 if total > MANIFEST_MAX_BYTES:
-                    raise MeasurementError(
-                        f"read-chain manifest exceeds the {MANIFEST_MAX_BYTES} byte budget")
+                    raise MeasurementError(f"read-chain manifest exceeds the {MANIFEST_MAX_BYTES} byte budget")
                 chunks.append(chunk)
             raw = b"".join(chunks)
     except SafeOpenError as exc:
-        raise MeasurementError(
-            f"cannot safely open read-chain manifest {manifest_path}: {exc.reason}") from exc
+        raise MeasurementError(f"cannot safely open read-chain manifest {manifest_path}: {exc.reason}") from exc
     digest = hashlib.sha256(raw).hexdigest()
     try:
         manifest = json.loads(raw.decode("utf-8"))
@@ -229,7 +230,8 @@ def _load_manifest(manifest_path: Path) -> tuple[dict, str]:
     if manifest.get("schema_version") != READ_CHAIN_VERSION:
         raise MeasurementError(
             f"unsupported read-chain manifest schema_version: "
-            f"{manifest.get('schema_version')!r} (expected {READ_CHAIN_VERSION})")
+            f"{manifest.get('schema_version')!r} (expected {READ_CHAIN_VERSION})"
+        )
     scenarios = manifest.get("scenarios")
     if not isinstance(scenarios, list) or not scenarios:
         raise MeasurementError("read-chain manifest must carry a non-empty scenarios list")
@@ -251,44 +253,43 @@ def _load_manifest(manifest_path: Path) -> tuple[dict, str]:
         for event in events:
             total_events += 1
             if total_events > MAX_EVENTS:
-                raise MeasurementError(
-                    f"manifest exceeds the event budget of {MAX_EVENTS} events")
+                raise MeasurementError(f"manifest exceeds the event budget of {MAX_EVENTS} events")
             if not isinstance(event, dict) or not isinstance(event.get("id"), str):
                 raise MeasurementError(f"scenario {scenario['id']}: every event needs a string id")
             if event["id"] in seen_events:
-                raise MeasurementError(
-                    f"scenario {scenario['id']}: duplicate event id {event['id']}")
+                raise MeasurementError(f"scenario {scenario['id']}: duplicate event id {event['id']}")
             seen_events.add(event["id"])
             if event.get("consumer") not in EVENT_CONSUMERS:
                 raise MeasurementError(
                     f"scenario {scenario['id']}/{event['id']}: consumer must be one of "
-                    f"{sorted(EVENT_CONSUMERS)}, got {event.get('consumer')!r}")
+                    f"{sorted(EVENT_CONSUMERS)}, got {event.get('consumer')!r}"
+                )
             if event.get("load_class") not in EVENT_LOAD_CLASSES:
                 raise MeasurementError(
                     f"scenario {scenario['id']}/{event['id']}: load_class must be one of "
-                    f"{sorted(EVENT_LOAD_CLASSES)}, got {event.get('load_class')!r}")
+                    f"{sorted(EVENT_LOAD_CLASSES)}, got {event.get('load_class')!r}"
+                )
             if event.get("source") not in sources:
                 raise MeasurementError(
                     f"scenario {scenario['id']}/{event['id']}: source "
-                    f"{event.get('source')!r} missing from the manifest sources map")
+                    f"{event.get('source')!r} missing from the manifest sources map"
+                )
             ranges = event.get("ranges")
             if ranges != "whole" and not isinstance(ranges, list):
                 raise MeasurementError(
-                    f"scenario {scenario['id']}/{event['id']}: ranges must be 'whole' "
-                    f"or a list of [start, end] pairs")
+                    f"scenario {scenario['id']}/{event['id']}: ranges must be 'whole' or a list of [start, end] pairs"
+                )
             call_id = event.get("call_id")
             if not isinstance(call_id, str) or not call_id.strip():
-                raise MeasurementError(
-                    f"scenario {scenario['id']}/{event['id']}: call_id must be a non-empty string")
+                raise MeasurementError(f"scenario {scenario['id']}/{event['id']}: call_id must be a non-empty string")
             for text_field in ("reason", "contract_anchor"):
                 if not isinstance(event.get(text_field), str) or not event[text_field].strip():
                     raise MeasurementError(
-                        f"scenario {scenario['id']}/{event['id']}: {text_field} must be a "
-                        f"non-empty string")
+                        f"scenario {scenario['id']}/{event['id']}: {text_field} must be a non-empty string"
+                    )
             repeat = event.get("repeat", 1)
             if not isinstance(repeat, int) or isinstance(repeat, bool) or repeat < 1:
-                raise MeasurementError(
-                    f"scenario {scenario['id']}/{event['id']}: repeat must be an integer >= 1")
+                raise MeasurementError(f"scenario {scenario['id']}/{event['id']}: repeat must be an integer >= 1")
     return manifest, digest
 
 
@@ -315,16 +316,24 @@ def measure_read_chains(root: Path, manifest: dict, manifest_sha256: str) -> dic
             raise MeasurementError(
                 f"input drift: {rel} no longer matches the manifest digest "
                 f"(declared {declared[:12]}…, actual {actual[:12]}…); recalibrate the "
-                f"manifest only if the change is intentional")
+                f"manifest only if the change is intentional"
+            )
         text = _decode_input(rel, raw)
         snapshots[rel] = (text, _line_bytes(text), actual)
         acc = _account(text)
-        inputs.append({"path": rel, "raw_sha256": actual,
-                       "bytes": acc["bytes"], "chars": acc["chars"], "lines": acc["lines"]})
+        inputs.append(
+            {"path": rel, "raw_sha256": actual, "bytes": acc["bytes"], "chars": acc["chars"], "lines": acc["lines"]}
+        )
 
     scenario_reports: list[dict[str, object]] = []
-    summary = {"total_scenarios": 0, "complete_scenarios": 0, "read_events": 0,
-               "model_event_bytes": 0, "model_unique_bytes": 0, "script_read_bytes": 0}
+    summary = {
+        "total_scenarios": 0,
+        "complete_scenarios": 0,
+        "read_events": 0,
+        "model_event_bytes": 0,
+        "model_unique_bytes": 0,
+        "script_read_bytes": 0,
+    }
     for scenario in sorted(manifest["scenarios"], key=lambda s: s["id"]):
         model_event_bytes = 0
         script_read_bytes = 0
@@ -340,20 +349,25 @@ def measure_read_chains(root: Path, manifest: dict, manifest_sha256: str) -> dic
             validated: list[list[int]] = []
             previous_end = 0
             for pair in ranges:
-                if (not isinstance(pair, list) or len(pair) != 2
-                        or not all(isinstance(v, int) and not isinstance(v, bool) for v in pair)):
+                if (
+                    not isinstance(pair, list)
+                    or len(pair) != 2
+                    or not all(isinstance(v, int) and not isinstance(v, bool) for v in pair)
+                ):
                     raise MeasurementError(
-                        f"scenario {scenario['id']}/{event['id']}: range entries must be "
-                        f"[start, end] integer pairs")
+                        f"scenario {scenario['id']}/{event['id']}: range entries must be [start, end] integer pairs"
+                    )
                 start, end = pair
                 if start < 1 or start > end or end > len(line_sizes):
                     raise MeasurementError(
                         f"scenario {scenario['id']}/{event['id']}: range [{start}, {end}] "
-                        f"out of bounds for {event['source']} ({len(line_sizes)} lines)")
+                        f"out of bounds for {event['source']} ({len(line_sizes)} lines)"
+                    )
                 if start <= previous_end:
                     raise MeasurementError(
                         f"scenario {scenario['id']}/{event['id']}: ranges must be ordered "
-                        f"and non-overlapping in {event['source']}")
+                        f"and non-overlapping in {event['source']}"
+                    )
                 previous_end = end
                 validated.append([start, end])
             repeat = event.get("repeat", 1)
@@ -373,34 +387,35 @@ def measure_read_chains(root: Path, manifest: dict, manifest_sha256: str) -> dic
         for entry in scenario.get("context_available", []):
             rel, declared = entry["source"], entry["sha256"]
             if rel not in snapshots:
-                raise MeasurementError(
-                    f"scenario {scenario['id']}: context source {rel!r} missing from sources")
+                raise MeasurementError(f"scenario {scenario['id']}: context source {rel!r} missing from sources")
             _, _, actual = snapshots[rel]
             if declared != actual:
                 raise MeasurementError(
                     f"scenario {scenario['id']}: context digest for {rel} does not match "
-                    f"the current file — the warm/resumed premise is stale")
+                    f"the current file — the warm/resumed premise is stale"
+                )
         missing = [key for key in scenario.get("expected", []) if key not in covered_keys]
-        scenario_reports.append({
-            "id": scenario["id"], "stage": scenario.get("stage"),
-            "profile": scenario.get("profile"),
-            "package_format": scenario.get("package_format"),
-            "session_mode": scenario.get("session_mode"),
-            "task_class": scenario.get("task_class"),
-            "read_events": read_events,
-            "model_events": sum(e.get("repeat", 1) for e in scenario["events"]
-                                if e["consumer"] == "model"),
-            "script_events": sum(e.get("repeat", 1) for e in scenario["events"]
-                                 if e["consumer"] == "script"),
-            "model_event_bytes": model_event_bytes,
-            "model_unique_bytes": model_unique_bytes,
-            "script_read_bytes": script_read_bytes,
-            "planned_deterministic_tool_calls": len(model_calls),
-            "planned_response_bytes": model_event_bytes,
-            "modelled": True,
-            "coverage": "complete" if not missing else "partial",
-            "missing_expected": missing,
-        })
+        scenario_reports.append(
+            {
+                "id": scenario["id"],
+                "stage": scenario.get("stage"),
+                "profile": scenario.get("profile"),
+                "package_format": scenario.get("package_format"),
+                "session_mode": scenario.get("session_mode"),
+                "task_class": scenario.get("task_class"),
+                "read_events": read_events,
+                "model_events": sum(e.get("repeat", 1) for e in scenario["events"] if e["consumer"] == "model"),
+                "script_events": sum(e.get("repeat", 1) for e in scenario["events"] if e["consumer"] == "script"),
+                "model_event_bytes": model_event_bytes,
+                "model_unique_bytes": model_unique_bytes,
+                "script_read_bytes": script_read_bytes,
+                "planned_deterministic_tool_calls": len(model_calls),
+                "planned_response_bytes": model_event_bytes,
+                "modelled": True,
+                "coverage": "complete" if not missing else "partial",
+                "missing_expected": missing,
+            }
+        )
         summary["total_scenarios"] += 1
         summary["complete_scenarios"] += 0 if missing else 1
         summary["read_events"] += read_events
@@ -462,19 +477,22 @@ def render_table(report: dict[str, object]) -> str:
     chains = report.get("read_chains")
     if chains:
         lines.append("")
-        lines.append(f"read chains (manifest {chains['manifest_sha256'][:12]}\u2026, "
-                     f"complete={chains['complete']}):")
-        lines.append(f"  {'scenario':<24}{'events':>7}{'model B':>10}{'unique B':>10}"
-                     f"{'script B':>10}{'calls':>7}  coverage")
+        lines.append(f"read chains (manifest {chains['manifest_sha256'][:12]}\u2026, complete={chains['complete']}):")
+        lines.append(
+            f"  {'scenario':<24}{'events':>7}{'model B':>10}{'unique B':>10}{'script B':>10}{'calls':>7}  coverage"
+        )
         for entry in chains["scenarios"]:
             lines.append(
                 f"  {entry['id']:<24}{entry['read_events']:>7}{entry['model_event_bytes']:>10}"
                 f"{entry['model_unique_bytes']:>10}{entry['script_read_bytes']:>10}"
-                f"{entry['planned_deterministic_tool_calls']:>7}  {entry['coverage']}")
-        lines.append(f"  {'total':<24}{chains['summary']['read_events']:>7}"
-                     f"{chains['summary']['model_event_bytes']:>10}"
-                     f"{chains['summary']['model_unique_bytes']:>10}"
-                     f"{chains['summary']['script_read_bytes']:>10}")
+                f"{entry['planned_deterministic_tool_calls']:>7}  {entry['coverage']}"
+            )
+        lines.append(
+            f"  {'total':<24}{chains['summary']['read_events']:>7}"
+            f"{chains['summary']['model_event_bytes']:>10}"
+            f"{chains['summary']['model_unique_bytes']:>10}"
+            f"{chains['summary']['script_read_bytes']:>10}"
+        )
     return "\n".join(lines)
 
 
@@ -482,10 +500,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Measure the SKILL constant-load surface (four fixed dimensions).")
     parser.add_argument("--root", default=".", help="project root holding SKILL.md and references/ (default: .)")
     parser.add_argument("--json", action="store_true", help="print the single JSON report on stdout instead of a table")
-    parser.add_argument("--read-chain-manifest", default=None, metavar="PATH",
-                        help="optional read-chain attribution input (fixture contract v1); "
-                             "relative paths resolve against --root; adds one read_chains "
-                             "block and never changes the four surfaces")
+    parser.add_argument(
+        "--read-chain-manifest",
+        default=None,
+        metavar="PATH",
+        help="optional read-chain attribution input (fixture contract v1); "
+        "relative paths resolve against --root; adds one read_chains "
+        "block and never changes the four surfaces",
+    )
     args = parser.parse_args(argv)
 
     root = Path(args.root).resolve()

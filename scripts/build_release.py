@@ -104,7 +104,11 @@ def run_prebuild_checks(root: Path) -> None:
     print("ok")
 
     print("  pytest ......", end=" ", flush=True)
-    _run_cmd([PYTHON, "-m", "pytest", "tests", "slots", "-q"], root, "pytest")
+    # The full suite is the longest pre-build step. The self-hosted release
+    # runner is slower than a dev workstation and exceeded the generic 600s
+    # budget (v0.19.0 run 1217, v0.19.1 run 1272), so this step owns a wider
+    # ceiling; the suite still has to pass as a whole, nothing is skipped.
+    _run_cmd([PYTHON, "-m", "pytest", "tests", "slots", "-q"], root, "pytest", timeout=1800)
     print("ok")
 
     print("  ruff ........", end=" ", flush=True)

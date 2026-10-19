@@ -300,15 +300,11 @@ class TestDecideTableAutorun:
         assert decision.detail["next"] == 21 and decision.detail["cap"] == 20
 
     def test_row3_chain_complete_when_every_feature_checked(self):
-        decision = decide(
-            "autorun", autorun_state(), "ok", plan_checked=13, plan_unchecked=0, active_packages=[]
-        )
+        decision = decide("autorun", autorun_state(), "ok", plan_checked=13, plan_unchecked=0, active_packages=[])
         assert decision.action == "chain_complete"
 
     def test_row3_tolerant_zero_counts_mean_nothing_to_consume(self):
-        decision = decide(
-            "autorun", autorun_state(), "ok", plan_checked=0, plan_unchecked=0, active_packages=[]
-        )
+        decision = decide("autorun", autorun_state(), "ok", plan_checked=0, plan_unchecked=0, active_packages=[])
         assert decision.action == "chain_complete"
         assert "no qualifying planning document" in decision.reason
 

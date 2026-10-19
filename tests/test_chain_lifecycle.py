@@ -21,10 +21,15 @@ def seed(root, chain="autoplan", checked=True):
     state = {
         "plan_docs": [str(doc.relative_to(root))],
         "feature_fingerprint": support.feature_fingerprint([doc], root),
-        "host": "pi", "model": {"id": "old-provider/old-model"},
-        "permission_mode": "ask", "permission_effective": "ask",
-        "kind": "review", "pass": 20, "round": 5,
-        "max_passes": 20, "max_rounds": 5,
+        "host": "pi",
+        "model": {"id": "old-provider/old-model"},
+        "permission_mode": "ask",
+        "permission_effective": "ask",
+        "kind": "review",
+        "pass": 20,
+        "round": 5,
+        "max_passes": 20,
+        "max_rounds": 5,
     }
     summary = support.chain_dir(root, chain)
     runtime = support.chain_runtime_dir(root, chain)
@@ -155,9 +160,14 @@ def test_close_is_mutex_protected(tmp_path):
             lifecycle.close_chain(tmp_path, "autoplan")
 
 
-@pytest.mark.parametrize("path", [
-    ".spec/autoplan/history", ".spec/autoplan/chain.json", ".git/spec-chain/autoplan/spawns.jsonl",
-])
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".spec/autoplan/history",
+        ".spec/autoplan/chain.json",
+        ".git/spec-chain/autoplan/spawns.jsonl",
+    ],
+)
 def test_symlinked_state_or_archive_refused(tmp_path, path):
     seed(tmp_path)
     target = tmp_path / path
@@ -198,10 +208,12 @@ def test_summary_failure_after_audit_is_retryable(tmp_path, monkeypatch):
     _, _, summary, _, _ = seed(tmp_path)
     before = (summary / "chain.json").read_bytes()
     write = support.atomic_write
+
     def fail_summary(path, content):
         if path.name == "chain.json":
             raise OSError("summary failure")
         write(path, content)
+
     with monkeypatch.context() as patch:
         patch.setattr(support, "atomic_write", fail_summary)
         with pytest.raises(support.ChainSpawnError, match="summary failure"):

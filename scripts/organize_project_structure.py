@@ -127,6 +127,9 @@ PROTOCOL_ARTIFACT_NAMES = frozenset(
         "MANIFEST.md",
         "path.json",
         "workflow_fanout.py",
+        # Sandbox task-list label the bench workers maintain at runtime
+        # (bench/mock_workers/_common.py TODO_FILENAME); never a repo path.
+        "TODO.md",
     }
 )
 CLASS_UNREFERENCED_FILE = "unreferenced-file"

@@ -201,7 +201,7 @@ def test_build_releases_ruff_format_failure_raises_builderror(monkeypatch, tmp_p
 
     calls = []
 
-    def fake_run(args, cwd, label):
+    def fake_run(args, cwd, label, **_kwargs):
         calls.append((args, label))
         if label == "ruff format":
             raise module.BuildError("ruff format failed")

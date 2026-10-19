@@ -632,7 +632,7 @@ class TestShowSubcommand:
     def test_show_replaces_invalid_choice_and_reports_latest_view(self, tmp_path):
         root = init_repo(tmp_path)
         slug = "2026-10-19_add-internal-read-surface"
-        package = make_package(
+        make_package(
             root,
             slug,
             runs_protocol=True,
@@ -656,17 +656,13 @@ class TestShowSubcommand:
     def test_show_never_executes_verify_or_writes(self, tmp_path):
         root = init_repo(tmp_path)
         slug = "2026-10-19_add-internal-read-surface"
-        package = make_package(
+        make_package(
             root,
             slug,
             runs_protocol=True,
             tasks_text="# T\n## A\n- [ ] boom\n  - boundary: b\n  - verify: `python3 -c 'raise SystemExit(3)'`\n",
         )
-        before = {
-            p: p.read_bytes()
-            for p in sorted(root.rglob("*"))
-            if p.is_file() and ".git" not in p.parts
-        }
+        before = {p: p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file() and ".git" not in p.parts}
         # no runs.jsonl yet: missing (unverified), never an empty success;
         # the failing verify command is never executed on the read path
         missing = show_cli(root, slug, "--failures-only", check=False)

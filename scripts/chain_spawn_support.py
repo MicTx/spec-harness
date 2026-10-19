@@ -638,7 +638,24 @@ def single_chain_lock(
 
 
 def pid_alive(pid: int) -> Optional[bool]:
-    """Whether ``pid`` names a live process; ``None`` when unverifiable."""
+    """Whether ``pid`` names a live process; ``None`` when unverifiable.
+
+    POSIX probes with ``os.kill(pid, 0)`` — no external ``ps``: minimal
+    images (the self-hosted release runner's busybox ``ps`` rejects
+    ``-p <pid>``) must not degrade a live lock holder to "stale".
+    Non-POSIX platforms keep the ``ps`` probe as the unverifiable fallback.
+    Zombies report alive under both probes; reaped pids report dead.
+    """
+    if os.name == "posix":
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return None
+        return True
     try:
         probe = subprocess.run(
             ["ps", "-p", str(pid), "-o", "pid="],
