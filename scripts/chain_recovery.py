@@ -162,8 +162,8 @@ def decide(
 ) -> RecoveryDecision:
     """Judge the 13-row F4 decision table and return the next chain action.
 
-    Row order: corrupt → (audit adoption, re-judged from the cap row) → cap →
-    complete → fresh → per-chain rows. ``plan_checked``/``plan_unchecked``
+    Row order: corrupt → audit adoption → proven nonempty completion → cap →
+    tolerant empty-scope completion → fresh → per-chain rows. ``plan_checked``/``plan_unchecked``
     come from the planning-document counts (a tolerant ``(0, 0)`` when the
     caller found no qualifying document); ``cap`` falls back to the state's
     ``max_rounds``/``max_passes`` and then to no cap at all — chains are
@@ -204,22 +204,42 @@ def decide(
     counter = _as_int(state.get(counter_key)) if state is not None else None
     counter = counter if counter is not None else 0
 
+    # A proven nonempty completed scope needs no next round, even at cap.
+    # Callers must validate recorded paths/fingerprint before trusting counts.
+    if plan_checked > 0 and plan_unchecked == 0 and not active_packages:
+        return RecoveryDecision(
+            "chain_complete",
+            f"all {plan_checked} planning features checked — the chain is complete",
+            {"checked": plan_checked, **({"recovered_state": True} if recovered_state else {})},
+        )
+
     # Row 2: cap — next = last + 1; next == cap still runs, next > cap stops.
     # An unbounded chain (no explicit cap anywhere) never takes this row.
     next_index = counter + 1
     if effective_cap is not None and next_index > effective_cap:
         if recovered_state:
             detail["recovered_state"] = True
+        reason = (
+            f"next {counter_label} {next_index} exceeds the cap {effective_cap} — raise "
+            f"--max-{cap_label} deliberately or close the chain; the cap exists to stop runaway loops"
+        )
+        if chain == "autoplan":
+            # 2026-10-19: no flag means no cap, so a recorded cap is the
+            # previous pass's explicit decision — list every legal way out so
+            # the resume contract points at the complete option set
+            reason += (
+                "; the recorded cap is the previous pass's explicit decision — a no-flag "
+                "continuation (the new default) or --unbounded removes this cap"
+            )
         return RecoveryDecision(
             "cap_reached",
-            f"next {counter_label} {next_index} exceeds the cap {effective_cap} — raise "
-            f"--max-{cap_label} deliberately or close the chain; the cap exists to stop runaway loops",
+            reason,
             {"next": next_index, "cap": effective_cap, **detail},
         )
 
     # Row 3: every planning feature checked (a tolerant 0/0 means no
     # qualifying document — equally nothing for the chain to consume).
-    if plan_unchecked == 0:
+    if plan_unchecked == 0 and not active_packages:
         if plan_checked == 0:
             reason = "no qualifying planning document found — nothing for the chain to consume"
         else:

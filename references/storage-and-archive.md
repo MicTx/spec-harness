@@ -37,28 +37,20 @@ Per-machine chain runtime state lives outside the tracked tree, under `.git/spec
 
 - Active packages live only at the `.spec/specs/` root; completed packages move wholesale into `archive/`.
 - A task package has at least the trio; an archive must additionally have `completion-summary.md`.
-- The optional `handoff.md` member is the session-boundary handoff document (`references/handoff.md`): a generated snapshot head plus an append-only entry log, validated by the check gate when present, closed with a terminal entry at `done`, and archived wholesale with the package.
-- An active package may additionally carry `orchestration/` — the workflow script and the run
-  ledger (`runs.md`) — written by the main session; it archives wholesale with the package.
-- A package may carry a historical `update-checkpoint.json` from the retired update-checkpoint
-  mechanism: read-only recognized by `scripts/update_checkpoint.py status`, resolved by
-  Git-history recovery plus file deletion (`references/stages/update.md`). New updates never
-  produce one — update rollback safety is the Git WIP commit — and the file archives wholesale
-  with the package as history.
-- `.spec/docs/` holds reusable knowledge only, not task streams; it lives inside the executing project's repository and never mirrors into a global carrier.
-- `.spec/autoplan/` holds the tracked pass-chain summary for `/spec:autoplan` (`scripts/autoplan_spawn.py`): `chain.json` only, volatile-free. The per-machine runtime (volatile state, `spawns.jsonl` audit, `events.jsonl`, `chain.lock`) lives under `.git/spec-chain/autoplan/` and is never archived with a package.
-- `.spec/autorun/` holds the tracked chain summary for `/spec:autorun` (`scripts/autorun_spawn.py`): `chain.json` only, volatile-free, never archived. The per-machine runtime (volatile state, `spawns.jsonl` audit, `events.jsonl`, `chain.lock`) lives under `.git/spec-chain/autorun/`. Each autorun-planned package carries a final plan-sync task whose boundary covers the planning documents and this summary, so checkmarks and the chain summary land on `main` with the round's push and the tree is clean when the next round's `/spec:new` runs — while the round's tty/window/pid details stay machine-local and out of every commit.
-- The planning-document tree (the `.spec/plans/` root: index `.spec/plans/README.md`, single-round `<YYYY-MM-DD>_<verb>-<object>.md` plans, multi-round `<slug>/` clusters holding `master.md` plus `NN-<slug>.md` phase details; delivered or retired units move to `.spec/plans/archive/` under the same name) is project content produced or reconciled by `/spec:autoplan` (`scripts/autoplan_gate.py`, pass chain via `scripts/autoplan_spawn.py`): it feeds the autorun chain's feature checkboxes and detail designs, is committed like normal project files, and is never task-package state — `autoplan` writes no `.spec/specs/` package and no `.spec/autorun/` chain state.
+- The optional `handoff.md` member is the session-boundary handoff document (`references/handoff.md`): generated snapshot head plus append-only entry log, validated by the check gate when present, closed with a terminal entry at `done`, archived wholesale with the package.
+- An active package may additionally carry `orchestration/` (workflow script + run ledger, written by the main session); it archives wholesale with the package.
+- A package may carry a historical `update-checkpoint.json` from the retired checkpoint mechanism: read-only recognized by `scripts/update_checkpoint.py status`, resolved by Git-history recovery plus file deletion (`references/stages/update.md`); new updates never produce one (rollback safety is the Git WIP commit), and the file archives as history.
+- `.spec/autoplan/` and `.spec/autorun/` hold the tracked chain summaries (`chain.json` only, volatile-free, never archived) for their spawn scripts; the per-machine runtime (volatile state, `spawns.jsonl` audit, `events.jsonl`, `chain.lock`) lives under `.git/spec-chain/<chain>/` and never archives with a package. Each autorun-planned package carries a final plan-sync task whose boundary covers the planning documents and this summary, so checkmarks and the chain summary land on `main` with the round's push and the tree is clean when the next round's `/spec:new` runs — the round's tty/window/pid details stay machine-local and out of every commit.
+- The planning-document tree (`.spec/plans/` root: index `README.md`, single-round `<YYYY-MM-DD>_<verb>-<object>.md` plans, multi-round `<slug>/` clusters holding `master.md` plus `NN-<slug>.md` phase details; delivered or retired units move to `.spec/plans/archive/` under the same name) is project content produced or reconciled by `/spec:autoplan` (`scripts/autoplan_gate.py`, pass chain via `scripts/autoplan_spawn.py`): it feeds the autorun chain's feature checkboxes and detail designs, is committed like normal project files, and is never task-package state — `autoplan` writes no `.spec/specs/` package and no `.spec/autorun/` chain state.
 - `.spec/architecture/` is the current module graph and belongs to no single package.
 - `--specs-dir` must be a trusted relative directory under root — never empty, absolute, or containing `..`.
 
 ## Development Record
 
-One development loop, directory named `YYYY-MM-DD_slug`. The date lives in the slug; do not write a separate `dev-log.md`.
+One development loop, directory named `YYYY-MM-DD_slug`. The date lives in the slug; no separate `dev-log.md`.
 
 - New packages use `YYYY-MM-DD_<verb>-<object>`; verbs live in `naming-and-commits.md`.
-- `check` only advises on non-verb-object names; it does not hard-fail. Underlying slug validity stays backward compatible.
-- Historical packages keep their names; archives are not renamed for the new standard.
+- `check` only advises on non-verb-object names (underlying slug validity stays backward compatible); historical packages keep their names, and archives are not renamed.
 
 ## Knowledge / architecture
 
@@ -68,8 +60,7 @@ One development loop, directory named `YYYY-MM-DD_slug`. The date lives in the s
 
 ## Archiving
 
-- `--archive` is allowed only when `check_spec_package.py` currently exits 0.
-- `--allow-incomplete` never combines with `--archive`.
-- Archiving is atomic: quarantine → re-verify the snapshot → write the summary → switch. Never write the summary into the source package first and then move. Symlink/FIFO/oversize/concurrent-change conditions must fail and restore the active package.
-- A new archive must carry the v1 `## 问题处置` (issue dispositions) JSON. Only legacy archives byte-identical to the authoritative baseline quartet stay read-only compatible.
+- `--archive` is allowed only when `check_spec_package.py` currently exits 0, and never combines with `--allow-incomplete`.
+- Archiving is atomic: quarantine → re-verify the snapshot → write the summary → switch; never write the summary into the source package first. Symlink/FIFO/oversize/concurrent-change conditions fail and restore the active package.
+- A new archive carries the v1 `## 问题处置` (issue dispositions) JSON; only legacy archives byte-identical to the authoritative baseline quartet stay read-only compatible.
 - `done` produces the archive and finishes this round's commit; merging/pushing/branch deletion is left to `push`.

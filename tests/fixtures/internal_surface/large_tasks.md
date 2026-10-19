@@ -1,0 +1,125 @@
+# 大合成包 - 任务拆解
+## 批量阶段
+- [x] 批量任务 01
+  - boundary: 合成边界 01
+  - verify: `python3 -m pytest -q tests/`
+- [x] 批量任务 02
+  - boundary: 合成边界 02
+  - verify: `python3 -m pytest -q tests/`
+  - depends-on: task_0001
+- [x] 批量任务 03
+  - boundary: 合成边界 03
+  - verify: `python3 -m pytest -q tests/`
+  - depends-on: task_0002
+- [x] 批量任务 04
+  - boundary: 合成边界 04
+  - verify: `python3 -m pytest -q tests/`
+  - depends-on: task_0003
+- [ ] 批量任务 05
+  - boundary: 合成边界 05
+  - verify: `python3 -m pytest -q tests/`
+  - depends-on: task_0004
+- [ ] 批量任务 06
+  - boundary: 合成边界 06
+  - verify: `python3 -m pytest -q tests/`
+  - depends-on: task_0005
+- [ ] 批量任务 07
+  - boundary: 合成边界 07
+  - verify: `python3 -m pytest -q tests/`
+  - depends-on: task_0006
+- [ ] 批量任务 08
+  - boundary: 合成边界 08
+  - verify: `python3 -m pytest -q tests/`
+  - depends-on: task_0007
+- [ ] 批量任务 09
+  - boundary: 合成边界 09
+  - verify: `python3 -m pytest -q tests/`
+  - depends-on: task_0008
+- [ ] 批量任务 10
+  - boundary: 合成边界 10
+  - verify: `python3 -m pytest -q tests/`
+  - depends-on: task_0009
+- [ ] 批量任务 11
+  - boundary: 合成边界 11
+  - verify: `python3 -m pytest -q tests/`
+  - depends-on: task_0010
+- [ ] 批量任务 12
+  - boundary: 合成边界 12
+  - verify: `python3 -m pytest -q tests/`
+  - depends-on: task_0011
+- [ ] 批量任务 13
+  - boundary: 合成边界 13
+  - verify: `python3 -m pytest -q tests/`
+  - depends-on: task_0012
+- [ ] 批量任务 14
+  - boundary: 合成边界 14
+  - verify: `python3 -m pytest -q tests/`
+  - depends-on: task_0013
+- [ ] 批量任务 15
+  - boundary: 合成边界 15
+  - verify: `python3 -m pytest -q tests/`
+  - depends-on: task_0014
+- [ ] 批量任务 16
+  - boundary: 合成边界 16
+  - verify: `python3 -m pytest -q tests/`
+  - depends-on: task_0015
+- [ ] 批量任务 17
+  - boundary: 合成边界 17
+  - verify: `python3 -m pytest -q tests/`
+  - depends-on: task_0016
+- [ ] 批量任务 18
+  - boundary: 合成边界 18
+  - verify: `python3 -m pytest -q tests/`
+  - depends-on: task_0017
+- [ ] 批量任务 19
+  - boundary: 合成边界 19
+  - verify: `python3 -m pytest -q tests/`
+  - depends-on: task_0018
+- [ ] 批量任务 20
+  - boundary: 合成边界 20
+  - verify: `python3 -m pytest -q tests/`
+  - depends-on: task_0019
+- [ ] 批量任务 21
+  - boundary: 合成边界 21
+  - verify: `python3 -m pytest -q tests/`
+  - depends-on: task_0020
+- [ ] 批量任务 22
+  - boundary: 合成边界 22
+  - verify: `python3 -m pytest -q tests/`
+  - depends-on: task_0021
+- [ ] 批量任务 23
+  - boundary: 合成边界 23
+  - verify: `python3 -m pytest -q tests/`
+  - depends-on: task_0022
+- [ ] 批量任务 24
+  - boundary: 合成边界 24
+  - verify: `python3 -m pytest -q tests/`
+  - depends-on: task_0023
+- [ ] 批量任务 25
+  - boundary: 合成边界 25
+  - verify: `python3 -m pytest -q tests/`
+  - depends-on: task_0024
+- [ ] 批量任务 26
+  - boundary: 合成边界 26
+  - verify: `python3 -m pytest -q tests/`
+  - depends-on: task_0025
+- [ ] 批量任务 27
+  - boundary: 合成边界 27
+  - verify: `python3 -m pytest -q tests/`
+  - depends-on: task_0026
+- [ ] 批量任务 28
+  - boundary: 合成边界 28
+  - verify: `python3 -m pytest -q tests/`
+  - depends-on: task_0027
+- [ ] 批量任务 29
+  - boundary: 合成边界 29
+  - verify: `python3 -m pytest -q tests/`
+  - depends-on: task_0028
+- [ ] 批量任务 30
+  - boundary: 合成边界 30
+  - verify: `python3 -m pytest -q tests/`
+  - depends-on: task_0029
+
+---
+
+**当前进度**：由脚本计算，无需手动维护

@@ -606,3 +606,72 @@ class TestAuditReplays:
             check=False,
         )
         assert result.returncode == 0
+
+
+# --------------------------------------------------------------------------- #
+# F3 show subcommand: bounded read-only evidence view (doc 03 §2.3)
+# --------------------------------------------------------------------------- #
+
+
+def show_cli(root: Path, slug: str, *extra: str, check: bool = True) -> subprocess.CompletedProcess:
+    return command(
+        root,
+        sys.executable,
+        str(SCRIPTS / "spec_verify.py"),
+        "show",
+        "--root",
+        str(root),
+        "--slug",
+        slug,
+        *extra,
+        check=check,
+    )
+
+
+class TestShowSubcommand:
+    def test_show_replaces_invalid_choice_and_reports_latest_view(self, tmp_path):
+        root = init_repo(tmp_path)
+        slug = "2026-10-19_add-internal-read-surface"
+        package = make_package(
+            root,
+            slug,
+            runs_protocol=True,
+            tasks_text=(
+                "# T\n## A\n"
+                "- [ ] task one\n  - boundary: b\n  - verify: `python3 -c pass`\n"
+                "- [ ] task two\n  - boundary: b\n  - verify: `python3 -c pass`\n"
+            ),
+        )
+        run_recorder(root, slug, "--all")
+        result = show_cli(root, slug)
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["capability"] == "evidence"
+        assert payload["counts"] == {"returned": 2, "total_matching": 2}
+        assert payload["complete"] is True
+        assert payload["freshness"]["status"] == "evaluated"
+        # recorded right here by run: both tasks fresh against this tree
+        assert set(payload["freshness"]["per_task"].values()) == {"fresh"}
+
+    def test_show_never_executes_verify_or_writes(self, tmp_path):
+        root = init_repo(tmp_path)
+        slug = "2026-10-19_add-internal-read-surface"
+        package = make_package(
+            root,
+            slug,
+            runs_protocol=True,
+            tasks_text="# T\n## A\n- [ ] boom\n  - boundary: b\n  - verify: `python3 -c 'raise SystemExit(3)'`\n",
+        )
+        before = {
+            p: p.read_bytes()
+            for p in sorted(root.rglob("*"))
+            if p.is_file() and ".git" not in p.parts
+        }
+        # no runs.jsonl yet: missing (unverified), never an empty success;
+        # the failing verify command is never executed on the read path
+        missing = show_cli(root, slug, "--failures-only", check=False)
+        assert missing.returncode == 1
+        assert missing.stdout == ""
+        assert "error: missing:" in missing.stderr
+        after = {p: p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file() and ".git" not in p.parts}
+        assert after == before

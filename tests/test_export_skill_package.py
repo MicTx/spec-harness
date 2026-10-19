@@ -99,6 +99,7 @@ def test_export_end_to_end():
         assert (output / "scripts" / "autorun_spawn.py").is_file()
         assert (output / "scripts" / "autoplan_spawn.py").is_file()
         assert (output / "scripts" / "chain_recovery.py").is_file()
+        assert (output / "scripts" / "chain_lifecycle.py").is_file()
         assert (output / "scripts" / "route_decision.py").is_file()
         assert (output / "agents" / "orchestrator.md").is_file()
         assert (output / "agents" / "planner.md").is_file()

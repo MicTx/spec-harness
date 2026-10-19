@@ -1,8 +1,6 @@
 # Naming And Commits
 
-Names are the first index a human or LLM uses when it returns to a task. A good slug tells the reader what kind of change happened; a good commit footer lets that reader walk back from Git to the evidence that justified it.
-
-Single source of truth for slugs, commits, and Git records. The three rule sets share one design goal: let humans and LLMs review a spec round at minimal cost.
+Names are the first index a human or LLM uses when it returns to a task: a good slug tells the reader what kind of change happened; a good commit footer lets that reader walk back from Git to the evidence that justified it. Single source of truth for slugs, commits, and Git records; the three rule sets share one design goal — review a spec round at minimal cost.
 
 ## Design principles
 
@@ -11,7 +9,7 @@ Language is handled in two layers:
 - **Structural layer** (slugs, commit `type(scope)`, Git record field names) is fixed ASCII English — stable, greppable, cross-platform, deterministically parseable by LLMs.
 - **Semantic layer** (commit description and body, Git record content, spec/tasks/summary prose) follows the user's input language.
 
-The structural layer is never localized; the semantic layer is never forced into English. Whether the user writes Chinese or English, the structural retrieval path for review stays identical.
+The structural layer is never localized; the semantic layer is never forced into English — the structural retrieval path stays identical whatever the user writes.
 
 ## Slug naming
 
@@ -21,10 +19,10 @@ Format:
 YYYY-MM-DD_<verb>-<object>[-<detail>]
 ```
 
-- Date: ISO `YYYY-MM-DD`, taken from the slug itself; no separate timeline file.
-- verb: a controlled verb (see the table), expressing the round's dominant intent.
+- Date: ISO `YYYY-MM-DD` from the slug itself; no separate timeline file.
+- verb: a controlled verb (see the table), the round's dominant intent.
 - object: a kebab-case noun naming the module or theme; reuse the same word when it aligns with the commit scope.
-- detail: optional, for disambiguation.
+- detail: optional disambiguator.
 - All-lowercase ASCII; no spaces, no CJK, no consecutive `--` or `__`.
 
 Controlled verb table (sharing semantics with Conventional Commit types — one mental model):
@@ -52,8 +50,8 @@ Examples:
 Rules:
 
 - The verb describes "what this whole spec round does", not a single commit.
-- The object uses a stable noun — never temporary branch names, person names, or one-off commands.
-- Historical packages keep their names; archives are never rewritten for the new standard.
+- The object is a stable noun — never temporary branch names, person names, or one-off commands.
+- Historical packages keep their names; archives are never rewritten.
 - Underlying slug validity stays backward compatible; `check` only advises on non-verb-object forms, never hard-fails.
 - The slug segment in knowledge documents `.spec/docs/YYYY-MM-DD_slug_topic.md` reuses the same slug.
 
@@ -77,14 +75,12 @@ Conventional Commits:
 
 Slug-to-commit relations:
 
-- One slug (task package) maps to 1..N commits.
-- The slug's verb is the overall intent; individual commit types may differ (an `add-billing` package can contain `feat`, `test`, `docs`).
-- Not every commit must carry the footer; the `done` archive commit should carry `Spec: <slug>` for traceability.
+- One slug (task package) maps to 1..N commits; the slug's verb is the overall intent, individual commit types may differ (an `add-billing` package can contain `feat`, `test`, `docs`).
+- Not every commit needs the footer; the `done` archive commit carries `Spec: <slug>` for traceability.
 
 In-flight WIP footer:
 
-- Commits on the package's integration branch made before its archive round may carry `Spec-WIP: <slug>`; they pass `pre-commit` through the structural-lint channel and can be pushed on `spec/*` branches for handoff.
-- The footer is a marker for humans and later attribution tooling, not a gate input: hooks decide the WIP channel from the branch name and staged paths, never from this footer.
+- Commits on the package's integration branch before its archive round may carry `Spec-WIP: <slug>`; they pass `pre-commit` through the structural-lint channel and can be pushed on `spec/*` branches for handoff. The footer is a marker for humans and later attribution tooling, not a gate input — hooks decide the WIP channel from the branch name and staged paths, never from this footer.
 - When the branch merges to main via `/spec:push`, the archive commit's `Spec: <slug>` footer is the attribution of record; a bare `Spec-WIP:` footer must not be the only attribution on a non-merge commit reaching main.
 
 Examples:
@@ -114,7 +110,5 @@ Auto-detected by default, overridable by argument:
 | Git record content | Follows the user | Natural |
 | spec / tasks / checklist / summary | Follows the user | Natural |
 
-Auto-detection: with `complete_spec_package.py --git-record-language auto`, decide from the CJK ratio of the `spec.md` title (CJK characters > 30% of alphabetic characters → `zh`, else `en`); fall back to `zh` when nothing is decidable.
-
-`/spec:done` defaults to `auto`; force with `--git-record-language zh` or `en` when needed. Commit descriptions need no argument — they naturally follow the user's input.
+Auto-detection: `complete_spec_package.py --git-record-language auto` (the `/spec:done` default) decides from the CJK ratio of the `spec.md` title (CJK > 30% of alphabetic characters → `zh`, else `en`), falling back to `zh` when nothing is decidable; force `zh` or `en` when needed. Commit descriptions need no argument — they follow the user's input.
 

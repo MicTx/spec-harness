@@ -1,0 +1,1497 @@
+{
+  "schema_version": 1,
+  "sources": {
+    "SKILL.md": "441128bbf507063f4439ea20013a890bcbd6c2fb49d0307a547b2f0f00073d29",
+    "agents/planner.md": "63c33bc01d483d216ec2d57802216b13604810554268deb9d2b34e49bfb981f6",
+    "references/commands.md": "d72a23188bcb7c64a052875562457169c3cc0c218d5e141fd49e8d19c1a263bf",
+    "references/handoff.md": "d091865d662b8de7873f50426370563209bb7642256674359ec43c2e200ca646",
+    "references/naming-and-commits.md": "2ba4559044b7878ff3663b88cdb843303487de5462d35c48fd0cfc7ab28b2cb5",
+    "references/orchestration.md": "ca95e147cc014f654ad29053086a21469509371f26300be0633bf7dfc609df07",
+    "references/output-contracts.md": "5ab53d3a0c2a89bde442f91f8da2fb874e50431eda934dcbc8df8ecb618db6ff",
+    "references/stages/autoplan.md": "d5ca2081525c90ffd71fac1db7e37f4e6bf1e3c06dabf9a0e0dd658be52c829f",
+    "references/stages/autorun.md": "3c3e66d1de298a6a578849d08e8e1926a3df6c866a0d2ba5296880dfbb0a7d67",
+    "references/stages/check.md": "6b95c21892f054e8e76bd9bc780ad8bb66121c6377e9d94680b7e9815b288fc6",
+    "references/stages/doctor.md": "9d53581740c09d36f927afa0f1f3bfe26fa6347fbc57d2cb1d183d36c1d5f2fd",
+    "references/stages/done.md": "a33dc80a289afa527949da7b2998d0a3f57adf65e0bc17526e7e316809f8d98e",
+    "references/stages/goal.md": "5efbff715abd478dcfd486cc46e2bea23dcb0b3d4c7488e669161992ff0ed36c",
+    "references/stages/new.md": "66c66cecf318e433078c74ce7643814c2267c0ed91db8cfc6ef955649cce9d00",
+    "references/stages/organize.md": "40b05966237055df52bfcc514e7ca6923afbe3b8ef8aee418fdd890666136924",
+    "references/stages/push.md": "4cf8a66c42e49fbf33c742fab94acd0a755d5aefdb8ef8b18c88f6c9a0bf038f",
+    "references/stages/run.md": "b433c8f85db30fe317e8b3c2da4b4fa5b2c1c3f0b3d2c4e8377dede3fc322497",
+    "references/stages/status.md": "4e6c757677932ae634886b2c0b1d1c0559145b44da3a320cfcd2e7e7733503bb",
+    "references/stages/update.md": "07e8d4fc71da1cc02b9899dd75b712819fa5f0d5a5e628fe761e5abae9fa4fb5",
+    "references/templates.md": "c87da0101a34f4990b9191232c395219a9c33fccaf9926b2bb674a55f9f6080b",
+    "slots/team-loop/README.md": "1dc5b58e74bdb0b0deeac3e94a7cb796fc8e680b5b43a659cab5396282762a44",
+    "tests/fixtures/skill_surface/inputs/handoff-snapshot.md": "8b04243b0211414d1b0d15d328bfd6092b1d29c4154fc813f45f7e4790729f1a",
+    "tests/fixtures/skill_surface/inputs/pkg-large/tasks.md": "5cd8c2f991948e35a64eb5c323494201edd7ae2860f66943ff5f4c9a01bfec4b",
+    "tests/fixtures/skill_surface/inputs/pkg-v1/checklist.md": "9868ff5a1c788df49f14de69ad2b2a62e77ec0d7c7831aee2b1808ca80baf87d",
+    "tests/fixtures/skill_surface/inputs/pkg-v2/spec.md": "24632e81dc5bb3c7669b128cc0bacbce77eac25391b453f0eb74ebe91b38bc8f",
+    "tests/fixtures/skill_surface/inputs/pkg-v2/tasks.md": "855c59296dd3851ccdca5e6861c974ef381b2bb662b112680f2c0004f6166693",
+    "tests/fixtures/skill_surface/inputs/plan-master.md": "6f3e94c821015c39a9c9fff62bd0a6662ebc22a585312369b8565179e5adb1ff"
+  },
+  "scenarios": [
+    {
+      "id": "new-cold-v2",
+      "stage": "new",
+      "profile": "full",
+      "package_format": "v2",
+      "session_mode": "cold",
+      "task_class": "small-package",
+      "preconditions": "clean git tree; user goal known; branch preflight output available",
+      "success_condition": "package initialized on integration branch with executable spec/tasks",
+      "expected": [
+        "frontmatter-contract",
+        "skill-contract",
+        "new-stage-contract",
+        "output-contract",
+        "slug-naming",
+        "init-templates"
+      ],
+      "events": [
+        {
+          "id": "e-skill-frontmatter",
+          "consumer": "model",
+          "load_class": "always_loaded",
+          "source": "SKILL.md",
+          "ranges": [
+            [
+              1,
+              7
+            ]
+          ],
+          "reason": "host skill list always loads frontmatter",
+          "contract_anchor": "SKILL.md frontmatter",
+          "call_id": "host-skill-list",
+          "expected_keys": [
+            "frontmatter-contract"
+          ]
+        },
+        {
+          "id": "e-skill-whole",
+          "consumer": "model",
+          "load_class": "trigger_loaded",
+          "source": "SKILL.md",
+          "ranges": "whole",
+          "reason": "skill trigger loads the full SKILL",
+          "contract_anchor": "SKILL.md body",
+          "call_id": "host-skill-load",
+          "expected_keys": [
+            "skill-contract"
+          ]
+        },
+        {
+          "id": "e-stage-new",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/stages/new.md",
+          "ranges": "whole",
+          "reason": "current stage contract page for new",
+          "contract_anchor": "stages/new.md",
+          "call_id": "read:stages/new",
+          "expected_keys": [
+            "new-stage-contract"
+          ]
+        },
+        {
+          "id": "e-output-contracts",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/output-contracts.md",
+          "ranges": [
+            [
+              83,
+              86
+            ]
+          ],
+          "reason": "output skeleton + shared hard rules + current stage section",
+          "contract_anchor": "output-contracts.md shared + stage section",
+          "call_id": "read:output-contracts",
+          "expected_keys": [
+            "output-contract"
+          ]
+        },
+        {
+          "id": "e-naming",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/naming-and-commits.md",
+          "ranges": [
+            [
+              14,
+              57
+            ]
+          ],
+          "reason": "slug naming rules and controlled verb table",
+          "contract_anchor": "naming-and-commits.md slug naming",
+          "call_id": "read:naming",
+          "expected_keys": [
+            "slug-naming"
+          ]
+        },
+        {
+          "id": "e-templates",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/templates.md",
+          "ranges": [
+            [
+              10,
+              69
+            ],
+            [
+              83,
+              107
+            ]
+          ],
+          "reason": "spec/tasks init fences instantiated per new package",
+          "contract_anchor": "templates.md init fences",
+          "call_id": "read:templates",
+          "expected_keys": [
+            "init-templates"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "run-local-v2",
+      "stage": "run",
+      "profile": "full",
+      "package_format": "v2",
+      "session_mode": "warm",
+      "task_class": "small-package",
+      "preconditions": "SKILL.md already in context (digest below); active package routed",
+      "context_available": [
+        {
+          "source": "SKILL.md",
+          "sha256": "441128bbf507063f4439ea20013a890bcbd6c2fb49d0307a547b2f0f00073d29"
+        }
+      ],
+      "success_condition": "next ready task executed with its verify actually run",
+      "expected": [
+        "run-stage-contract",
+        "output-contract",
+        "package-docs",
+        "route-facts"
+      ],
+      "events": [
+        {
+          "id": "e-stage-run",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/stages/run.md",
+          "ranges": "whole",
+          "reason": "current stage contract page for run",
+          "contract_anchor": "stages/run.md",
+          "call_id": "read:stages/run",
+          "expected_keys": [
+            "run-stage-contract"
+          ]
+        },
+        {
+          "id": "e-output-contracts",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/output-contracts.md",
+          "ranges": [
+            [
+              87,
+              90
+            ]
+          ],
+          "reason": "output skeleton + shared hard rules + current stage section",
+          "contract_anchor": "output-contracts.md shared + stage section",
+          "call_id": "read:output-contracts",
+          "expected_keys": [
+            "output-contract"
+          ]
+        },
+        {
+          "id": "e-pkg-spec",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "tests/fixtures/skill_surface/inputs/pkg-v2/spec.md",
+          "ranges": "whole",
+          "reason": "package scope still governs execution",
+          "contract_anchor": "package doc tests/fixtures/skill_surface/inputs/pkg-v2/spec.md",
+          "call_id": "read:tests/fixtures/skill_surface/inputs/pkg-v2/spec.md",
+          "expected_keys": [
+            "package-docs"
+          ]
+        },
+        {
+          "id": "e-pkg-tasks",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "tests/fixtures/skill_surface/inputs/pkg-v2/tasks.md",
+          "ranges": "whole",
+          "reason": "task boundaries and verify lines drive execution",
+          "contract_anchor": "package doc tests/fixtures/skill_surface/inputs/pkg-v2/tasks.md",
+          "call_id": "read:tests/fixtures/skill_surface/inputs/pkg-v2/tasks.md",
+          "expected_keys": [
+            "package-docs"
+          ]
+        },
+        {
+          "id": "e-route-script",
+          "consumer": "script",
+          "load_class": "conditional",
+          "source": "tests/fixtures/skill_surface/inputs/pkg-v2/spec.md",
+          "ranges": "whole",
+          "reason": "route script parses package state",
+          "contract_anchor": "package doc tests/fixtures/skill_surface/inputs/pkg-v2/spec.md",
+          "call_id": "script:route",
+          "expected_keys": [
+            "route-facts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "run-nonlocal-v2",
+      "stage": "run",
+      "profile": "full",
+      "package_format": "v2",
+      "session_mode": "warm",
+      "task_class": "large-package",
+      "preconditions": "SKILL.md in context; route decision selected team-loop slot lane",
+      "context_available": [
+        {
+          "source": "SKILL.md",
+          "sha256": "441128bbf507063f4439ea20013a890bcbd6c2fb49d0307a547b2f0f00073d29"
+        }
+      ],
+      "success_condition": "slot lane assignment contract satisfied; no second state machine",
+      "expected": [
+        "run-stage-contract",
+        "output-contract",
+        "orchestration-contract",
+        "slot-protocol",
+        "package-docs"
+      ],
+      "events": [
+        {
+          "id": "e-stage-run",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/stages/run.md",
+          "ranges": "whole",
+          "reason": "current stage contract page for run",
+          "contract_anchor": "stages/run.md",
+          "call_id": "read:stages/run",
+          "expected_keys": [
+            "run-stage-contract"
+          ]
+        },
+        {
+          "id": "e-output-contracts",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/output-contracts.md",
+          "ranges": [
+            [
+              87,
+              90
+            ]
+          ],
+          "reason": "output skeleton + shared hard rules + current stage section",
+          "contract_anchor": "output-contracts.md shared + stage section",
+          "call_id": "read:output-contracts",
+          "expected_keys": [
+            "output-contract"
+          ]
+        },
+        {
+          "id": "e-orchestration",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/orchestration.md",
+          "ranges": [
+            [
+              11,
+              24
+            ],
+            [
+              35,
+              44
+            ]
+          ],
+          "reason": "route vocabulary + assignment contract for the lane",
+          "contract_anchor": "orchestration.md route + assignment",
+          "call_id": "read:orchestration",
+          "expected_keys": [
+            "orchestration-contract"
+          ]
+        },
+        {
+          "id": "e-slot-readme",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "slots/team-loop/README.md",
+          "ranges": "whole",
+          "reason": "selected slot README protocol governs the execution segment",
+          "contract_anchor": "slots/team-loop/README.md",
+          "call_id": "read:slot-readme",
+          "expected_keys": [
+            "slot-protocol"
+          ]
+        },
+        {
+          "id": "e-large-tasks",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "tests/fixtures/skill_surface/inputs/pkg-large/tasks.md",
+          "ranges": "whole",
+          "reason": "large package task graph read for dependency order",
+          "contract_anchor": "package doc tests/fixtures/skill_surface/inputs/pkg-large/tasks.md",
+          "call_id": "read:tests/fixtures/skill_surface/inputs/pkg-large/tasks.md",
+          "expected_keys": [
+            "package-docs"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "check-v2",
+      "stage": "check",
+      "profile": "full",
+      "package_format": "v2",
+      "session_mode": "warm",
+      "task_class": "failure-repair",
+      "preconditions": "SKILL.md in context; declared scope integration; a verify failed",
+      "context_available": [
+        {
+          "source": "SKILL.md",
+          "sha256": "441128bbf507063f4439ea20013a890bcbd6c2fb49d0307a547b2f0f00073d29"
+        }
+      ],
+      "success_condition": "failure diagnosed, written back, fixed and fully re-verified in-round",
+      "expected": [
+        "check-stage-contract",
+        "output-contract",
+        "package-docs",
+        "verify-evidence"
+      ],
+      "events": [
+        {
+          "id": "e-stage-check",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/stages/check.md",
+          "ranges": "whole",
+          "reason": "current stage contract page for check",
+          "contract_anchor": "stages/check.md",
+          "call_id": "read:stages/check",
+          "expected_keys": [
+            "check-stage-contract"
+          ]
+        },
+        {
+          "id": "e-output-contracts",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/output-contracts.md",
+          "ranges": [
+            [
+              91,
+              100
+            ]
+          ],
+          "reason": "output skeleton + shared hard rules + current stage section",
+          "contract_anchor": "output-contracts.md shared + stage section",
+          "call_id": "read:output-contracts",
+          "expected_keys": [
+            "output-contract"
+          ]
+        },
+        {
+          "id": "e-check-spec",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "tests/fixtures/skill_surface/inputs/pkg-v2/spec.md",
+          "ranges": "whole",
+          "reason": "declared verification scope re-read fresh",
+          "contract_anchor": "package doc tests/fixtures/skill_surface/inputs/pkg-v2/spec.md",
+          "call_id": "read:tests/fixtures/skill_surface/inputs/pkg-v2/spec.md",
+          "expected_keys": [
+            "package-docs"
+          ]
+        },
+        {
+          "id": "e-check-tasks",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "tests/fixtures/skill_surface/inputs/pkg-v2/tasks.md",
+          "ranges": "whole",
+          "reason": "task verify lines drive the review round",
+          "contract_anchor": "package doc tests/fixtures/skill_surface/inputs/pkg-v2/tasks.md",
+          "call_id": "read:tests/fixtures/skill_surface/inputs/pkg-v2/tasks.md",
+          "expected_keys": [
+            "package-docs"
+          ]
+        },
+        {
+          "id": "e-verify-run",
+          "consumer": "script",
+          "load_class": "conditional",
+          "source": "tests/fixtures/skill_surface/inputs/pkg-v2/tasks.md",
+          "ranges": "whole",
+          "reason": "spec_verify executes machine verify commands",
+          "contract_anchor": "package doc tests/fixtures/skill_surface/inputs/pkg-v2/tasks.md",
+          "call_id": "script:spec-verify",
+          "expected_keys": [
+            "verify-evidence"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "check-v1-legacy",
+      "stage": "check",
+      "profile": "full",
+      "package_format": "v1",
+      "session_mode": "warm",
+      "task_class": "long-log",
+      "preconditions": "SKILL.md in context; legacy package carries checklist evidence",
+      "context_available": [
+        {
+          "source": "SKILL.md",
+          "sha256": "441128bbf507063f4439ea20013a890bcbd6c2fb49d0307a547b2f0f00073d29"
+        }
+      ],
+      "success_condition": "legacy evidence completeness judged with full log, not first screen",
+      "expected": [
+        "check-stage-contract",
+        "output-contract",
+        "legacy-evidence"
+      ],
+      "events": [
+        {
+          "id": "e-stage-check",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/stages/check.md",
+          "ranges": "whole",
+          "reason": "current stage contract page for check",
+          "contract_anchor": "stages/check.md",
+          "call_id": "read:stages/check",
+          "expected_keys": [
+            "check-stage-contract"
+          ]
+        },
+        {
+          "id": "e-output-contracts",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/output-contracts.md",
+          "ranges": [
+            [
+              91,
+              100
+            ]
+          ],
+          "reason": "output skeleton + shared hard rules + current stage section",
+          "contract_anchor": "output-contracts.md shared + stage section",
+          "call_id": "read:output-contracts",
+          "expected_keys": [
+            "output-contract"
+          ]
+        },
+        {
+          "id": "e-v1-checklist",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "tests/fixtures/skill_surface/inputs/pkg-v1/checklist.md",
+          "ranges": "whole",
+          "reason": "legacy checklist gates + evidence log read to the relevant tail",
+          "contract_anchor": "package doc tests/fixtures/skill_surface/inputs/pkg-v1/checklist.md",
+          "call_id": "read:tests/fixtures/skill_surface/inputs/pkg-v1/checklist.md",
+          "expected_keys": [
+            "legacy-evidence"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "done-v2",
+      "stage": "done",
+      "profile": "full",
+      "package_format": "v2",
+      "session_mode": "warm",
+      "task_class": "small-package",
+      "preconditions": "SKILL.md in context; acceptance surface green",
+      "context_available": [
+        {
+          "source": "SKILL.md",
+          "sha256": "441128bbf507063f4439ea20013a890bcbd6c2fb49d0307a547b2f0f00073d29"
+        }
+      ],
+      "success_condition": "package archived and committed with naming/commit contract",
+      "expected": [
+        "done-stage-contract",
+        "output-contract",
+        "commit-contract",
+        "package-docs"
+      ],
+      "events": [
+        {
+          "id": "e-stage-done",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/stages/done.md",
+          "ranges": "whole",
+          "reason": "current stage contract page for done",
+          "contract_anchor": "stages/done.md",
+          "call_id": "read:stages/done",
+          "expected_keys": [
+            "done-stage-contract"
+          ]
+        },
+        {
+          "id": "e-output-contracts",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/output-contracts.md",
+          "ranges": [
+            [
+              101,
+              110
+            ]
+          ],
+          "reason": "output skeleton + shared hard rules + current stage section",
+          "contract_anchor": "output-contracts.md shared + stage section",
+          "call_id": "read:output-contracts",
+          "expected_keys": [
+            "output-contract"
+          ]
+        },
+        {
+          "id": "e-commit-naming",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/naming-and-commits.md",
+          "ranges": [
+            [
+              58,
+              99
+            ]
+          ],
+          "reason": "commit message contract for the archive commit",
+          "contract_anchor": "naming-and-commits.md commit messages",
+          "call_id": "read:naming-commits",
+          "expected_keys": [
+            "commit-contract"
+          ]
+        },
+        {
+          "id": "e-done-spec",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "tests/fixtures/skill_surface/inputs/pkg-v2/spec.md",
+          "ranges": "whole",
+          "reason": "final scope confirmation before archive",
+          "contract_anchor": "package doc tests/fixtures/skill_surface/inputs/pkg-v2/spec.md",
+          "call_id": "read:tests/fixtures/skill_surface/inputs/pkg-v2/spec.md",
+          "expected_keys": [
+            "package-docs"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "push-branch",
+      "stage": "push",
+      "profile": "full",
+      "package_format": "v2",
+      "session_mode": "warm",
+      "task_class": "small-package",
+      "preconditions": "SKILL.md in context; done completed; preflight facts available",
+      "context_available": [
+        {
+          "source": "SKILL.md",
+          "sha256": "441128bbf507063f4439ea20013a890bcbd6c2fb49d0307a547b2f0f00073d29"
+        }
+      ],
+      "success_condition": "merge to main pushed on the recorded integration branch only",
+      "expected": [
+        "push-stage-contract",
+        "output-contract",
+        "package-docs"
+      ],
+      "events": [
+        {
+          "id": "e-stage-push",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/stages/push.md",
+          "ranges": "whole",
+          "reason": "current stage contract page for push",
+          "contract_anchor": "stages/push.md",
+          "call_id": "read:stages/push",
+          "expected_keys": [
+            "push-stage-contract"
+          ]
+        },
+        {
+          "id": "e-output-contracts",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/output-contracts.md",
+          "ranges": [
+            [
+              111,
+              120
+            ]
+          ],
+          "reason": "output skeleton + shared hard rules + current stage section",
+          "contract_anchor": "output-contracts.md shared + stage section",
+          "call_id": "read:output-contracts",
+          "expected_keys": [
+            "output-contract"
+          ]
+        },
+        {
+          "id": "e-push-spec",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "tests/fixtures/skill_surface/inputs/pkg-v2/spec.md",
+          "ranges": "whole",
+          "reason": "recorded integration branch facts re-checked",
+          "contract_anchor": "package doc tests/fixtures/skill_surface/inputs/pkg-v2/spec.md",
+          "call_id": "read:tests/fixtures/skill_surface/inputs/pkg-v2/spec.md",
+          "expected_keys": [
+            "package-docs"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "goal-one-shot",
+      "stage": "goal",
+      "profile": "full",
+      "package_format": "v2",
+      "session_mode": "cold",
+      "task_class": "small-package",
+      "preconditions": "fresh session; user goal stated",
+      "success_condition": "plan-execute-review-archive-commit completed in one session",
+      "expected": [
+        "frontmatter-contract",
+        "skill-contract",
+        "goal-stage-contract",
+        "output-contract",
+        "traversed-stage-sections"
+      ],
+      "events": [
+        {
+          "id": "e-skill-frontmatter",
+          "consumer": "model",
+          "load_class": "always_loaded",
+          "source": "SKILL.md",
+          "ranges": [
+            [
+              1,
+              7
+            ]
+          ],
+          "reason": "host skill list always loads frontmatter",
+          "contract_anchor": "SKILL.md frontmatter",
+          "call_id": "host-skill-list",
+          "expected_keys": [
+            "frontmatter-contract"
+          ]
+        },
+        {
+          "id": "e-skill-whole",
+          "consumer": "model",
+          "load_class": "trigger_loaded",
+          "source": "SKILL.md",
+          "ranges": "whole",
+          "reason": "skill trigger loads the full SKILL",
+          "contract_anchor": "SKILL.md body",
+          "call_id": "host-skill-load",
+          "expected_keys": [
+            "skill-contract"
+          ]
+        },
+        {
+          "id": "e-stage-goal",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/stages/goal.md",
+          "ranges": "whole",
+          "reason": "current stage contract page for goal",
+          "contract_anchor": "stages/goal.md",
+          "call_id": "read:stages/goal",
+          "expected_keys": [
+            "goal-stage-contract"
+          ]
+        },
+        {
+          "id": "e-output-contracts-goal",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/output-contracts.md",
+          "ranges": [
+            [
+              7,
+              58
+            ],
+            [
+              83,
+              86
+            ],
+            [
+              87,
+              90
+            ],
+            [
+              91,
+              100
+            ],
+            [
+              101,
+              110
+            ],
+            [
+              135,
+              138
+            ]
+          ],
+          "reason": "goal page + shared rules + the stage sections actually traversed in-session",
+          "contract_anchor": "output-contracts.md traversed sections",
+          "call_id": "read:output-contracts",
+          "expected_keys": [
+            "output-contract",
+            "traversed-stage-sections"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "autoplan-detail",
+      "stage": "autoplan",
+      "profile": "full",
+      "package_format": "v2",
+      "session_mode": "warm",
+      "task_class": "large-package",
+      "preconditions": "SKILL.md in context; detail pass assigned one planning document",
+      "context_available": [
+        {
+          "source": "SKILL.md",
+          "sha256": "441128bbf507063f4439ea20013a890bcbd6c2fb49d0307a547b2f0f00073d29"
+        }
+      ],
+      "success_condition": "assigned detail document written per planner mission, nothing else",
+      "expected": [
+        "autoplan-stage-contract",
+        "output-contract",
+        "backend-contract",
+        "planner-mission",
+        "planning-docs"
+      ],
+      "events": [
+        {
+          "id": "e-stage-autoplan",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/stages/autoplan.md",
+          "ranges": "whole",
+          "reason": "current stage contract page for autoplan",
+          "contract_anchor": "stages/autoplan.md",
+          "call_id": "read:stages/autoplan",
+          "expected_keys": [
+            "autoplan-stage-contract"
+          ]
+        },
+        {
+          "id": "e-output-contracts",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/output-contracts.md",
+          "ranges": [
+            [
+              170,
+              181
+            ]
+          ],
+          "reason": "output skeleton + shared hard rules + current stage section",
+          "contract_anchor": "output-contracts.md shared + stage section",
+          "call_id": "read:output-contracts",
+          "expected_keys": [
+            "output-contract"
+          ]
+        },
+        {
+          "id": "e-commands-backends",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/commands.md",
+          "ranges": [
+            [
+              42,
+              45
+            ]
+          ],
+          "reason": "session backend contract for pass windows",
+          "contract_anchor": "commands.md autoplan",
+          "call_id": "read:commands",
+          "expected_keys": [
+            "backend-contract"
+          ]
+        },
+        {
+          "id": "e-planner-mission",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "agents/planner.md",
+          "ranges": "whole",
+          "reason": "planner mission governs the detail pass write scope",
+          "contract_anchor": "agents/planner.md",
+          "call_id": "read:planner",
+          "expected_keys": [
+            "planner-mission"
+          ]
+        },
+        {
+          "id": "e-plan-master",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "tests/fixtures/skill_surface/inputs/plan-master.md",
+          "ranges": "whole",
+          "reason": "cluster master feature index consumed by the pass",
+          "contract_anchor": "package doc tests/fixtures/skill_surface/inputs/plan-master.md",
+          "call_id": "read:tests/fixtures/skill_surface/inputs/plan-master.md",
+          "expected_keys": [
+            "planning-docs"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "autorun-round",
+      "stage": "autorun",
+      "profile": "full",
+      "package_format": "v2",
+      "session_mode": "warm",
+      "task_class": "failure-repair",
+      "preconditions": "SKILL.md in context; a round verify failed",
+      "context_available": [
+        {
+          "source": "SKILL.md",
+          "sha256": "441128bbf507063f4439ea20013a890bcbd6c2fb49d0307a547b2f0f00073d29"
+        }
+      ],
+      "success_condition": "fail-fast honored: chain stops, failure reported per goal contract",
+      "expected": [
+        "autorun-stage-contract",
+        "output-contract",
+        "backend-contract",
+        "goal-conditions",
+        "package-docs"
+      ],
+      "events": [
+        {
+          "id": "e-stage-autorun",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/stages/autorun.md",
+          "ranges": "whole",
+          "reason": "current stage contract page for autorun",
+          "contract_anchor": "stages/autorun.md",
+          "call_id": "read:stages/autorun",
+          "expected_keys": [
+            "autorun-stage-contract"
+          ]
+        },
+        {
+          "id": "e-output-contracts",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/output-contracts.md",
+          "ranges": [
+            [
+              159,
+              169
+            ]
+          ],
+          "reason": "output skeleton + shared hard rules + current stage section",
+          "contract_anchor": "output-contracts.md shared + stage section",
+          "call_id": "read:output-contracts",
+          "expected_keys": [
+            "output-contract"
+          ]
+        },
+        {
+          "id": "e-commands-autorun",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/commands.md",
+          "ranges": [
+            [
+              46,
+              49
+            ]
+          ],
+          "reason": "autorun backend contract",
+          "contract_anchor": "commands.md autorun",
+          "call_id": "read:commands",
+          "expected_keys": [
+            "backend-contract"
+          ]
+        },
+        {
+          "id": "e-goal-conditions",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/stages/goal.md",
+          "ranges": "whole",
+          "reason": "autorun failure reporting follows the goal contract conditions",
+          "contract_anchor": "stages/goal.md",
+          "call_id": "read:stages/goal",
+          "expected_keys": [
+            "goal-conditions"
+          ]
+        },
+        {
+          "id": "e-ar-tasks",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "tests/fixtures/skill_surface/inputs/pkg-v2/tasks.md",
+          "ranges": "whole",
+          "reason": "failing task facts for the failure report",
+          "contract_anchor": "package doc tests/fixtures/skill_surface/inputs/pkg-v2/tasks.md",
+          "call_id": "read:tests/fixtures/skill_surface/inputs/pkg-v2/tasks.md",
+          "expected_keys": [
+            "package-docs"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "update-midflight",
+      "stage": "update",
+      "profile": "full",
+      "package_format": "v2",
+      "session_mode": "warm",
+      "task_class": "failure-repair",
+      "preconditions": "SKILL.md in context; scope change request mid-flight",
+      "context_available": [
+        {
+          "source": "SKILL.md",
+          "sha256": "441128bbf507063f4439ea20013a890bcbd6c2fb49d0307a547b2f0f00073d29"
+        }
+      ],
+      "success_condition": "spec/tasks updated with affected acceptance surface still coherent",
+      "expected": [
+        "update-stage-contract",
+        "output-contract",
+        "package-docs"
+      ],
+      "events": [
+        {
+          "id": "e-stage-update",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/stages/update.md",
+          "ranges": "whole",
+          "reason": "current stage contract page for update",
+          "contract_anchor": "stages/update.md",
+          "call_id": "read:stages/update",
+          "expected_keys": [
+            "update-stage-contract"
+          ]
+        },
+        {
+          "id": "e-output-contracts",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/output-contracts.md",
+          "ranges": [
+            [
+              121,
+              124
+            ]
+          ],
+          "reason": "output skeleton + shared hard rules + current stage section",
+          "contract_anchor": "output-contracts.md shared + stage section",
+          "call_id": "read:output-contracts",
+          "expected_keys": [
+            "output-contract"
+          ]
+        },
+        {
+          "id": "e-upd-spec",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "tests/fixtures/skill_surface/inputs/pkg-v2/spec.md",
+          "ranges": "whole",
+          "reason": "current scope before modification",
+          "contract_anchor": "package doc tests/fixtures/skill_surface/inputs/pkg-v2/spec.md",
+          "call_id": "read:tests/fixtures/skill_surface/inputs/pkg-v2/spec.md",
+          "expected_keys": [
+            "package-docs"
+          ]
+        },
+        {
+          "id": "e-upd-tasks",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "tests/fixtures/skill_surface/inputs/pkg-v2/tasks.md",
+          "ranges": "whole",
+          "reason": "task set before modification",
+          "contract_anchor": "package doc tests/fixtures/skill_surface/inputs/pkg-v2/tasks.md",
+          "call_id": "read:tests/fixtures/skill_surface/inputs/pkg-v2/tasks.md",
+          "expected_keys": [
+            "package-docs"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "status-report",
+      "stage": "status",
+      "profile": "full",
+      "package_format": "v2",
+      "session_mode": "cold",
+      "task_class": "small-package",
+      "preconditions": "fresh session",
+      "success_condition": "progress overview rendered with real blockers, nothing hidden",
+      "expected": [
+        "frontmatter-contract",
+        "skill-contract",
+        "status-stage-contract",
+        "output-contract",
+        "package-docs"
+      ],
+      "events": [
+        {
+          "id": "e-skill-frontmatter",
+          "consumer": "model",
+          "load_class": "always_loaded",
+          "source": "SKILL.md",
+          "ranges": [
+            [
+              1,
+              7
+            ]
+          ],
+          "reason": "host skill list always loads frontmatter",
+          "contract_anchor": "SKILL.md frontmatter",
+          "call_id": "host-skill-list",
+          "expected_keys": [
+            "frontmatter-contract"
+          ]
+        },
+        {
+          "id": "e-skill-whole",
+          "consumer": "model",
+          "load_class": "trigger_loaded",
+          "source": "SKILL.md",
+          "ranges": "whole",
+          "reason": "skill trigger loads the full SKILL",
+          "contract_anchor": "SKILL.md body",
+          "call_id": "host-skill-load",
+          "expected_keys": [
+            "skill-contract"
+          ]
+        },
+        {
+          "id": "e-stage-status",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/stages/status.md",
+          "ranges": "whole",
+          "reason": "current stage contract page for status",
+          "contract_anchor": "stages/status.md",
+          "call_id": "read:stages/status",
+          "expected_keys": [
+            "status-stage-contract"
+          ]
+        },
+        {
+          "id": "e-output-contracts",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/output-contracts.md",
+          "ranges": [
+            [
+              125,
+              134
+            ]
+          ],
+          "reason": "output skeleton + shared hard rules + current stage section",
+          "contract_anchor": "output-contracts.md shared + stage section",
+          "call_id": "read:output-contracts",
+          "expected_keys": [
+            "output-contract"
+          ]
+        },
+        {
+          "id": "e-status-spec",
+          "consumer": "script",
+          "load_class": "conditional",
+          "source": "tests/fixtures/skill_surface/inputs/pkg-v2/spec.md",
+          "ranges": "whole",
+          "reason": "package facts for the report",
+          "contract_anchor": "package doc tests/fixtures/skill_surface/inputs/pkg-v2/spec.md",
+          "call_id": "script:report",
+          "expected_keys": [
+            "package-docs"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "doctor-env",
+      "stage": "doctor",
+      "profile": "full",
+      "package_format": "v2",
+      "session_mode": "cold",
+      "task_class": "small-package",
+      "preconditions": "fresh session; suspected environment breakage",
+      "success_condition": "environment self-check reports real missing pieces",
+      "expected": [
+        "frontmatter-contract",
+        "skill-contract",
+        "doctor-stage-contract",
+        "output-contract"
+      ],
+      "events": [
+        {
+          "id": "e-skill-frontmatter",
+          "consumer": "model",
+          "load_class": "always_loaded",
+          "source": "SKILL.md",
+          "ranges": [
+            [
+              1,
+              7
+            ]
+          ],
+          "reason": "host skill list always loads frontmatter",
+          "contract_anchor": "SKILL.md frontmatter",
+          "call_id": "host-skill-list",
+          "expected_keys": [
+            "frontmatter-contract"
+          ]
+        },
+        {
+          "id": "e-skill-whole",
+          "consumer": "model",
+          "load_class": "trigger_loaded",
+          "source": "SKILL.md",
+          "ranges": "whole",
+          "reason": "skill trigger loads the full SKILL",
+          "contract_anchor": "SKILL.md body",
+          "call_id": "host-skill-load",
+          "expected_keys": [
+            "skill-contract"
+          ]
+        },
+        {
+          "id": "e-stage-doctor",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/stages/doctor.md",
+          "ranges": "whole",
+          "reason": "current stage contract page for doctor",
+          "contract_anchor": "stages/doctor.md",
+          "call_id": "read:stages/doctor",
+          "expected_keys": [
+            "doctor-stage-contract"
+          ]
+        },
+        {
+          "id": "e-output-contracts",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/output-contracts.md",
+          "ranges": [
+            [
+              139,
+              148
+            ]
+          ],
+          "reason": "output skeleton + shared hard rules + current stage section",
+          "contract_anchor": "output-contracts.md shared + stage section",
+          "call_id": "read:output-contracts",
+          "expected_keys": [
+            "output-contract"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "organize-audit",
+      "stage": "organize",
+      "profile": "full",
+      "package_format": "v2",
+      "session_mode": "cold",
+      "task_class": "small-package",
+      "preconditions": "fresh session; audit-only default",
+      "success_condition": "structure audit report produced; no move/delete without --apply",
+      "expected": [
+        "frontmatter-contract",
+        "skill-contract",
+        "organize-stage-contract",
+        "output-contract"
+      ],
+      "events": [
+        {
+          "id": "e-skill-frontmatter",
+          "consumer": "model",
+          "load_class": "always_loaded",
+          "source": "SKILL.md",
+          "ranges": [
+            [
+              1,
+              7
+            ]
+          ],
+          "reason": "host skill list always loads frontmatter",
+          "contract_anchor": "SKILL.md frontmatter",
+          "call_id": "host-skill-list",
+          "expected_keys": [
+            "frontmatter-contract"
+          ]
+        },
+        {
+          "id": "e-skill-whole",
+          "consumer": "model",
+          "load_class": "trigger_loaded",
+          "source": "SKILL.md",
+          "ranges": "whole",
+          "reason": "skill trigger loads the full SKILL",
+          "contract_anchor": "SKILL.md body",
+          "call_id": "host-skill-load",
+          "expected_keys": [
+            "skill-contract"
+          ]
+        },
+        {
+          "id": "e-stage-organize",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/stages/organize.md",
+          "ranges": "whole",
+          "reason": "current stage contract page for organize",
+          "contract_anchor": "stages/organize.md",
+          "call_id": "read:stages/organize",
+          "expected_keys": [
+            "organize-stage-contract"
+          ]
+        },
+        {
+          "id": "e-output-contracts",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/output-contracts.md",
+          "ranges": [
+            [
+              149,
+              158
+            ]
+          ],
+          "reason": "output skeleton + shared hard rules + current stage section",
+          "contract_anchor": "output-contracts.md shared + stage section",
+          "call_id": "read:output-contracts",
+          "expected_keys": [
+            "output-contract"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "core-extended-refusal",
+      "stage": "status",
+      "profile": "core",
+      "package_format": "v2",
+      "session_mode": "cold",
+      "task_class": "small-package",
+      "preconditions": "core install (5 stages only); user invokes an extended stage",
+      "success_condition": "reinstall-to-full hint answered from core-shipped text only",
+      "expected": [
+        "frontmatter-contract",
+        "skill-contract",
+        "install-profile-hint"
+      ],
+      "events": [
+        {
+          "id": "e-skill-frontmatter",
+          "consumer": "model",
+          "load_class": "always_loaded",
+          "source": "SKILL.md",
+          "ranges": [
+            [
+              1,
+              7
+            ]
+          ],
+          "reason": "host skill list always loads frontmatter",
+          "contract_anchor": "SKILL.md frontmatter",
+          "call_id": "host-skill-list",
+          "expected_keys": [
+            "frontmatter-contract"
+          ]
+        },
+        {
+          "id": "e-skill-whole",
+          "consumer": "model",
+          "load_class": "trigger_loaded",
+          "source": "SKILL.md",
+          "ranges": "whole",
+          "reason": "skill trigger loads the full SKILL",
+          "contract_anchor": "SKILL.md body",
+          "call_id": "host-skill-load",
+          "expected_keys": [
+            "skill-contract"
+          ]
+        },
+        {
+          "id": "e-skill-commands",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "SKILL.md",
+          "ranges": [
+            [
+              19,
+              47
+            ]
+          ],
+          "reason": "commands table + install profile note is the only core-shipped answer surface",
+          "contract_anchor": "SKILL.md commands table",
+          "call_id": "read:skill-commands",
+          "expected_keys": [
+            "install-profile-hint"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "resumed-run-handoff",
+      "stage": "run",
+      "profile": "full",
+      "package_format": "v2",
+      "session_mode": "resumed",
+      "task_class": "session-resume",
+      "preconditions": "new session; handoff document exists; freshness unknown until read",
+      "success_condition": "next action restored from package + handoff; stale facts re-verified",
+      "expected": [
+        "frontmatter-contract",
+        "skill-contract",
+        "run-stage-contract",
+        "output-contract",
+        "handoff-contract",
+        "handoff-snapshot",
+        "package-docs"
+      ],
+      "events": [
+        {
+          "id": "e-skill-frontmatter",
+          "consumer": "model",
+          "load_class": "always_loaded",
+          "source": "SKILL.md",
+          "ranges": [
+            [
+              1,
+              7
+            ]
+          ],
+          "reason": "host skill list always loads frontmatter",
+          "contract_anchor": "SKILL.md frontmatter",
+          "call_id": "host-skill-list",
+          "expected_keys": [
+            "frontmatter-contract"
+          ]
+        },
+        {
+          "id": "e-skill-whole",
+          "consumer": "model",
+          "load_class": "trigger_loaded",
+          "source": "SKILL.md",
+          "ranges": "whole",
+          "reason": "skill trigger loads the full SKILL",
+          "contract_anchor": "SKILL.md body",
+          "call_id": "host-skill-load",
+          "expected_keys": [
+            "skill-contract"
+          ]
+        },
+        {
+          "id": "e-stage-run",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/stages/run.md",
+          "ranges": "whole",
+          "reason": "current stage contract page for run",
+          "contract_anchor": "stages/run.md",
+          "call_id": "read:stages/run",
+          "expected_keys": [
+            "run-stage-contract"
+          ]
+        },
+        {
+          "id": "e-output-contracts",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/output-contracts.md",
+          "ranges": [
+            [
+              87,
+              90
+            ]
+          ],
+          "reason": "output skeleton + shared hard rules + current stage section",
+          "contract_anchor": "output-contracts.md shared + stage section",
+          "call_id": "read:output-contracts",
+          "expected_keys": [
+            "output-contract"
+          ]
+        },
+        {
+          "id": "e-handoff-contract",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/handoff.md",
+          "ranges": [
+            [
+              37,
+              80
+            ]
+          ],
+          "reason": "entry structure + freshness + lifecycle integration contract",
+          "contract_anchor": "handoff.md freshness",
+          "call_id": "read:handoff",
+          "expected_keys": [
+            "handoff-contract"
+          ]
+        },
+        {
+          "id": "e-handoff-snapshot",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "tests/fixtures/skill_surface/inputs/handoff-snapshot.md",
+          "ranges": "whole",
+          "reason": "snapshot facts; freshness judged against current package state",
+          "contract_anchor": "package doc tests/fixtures/skill_surface/inputs/handoff-snapshot.md",
+          "call_id": "read:tests/fixtures/skill_surface/inputs/handoff-snapshot.md",
+          "expected_keys": [
+            "handoff-snapshot"
+          ]
+        },
+        {
+          "id": "e-resume-tasks",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "tests/fixtures/skill_surface/inputs/pkg-v2/tasks.md",
+          "ranges": "whole",
+          "reason": "current task state after the handoff point",
+          "contract_anchor": "package doc tests/fixtures/skill_surface/inputs/pkg-v2/tasks.md",
+          "call_id": "read:tests/fixtures/skill_surface/inputs/pkg-v2/tasks.md",
+          "expected_keys": [
+            "package-docs"
+          ]
+        }
+      ]
+    }
+  ]
+}

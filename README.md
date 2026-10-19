@@ -78,7 +78,7 @@ Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.19.0
+git checkout v0.19.1
 bash install.sh
 ```
 
@@ -221,6 +221,7 @@ spec/
 │   ├── autoplan_gate.py
 │   ├── autoplan_spawn.py
 │   ├── autorun_spawn.py
+│   ├── chain_lifecycle.py
 │   ├── chain_recovery.py
 │   ├── chain_spawn_support.py
 │   ├── check_all_spec_packages.py
@@ -309,6 +310,15 @@ git diff --check
 ```
 
 完整验证范围以 [`CONTRIBUTING.md`](CONTRIBUTING.md) 为准；任务包的 `package`、`integration`、`project` 验证级别由 `spec.md` 的 `### 5.1 验证策略` 区块声明（机器键 `verification-strategy`，区块按机器键识别，英文标题与键锚点等价，见 [`references/templates.md`](references/templates.md) 的英文模板变体）。
+
+## 效率与读取成本
+
+内部读取面（`route_spec_package.py --format json --brief` 任务切片与 `spec_verify.py show` 证据视图）与文档压缩的取舍以四臂对照实测为准：A 基线 / B 仅压缩 / C 仅内部工具 / D 组合，16 个冻结场景归入五类固定任务，两次连续运行稳定投影一致，字节、确定性调用与真实使用三层分列不换算。
+
+- 文本压缩降低全部五类任务的读取字节（每类 −23 ～ −2,270 B）与静态文档面 1,357 B，任务完整性零损失。
+- 内部工具的调度说明是 248 B 有界常开成本；组合态在读取量最大的任务类上仍净省 782 B。
+- `--brief` 在一次视图替代多次整读的形态下同时减少调用与字节（实测：复审场景 −1 调用、−552 B）；小包定位与单文件精确读取按调度决策表保持原生读取，实测聚合开销大于直读的负收益行如实保留。
+- `spec_verify.py show --history` 全量重组仅在需要完整日志时使用，分页可逐字节重组校验；首屏与短证据直读不经过它。
 
 ## 获取版本
 

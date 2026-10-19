@@ -1,0 +1,86 @@
+# 合成大包（v2）- 任务拆解
+
+## 使用规则
+- 每个任务都要写清楚 `boundary` 和 `verify`；机器任务的 verify 以首个反引号 span 为执行的命令
+
+## 阶段一：批量合成任务
+- [ ] 合成任务 001
+  - boundary: 仅合成文件 001
+  - verify: `python3 -c "print('fixture-001')"`
+- [ ] 合成任务 002
+  - depends-on: task_0001
+  - boundary: 仅合成文件 002
+  - verify: `python3 -c "print('fixture-002')"`
+- [ ] 合成任务 003
+  - depends-on: task_0001
+  - boundary: 仅合成文件 003
+  - verify: `python3 -c "print('fixture-003')"`
+- [ ] 合成任务 004
+  - depends-on: task_0002, task_0003
+  - boundary: 仅合成文件 004
+  - verify: `python3 -c "print('fixture-004')"`
+- [ ] 合成任务 005
+  - depends-on: task_0004
+  - boundary: 仅合成文件 005
+  - verify: `python3 -c "print('fixture-005')"`
+- [ ] 合成任务 006
+  - boundary: 仅合成文件 006
+  - verify: `python3 -c "print('fixture-006')"`
+- [ ] 合成任务 007
+  - depends-on: task_0006
+  - boundary: 仅合成文件 007
+  - verify: `python3 -c "print('fixture-007')"`
+- [ ] 合成任务 008
+  - depends-on: task_0006
+  - boundary: 仅合成文件 008
+  - verify: `python3 -c "print('fixture-008')"`
+- [ ] 合成任务 009
+  - depends-on: task_0007, task_0008
+  - boundary: 仅合成文件 009
+  - verify: `python3 -c "print('fixture-009')"`
+- [ ] 合成任务 010
+  - depends-on: task_0009
+  - boundary: 仅合成文件 010
+  - verify: `python3 -c "print('fixture-010')"`
+- [ ] 合成任务 011
+  - boundary: 仅合成文件 011
+  - verify: `python3 -c "print('fixture-011')"`
+- [ ] 合成任务 012
+  - depends-on: task_0011
+  - boundary: 仅合成文件 012
+  - verify: `python3 -c "print('fixture-012')"`
+- [ ] 合成任务 013
+  - depends-on: task_0012
+  - boundary: 仅合成文件 013
+  - verify: `python3 -c "print('fixture-013')"`
+- [ ] 合成任务 014
+  - depends-on: task_0013
+  - boundary: 仅合成文件 014
+  - verify: `python3 -c "print('fixture-014')"`
+- [ ] 合成任务 015
+  - depends-on: task_0014
+  - boundary: 仅合成文件 015
+  - verify: `python3 -c "print('fixture-015')"`
+- [ ] 合成任务 016
+  - boundary: 仅合成文件 016
+  - verify: `python3 -c "print('fixture-016')"`
+- [ ] 合成任务 017
+  - depends-on: task_0016
+  - boundary: 仅合成文件 017
+  - verify: `python3 -c "print('fixture-017')"`
+- [ ] 合成任务 018
+  - depends-on: task_0017
+  - boundary: 仅合成文件 018
+  - verify: `python3 -c "print('fixture-018')"`
+- [ ] 合成任务 019
+  - depends-on: task_0018
+  - boundary: 仅合成文件 019
+  - verify: `python3 -c "print('fixture-019')"`
+- [ ] 合成任务 020
+  - depends-on: task_0019
+  - boundary: 仅合成文件 020
+  - verify: `python3 -c "print('fixture-020')"`
+
+---
+
+**当前进度**：由脚本计算，无需手动维护

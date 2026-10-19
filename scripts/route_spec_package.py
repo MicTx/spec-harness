@@ -7,6 +7,9 @@ Render the internal spec stage decision that is compatible with Claude Code and 
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -35,6 +38,9 @@ from spec_package_support import (
     resolve_specs_child,
     resolve_specs_root,
     select_active_package,
+    task_dependencies,
+    utc_now,
+    validate_branch_bound_package,
     validate_slug,
 )
 from update_checkpoint_support import CheckpointStatus, detect_update_checkpoint
@@ -54,11 +60,164 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ascii", action="store_true", help="Render dashboard glyphs as ASCII fallback")
     parser.add_argument("--compact", action="store_true", help="Render metrics as a single line")
     parser.add_argument("--format", choices=("markdown", "json"), default="markdown")
+    parser.add_argument(
+        "--brief",
+        action="store_true",
+        help="Bounded aggregated read: route decision + per-task contracts in one envelope (implies JSON)",
+    )
+    parser.add_argument(
+        "--max-items",
+        type=int,
+        default=DEFAULT_MAX_ITEMS,
+        help=f"Task-slice item budget for --brief (default {DEFAULT_MAX_ITEMS}, hard cap {HARD_MAX_ITEMS})",
+    )
+    parser.add_argument(
+        "--page-token",
+        default=None,
+        help="Opaque continuation token from a prior --brief envelope's `next` field",
+    )
     return parser.parse_args()
 
 
 # Shared enumeration contract; alias kept for existing importers.
 active_packages = active_package_slugs
+
+
+# --------------------------------------------------------------------------- #
+# bounded-read envelope (doc 03 §2.1/§2.2): route's host implementation.
+# Host scripts implement the envelope themselves — the tests pin the shared
+# contract per host; there is deliberately no cross-capability module.
+# --------------------------------------------------------------------------- #
+
+BRIEF_CAPABILITY = "brief"
+DEFAULT_MAX_ITEMS = 100
+HARD_MAX_ITEMS = 1000
+TRUNCATION_NONE = "none"
+TRUNCATION_ITEM_BUDGET = "item_budget"
+
+
+class EnvelopeError(Exception):
+    """Classified bounded-read failure; kind must stay inside the shared table
+    (invalid_query / missing / unreadable / version_changed / unsupported)."""
+
+    def __init__(self, kind: str, message: str):
+        super().__init__(message)
+        self.kind = kind
+        self.message = message
+
+
+def _encode_page_token(payload: dict) -> str:
+    return base64.urlsafe_b64encode(json.dumps(payload, sort_keys=True).encode("utf-8")).decode("ascii")
+
+
+def _decode_page_token(token: str) -> dict:
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8"))
+    except (binascii.Error, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise EnvelopeError("invalid_query", f"page token 不可解码：{exc}") from exc
+    if not isinstance(payload, dict):
+        raise EnvelopeError("invalid_query", "page token 必须编码 JSON 对象")
+    return payload
+
+
+def _digest_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _brief_task_state(record, ready: set[str]) -> str:
+    if record.checked:
+        return "done"
+    if record.blocked:
+        return "blocked"
+    if record.block_text.startswith("- [>"):
+        return "manual-in-progress"
+    if record.id in ready:
+        return "ready"
+    return "pending"
+
+
+def _brief_task_projection(record, ready: set[str]) -> dict:
+    return {
+        "id": record.id,
+        "title": record.title,
+        "state": _brief_task_state(record, ready),
+        "boundary": record.boundary,
+        "verify": record.verify,
+        "depends_on": list(task_dependencies(record)),
+    }
+
+
+def _handoff_view(package_dir: Path, root: Path, tasks_content: str, panel_line: str | None) -> dict:
+    """Objectify the same handoff conclusion the markdown panel renders."""
+    if panel_line is None:
+        return {"line": None, "fresh": "absent"}
+    if "不可读" in panel_line:
+        return {"line": panel_line, "fresh": "unreadable"}
+    if "结构非法" in panel_line or "无条目" in panel_line:
+        return {"line": panel_line, "fresh": "unknown"}
+    content = read_handoff(package_dir)
+    doc = parse_handoff(content) if content is not None else None
+    if doc is None or doc.latest is None:
+        return {"line": panel_line, "fresh": "unknown"}
+    label, detail = freshness(doc, root, tasks_content)
+    view = {"line": panel_line, "fresh": label}
+    if label != "fresh":
+        view["stale_reason"] = detail
+    return view
+
+
+def _brief_envelope(
+    *,
+    slug: str | None,
+    payload: dict,
+    records: list,
+    tasks_content: str,
+    max_items: int,
+    page_token: str | None,
+) -> dict:
+    """Item-budget paging over the task slice; version pinned to tasks.md."""
+    version = _digest_text(tasks_content) if slug is not None else None
+    item_offset = 0
+    if page_token:
+        token = _decode_page_token(page_token)
+        if token.get("capability") != BRIEF_CAPABILITY:
+            raise EnvelopeError("invalid_query", "page token 不属于 brief 能力")
+        if slug is None:
+            raise EnvelopeError("invalid_query", "无活动包分支没有可续页的任务切片")
+        if token.get("version") != version:
+            raise EnvelopeError(
+                "version_changed",
+                f"tasks.md 摘要已变化（token {str(token.get('version'))[:12]} ≠ 当前 {version[:12]}），请从头重取",
+            )
+        try:
+            item_offset = int(token["item_offset"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise EnvelopeError("invalid_query", f"page token 缺少合法 item_offset：{exc}") from exc
+        if item_offset < 0 or item_offset > len(records):
+            raise EnvelopeError("invalid_query", f"item_offset 越界：{item_offset}")
+    tasks = payload.get("tasks", [])
+    window = tasks[item_offset : item_offset + max_items]
+    complete = item_offset + len(window) >= len(tasks)
+    payload.update(
+        {
+            "capability": BRIEF_CAPABILITY,
+            "query": {"slug": slug, "max_items": max_items, "item_offset": item_offset},
+            "version": {"source_sha256": version, "records": len(records)},
+            "counts": {"returned": len(window), "total_matching": len(tasks)},
+            "complete": complete,
+            "truncated_reason": TRUNCATION_NONE if complete else TRUNCATION_ITEM_BUDGET,
+            "partial_line": False,
+            "next": (
+                _encode_page_token(
+                    {"capability": BRIEF_CAPABILITY, "item_offset": item_offset + len(window), "version": version}
+                )
+                if not complete
+                else None
+            ),
+        }
+    )
+    payload["tasks"] = window
+    return payload
 
 
 def checkpoint_alert(status: CheckpointStatus) -> str:
@@ -125,7 +284,12 @@ def route_for_package(
     ascii_mode: bool = False,
     compact: bool = False,
     output_format: str = "markdown",
+    brief: bool = False,
+    max_items: int = DEFAULT_MAX_ITEMS,
+    page_token: str | None = None,
 ) -> str:
+    if brief:
+        output_format = "json"
     slug = validate_slug(slug)
     specs_root = resolve_specs_root(root, specs_dir_name)
     package_dir = resolve_specs_child(specs_root, "specs", slug)
@@ -281,28 +445,92 @@ def route_for_package(
         compact=compact,
     )
     if output_format == "json":
-        return json.dumps(
-            {
-                "slug": slug,
-                "stage": next_stage,
-                "health": health,
-                "completed": r.completed_tasks,
-                "total": r.total_tasks,
-                "currentTask": current_task,
-                "dependencyErrors": r.task_contract_errors,
-                "orchestrationErrors": r.orchestration_errors,
-                "verificationScope": r.verification_scope,
-                "updateCheckpoint": checkpoint_status.state,
-                **({"handoff": handoff_line} if handoff_line else {}),
-            },
-            ensure_ascii=False,
-        )
+        payload = {
+            "slug": slug,
+            "stage": next_stage,
+            "health": health,
+            "completed": r.completed_tasks,
+            "total": r.total_tasks,
+            "currentTask": current_task,
+            "dependencyErrors": r.task_contract_errors,
+            "orchestrationErrors": r.orchestration_errors,
+            "verificationScope": r.verification_scope,
+            "updateCheckpoint": checkpoint_status.state,
+            **({"handoff": handoff_line} if handoff_line else {}),
+        }
+        if brief:
+            records_for_slice: list = []
+            ready: set[str] = set()
+            try:
+                records_for_slice = parse_task_records(tasks_content)
+                ready = ready_task_ids(records_for_slice)
+            except SpecControlError:
+                # The gate's dependencyErrors already carries the parse reason;
+                # an empty slice plus that error is the honest projection.
+                records_for_slice = []
+                ready = set()
+            payload["title"] = title
+            payload["branch_binding"] = validate_branch_bound_package(
+                root, slug, spec_content, allow_legacy_convention=True
+            )[1]
+            payload["ready"] = sorted(ready)
+            payload["tasks"] = [_brief_task_projection(record, ready) for record in records_for_slice]
+            payload["alerts"] = alerts
+            payload["handoff"] = _handoff_view(package_dir, root, tasks_content, handoff_line)
+            payload["source"] = {
+                "spec_sha256": _digest_text(spec_content),
+                "tasks_sha256": _digest_text(tasks_content),
+                "checklist_sha256": _digest_text(checklist_content) if checklist_content is not None else None,
+                "generated_at": utc_now(),
+            }
+            payload = _brief_envelope(
+                slug=slug,
+                payload=payload,
+                records=records_for_slice,
+                tasks_content=tasks_content,
+                max_items=max_items,
+                page_token=page_token,
+            )
+        return json.dumps(payload, ensure_ascii=False)
     return dash.render()
+
+
+def _validate_envelope_flags(args: argparse.Namespace) -> str | None:
+    """Fail-closed flag validation before any output; None when acceptable."""
+    if args.brief and args.format == "markdown":
+        return "--brief 隐含 JSON 输出，不能与 --format markdown 同时使用"
+    if not args.brief and (args.max_items != DEFAULT_MAX_ITEMS or args.page_token):
+        return "--max-items/--page-token 仅在 --brief 下有效"
+    if not 1 <= args.max_items <= HARD_MAX_ITEMS:
+        return f"--max-items 必须在 1..{HARD_MAX_ITEMS} 内（硬上限，超限是错误不是截断）"
+    return None
+
+
+def _print_envelope_error(kind: str, message: str) -> int:
+    print(f"error: {kind}: {message}", file=sys.stderr)
+    return 1
+
+
+def _decorate_branch_payload(payload: dict, args: argparse.Namespace) -> dict:
+    """Attach the shared brief envelope to the slug-less main branches."""
+    if not args.brief:
+        return payload
+    return _brief_envelope(
+        slug=None,
+        payload=payload,
+        records=[],
+        tasks_content="",
+        max_items=args.max_items,
+        page_token=args.page_token,
+    )
 
 
 def main() -> int:
     args = parse_args()
     root = Path(args.root).resolve()
+    invalid = _validate_envelope_flags(args)
+    if invalid:
+        return _print_envelope_error("invalid_query", invalid)
     try:
         specs_root = resolve_specs_root(root, args.specs_dir)
     except ValueError as exc:
@@ -322,7 +550,10 @@ def main() -> int:
             return 1
         package_dir = specs_dir / slug
         if not package_dir.exists():
-            print(f"error: task package not found: {package_dir}", file=sys.stderr)
+            message = f"task package not found: {package_dir}"
+            if args.brief:
+                return _print_envelope_error("missing", message)
+            print(f"error: {message}", file=sys.stderr)
             return 1
         try:
             print(
@@ -333,15 +564,35 @@ def main() -> int:
                     ascii_mode=args.ascii,
                     compact=args.compact,
                     output_format=args.format,
+                    brief=args.brief,
+                    max_items=args.max_items,
+                    page_token=args.page_token,
                 )
             )
+        except EnvelopeError as exc:
+            return _print_envelope_error(exc.kind, exc.message)
         except (OSError, UnicodeError, ValueError) as exc:
+            if args.brief:
+                return _print_envelope_error("unreadable", str(exc))
             print(f"error: {exc}", file=sys.stderr)
             return 1
         return 0
 
     packages = active_packages(specs_dir)
     if not packages:
+        if args.brief or args.format == "json":
+            payload = _decorate_branch_payload(
+                {
+                    "slug": None,
+                    "stage": "new",
+                    "health": HEALTH_OK,
+                    "alerts": [],
+                    "nextStep": "描述要完成的目标，skill 会直接建立任务并开始推进",
+                },
+                args,
+            )
+            print(json.dumps(payload, ensure_ascii=False))
+            return 0
         dash = Dashboard(
             slug="spec",
             stage="new",
@@ -357,7 +608,10 @@ def main() -> int:
     try:
         selection = select_active_package(root, specs_root, packages)
     except (OSError, UnicodeError, ValueError) as exc:
-        print(f"error: cannot bind active task package: {exc}", file=sys.stderr)
+        message = f"cannot bind active task package: {exc}"
+        if args.brief:
+            return _print_envelope_error("unreadable", message)
+        print(f"error: {message}", file=sys.stderr)
         return 1
     if selection.slug:
         try:
@@ -369,19 +623,42 @@ def main() -> int:
                     ascii_mode=args.ascii,
                     compact=args.compact,
                     output_format=args.format,
+                    brief=args.brief,
+                    max_items=args.max_items,
+                    page_token=args.page_token,
                 )
             )
+        except EnvelopeError as exc:
+            return _print_envelope_error(exc.kind, exc.message)
         except (OSError, UnicodeError, ValueError) as exc:
+            if args.brief:
+                return _print_envelope_error("unreadable", str(exc))
             print(f"error: {exc}", file=sys.stderr)
             return 1
         return 0
 
+    warning = selection.warning or f"无法唯一选择活动任务包：{'、'.join(packages)}"
+    if args.brief or args.format == "json":
+        payload = _decorate_branch_payload(
+            {
+                "slug": None,
+                "stage": "status",
+                "health": HEALTH_RISK,
+                "branch": selection.current_branch,
+                "candidates": list(packages),
+                "alerts": [warning],
+                "nextStep": "切换到任务包记录的 integration branch，或显式指定 --slug 只读查看",
+            },
+            args,
+        )
+        print(json.dumps(payload, ensure_ascii=False))
+        return 0
     dash = Dashboard(
         slug="spec",
         stage="status",
         title="任务包分支未绑定",
         health=HEALTH_RISK,
-        alerts=[selection.warning or f"无法唯一选择活动任务包：{'、'.join(packages)}"],
+        alerts=[warning],
         metrics={"门禁": "分支绑定"},
         next_step="切换到任务包记录的 integration branch，或显式指定 --slug 只读查看",
         ascii_mode=args.ascii,

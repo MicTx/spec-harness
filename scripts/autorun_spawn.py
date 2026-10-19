@@ -62,6 +62,7 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import chain_lifecycle  # noqa: E402
 import chain_spawn_support as chain_support  # noqa: E402  # type: ignore
 
 # F4 recovery semantics: the 13-row resume decision table (the tolerant state
@@ -1033,14 +1034,22 @@ def status_payload(root: Path) -> Dict[str, object]:
     # document means (0, 0) and the decision table says nothing to consume.
     plan_checked = 0
     plan_unchecked = 0
+    scope_error = None
     try:
-        plan = plan_payload(root, None)
+        plan = (
+            chain_lifecycle.recorded_plan(root, state, require_fingerprint=False)
+            if state is not None and "plan_docs" in state
+            else plan_payload(root, None)
+        )
         payload["plan"] = plan
         totals = plan["totals"]  # type: ignore[index]
         plan_checked = int(totals["checked"])  # type: ignore[index]
         plan_unchecked = int(totals["unchecked"])  # type: ignore[index]
     except NoPlanError as exc:
         payload["plan"] = {"error": str(exc)}
+    except ChainSpawnError as exc:
+        scope_error = str(exc)
+        payload["plan"] = {"error": scope_error}
     active_package, active_packages = _active_package_facts(root)
     payload["active_package"] = active_package
     if len(active_packages) > 1:
@@ -1055,6 +1064,8 @@ def status_payload(root: Path) -> Dict[str, object]:
         active_packages=active_packages,
     )
     payload["resume"] = {"action": decision.action, "reason": decision.reason, "detail": decision.detail}
+    if scope_error:
+        payload["resume"] = {"action": "state_diverged", "reason": scope_error, "detail": {}}
     return payload
 
 
@@ -1227,6 +1238,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Autorun chain facts and next-round spawn for /spec:autorun.",
     )
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
+    chain_lifecycle.add_close_parser(subparsers)
 
     plan_parser = subparsers.add_parser("plan", help="discover planning documents and count feature checkboxes")
     _add_plan_args(plan_parser)
@@ -1311,7 +1323,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     root: Optional[Path] = None
     try:
         root = _resolve_root(args.root)
-        if args.subcommand == "plan":
+        if args.subcommand == "close":
+            _emit(chain_lifecycle.close_chain(root, "autorun", dry_run=args.dry_run),
+                  chain_lifecycle.render_close, args.format == "json")
+        elif args.subcommand == "plan":
             _emit(plan_payload(root, args.plan), _render_plan, args.format == "json")
         elif args.subcommand == "spawn":
             if args.max_rounds is not None:

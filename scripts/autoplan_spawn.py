@@ -73,11 +73,11 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import chain_lifecycle  # noqa: E402
 import chain_spawn_support as chain_support  # noqa: E402  # type: ignore
 from autorun_spawn import (  # noqa: E402  # type: ignore  # noqa: E402  # type: ignore
     PLAN_ARCHIVE_DIR_NAME,
     PLAN_ROOT,
-    AutorunError,
     NoPlanError,
     discover_plan_docs,
     plan_args_for_prompt,
@@ -103,7 +103,6 @@ from chain_spawn_support import (  # noqa: E402  # type: ignore
     CHAIN_LOCK_FILE,
     CHAIN_SPAWNS_FILE,
     CHAIN_STATE_FILE,
-    DEFAULT_AUTOPLAN_MAX_PASSES,
     PERMISSION_MODES,
     WORKER_START_TIMEOUT_SECONDS,
     ChainSpawnError,
@@ -506,14 +505,15 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
                 "removed, or reworded mid-chain — finish this chain and start a new one, or "
                 "restore the planning documents; refusing the spawn"
             )
-        # F1 (AUD-01) restored default cap: --max-passes > --unbounded > the
-        # default of 20. The strict int gate and the next==cap boundary stay
-        # in the shared guard helpers (F12); the effective cap is forwarded
-        # to the next pass's prompt so the decision is self-carrying.
+        # 2026-10-19 user decision: autoplan passes are uncapped without a
+        # flag — --max-passes > --unbounded > no cap. The strict int gate and
+        # the next==cap boundary stay in the shared guard helpers (F12); the
+        # effective cap is forwarded to the next pass's prompt so the
+        # decision is self-carrying.
         max_passes = resolve_effective_cap(
             args.max_passes,
             getattr(args, "unbounded", False),
-            DEFAULT_AUTOPLAN_MAX_PASSES,
+            None,
             "max-passes",
             error=AutoplanSpawnError,
         )
@@ -734,12 +734,20 @@ def status_payload(root: Path) -> Dict[str, object]:
         recorded = [item for item in state["plan_docs"] if isinstance(item, str)]  # type: ignore[union-attr]
     plan_checked = 0
     plan_unchecked = 0
+    scope_error = None
     try:
-        totals = plan_payload(root, ",".join(recorded) if recorded else None)["totals"]  # type: ignore[index]
-        plan_checked = int(totals["checked"])  # type: ignore[index]
-        plan_unchecked = int(totals["unchecked"])  # type: ignore[index]
-    except (NoPlanError, AutorunError):
+        plan = (
+            chain_lifecycle.recorded_plan(root, state, require_fingerprint=False)
+            if state is not None and "plan_docs" in state
+            else plan_payload(root, None)
+        )
+        totals = plan["totals"]
+        plan_checked = int(totals["checked"])
+        plan_unchecked = int(totals["unchecked"])
+    except NoPlanError:
         pass
+    except ChainSpawnError as exc:
+        scope_error = str(exc)
     master_rel = recorded[0] if recorded else DEFAULT_MASTER_DOC
     master_links = _master_link_docs(root, root / master_rel)
     decision = decide(
@@ -765,6 +773,8 @@ def status_payload(root: Path) -> Dict[str, object]:
                 {"target": diverged_target, "master_links": master_links},
             )
     payload["resume"] = {"action": decision.action, "reason": decision.reason, "detail": decision.detail}
+    if scope_error:
+        payload["resume"] = {"action": "state_diverged", "reason": scope_error, "detail": {}}
     return payload
 
 
@@ -852,6 +862,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Serial pass-chain spawn for /spec:autoplan (same spawn discipline as /spec:autorun).",
     )
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
+    chain_lifecycle.add_close_parser(subparsers)
 
     spawn_parser = subparsers.add_parser("spawn", help="open the next planning-pass interactive session after guards")
     spawn_parser.add_argument("--root", default=".", help="project root (default: current directory)")
@@ -899,15 +910,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            "pass cap for this chain (default: 20); an explicit value overrides the default "
-            "and is forwarded to the next pass's prompt"
+            "explicit pass cap for this chain (the caller's own limit; no flag means no cap); "
+            "an explicit value is forwarded to the next pass's prompt"
         ),
     )
     spawn_parser.add_argument(
         "--unbounded",
         dest="unbounded",
         action="store_true",
-        help=("remove the pass cap entirely (the pre-F1 unbounded behavior; mutually exclusive with --max-passes)"),
+        help=(
+            "explicitly remove the pass cap (now also the no-flag default; kept as a "
+            "compatibility entry and for explicit forwarding; mutually exclusive with --max-passes)"
+        ),
     )
     spawn_parser.add_argument(
         "--permission-mode",
@@ -952,7 +966,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     root: Optional[Path] = None
     try:
         root = _resolve_root(args.root)
-        if args.subcommand == "spawn":
+        if args.subcommand == "close":
+            _emit(chain_lifecycle.close_chain(root, "autoplan", dry_run=args.dry_run),
+                  chain_lifecycle.render_close, args.format == "json")
+        elif args.subcommand == "spawn":
             if args.max_passes is not None:
                 # an explicit cap is validated here, before any lock/state
                 # touch; the default cap and the --unbounded interaction

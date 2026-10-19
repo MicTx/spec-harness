@@ -104,16 +104,15 @@ TERMINAL_OPEN_RETRY_BACKOFF_SECONDS = 2
 # the helper's waits plus its osascript calls.
 REFUSAL_CLOSE_WAIT_SECONDS = 30
 REFUSAL_CLOSE_HELPER_TIMEOUT_SECONDS = 100
-# Chain caps (F1, AUD-01): a restored default bounds every chain — autorun
-# rounds default to 5, autoplan passes to 20 — an explicit ``--max-rounds`` /
-# ``--max-passes`` overrides the default, and ``--unbounded`` removes the cap
-# entirely (the pre-F1 behavior, now opt-in). The 2026-10-09 opt-in-only
-# regime is superseded by this 2026-10-12 restoration; the strict validation
-# and the next==cap boundary judgment (F12) stay unchanged. The effective
-# cap resolves per spawn (flag > --unbounded > default) and travels to the
-# next round's prompt, so a chain's cap decision is self-carrying.
+# Chain caps (F1, AUD-01): autorun rounds keep the restored default of 5;
+# autoplan passes are uncapped without a flag (2026-10-19 user decision) —
+# an explicit ``--max-rounds`` / ``--max-passes`` is the caller's own limit,
+# and ``--unbounded`` stays as an explicit compatibility entry. The strict
+# validation and the next==cap boundary judgment (F12) stay unchanged. The
+# effective cap resolves per spawn (flag > --unbounded > default) and
+# travels to the next round's prompt, so a chain's cap decision is
+# self-carrying.
 DEFAULT_AUTORUN_MAX_ROUNDS = 5
-DEFAULT_AUTOPLAN_MAX_PASSES = 20
 
 # F1 (AUD-01) chain permission modes. ``ask`` renders no escalation flag on
 # any host; ``bypass`` renders the host's escalation flag (claude's
@@ -178,7 +177,7 @@ def validate_cap(value: int, option: str) -> int:
 def resolve_effective_cap(
     explicit: Optional[int],
     unbounded: bool,
-    default: int,
+    default: Optional[int],
     option: str,
     error: Callable[..., Exception] = ChainSpawnError,
 ) -> Optional[int]:
@@ -432,6 +431,24 @@ def atomic_write(path: Path, content: str) -> None:
     os.replace(tmp, path)
 
 
+def closed_chain_marker(state: Dict[str, object]) -> bool:
+    """Recognize only a well-shaped close receipt, never a bare reset flag."""
+    if state.get("lifecycle") != "closed":
+        return False
+    chain = state.get("chain")
+    digest = state.get("previous_digest")
+    if (
+        chain not in ("autoplan", "autorun")
+        or not isinstance(digest, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", digest)
+        or state.get("archive") != f".spec/{chain}/history/{digest}.json"
+        or not isinstance(state.get("closed_at"), str)
+        or not state["closed_at"]
+    ):
+        raise ChainSpawnError("invalid closed chain marker; inspect its archive/audit before restarting")
+    return True
+
+
 def read_state_file(state_file: Path, *, label: str, error: Callable[[str], Exception]) -> Optional[Dict[str, object]]:
     """Strict single-file state read: ``None`` when missing, raise otherwise.
 
@@ -447,7 +464,10 @@ def read_state_file(state_file: Path, *, label: str, error: Callable[[str], Exce
         raise error(f"{label} unreadable ({state_file}): {exc}") from exc
     if not isinstance(data, dict):
         raise error(f"{label} is not a JSON object: {state_file}")
-    return data
+    try:
+        return None if closed_chain_marker(data) else data
+    except ChainSpawnError as exc:
+        raise error(str(exc)) from exc
 
 
 def _normalize_state(state: Dict[str, object]) -> Dict[str, object]:
@@ -521,10 +541,19 @@ def read_state(summary_dir: Path, runtime_dir: Path, chain: str = "unknown") -> 
     except (OSError, json.JSONDecodeError):
         data = None
     if data is not None:
-        return _normalize_state(data), READ_OK
+        try:
+            if closed_chain_marker(data):
+                return None, READ_MISSING
+            return _normalize_state(data), READ_OK
+        except ChainSpawnError:
+            pass  # A malformed close receipt is corrupt, never a fresh chain.
 
     record, line_number = last_audit_record(runtime_dir / CHAIN_SPAWNS_FILE)
     if record is None:
+        return None, READ_CORRUPT
+    try:
+        closed_chain_marker(record)
+    except ChainSpawnError:
         return None, READ_CORRUPT
 
     # Rebuild from the audit tail: atomic write-back plus the recovery audit.
@@ -543,6 +572,8 @@ def read_state(summary_dir: Path, runtime_dir: Path, chain: str = "unknown") -> 
         "recovered_state",
         {"source": f"{CHAIN_SPAWNS_FILE} line {line_number}", "state_file": CHAIN_STATE_FILE},
     )
+    if closed_chain_marker(recovered):
+        return None, READ_MISSING
     return recovered, READ_RECOVERED
 
 

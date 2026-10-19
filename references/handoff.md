@@ -1,13 +1,13 @@
 # Handoff Document Contract
 
-This page is the source of truth for the optional package member `handoff.md` — the session-boundary handoff document that lets work move between one human's sessions, between teammates, into a fresh agent session, or across an agent cluster's lanes without re-deriving the repository. The runtime mechanics live in `scripts/handoff_support.py`; the CLI is `scripts/spec_handoff.py`.
+Source of truth for the optional package member `handoff.md` — the session-boundary handoff document that lets work move between sessions, teammates, fresh agent sessions, or agent-cluster lanes without re-deriving the repository. Runtime mechanics: `scripts/handoff_support.py`; CLI: `scripts/spec_handoff.py`.
 
 ## When to use
 
-- A session ends or pauses mid-package (`pause`), someone else takes over (`takeover`), a human decision is required (`escalation`), a cluster lane finishes (`lane-end`), or the package archives (`close`).
+- A session ends or pauses mid-package (`pause`), someone takes over (`takeover`), a human decision is required (`escalation`), a cluster lane finishes (`lane-end`), or the package archives (`close`).
 - Skip it for work that fits entirely inside one conversation; the package trio already carries that state.
 
-The document is optional by construction: packages without it (all historical packages) lose no gate, and no stage requires creating one. Once present, `scripts/check_spec_package.py` validates its structure and fails closed on malformation.
+The document is optional by construction: packages without it lose no gate, and no stage requires creating one. Once present, `scripts/check_spec_package.py` validates its structure and fails closed on malformation.
 
 ## File layout
 
@@ -30,7 +30,7 @@ python3 scripts/spec_handoff.py show --slug <slug> [--entry N] [--format json]
 python3 scripts/spec_handoff.py validate --slug <slug>
 ```
 
-`--root <project>` and `--specs-dir <dir>` follow the shared script conventions. `update` defaults: `collab` and `actor` carry over from the latest entry (else `solo` / `main`), `event` defaults to `pause`, `status` defaults to `blocked-on-human` for `escalation` and `in-progress` otherwise. `close` is not a manual choice: it exists only as the terminal entry `done --archive` writes, and appending to a closed log is refused. `--note` is capped at 4000 characters; longer narrative belongs in the entry slots. The read-only subcommands `show` / `validate` fall back to `specs/archive/<slug>` after archiving, so a frozen log stays inspectable; `update` never resolves into the archive. The CLI generates structure only — narrative slots are placeholders the handing-off session fills; the script never invents narrative.
+`--root <project>` and `--specs-dir <dir>` follow the shared script conventions. `update` defaults: `collab` and `actor` carry over from the latest entry (else `solo` / `main`), `event` defaults to `pause`, `status` defaults to `blocked-on-human` for `escalation` and `in-progress` otherwise. `close` is not a manual choice — it exists only as the terminal entry `done --archive` writes, and appending to a closed log is refused. `--note` is capped at 4000 characters; longer narrative belongs in the entry slots. The read-only `show` / `validate` fall back to `specs/archive/<slug>` after archiving so a frozen log stays inspectable; `update` never resolves into the archive. The CLI generates structure only — narrative slots are placeholders the handing-off session fills; the script never invents narrative.
 
 Writes are atomic (fsync'd temp file + rename) and verified after landing: a document that does not round-trip through its own validator is rolled back to the previous content, so a crash or a generation bug cannot truncate the append-only log or freeze an invalid document.
 
@@ -81,6 +81,6 @@ The snapshot anchors `head` (git HEAD) and `progress` (task counts). `show` comp
 ## Writing discipline
 
 - Append-only: correct an earlier entry by writing a newer entry, never by rewriting history.
-- One writer at a time: a single session owns the package while it works and writes the boundary entry before releasing it; the file format assumes no concurrent writers (there is no file lock — coordination is by the mode lattice's ownership slots, not by locking).
+- One writer at a time: a single session owns the package while it works and writes the boundary entry before releasing it; the format assumes no concurrent writers — coordination is by the mode lattice's ownership slots, not by locking.
 - The departing side writes; the receiving side fills the 回执 slot on takeover.
-- Escalate early with full context rather than letting a stale session drift; a handoff nobody updates is worse than none — the generated snapshot and the check gate exist to keep that from happening silently.
+- Escalate early with full context rather than letting a stale session drift; a handoff nobody updates is worse than none — the snapshot and the check gate exist to keep that from happening silently.

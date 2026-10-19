@@ -269,6 +269,21 @@ class TestDecideTableAutorun:
         assert stopped.action == "cap_reached"
         assert stopped.detail["next"] == 21 and stopped.detail["cap"] == 20
 
+    def test_row2_autorun_cap_reason_is_byte_unchanged(self):
+        # the 2026-10-19 autoplan tail sentence must never leak into the
+        # autorun surface — the autorun reason stays byte-identical
+        stopped = decide(
+            "autorun",
+            autorun_state(round_index=20, max_rounds=20),
+            "ok",
+            plan_unchecked=1,
+            active_packages=self.PACKAGE,
+        )
+        assert stopped.reason == (
+            "next round 21 exceeds the cap 20 — raise --max-rounds deliberately or close "
+            "the chain; the cap exists to stop runaway loops"
+        )
+
     def test_row2_state_without_cap_is_unbounded(self):
         # chains are unbounded without an explicit cap: a state without
         # max_rounds (the no-flag spawn shape) never takes the cap row —
@@ -286,13 +301,13 @@ class TestDecideTableAutorun:
 
     def test_row3_chain_complete_when_every_feature_checked(self):
         decision = decide(
-            "autorun", autorun_state(), "ok", plan_checked=13, plan_unchecked=0, active_packages=self.PACKAGE
+            "autorun", autorun_state(), "ok", plan_checked=13, plan_unchecked=0, active_packages=[]
         )
         assert decision.action == "chain_complete"
 
     def test_row3_tolerant_zero_counts_mean_nothing_to_consume(self):
         decision = decide(
-            "autorun", autorun_state(), "ok", plan_checked=0, plan_unchecked=0, active_packages=self.PACKAGE
+            "autorun", autorun_state(), "ok", plan_checked=0, plan_unchecked=0, active_packages=[]
         )
         assert decision.action == "chain_complete"
         assert "no qualifying planning document" in decision.reason
@@ -457,6 +472,20 @@ class TestDecideTableAutoplan:
             "autoplan", autoplan_state(pass_index=11, kind="review", target=None), "ok", detail_docs=docs(), **self.BASE
         )
         assert decision.action == "resume_review"
+
+    def test_row2_cap_reason_lists_the_autoplan_ways_out(self):
+        # S6 shape (a recorded 20 from the old default era, or any explicit
+        # N): the reason keeps the shared cap wording and appends the
+        # autoplan-only ways out — a no-flag continuation (the 2026-10-19
+        # default) or --unbounded removes the cap
+        decision = decide(
+            "autoplan", autoplan_state(pass_index=20, max_passes=20), "ok", detail_docs=docs(), **self.BASE
+        )
+        assert decision.action == "cap_reached"
+        assert decision.reason.endswith(
+            "; the recorded cap is the previous pass's explicit decision — a no-flag "
+            "continuation (the new default) or --unbounded removes this cap"
+        )
 
 
 class TestActionVocabulary:

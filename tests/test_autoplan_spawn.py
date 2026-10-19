@@ -1432,10 +1432,10 @@ class TestAuditFieldContract:
         assert payload["kind"] in contract["plan_kind_domain"]
         assert payload["kind"] == "framework"
         assert payload["target"] is None
-        # F1: the restored default cap applies without a flag — recorded and
-        # forwarded to the next pass's prompt; the permission decision and
-        # the feature fingerprint ride in every record face
-        assert payload["max_passes"] == 20
+        # 2026-10-19: no flag means no cap — recorded as null and forwarded
+        # without a cap flag to the next pass's prompt; the permission
+        # decision and the feature fingerprint ride in every record face
+        assert payload["max_passes"] is None
         assert payload["feature_fingerprint"]
         assert payload["permission_mode"] == "inherit"
         assert payload["permission_effective"] == "ask"
@@ -2344,9 +2344,7 @@ class TestModelIdentity:
         payload = json.loads(capsys.readouterr().out)
         assert payload["model"] is None
         assert payload["model_injection"] == "none"
-        assert (
-            payload["shell_command"] == f"cd {tmp_path} && pi --mode text -- '$spec autoplan continue --max-passes 20'"
-        )
+        assert payload["shell_command"] == f"cd {tmp_path} && pi --mode text -- '$spec autoplan continue'"
 
     # --- partial injection ------------------------------------------------------
 
@@ -2711,10 +2709,11 @@ class TestLegacyStateSamples:
 
 
 class TestPassCapDefaults:
-    """F1 (AUD-01): the restored default pass cap — 20 passes without a flag,
-    an explicit ``--max-passes`` overrides, ``--unbounded`` removes (the
-    pre-F1 behavior, now opt-in). The effective cap always forwards to the
-    next pass's prompt so the decision is self-carrying."""
+    """2026-10-19 user decision: autoplan passes are uncapped without a
+    flag, an explicit ``--max-passes`` is the caller's own limit, and
+    ``--unbounded`` stays as an explicit compatibility entry. The effective
+    cap always forwards to the next pass's prompt so the decision is
+    self-carrying."""
 
     @staticmethod
     def seed_master_with_details(root, detail_count):
@@ -2728,31 +2727,36 @@ class TestPassCapDefaults:
         )
         return master
 
-    def test_no_flag_means_default_cap(self, tmp_path, capsys, monkeypatch):
+    def test_no_flag_means_no_cap(self, tmp_path, capsys, monkeypatch):
         self.seed_master_with_details(tmp_path, 4)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autoplan_spawn.session_tty", lambda: "/dev/ttys012")
         argv = ["spawn", "--root", str(tmp_path), "--next", "review", "--host", "pi", "--format", "json", "--dry-run"]
         assert main(argv) == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["max_passes"] == 20
-        assert "--max-passes 20" in payload["shell_command"]
+        assert payload["max_passes"] is None
+        assert "--max-passes" not in payload["shell_command"]
+        assert "--unbounded" not in payload["shell_command"]
 
-    def test_default_cap_refuses_past_twenty(self, tmp_path, capsys, monkeypatch):
-        # fail-closed without any flag: a chain at pass 20 (the restored
-        # default) refuses its 21st spawn instead of spinning unbounded
+    def test_no_flag_continues_past_twenty(self, tmp_path, capsys, monkeypatch):
+        # no flag means no cap (2026-10-19): a chain at pass 20 continues
+        # its 21st pass instead of refusing — the old default-cap refusal
+        # text never appears on the no-flag path
         seed_master(tmp_path)
         state = tmp_path / ".spec" / "autoplan" / "chain.json"
         state.parent.mkdir(parents=True, exist_ok=True)
         state.write_text(json.dumps({"pass": 20}), encoding="utf-8")
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
-        argv = ["spawn", "--root", str(tmp_path), "--next", "review", "--dry-run"]
-        assert main(argv) == 1
+        monkeypatch.setattr("autoplan_spawn.session_tty", lambda: "/dev/ttys012")
+        argv = ["spawn", "--root", str(tmp_path), "--next", "review", "--host", "pi", "--format", "json", "--dry-run"]
+        assert main(argv) == 0
         captured = capsys.readouterr()
-        assert captured.out == ""
-        assert captured.err.strip() == "error: pass cap reached: next pass 21 exceeds --max-passes 20"
-        assert json.loads(state.read_text(encoding="utf-8"))["pass"] == 20
-        assert not (tmp_path / ".git" / "spec-chain" / "autoplan" / "spawns.jsonl").exists()
+        payload = json.loads(captured.out)
+        assert captured.err == ""
+        assert "pass cap reached" not in captured.out
+        assert payload["pass"] == 21
+        assert payload["max_passes"] is None
+        assert "--max-passes" not in payload["shell_command"]
 
     def test_unbounded_conflicts_with_max_passes(self, tmp_path, capsys, monkeypatch):
         # both flags at once is an ambiguous cap decision — refused before any
@@ -2793,8 +2797,9 @@ class TestPassCapDefaults:
 
     def test_recorded_cap_is_not_sticky(self, tmp_path, capsys, monkeypatch):
         # a cap recorded by an earlier pass no longer binds later passes:
-        # the flag alone decides, so a no-flag continuation re-acquires the
-        # default (20), not the recorded 30
+        # the flag alone decides, so a no-flag continuation resolves to no
+        # cap (2026-10-19 default), not the recorded 30 — and never back to
+        # any hidden numeric default
         seed_master(tmp_path)
         state_file = tmp_path / ".spec" / "autoplan" / "chain.json"
         state_file.parent.mkdir(parents=True, exist_ok=True)
@@ -2804,8 +2809,8 @@ class TestPassCapDefaults:
         argv = ["spawn", "--root", str(tmp_path), "--next", "review", "--host", "pi", "--format", "json", "--dry-run"]
         assert main(argv) == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["max_passes"] == 20
-        assert "--max-passes 20" in payload["shell_command"]
+        assert payload["max_passes"] is None
+        assert "--max-passes" not in payload["shell_command"]
 
 
 class TestPassChainPermissionMode:

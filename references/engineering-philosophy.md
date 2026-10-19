@@ -1,8 +1,6 @@
 # Engineering Philosophy
 
-These principles are decision tools, not slogans. When two reasonable actions compete, use the conflict order below to choose the smallest action that leaves the strongest evidence.
-
-The engineering philosophy of this `spec` skill centers on four principles. The goal is not to add a "values statement" but to reduce the four most common AI mistakes on complex tasks: guessing, over-engineering, drive-by changes, and finishing without evidence.
+These principles are decision tools, not slogans, and they exist to reduce the four most common AI mistakes on complex tasks — guessing, over-engineering, drive-by changes, and finishing without evidence — not to add a "values statement". When two reasonable actions compete, use the conflict order below to choose the smallest action that leaves the strongest evidence.
 
 ## Contents
 
@@ -23,11 +21,7 @@ Never silently decide requirements for the user.
 - When several interpretations exist, write the candidates and the current choice
 - When information is insufficient to proceed safely, stop and clarify first
 
-Landing in Spec:
-
-- `/spec` and `/spec:new` route and clarify before any package is written
-- `spec.md` must contain `已确认事实` (confirmed facts), `关键假设` (key assumptions), `待确认问题` (open questions)
-- `/spec:update` must state which assumptions were added, overturned, or converged
+Landing in Spec: `/spec` and `/spec:new` route and clarify before any package is written; `spec.md` must contain `已确认事实` (confirmed facts), `关键假设` (key assumptions), `待确认问题` (open questions); `/spec:update` states which assumptions were added, overturned, or converged.
 
 ### 2. Minimal implementation
 
@@ -37,11 +31,7 @@ Build only the smallest viable solution the current goal requires.
 - No extra abstractions for one-off scenarios
 - No unrequested configurability
 
-Landing in Spec:
-
-- `spec.md` must state the minimal implementation path
-- `tasks.md` tasks orbit the closed loop, not imagined future capabilities
-- `/spec:new` and `/spec:update` both name "what this round does not do"
+Landing in Spec: `spec.md` must state the minimal implementation path; `tasks.md` tasks orbit the closed loop, not imagined future capabilities; `/spec:new` and `/spec:update` both name "what this round does not do".
 
 ### 3. Clear boundaries
 
@@ -51,11 +41,7 @@ Each step touches only what the current task needs.
 - No drive-by cleanup of unrelated code
 - No drive-by style or naming unification
 
-Landing in Spec:
-
-- Every task in `tasks.md` declares `boundary`
-- `/spec:run` confirms the current task's boundary before executing
-- `/spec:check` specifically looks for unrelated changes mixed in
+Landing in Spec: every task in `tasks.md` declares `boundary`; `/spec:run` confirms the current task's boundary before executing; `/spec:check` specifically looks for unrelated changes mixed in.
 
 ### 4. Verification first
 
@@ -65,12 +51,7 @@ Define how completion is proven before starting implementation.
 - "Looks like it works" is not verification
 - No evidence, no clean archive
 
-Landing in Spec:
-
-- Every success criterion in `spec.md` carries `verify`
-- Every task in `tasks.md` carries `verify`
-- Every new package declares the smallest verification level that can prove its boundary: `package` by default, `integration` when directly affected cross-module paths matter, and `project` only for shared or release-wide risk
-- `/spec:check` and `/spec:done` must carry evidence at the declared level; `check_spec_package.py` requires at least one non-placeholder script/test/build evidence item, and when cross-carrier or structure gates are enabled, the corresponding checklist sections must pass as well
+Landing in Spec: every success criterion in `spec.md` and every task in `tasks.md` carries `verify`; every new package declares the smallest verification level that can prove its boundary — `package` by default, `integration` when directly affected cross-module paths matter, `project` only for shared or release-wide risk; `/spec:check` and `/spec:done` carry evidence at the declared level (`check_spec_package.py` requires at least one non-placeholder script/test/build evidence item, and when cross-carrier or structure gates are enabled, the corresponding checklist sections must pass as well).
 
 ## Conflict priority
 

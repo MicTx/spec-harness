@@ -8,7 +8,7 @@ Start with the smallest page that can unblock the current action:
 
 1. The current stage's contract file [`stages/<stage>.md`](stages/) (the [`commands.md`](commands.md) index links every stage; `/spec` entry routing and shared conventions stay there)
 2. The same-stage section of [`output-contracts.md`](output-contracts.md); paste script output when a script exists
-3. The three init fences in [`templates.md`](templates.md) (`new` only)
+3. The init fences in [`templates.md`](templates.md) (`new` only)
 4. [`storage-and-archive.md`](storage-and-archive.md) — directories and archiving
 5. [`naming-and-commits.md`](naming-and-commits.md) — slugs and commits
 

@@ -1123,9 +1123,12 @@ class TestResolveEffectiveCap:
             support.resolve_effective_cap(9, True, 20, "max-passes")
 
     def test_chain_default_constants(self):
-        # the restored defaults are part of the safety contract, not tuning
+        # autorun's restored default is part of the safety contract, not
+        # tuning; the autoplan default-cap constant is gone (2026-10-19 user
+        # decision: no flag means no cap) — no re-assignable default cap may
+        # come back without an explicit flag decision
         assert support.DEFAULT_AUTORUN_MAX_ROUNDS == 5
-        assert support.DEFAULT_AUTOPLAN_MAX_PASSES == 20
+        assert not hasattr(support, "DEFAULT_AUTOPLAN_MAX_PASSES")
 
 
 class TestFeatureFingerprint:

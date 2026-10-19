@@ -28,6 +28,8 @@ recorder produces.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import hashlib
 import json
 import re
@@ -196,13 +198,41 @@ def read_runs_records(package_dir: Path) -> list[dict] | None:
     A present-but-malformed file fails closed with the offending line number:
     the gate must neither crash nor silently drop evidence it cannot read.
     """
+    entries = read_runs_entries(package_dir)
+    if entries is None:
+        return None
+    return [entry.record for entry in entries]
+
+
+class RunEntry:
+    """One ``runs.jsonl`` line: audit position plus exact source bytes."""
+
+    __slots__ = ("line", "raw", "record", "start_offset")
+
+    def __init__(self, line: int, raw: str, record: dict, start_offset: int):
+        self.line = line
+        self.raw = raw
+        self.record = record
+        self.start_offset = start_offset
+
+
+def read_runs_entries(package_dir: Path) -> list[RunEntry] | None:
+    """Line-annotated parse of ``runs.jsonl``; ``None`` when the file is absent.
+
+    Single parser behind both the gate (``read_runs_records``) and the
+    read-only ``show`` view: the same fail-closed-by-line-number contract,
+    with the raw line kept so bounded views stay byte-reassemblable.
+    """
     path = package_dir / RUNS_FILENAME
     if not path.is_file():
         return None
-    records: list[dict] = []
+    entries: list[RunEntry] = []
     content = read_regular_text(path)
+    offset = 0
     for number, line in enumerate(content.splitlines(), 1):
+        line_bytes = len(line.encode("utf-8")) + 1  # +1 for the consumed newline
         if not line.strip():
+            offset += line_bytes
             continue
         try:
             record = json.loads(line)
@@ -210,8 +240,9 @@ def read_runs_records(package_dir: Path) -> list[dict] | None:
             raise ValueError(f"{RUNS_FILENAME} 第 {number} 行不是合法 JSON：{exc}") from exc
         if not isinstance(record, dict):
             raise ValueError(f"{RUNS_FILENAME} 第 {number} 行不是 JSON 对象")
-        records.append(record)
-    return records
+        entries.append(RunEntry(number, line, record, offset))
+        offset += line_bytes
+    return entries
 
 
 def latest_record_by_task(records: list[dict]) -> dict[str, dict]:
@@ -242,6 +273,67 @@ def _machine_tasks(tasks_content: str) -> tuple[list[tuple[str, str, str]], list
     return machine, errors, manual_count
 
 
+def _runs_gate_states(
+    spec_content: str,
+    tasks_content: str,
+    package_dir: Path | None,
+    root: Path | None,
+) -> tuple[bool | None, list[str], str, dict[str, str]]:
+    """Single-pass runs-gate evaluation with per-task freshness states.
+
+    The state comparison lives ONLY here: ``evaluate_runs_gate`` (gate
+    callers) and ``show`` (bounded read view) consume the same computation —
+    there is no second fingerprint-comparison truth.
+    """
+    if not runs_protocol_enabled(spec_content):
+        return None, [], "", {}
+    if package_dir is None or root is None:
+        return None, [], "适用外：缺少 package_dir/root（路由与报告上下文不评估运行证据）", {}
+    try:
+        machine, errors, manual_count = _machine_tasks(tasks_content)
+    except SpecControlError as exc:
+        return False, [f"任务清单解析失败：{exc}"], "任务清单解析失败", {}
+    manual_ids = {
+        record.id
+        for record in parse_task_records(tasks_content)
+        if (classification := classify_verify(record.verify)) is not None and classification.kind == "manual"
+    }
+    try:
+        records = read_runs_records(package_dir)
+    except (OSError, UnicodeError, ValueError) as exc:
+        return False, [f"runs 证据不可读：{exc}"], "runs 证据不可读", {task_id: "unverified" for task_id, _c, _v in machine}
+    fingerprint = compute_tree_fingerprint(root)
+    if fingerprint is None:
+        return None, [], "适用外：非 Git 工作区或指纹不可计算，跳过 runs 比对", {}
+    latest = latest_record_by_task(records or [])
+    passed = 0
+    states: dict[str, str] = {task_id: "manual" for task_id in manual_ids}
+    for task_id, _command, _verify in machine:
+        record = latest.get(task_id)
+        if record is None:
+            errors.append(f"{task_id}：未验证（{RUNS_FILENAME} 无该任务记录）")
+            states[task_id] = "unverified"
+            continue
+        exit_code = record.get("exit")
+        if exit_code != 0:
+            errors.append(f"{task_id}：未验证（最近记录 exit={exit_code}）")
+            states[task_id] = "unverified"
+            continue
+        recorded_fp = record.get("tree_fp")
+        if not isinstance(recorded_fp, str) or recorded_fp != fingerprint:
+            shown = recorded_fp if isinstance(recorded_fp, str) else str(recorded_fp)
+            errors.append(
+                f"{task_id}：证据过期（记录指纹 {shown[:12]} ≠ 当前工作树指纹 {fingerprint[:12]}；"
+                "工作树变更后需重跑 spec_verify.py）"
+            )
+            states[task_id] = "stale"
+            continue
+        passed += 1
+        states[task_id] = "fresh"
+    detail = f"机器任务 {passed}/{len(machine)} 最近记录 exit==0 且指纹匹配；manual 任务 {manual_count} 项"
+    return not errors, errors, detail, states
+
+
 def evaluate_runs_gate(
     spec_content: str,
     tasks_content: str,
@@ -257,43 +349,8 @@ def evaluate_runs_gate(
     and ``tree_fp`` equal to the current fingerprint; anything else is named
     precisely: 未验证 (no usable record) or 证据过期 (tree moved since).
     """
-    if not runs_protocol_enabled(spec_content):
-        return None, [], ""
-    if package_dir is None or root is None:
-        return None, [], "适用外：缺少 package_dir/root（路由与报告上下文不评估运行证据）"
-    try:
-        machine, errors, manual_count = _machine_tasks(tasks_content)
-    except SpecControlError as exc:
-        return False, [f"任务清单解析失败：{exc}"], "任务清单解析失败"
-    try:
-        records = read_runs_records(package_dir)
-    except (OSError, UnicodeError, ValueError) as exc:
-        return False, [f"runs 证据不可读：{exc}"], "runs 证据不可读"
-    fingerprint = compute_tree_fingerprint(root)
-    if fingerprint is None:
-        return None, [], "适用外：非 Git 工作区或指纹不可计算，跳过 runs 比对"
-    latest = latest_record_by_task(records or [])
-    passed = 0
-    for task_id, _command, _verify in machine:
-        record = latest.get(task_id)
-        if record is None:
-            errors.append(f"{task_id}：未验证（{RUNS_FILENAME} 无该任务记录）")
-            continue
-        exit_code = record.get("exit")
-        if exit_code != 0:
-            errors.append(f"{task_id}：未验证（最近记录 exit={exit_code}）")
-            continue
-        recorded_fp = record.get("tree_fp")
-        if not isinstance(recorded_fp, str) or recorded_fp != fingerprint:
-            shown = recorded_fp if isinstance(recorded_fp, str) else str(recorded_fp)
-            errors.append(
-                f"{task_id}：证据过期（记录指纹 {shown[:12]} ≠ 当前工作树指纹 {fingerprint[:12]}；"
-                "工作树变更后需重跑 spec_verify.py）"
-            )
-            continue
-        passed += 1
-    detail = f"机器任务 {passed}/{len(machine)} 最近记录 exit==0 且指纹匹配；manual 任务 {manual_count} 项"
-    return not errors, errors, detail
+    ok, errors, detail, _states = _runs_gate_states(spec_content, tasks_content, package_dir, root)
+    return ok, errors, detail
 
 
 def machine_verification_summary(tasks_content: str, package_dir: Path) -> str | None:
@@ -440,6 +497,223 @@ def run_selected_tasks(args: argparse.Namespace) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------- #
+# show subcommand: bounded read-only evidence view (F3 / doc 03 §2.3)
+# --------------------------------------------------------------------------- #
+
+SHOW_CAPABILITY = "evidence"
+DEFAULT_MAX_BYTES = 16384
+DEFAULT_MAX_LINES = 200
+HARD_MAX_BYTES = 1024 * 1024
+HARD_MAX_LINES = 5000
+
+
+class ShowError(Exception):
+    """Classified show failure; kind stays in the shared envelope table."""
+
+    def __init__(self, kind: str, message: str):
+        super().__init__(message)
+        self.kind = kind
+        self.message = message
+
+
+def _encode_show_token(payload: dict) -> str:
+    return base64.urlsafe_b64encode(json.dumps(payload, sort_keys=True).encode("utf-8")).decode("ascii")
+
+
+def _decode_show_token(token: str) -> dict:
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8"))
+    except (binascii.Error, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ShowError("invalid_query", f"page token 不可解码：{exc}") from exc
+    if not isinstance(payload, dict):
+        raise ShowError("invalid_query", "page token 必须编码 JSON 对象")
+    return payload
+
+
+def _show_freshness(spec_content: str, tasks_content: str, package_dir: Path, root: Path) -> dict:
+    """Freshness block strictly from the ``_runs_gate_states`` computation."""
+    ok, errors, detail, states = _runs_gate_states(spec_content, tasks_content, package_dir, root)
+    if ok is None:
+        per_task = {}
+        try:
+            per_task = {record.id: "n_a" for record in parse_task_records(tasks_content)}
+        except SpecControlError:
+            per_task = {}
+        reason = detail or "适用外：包未启用 evidence: runs 协议，无 runs 新鲜度可言"
+        return {"status": "n_a", "ok": None, "reason": reason, "errors": errors, "per_task": per_task}
+    return {"status": "evaluated", "ok": ok, "detail": detail, "errors": errors, "per_task": states}
+
+
+def show_evidence(args: argparse.Namespace) -> int:
+    """Bounded, read-only, version-pinned view over ``runs.jsonl``.
+
+    Never executes verify commands and never writes files; the only
+    subprocesses are the read-only git calls inside the tree fingerprint.
+    A missing ``runs.jsonl`` is the *unverified* fact it is — a ``missing``
+    error, never an empty success.
+    """
+    if not 1 <= args.max_bytes <= HARD_MAX_BYTES:
+        raise ShowError("invalid_query", f"--max-bytes 必须在 1..{HARD_MAX_BYTES} 内（硬上限，超限是错误不是截断）")
+    if not 1 <= args.max_lines <= HARD_MAX_LINES:
+        raise ShowError("invalid_query", f"--max-lines 必须在 1..{HARD_MAX_LINES} 内（硬上限，超限是错误不是截断）")
+    if args.failures_only and args.no_freshness:
+        raise ShowError("invalid_query", "--failures-only 的 stale 判定依赖 freshness，不能与 --no-freshness 同时使用")
+
+    root = Path(args.root).resolve()
+    try:
+        specs_root = resolve_specs_root(root, args.specs_dir)
+        package_dir = resolve_specs_child(specs_root, "specs", args.slug)
+    except ValueError as exc:
+        raise ShowError("invalid_query", str(exc)) from exc
+    spec_path = package_dir / "spec.md"
+    tasks_path = package_dir / "tasks.md"
+    if not spec_path.is_file() or not tasks_path.is_file():
+        raise ShowError("missing", f"task package files missing: {spec_path} / {tasks_path}")
+    try:
+        spec_content = read_regular_text(spec_path)
+        tasks_content = read_regular_text(tasks_path)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ShowError("unreadable", f"包文档不可读：{exc}") from exc
+    try:
+        known_tasks = {record.id for record in parse_task_records(tasks_content)}
+    except SpecControlError as exc:
+        raise ShowError("unreadable", f"任务清单不可解析：{exc}") from exc
+    unknown = [task_id for task_id in args.task if task_id not in known_tasks]
+    if unknown:
+        raise ShowError("invalid_query", f"未知任务 id：{'、'.join(unknown)}")
+    task_filter = set(args.task) if args.task else None
+
+    try:
+        entries = read_runs_entries(package_dir)
+    except FileNotFoundError as exc:
+        raise ShowError("missing", f"{RUNS_FILENAME} 不存在：未验证事实，不是空列表") from exc
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ShowError("unreadable", str(exc)) from exc
+    if entries is None:
+        raise ShowError("missing", f"{RUNS_FILENAME} 不存在：未验证事实，不是空列表")
+    content_bytes = (package_dir / RUNS_FILENAME).read_bytes()
+    version = hashlib.sha256(content_bytes).hexdigest()
+
+    # View construction: deterministic ordering derived only from file content.
+    view = list(entries)  # history view: file order
+    if not args.history:
+        latest: dict[str, RunEntry] = {}
+        for entry in entries:
+            task = entry.record.get("task")
+            if isinstance(task, str) and task:
+                latest[task] = entry
+        view = sorted(latest.values(), key=lambda entry: entry.line)
+        if args.failures_only:
+            freshness = _show_freshness(spec_content, tasks_content, package_dir, root)
+            view = [
+                entry
+                for entry in view
+                if freshness["per_task"].get(entry.record.get("task", "")) in {"stale", "unverified"}
+            ]
+    elif args.failures_only:
+        freshness = _show_freshness(spec_content, tasks_content, package_dir, root)
+        failing = {
+            task for task, state in freshness["per_task"].items() if state in {"stale", "unverified"}
+        }
+        view = [entry for entry in view if entry.record.get("task") in failing]
+    if task_filter is not None:
+        view = [entry for entry in view if entry.record.get("task") in task_filter]
+
+    # Resume point: token pins the exact next line (number + byte offset).
+    start_index = 0
+    if args.page_token:
+        token = _decode_show_token(args.page_token)
+        if token.get("capability") != SHOW_CAPABILITY:
+            raise ShowError("invalid_query", "page token 不属于 evidence 能力")
+        if token.get("version") != version:
+            raise ShowError(
+                "version_changed",
+                f"runs.jsonl 摘要已变化（token {str(token.get('version'))[:12]} ≠ 当前 {version[:12]}），"
+                "请从头重取，不得跨版本拼接",
+            )
+        line_index = token.get("line_index")
+        offset_bytes = token.get("offset_bytes")
+        start_index = next((i for i, entry in enumerate(view) if entry.line == line_index), None)
+        if start_index is None or view[start_index].start_offset != offset_bytes:
+            raise ShowError("invalid_query", f"page token 锚点不匹配：line={line_index}, offset={offset_bytes}")
+
+    items: list[dict] = []
+    raw_bytes = 0
+    index = start_index
+    truncated_reason = "none"
+    next_token = None
+    while index < len(view):
+        entry = view[index]
+        entry_bytes = len(entry.raw.encode("utf-8"))
+        if len(items) >= args.max_lines:
+            truncated_reason = "line_budget"
+            break
+        if entry_bytes > args.max_bytes:
+            # Oversized single line: an explicit marker, never a silent drop
+            # or a hard truncation pretending to be the record.
+            items.append(
+                {
+                    "line": entry.line,
+                    "oversized": True,
+                    "length_bytes": entry_bytes,
+                    "sha256": hashlib.sha256(entry.raw.encode("utf-8")).hexdigest(),
+                }
+            )
+            truncated_reason = "oversized_line"
+            index += 1
+            break
+        if raw_bytes + entry_bytes > args.max_bytes:
+            truncated_reason = "byte_budget"
+            break
+        items.append({"line": entry.line, "record": entry.record, "raw": entry.raw})
+        raw_bytes += entry_bytes
+        index += 1
+
+    elided = truncated_reason == "oversized_line"
+    complete = index >= len(view) and not elided
+    if complete:
+        truncated_reason = "none"
+    if index < len(view):
+        anchor = view[index]
+        next_token = _encode_show_token(
+            {
+                "capability": SHOW_CAPABILITY,
+                "offset_bytes": anchor.start_offset,
+                "line_index": anchor.line,
+                "version": version,
+            }
+        )
+
+    query = {
+        "slug": args.slug,
+        "task": list(args.task) if args.task else None,
+        "failures_only": args.failures_only,
+        "history": args.history,
+        "freshness": not args.no_freshness,
+        "max_bytes": args.max_bytes,
+        "max_lines": args.max_lines,
+    }
+    payload: dict = {
+        "capability": SHOW_CAPABILITY,
+        "query": query,
+        "version": {"source_sha256": version, "records": len(entries)},
+        "items": items,
+        "counts": {"returned": len(items), "total_matching": len(view)},
+        "complete": complete,
+        "truncated_reason": truncated_reason,
+        # Line-granular slicing: cuts only ever fall on line (codepoint-safe)
+        # boundaries, so a partial line is never returned.
+        "partial_line": False,
+        "next": next_token,
+        "stdout_note": "stdout_tail_sha256 仅是尾部 4096 B 摘要；正文不可从 runs.jsonl 恢复，完整证据=重跑 run",
+    }
+    if not args.no_freshness:
+        payload["freshness"] = _show_freshness(spec_content, tasks_content, package_dir, root)
+    print(json.dumps(payload, ensure_ascii=False))
+    return 0
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Executable verify recorder for Spec packages.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -455,11 +729,47 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_TIMEOUT_S,
         help=f"Per-command timeout in seconds (default: {DEFAULT_TIMEOUT_S})",
     )
+    show_parser = subparsers.add_parser(
+        "show",
+        help="Bounded read-only view over runs.jsonl (never executes verify, never writes)",
+    )
+    show_parser.add_argument("--root", default=".", help="Project root (default: current directory)")
+    show_parser.add_argument("--slug", required=True, help="Task package slug")
+    add_specs_dir_arg(show_parser)
+    show_parser.add_argument("--task", action="append", default=[], help="Restrict to task id; repeat for multiple")
+    show_parser.add_argument(
+        "--failures-only", action="store_true", help="Latest view filtered to failing or stale tasks"
+    )
+    show_parser.add_argument("--history", action="store_true", help="All records in file order instead of latest-per-task")
+    show_parser.add_argument("--page-token", default=None, help="Opaque continuation token from a prior envelope's `next`")
+    show_parser.add_argument(
+        "--max-bytes",
+        type=int,
+        default=DEFAULT_MAX_BYTES,
+        help=f"Raw-line byte budget per page (default {DEFAULT_MAX_BYTES}, hard cap {HARD_MAX_BYTES})",
+    )
+    show_parser.add_argument(
+        "--max-lines",
+        type=int,
+        default=DEFAULT_MAX_LINES,
+        help=f"Item line budget per page (default {DEFAULT_MAX_LINES}, hard cap {HARD_MAX_LINES})",
+    )
+    show_parser.add_argument(
+        "--no-freshness",
+        action="store_true",
+        help="Omit the freshness block (gate conclusion stays with check)",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.command == "show":
+        try:
+            return show_evidence(args)
+        except ShowError as exc:
+            print(f"error: {exc.kind}: {exc.message}", file=sys.stderr)
+            return 1
     return run_selected_tasks(args)
 
 

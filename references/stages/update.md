@@ -17,7 +17,7 @@ Execution order:
 
 Adding tasks must not invalidate existing deliverables.
 
-1. **Append a new heading section after the original text**: keep the old task blocks, their trailing `---`, the progress footer, and other tail text verbatim; after all old content, open the appended section with a new Markdown heading (e.g. `## Appended tasks (this round)`) and write the new tasks there. This round's progress goes into the new section. Never delete or reorder old tasks so positional IDs drift; new tasks use unique explicit IDs.
+1. **Append a new heading section after the original text**: keep the old task blocks, their trailing `---`, the progress footer, and other tail text verbatim; after all old content open the appended section with a new heading (e.g. `## Appended tasks (this round)`) and write the new tasks there — never delete or reorder old tasks so positional IDs drift; new tasks use unique explicit IDs.
 2. **Caller acceptance after the rewrite**: re-parse the three documents and confirm every previously delivered task still exists, stays checked, and has unchanged `boundary`/`verify` text. Deleting or unchecking a delivered task breaks the contract — restore first (`git diff` / `git restore` against the WIP commit), then re-verify.
 
 ### Update rollback-safety contract (Git WIP)
@@ -36,8 +36,7 @@ In-place rewrites of the three documents must be wrapped in a Git WIP recovery p
 
 Historical `update-checkpoint.json` (retired mechanism, read-only recognition):
 
-- **Route advises, gates agree**: a package holding a historical `update-checkpoint.json` (live or corrupted) gets a prominent advisory from `scripts/route_spec_package.py` (Git history is the recovery point) while routing normally; `scripts/check_spec_package.py` still exits non-zero with Git recovery guidance — a half-applied package never passes review; `scripts/complete_spec_package.py` refuses to archive; `scripts/check_all_spec_packages.py` reports failure. Archived packages keep the file as comparable history; archived read-only review never fails on it.
-- **Resolution**: compare the current documents against Git history (the recorded snapshot fields in the file help locate the pre-update state), decide keep-new or restore via `git reset --hard` / `git revert`, then delete the package's `update-checkpoint.json` and re-run the refused gate.
+- **Route advises, gates agree**: a package holding a historical `update-checkpoint.json` (live or corrupted) gets a prominent advisory from `scripts/route_spec_package.py` (Git history is the recovery point) while routing normally; `scripts/check_spec_package.py` still exits non-zero with Git recovery guidance — a half-applied package never passes review; `scripts/complete_spec_package.py` refuses to archive; `scripts/check_all_spec_packages.py` reports failure. Archived packages keep the file as comparable history; archived read-only review never fails on it.- **Resolution**: compare the current documents against Git history (the recorded snapshot fields in the file help locate the pre-update state), decide keep-new or restore via `git reset --hard` / `git revert`, then delete the package's `update-checkpoint.json` and re-run the refused gate.
 - **Recognition CLI** (`scripts/update_checkpoint.py`, read-only; `begin`/`rollback`/`complete` are retired and refuse with the Git WIP guidance above):
 
 ```bash

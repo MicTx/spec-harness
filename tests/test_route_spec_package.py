@@ -1212,3 +1212,84 @@ def test_report_overview_prioritizes_dependency_before_orchestration(tmp_path):
     assert "task-ghost" in route_output.split("## 接下来")[-1]
     assert "修正项目任务依赖" in overview.split("## 接下来")[-1]
     assert "修正项目编排策略" not in overview.split("## 接下来")[-1]
+
+
+# --------------------------------------------------------------------------- #
+# F3 brief / three-branch JSON (doc 03 §2.2, D-1 legacy-defect fix)
+# --------------------------------------------------------------------------- #
+
+
+def _route_cli(root, *args):
+    return subprocess.run(
+        [
+            sys.executable,
+            str(Path(__file__).parents[1] / "scripts" / "route_spec_package.py"),
+            "--root",
+            str(root),
+            *args,
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.mark.parametrize("extra_args", [["--format", "json"], ["--format", "json", "--brief"]])
+def test_route_cli_json_covers_no_package_branch(tmp_path, extra_args):
+    """D-1 regression: --format json used to fall back to markdown here."""
+    completed = _route_cli(tmp_path, *extra_args)
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert payload["slug"] is None
+    assert payload["stage"] == "new"
+
+
+def test_route_cli_json_covers_unbound_branch(tmp_path):
+    slug_a = "2026-09-01_fix-first-unbound"
+    slug_b = "2026-09-02_fix-second-unbound"
+    for slug in (slug_a, slug_b):
+        spec = COMPLETE_SPEC + f"\n## 5. 技术决策\n- Git integration branch：`spec/{slug}`\n"
+        _create_package(
+            tmp_path / ".spec" / "specs",
+            slug,
+            spec_text=spec,
+            tasks_text="- [ ] Task\n  - boundary: x\n  - verify: x\n",
+            checklist_text="# C\n",
+        )
+    subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)], check=True)
+    completed = _route_cli(tmp_path, "--format", "json")
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)  # markdown before the D-1 fix
+    assert payload["slug"] is None
+    assert payload["stage"] == "status"
+    assert set(payload["candidates"]) == {slug_a, slug_b}
+
+
+def test_route_cli_brief_envelope_superset(tmp_path):
+    slug = "2026-09-03_fix-brief-envelope"
+    _create_package(
+        tmp_path / ".spec" / "specs",
+        slug,
+        spec_text=COMPLETE_SPEC + f"\n## 5. 技术决策\n- Git integration branch：`spec/{slug}`\n",
+        tasks_text=(
+            "- [ ] Task A\n  - boundary: 边界A\n  - verify: `pytest -q`\n"
+            "- [x] Task B\n  - boundary: 边界B\n  - verify: `pytest -q`\n"
+        ),
+        checklist_text="# C\n**验收结果**：待修复\n",
+    )
+    plain = json.loads(_route_cli(tmp_path, "--slug", slug, "--format", "json").stdout)
+    brief = json.loads(_route_cli(tmp_path, "--slug", slug, "--format", "json", "--brief").stdout)
+    for key, value in plain.items():
+        assert brief[key] == value, key
+    assert brief["capability"] == "brief"
+    assert brief["counts"] == {"returned": 2, "total_matching": 2}
+    assert brief["complete"] is True
+    assert brief["truncated_reason"] == "none"
+    assert {task["state"] for task in brief["tasks"]} == {"ready", "done"}
+    assert brief["handoff"]["fresh"] == "absent"
+
+
+def test_route_cli_brief_missing_slug_is_classified_error(tmp_path):
+    completed = _route_cli(tmp_path, "--slug", "2026-09-04_fix-no-such", "--format", "json", "--brief")
+    assert completed.returncode == 1
+    assert completed.stdout == ""
+    assert "error: missing:" in completed.stderr

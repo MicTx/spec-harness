@@ -78,7 +78,7 @@ Run the installer from a checked-out source or release tree:
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.19.0
+git checkout v0.19.1
 bash install.sh
 ```
 
@@ -221,6 +221,7 @@ spec/
 │   ├── autoplan_gate.py
 │   ├── autoplan_spawn.py
 │   ├── autorun_spawn.py
+│   ├── chain_lifecycle.py
 │   ├── chain_recovery.py
 │   ├── chain_spawn_support.py
 │   ├── check_all_spec_packages.py
@@ -309,6 +310,15 @@ git diff --check
 ```
 
 The full contributor matrix is in [`CONTRIBUTING.md`](CONTRIBUTING.md). A task package declares `package`, `integration`, or `project` verification in `spec.md` under `### 5.1 验证策略` (machine key `verification-strategy`): sections are recognized by their machine keys, so English titles and key anchors are equally valid — see the English-title variant in [`references/templates.md`](references/templates.md).
+
+## Efficiency And Read Costs
+
+The trade-offs of the internal read surface (`route_spec_package.py --format json --brief` task slices and `spec_verify.py show` evidence views) versus prose compression are backed by a four-arm ablation: A baseline / B compression only / C internal tools only / D combined, with 16 frozen scenarios grouped into five fixed task classes, byte-identical stable projections across two consecutive runs, and three layers (bytes, deterministic calls, real usage) reported separately with no cross-layer conversion.
+
+- Prose compression lowers read bytes in all five task classes (−23 to −2,270 B per class) and the static document face by 1,357 B, with zero task-completeness loss.
+- The internal-tool dispatch sentence is a bounded 248 B always-on cost; the combined arm still nets 782 B saved on the highest-volume task class.
+- `--brief` reduces both calls and bytes when one view replaces several full reads (measured: −1 call and −552 B on the review scenario); small-package locating and single-file precise reads stay native per the dispatch decision table, and measured negative-benefit rows are preserved as-is.
+- `spec_verify.py show --history` full reassembly is used only when the complete log is required, with pages reassembling byte-for-byte; first screens and short evidence stay on direct reads.
 
 ## Versions And Releases
 

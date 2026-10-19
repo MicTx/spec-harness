@@ -8,13 +8,13 @@ description: >-
 
 # Spec Workflow
 
-When a coding task outlives one conversation, the missing tool is usually a shared memory of decisions and evidence. Spec Harness supplies that memory as a Development Record under `.spec/specs/YYYY-MM-DD_slug/`: `spec.md` holds scope, `tasks.md` holds executable work, and `checklist.md` holds acceptance. Scripts in `scripts/` route and validate the record.
+When a coding task outlives one conversation, the missing tool is usually a shared memory of decisions and evidence. Spec Harness supplies that memory as a Development Record under `.spec/specs/YYYY-MM-DD_slug/`: `spec.md` holds scope, `tasks.md` holds executable work (legacy v1 packages add a `checklist.md`). Scripts in `scripts/` route and validate the record.
 
 The contract is intentionally small. Every task says what it may change (`boundary`) and how completion is proved (`verify`). The main session still owns routing, integration, acceptance, and Git closeout; a worker result never replaces those decisions.
 
 ## When to use
 
-Use spec for multi-step or cross-session development that needs tracked scope, tasks, and acceptance criteria, when the user explicitly requests spec mode or task packages, or at a project start / phase boundary that needs an interactive planning pass before the autonomous chain. Skip it for small reversible fixes, one-off experiments, or work whose plan and proof fit one short command sequence. For an obviously small task (one-line reversible fix with its test, typo, copy tweak), advise against a package and offer the lightweight path instead — fix + test directly, then push with a `Spec: none (<非空理由>)` footer; the user decides whether they want the record anyway.
+Use spec for multi-step or cross-session development that needs tracked scope, tasks, and acceptance criteria, when the user explicitly requests spec mode or task packages, or at a project start / phase boundary needing an interactive planning pass before the autonomous chain. Skip it for small reversible fixes, one-off experiments, or work whose plan and proof fit one short command sequence: for an obviously small task (one-line reversible fix with its test, typo, copy tweak), advise against a package and offer the lightweight path — fix + test directly, then push with a `Spec: none (<非空理由>)` footer; the user decides whether they want the record anyway.
 
 ## Commands
 
@@ -43,7 +43,7 @@ Read only the current stage's file under `references/stages/` ([`references/comm
 | `/spec:doctor` | environment self-check and repair |
 | `/spec:organize` | structure audit; audit-only by default, `--apply` creates the package; never delete, archive under `archive/retired` |
 
-Install profile: `new / run / check / done / push` ship in every install; the extended stages (`goal`, `autoplan`, `autorun`, `update`, `status`, `doctor`, `organize`) belong to `INSTALL_PROFILE=full`, and a core install answers them with the reinstall hint instead of executing them.
+Install profile: `new / run / check / done / push` ship in every install; the extended stages need `INSTALL_PROFILE=full` — a core install answers them with the reinstall hint instead of executing them (boundary: [`references/commands.md`](references/commands.md)).
 
 ## Core capability: single-orchestrator execution
 
@@ -58,41 +58,41 @@ The main session is the orchestrator and owns routing, acceptance, and the `done
 
 ## Execution loop
 
-Route first (`scripts/route_spec_package.py`; no active package → `new`), verify the integration branch, and give every task a `boundary` (what may change) and a `verify` (how completion is proven), with `depends-on` when order matters. Produce the route decision (`python3 scripts/route_decision.py --root <project> --slug <slug>`; contract: `references/stages/run.md` step 3) and write `### 5.4 编排策略` when the route is not `local`, then work ready tasks in dependency order — a task is checked off only after its `verify` actually ran. Converge: all tasks checked → check gates → `checklist.md` with real evidence → `done`/`push` as authorized; a blocked task gets a `!` marker and surfaces to the user, never a silent skip.
+Route first (`scripts/route_spec_package.py`; no active package → `new`), verify the integration branch, and give every task a `boundary` (what may change) and a `verify` (how completion is proven), with `depends-on` when order matters. Produce the route decision (`python3 scripts/route_decision.py --root <project> --slug <slug>`; contract: [`references/stages/run.md`](references/stages/run.md)) and write `### 5.4 编排策略` when the route is not `local`, then work ready tasks in dependency order — a task is checked off only after its `verify` actually ran. Converge: all tasks checked → check gates → the acceptance surface with real evidence → `done`/`push` as authorized; a blocked task gets a `!` marker and surfaces to the user, never a silent skip.
+
+Bounded internal reads: when one view replaces several reads use `route_spec_package.py --brief` (state, contracts) or `spec_verify.py show` (evidence, freshness); single files and `measure_skill_surface.py` stay direct; on error use plain reads.
 
 ## Progress and continuation
 
-Continuation is `/spec:run` itself: next ready task → verify → check off → repeat; after an interruption, re-running `/spec:run` resumes from `tasks.md` state. Cross-collaborator boundaries (pause, takeover, agent-cluster lanes) go through the optional `handoff.md` (`python3 scripts/spec_handoff.py`; contract: [`references/handoff.md`](references/handoff.md)). User pause/abort, pending user messages, and project trust prompts always outrun the loop; the optional `hooks/claude_stop_guard.py` keeps convergence explicit and never expands Git authorization.
+Continuation is `/spec:run` itself: next ready task → verify → check off → repeat; after an interruption, re-running `/spec:run` resumes from `tasks.md` state. Cross-collaborator boundaries (pause, takeover, agent-cluster lanes) go through the optional `handoff.md` (`scripts/spec_handoff.py`; contract: [`references/handoff.md`](references/handoff.md)). User pause/abort, pending user messages, and project trust prompts always outrun the loop; the optional `hooks/claude_stop_guard.py` keeps convergence explicit without expanding Git authorization.
 
 ## Execution rules
 
-1. **Start with routing**: Run `scripts/route_spec_package.py` first. If no active package exists, use `new`.
+1. **User-facing output**: Spec Harness is the internal method, not the user's subject. Every update starts from the user's goal and actual project progress: readable project name, real tasks, current work, concrete issues, delivered results, and verification. Do not expose the stage pipeline, gate counts, package maintenance, or `/spec:*` command handoffs as the main narrative; use [`references/output-contracts.md`](references/output-contracts.md), where script output is authoritative.
 
-2. **User-facing output**: Spec Harness is the internal method, not the user's subject. Every update starts from the user's goal and actual project progress: readable project name, real tasks, current work, concrete issues, delivered results, and verification. Do not expose the stage pipeline, gate counts, package maintenance, or `/spec:*` command handoffs as the main narrative. Use `references/output-contracts.md`; script output is authoritative where available.
-
-3. **Blocking conditions**:
+2. **Blocking conditions**:
    - Can't `run` while `spec.md` has template placeholders or blockers
    - Can't `done` without `boundary` and `verify` in every task
-   - Can't `done` unless `checklist.md` is fully checked with passing acceptance and at least one non-placeholder evidence (script/test/build output)
-   - A historical `update-checkpoint.json` (retired mechanism) marks a half-applied package: route renders a prominent advisory and check/done refuse until Git-history recovery resolves the triad and the file is deleted (`scripts/update_checkpoint.py` `status` recognizes it; contract: `references/stages/update.md`)
+   - Can't `done` unless the acceptance surface is fully checked with passing acceptance and at least one non-placeholder evidence (script/test/build output)
+   - A historical `update-checkpoint.json` (retired mechanism) marks a half-applied package: route renders a prominent advisory and check/done refuse until Git-history recovery resolves the triad and the file is deleted (contract: [`references/stages/update.md`](references/stages/update.md))
 
-4. **Issue handling**: Actionable issues found during `check` must be written back to the current package and fixed in the same round. Do not output executable fixes as user deliverables. Only ask the user about a project-shaping constraint, a decision that cannot be reasonably assumed, or an external dependency the agent cannot resolve. Closed issues must have one of: `resolved_current`, `resolved_followup`, `accepted_risk`, `external_blocked`, `non_actionable`.
+3. **Issue handling**: Actionable issues found during `check` must be written back to the current package and fixed in the same round. Do not output executable fixes as user deliverables. Only ask the user about a project-shaping constraint, a decision that cannot be reasonably assumed, or an external dependency the agent cannot resolve. Closed issues must have one of: `resolved_current`, `resolved_followup`, `accepted_risk`, `external_blocked`, `non_actionable`.
 
-5. **Validation**: declare the verification level in `spec.md` (`package` / `integration` / `project`); `check`/`done` run that declared level with real evidence — a verbal "passed" never counts (contract: `references/stages/check.md`).
+4. **Validation**: declare the verification level in `spec.md` (`package` / `integration` / `project`); `check`/`done` run that declared level with real evidence — a verbal "passed" never counts (contract: `references/stages/check.md`).
 
-6. **Commit/push separation**: only `done` archives and commits; only `push` merges, pushes, and deletes branches; never combine file changes and a commit in one bash call; never `--no-verify` (contract: `references/stages/done.md`, `references/stages/push.md`).
+5. **Commit/push separation**: only `done` archives and commits; only `push` merges, pushes, and deletes branches; never combine file changes and a commit in one bash call; never `--no-verify` (contract: `references/stages/done.md`, `references/stages/push.md`).
 
-7. **Branch safety**: active unarchived packages block `push` by default; branch mutation happens only on the package's recorded integration branch (contract: `references/stages/push.md`).
+6. **Branch safety**: active unarchived packages block `push` by default; branch mutation happens only on the package's recorded integration branch (contract: `references/stages/push.md`).
 
-8. **Branch naming and binding**: spec branches use the `spec/` prefix, each active package binds exactly one integration branch, and initialization refuses a branch already bound; `push` merges only `spec/` branches (legacy pre-2026-08-27 branches stay pushable in the grace window with a rename advisory; contract: [`references/naming-and-commits.md`](references/naming-and-commits.md)).
+7. **Branch naming and binding**: spec branches use the `spec/` prefix, each active package binds exactly one integration branch, and initialization refuses a branch already bound; `push` merges only `spec/` branches (legacy pre-2026-08-27 branches stay pushable in the grace window with a rename advisory; contract: [`references/naming-and-commits.md`](references/naming-and-commits.md)).
 
-9. **Changelog generation**: `scripts/generate_changelog.py` converts Git history into changelog entries on demand — a manual release-notes helper, never an automatic `done`/`push` step (guide: [`references/changelog-guide.md`](references/changelog-guide.md)).
+8. **Changelog generation**: `scripts/generate_changelog.py` converts Git history into changelog entries on demand — a manual release-notes helper, never an automatic `done`/`push` step (guide: [`references/changelog-guide.md`](references/changelog-guide.md)).
 
-10. **Distillation destination**: `done`/`goal` distillation lands only as the incremental `AGENTS.md` proposal inside `completion-summary.md` — never applied automatically, never written to global carriers or user-level memory files; distill project-specific engineering facts only (contract: `references/stages/done.md`).
+9. **Distillation destination**: `done`/`goal` distillation lands only as the incremental `AGENTS.md` proposal inside `completion-summary.md` — never applied automatically, never written to global carriers or user-level memory files; distill project-specific engineering facts only (contract: `references/stages/done.md`).
 
 ## Extension slots
 
-Slots are self-contained `slots/<name>/` directories (manifest declaration + README protocol) validated by `python3 scripts/slot_registry.py list|validate` and shipped by `install.sh`; the full contract lives in [`references/slots.md`](references/slots.md). Activation rule: when a task's shape matches a slot's triggers, hand the execution segment to that slot's README protocol (`team-loop` → `slots/team-loop/scripts/loop_route.py`; `workflow-runner` → `slots/workflow-runner/scripts/workflow_route.py`); orchestration routing (`scripts/route_decision.py`) is independent of slot activation, and routing, acceptance, and the `done`/`push` gates never move out of the main session.
+Slots are self-contained `slots/<name>/` directories (manifest declaration + README protocol) validated by `python3 scripts/slot_registry.py list|validate` and shipped by `install.sh`; the full contract lives in [`references/slots.md`](references/slots.md). Activation rule: when a task's shape matches a slot's triggers, hand the execution segment to that slot's README protocol (`team-loop` → `slots/team-loop/scripts/loop_route.py`; `workflow-runner` → `slots/workflow-runner/scripts/workflow_route.py`); slot activation is independent of orchestration routing (`scripts/route_decision.py`), and routing, acceptance, and the `done`/`push` gates never leave the main session.
 
 ## Reference documentation
 

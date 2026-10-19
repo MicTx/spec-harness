@@ -1,6 +1,6 @@
 # Changelog Guide
 
-`scripts/generate_changelog.py` is a manual helper that turns Git history into standardized changelog entries; it is not an automatic step of `done`/`push`. CLI usage and the entry format live in the script's `--help` output; commit message conventions live in `naming-and-commits.md`.
+A manual helper that turns Git history into standardized changelog entries — never an automatic `done`/`push` step. CLI usage and entry format live in `generate_changelog.py --help`; commit conventions live in `naming-and-commits.md`.
 
 ## Release notes style（发布说明风格契约）
 

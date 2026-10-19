@@ -65,17 +65,17 @@ python3 scripts/install_slot_hooks.py --slot team-loop --scope project --project
 python3 scripts/install_slot_hooks.py --slot team-loop --remove         # rollback
 ```
 
-- Identity uses the relative marker `slots/<name>/hooks/<script>`: independent of the install root, so after a spec reinstall/migration old entries are still reclaimed by `--remove`.
-- Idempotent, preserves other people's entries, backs up before writing, refuses to write corrupted settings.
+- Identity uses the relative marker `slots/<name>/hooks/<script>`, independent of the install root, so a reinstall/migration still reclaims old entries with `--remove`.
+- Idempotent: preserves other people's entries, backs up before writing, refuses to write corrupted settings.
 
 ## Distribution and tests
 
 - `COPY_DIRS` of `scripts/export_skill_package.py` includes `slots`: slots ship wholesale with the installed copy.
-- `pyproject.toml` sets `testpaths = ["tests", "slots"]`: slot tests are collected by `python3 -m pytest`; slot tests carry their own conftest (injecting sys.path for that slot's scripts only).
+- `pyproject.toml` sets `testpaths = ["tests", "slots"]`: slot tests are collected by `python3 -m pytest` and carry their own conftest (injecting sys.path for that slot's scripts only).
 
 ## Current slots
 
 | Slot | Capability |
 |---|---|
-| `team-loop` | agents-team loop triggering and efficient management (routing triggers / state machine / retries / concurrency / heartbeats / interrupts / termination). See `slots/team-loop/README.md` |
+| `team-loop` | agents-team loop triggering and management — routing triggers / state machine / retries / concurrency / heartbeats / interrupts / termination. See `slots/team-loop/README.md` |
 | `workflow-runner` | Delegating execution segments to the repository-owned deterministic driver (shape detection / driver preconditions / pi + codex worker subprocess fan-out via `workflow_fanout.py` / JSONL evidence). See `slots/workflow-runner/README.md` |

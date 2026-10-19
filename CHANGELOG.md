@@ -4,6 +4,30 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [0.19.1] - 2026-10-19
+
+### Added
+
+- Spec 内部有界读取能力：任务切片聚合视图（`scripts/route_spec_package.py --format json --brief`）与证据分页查询（`scripts/spec_verify.py show`）由阶段与包状态内部调度，读取量大的复审与恢复场景可用更少调用取得同等信息；不注册新命令、不新增用户指令或参数，路由、验收与 Git 授权仍由主会话持有。
+- Spec-internal bounded reads: an aggregate task-slice view (`scripts/route_spec_package.py --format json --brief`) and paged evidence queries (`scripts/spec_verify.py show`) are dispatched internally from the current stage and package state, so read-heavy review and resume scenarios reach the same information with fewer calls; no new commands, user instructions, or arguments are registered, and routing, acceptance, and Git authorization stay with the main session.
+
+### Changed
+
+- 常载 Skill 文本面压缩：SKILL.md 与 references 阶段页在保留结构、入口与行为契约的前提下同口径净减 1,357 B（skill −112 B、stages −1,245 B），并以收紧的 ratchet 上限防止无声回涨；四臂消融（基线 / 仅压缩 / 仅内部工具 / 组合）显示五类任务读取字节全部下降，静态面与读取链核对口径分列、不换算。
+- The always-loaded Skill surface shrinks by 1,357 B at the same measurement aperture (skill −112 B, stages −1,245 B) with structure, entry points, and behavioral contracts preserved, behind a tightened ratchet that blocks silent regrowth; a four-arm ablation (baseline / compression only / internal tools only / combined) shows read bytes down in all five task classes, with static bytes and read-chain checks reported as separate layers and never converted into one another.
+- autoplan 默认不再设 pass 数量上限：省略旗标即持续细化/复审直至就绪或出现真实停止条件，显式 `--max-passes N` 仍可用于主动限制，`--unbounded` 保留兼容；状态记 `max_passes: null`，历史有限记录不会被复活为上限。autorun 执行轮次上限（默认 5）、失败即停、单链互斥与权限/模型锁不变。
+- autoplan no longer applies a default pass cap: omitting the flag keeps refining/reviewing until readiness or a real stop condition, explicit `--max-passes N` still restricts deliberately, and `--unbounded` remains supported; state records `max_passes: null` and historical finite records are never revived as a cap. The autorun round cap (5 by default), fail-fast, single-chain locking, and permission/model locks are unchanged.
+
+### Fixed
+
+- `scripts/route_spec_package.py --format json` 的三个输出分支现统一为 JSON（此前 brief/默认分支忽略 `--format json` 输出 markdown 面板），一致的机器可读输出由回归测试钉死。
+- All three output branches of `scripts/route_spec_package.py --format json` now emit JSON (the brief/default branches previously ignored the flag and printed the markdown panel), pinned by regression tests.
+
+### Internal
+
+- 发布候选以锁定记录冻结（候选 commit、95 载荷文件树摘要、四臂消融报告与沙箱导出矩阵回执）；本轮发布只消费锁定候选，不重测、不回写实现结论。
+- The release candidate is frozen as a lock record (candidate commit, 95-file payload tree digest, four-arm ablation report, sandbox export matrix receipts); this release consumes the lock record only and neither re-measures nor rewrites implementation conclusions.
+
 ## [0.19.0] - 2026-10-15
 
 ### Added

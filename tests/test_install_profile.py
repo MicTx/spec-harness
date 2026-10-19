@@ -42,6 +42,7 @@ CORE_EXCLUDED_SCRIPTS = (
     "autoplan_gate.py",
     "chain_spawn_support.py",
     "chain_recovery.py",
+    "chain_lifecycle.py",
     "sweep_chain_windows.py",
 )
 
