@@ -15,6 +15,8 @@ CLAUDE_COMMANDS_DIR="${CLAUDE_COMMANDS_DIR:-$HOME/.claude/commands}"
 CLAUDE_AGENTS_DIR="${CLAUDE_AGENTS_DIR:-$HOME/.claude/agents}"
 CODEX_SKILLS_DIR="${CODEX_SKILLS_DIR:-$HOME/.codex/skills}"
 ZCODE_SKILLS_DIR="${ZCODE_SKILLS_DIR:-$HOME/.zcode/skills}"
+DEVIN_SKILLS_DIR="${DEVIN_SKILLS_DIR:-$HOME/.config/devin/skills}"
+CURSOR_SKILLS_DIR="${CURSOR_SKILLS_DIR:-$HOME/.cursor/skills}"
 # Each host skills directory below follows that agent's own standard location,
 # so the installed skill is picked up directly by the host CLI.
 CLAUDE_DESKTOP_SKILLS_DIR="${CLAUDE_DESKTOP_SKILLS_DIR:-$HOME/.claude-desktop/skills}"
@@ -135,6 +137,7 @@ CORE_EXCLUDED_SCRIPTS=(
   chain_spawn_support.py
   chain_recovery.py
   chain_lifecycle.py
+  chain_session.py
   sweep_chain_windows.py
 )
 
@@ -175,12 +178,14 @@ abs_path() {
 # directory and no host-specific command files are written. Pi left this
 # list in F4: it now also receives native prompt-template commands
 # (install_pi) alongside the skill copy.
-SKILL_ONLY_HOSTS=(claude-desktop codex gemini grok opencode openclaw hermes zcode)
+SKILL_ONLY_HOSTS=(claude-desktop codex devin cursor gemini grok opencode openclaw hermes zcode)
 
 skill_dir_for() {
   case "$1" in
     claude-desktop) printf '%s\n' "$CLAUDE_DESKTOP_SKILLS_DIR" ;;
     codex) printf '%s\n' "$CODEX_SKILLS_DIR" ;;
+    devin) printf '%s\n' "$DEVIN_SKILLS_DIR" ;;
+    cursor) printf '%s\n' "$CURSOR_SKILLS_DIR" ;;
     gemini) printf '%s\n' "$GEMINI_SKILLS_DIR" ;;
     grok) printf '%s\n' "$GROK_SKILLS_DIR" ;;
     opencode) printf '%s\n' "$OPENCODE_SKILLS_DIR" ;;
@@ -196,6 +201,8 @@ host_label_for() {
   case "$1" in
     claude-desktop) printf '%s\n' "Claude Desktop" ;;
     codex) printf '%s\n' "Codex" ;;
+    devin) printf '%s\n' "Devin" ;;
+    cursor) printf '%s\n' "Cursor" ;;
     gemini) printf '%s\n' "Gemini CLI" ;;
     grok) printf '%s\n' "Grok Build" ;;
     opencode) printf '%s\n' "OpenCode" ;;
@@ -211,6 +218,8 @@ default_skill_dir_for() {
   case "$1" in
     claude-desktop) printf '%s\n' "$HOME/.claude-desktop/skills" ;;
     codex) printf '%s\n' "$HOME/.codex/skills" ;;
+    devin) printf '%s\n' "$HOME/.config/devin/skills" ;;
+    cursor) printf '%s\n' "$HOME/.cursor/skills" ;;
     gemini) printf '%s\n' "$HOME/.gemini/skills" ;;
     grok) printf '%s\n' "$HOME/.grok/skills" ;;
     opencode) printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills" ;;
@@ -226,6 +235,7 @@ default_skill_dir_for() {
 host_trigger_hint() {
   case "$1" in
     codex|zcode|pi) printf '%s\n' 'trigger $spec' ;;
+    devin|cursor) printf '%s\n' 'load /spec, then ask spec:goal' ;;
     *) printf '%s\n' 'trigger the spec skill' ;;
   esac
 }
@@ -237,6 +247,8 @@ host_trigger_hint() {
 host_cli_for() {
   case "$1" in
     claude|codex|gemini|grok|opencode|openclaw|hermes|pi|zcode) printf '%s\n' "$1" ;;
+    devin) printf '%s\n' "devin" ;;
+    cursor) printf '%s\n' "cursor-agent" ;;
     *) return 1 ;;
   esac
 }
@@ -250,6 +262,8 @@ host_dir_probe_root() {
     claude) printf '%s\n' "$HOME/.claude" ;;
     claude-desktop) printf '%s\n' "$HOME/.claude-desktop" ;;
     codex) printf '%s\n' "$HOME/.codex" ;;
+    devin) printf '%s\n' "$HOME/.config/devin" ;;
+    cursor) printf '%s\n' "$HOME/.cursor" ;;
     gemini) printf '%s\n' "$HOME/.gemini" ;;
     grok) printf '%s\n' "$HOME/.grok" ;;
     opencode) printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/opencode" ;;
@@ -322,6 +336,8 @@ host_enabled() {
     codex) tokens="codex codex-desktop desktop rpi" ;;
     # grokbuild is an accepted alias token for Grok Build.
     grok) tokens="grok grokbuild" ;;
+    devin) tokens="devin devin-desktop" ;;
+    cursor) tokens="cursor cursor-cli" ;;
     claude-desktop|gemini|opencode|openclaw|hermes|pi|zcode) tokens="$host" ;;
     *) return 1 ;;
   esac
@@ -342,12 +358,12 @@ validate_hosts() {
   local host enabled=0
   for host in $INSTALL_HOSTS; do
     case "$host" in
-      all|claude|claude-desktop|codex|codex-desktop|desktop|gemini|grok|grokbuild|opencode|openclaw|hermes|pi|rpi|zcode) enabled=1 ;;
+      all|claude|claude-desktop|codex|codex-desktop|cursor|cursor-cli|desktop|devin|devin-desktop|gemini|grok|grokbuild|opencode|openclaw|hermes|pi|rpi|zcode) enabled=1 ;;
       "") ;;
       *) fail "unknown INSTALL_HOSTS entry: $host" ;;
     esac
   done
-  [ "$enabled" = "1" ] || fail "INSTALL_HOSTS must include a supported host: all, claude, claude-desktop, codex, codex-desktop, desktop, gemini, grok, grokbuild, opencode, openclaw, hermes, pi, rpi, or zcode"
+  [ "$enabled" = "1" ] || fail "INSTALL_HOSTS must include a supported host: all, claude, claude-desktop, codex, codex-desktop, cursor, cursor-cli, desktop, devin, devin-desktop, gemini, grok, grokbuild, opencode, openclaw, hermes, pi, rpi, or zcode"
 }
 
 # Extended stages = USER_STAGES minus CORE_STAGES, computed so a future
@@ -510,6 +526,8 @@ backup_namespace() {
     "$HOME/.claude/agents") printf '%s\n' ".claude-agents" ;;
     "$HOME/.codex/skills") printf '%s\n' ".codex-skills" ;;
     "$HOME/.zcode/skills") printf '%s\n' ".zcode-skills" ;;
+    "$HOME/.config/devin/skills") printf '%s\n' ".config-devin-skills" ;;
+    "$HOME/.cursor/skills") printf '%s\n' ".cursor-skills" ;;
     "$HOME/.claude-desktop/skills") printf '%s\n' ".claude-desktop-skills" ;;
     "$HOME/.gemini/skills") printf '%s\n' ".gemini-skills" ;;
     "$HOME/.grok/skills") printf '%s\n' ".grok-skills" ;;
@@ -672,14 +690,14 @@ EOF_BODY
       cat <<EOF_BODY
 # /$command_name
 
-Run the interactive planning workflow: interrogate the user in themed rounds (goal, scope, technology, priorities, risks) to pin down the project, run the planning passes as a serial fresh-session chain with no in-process subagent delegation until every feature reaches autorun granularity, gate the planning-document cluster for structural consistency, then report autorun readiness and stop. Never spawn the chain from autoplan.
+Run the interactive planning workflow: clarify goal, scope, technology, priorities and risks, then resolve execution from the actual client and surface. Desktop and IDE-plugin sessions use current-session framework/detail/review passes; verified CLI adapters may use the serial fresh-session chain. No in-process subagent delegation transfers chain ownership: native workers are optional bounded helpers, and review without them is explicitly main-session review. Keep pass receipts and recovery state, run the planning gate, report readiness and stop. Never start autorun from autoplan. Read references/stages/autoplan.md before execution.
 EOF_BODY
       ;;
     autorun)
       cat <<EOF_BODY
 # /$command_name
 
-Run the recursive autorun chain: finish the active task package goal-style through run, check, done, and push; after a successful push, discover the project planning documents, plan the next round with spec:new from the next unchecked feature, then open a fresh interactive session in the same path with the autorun prompt injected for the next round (macOS Terminal.app; Linux/Windows WSL2 tmux >=3.2, no graphical desktop needed). Native Windows users must run Python, the worker CLI, and Spec Harness inside WSL2. Recursion continues until every feature checkbox in the planning documents is checked; the first failure or a planning-document gap stops the chain with the recovery action. Safety rails: round cap on by default (5 rounds unless flagged; --unbounded explicitly removes it), single-chain lock, sequential spawn only.
+Run the recursive autorun chain using the actual client and surface: desktop and IDE-plugin sessions continue in the current session; verified CLI adapters retain fresh interactive sessions. Finish each package through run/check/done, perform Git publication only when explicitly authorized, then plan the next unchecked feature. Preserve scope, verification and recovery gates; stop at the first failure or permission boundary. Safety rails: round cap on by default (5 rounds unless flagged; --unbounded explicitly removes it), transaction lock, owner/revision checks for current sessions. Do not launch another agent just because its CLI is on PATH. Read references/stages/autorun.md before execution.
 EOF_BODY
       ;;
     run)

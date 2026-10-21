@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from doctor_spec_environment import (  # noqa: E402  # type: ignore
     CHANNEL_PROBE_TIMEOUT_SECONDS,
     CHANNEL_SPOT_CHECK_SCRIPTS,
+    EXTENSION_FILE_PREFIXES,
     PROBE_IDS,
     REQUIRED_RUNTIME_FILES,
     Doctor,
@@ -43,6 +44,8 @@ def isolated_home(monkeypatch, tmp_path):
         "CLAUDE_AGENTS_DIR",
         "CLAUDE_DESKTOP_SKILLS_DIR",
         "CODEX_SKILLS_DIR",
+        "DEVIN_SKILLS_DIR",
+        "CURSOR_SKILLS_DIR",
         "GEMINI_SKILLS_DIR",
         "GROK_SKILLS_DIR",
         "OPENCODE_SKILLS_DIR",
@@ -1051,7 +1054,7 @@ def _write_runtime_face(skill: Path, files) -> None:
 
 
 def _core_face_files() -> list:
-    return [name for name in REQUIRED_RUNTIME_FILES if not name.startswith(("agents/", "server/"))]
+    return [name for name in REQUIRED_RUNTIME_FILES if not name.startswith(EXTENSION_FILE_PREFIXES)]
 
 
 def test_install_profile_defaults_to_full_without_stamp(tmp_path):
@@ -1142,3 +1145,62 @@ def test_reinstall_claude_host_preserves_install_profile(isolated_home, monkeypa
     doctor = Doctor(skill_root=skill, project_root=isolated_home)
     doctor._reinstall_claude_host()  # fixture tree: outcome irrelevant, env is the assertion
     assert captured.get("INSTALL_PROFILE") == "full"
+
+
+def test_full_profile_layout_fails_when_chain_session_missing(tmp_path):
+    skill = tmp_path / "skill"
+    for name in REQUIRED_RUNTIME_FILES:
+        if name == "scripts/chain_session.py":
+            continue
+        path = skill / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("fixture\n", encoding="utf-8")
+    for slot in ("team-loop", "workflow-runner"):
+        source = ROOT / "slots" / slot
+        if source.is_dir():
+            shutil.copytree(source, skill / "slots" / slot)
+        else:
+            manifest = skill / "slots" / slot / "manifest.json"
+            manifest.parent.mkdir(parents=True, exist_ok=True)
+            manifest.write_text("{}\n", encoding="utf-8")
+    (skill / ".spec-skill-install").write_text(
+        "installed_by=spec/install.sh\nsource=/nonexistent\nprofile=full\n", encoding="utf-8"
+    )
+    doctor = Doctor(skill_root=skill, project_root=tmp_path)
+    doctor.check_skill_layout()
+    check = check_by_id(doctor, "skill.layout")
+    assert check.status == "fail"
+    assert "scripts/chain_session.py" in check.detail
+
+
+def test_core_profile_layout_healthy_without_chain_session(tmp_path):
+    skill = tmp_path / "skill"
+    _write_runtime_face(skill, _core_face_files())
+    assert not (skill / "scripts" / "chain_session.py").exists()
+    (skill / ".spec-skill-install").write_text(
+        "installed_by=spec/install.sh\nsource=/nonexistent\nprofile=core\n", encoding="utf-8"
+    )
+    doctor = Doctor(skill_root=skill, project_root=tmp_path)
+    assert doctor.check_skill_layout() is True
+    check = check_by_id(doctor, "skill.layout")
+    assert check.status == "ok"
+    assert "scripts/chain_session.py" not in doctor.required_runtime_files()
+
+
+def test_host_filter_normalizes_devin_cursor_aliases(tmp_path):
+    doctor = Doctor(skill_root=tmp_path, project_root=tmp_path, host_filter=["devin-desktop", "cursor-cli"])
+    assert [host[0] for host in doctor.active_hosts()] == ["devin", "cursor"]
+    single = Doctor(skill_root=tmp_path, project_root=tmp_path, host_filter=["cursor-cli"])
+    assert [host[0] for host in single.active_hosts()] == ["cursor"]
+    other = Doctor(skill_root=tmp_path, project_root=tmp_path, host_filter=["devin-desktop"])
+    assert [host[0] for host in other.active_hosts()] == ["devin"]
+
+
+def test_foreign_devin_skill_dir_is_protected(isolated_home):
+    foreign = isolated_home / ".config" / "devin" / "skills" / "spec"
+    foreign.mkdir(parents=True)
+    (foreign / "SKILL.md").write_text("# foreign spec\n", encoding="utf-8")
+    doctor = Doctor(skill_root=ROOT, project_root=isolated_home, host_filter=["devin-desktop"])
+    assert [host[0] for host in doctor.active_hosts()] == ["devin"]
+    assert doctor.is_foreign_skill(foreign) is True
+    assert doctor.is_installer_owned(foreign) is False

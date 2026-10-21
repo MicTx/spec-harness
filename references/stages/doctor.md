@@ -22,11 +22,11 @@ Check catalog:
 
 1. `python.runtime`: Python ≥ 3.9 (stdlib-only; newest syntax feature `str.removeprefix`)
 2. `git.available`: git on PATH (the done/push and hook gates depend on it)
-3. `skill.layout`: all 38 runtime files present (doctor holds the full manifest)
+3. `skill.layout`: all 39 runtime files present (doctor holds the full manifest; core excludes extension files)
 4. `skill.scripts`: every `scripts/*.py` compiles (detects truncated installs)
 5. `skill.channels`: bounded `--help` stdout/stderr spot-check on the five sample scripts (channel contract: contract output on stdout, diagnostics on stderr)
 6. `skill.marker` + `skill.drift`: installer ownership marker; when a source checkout exists, per-file hash comparison reports drift
-7. `hosts.installed`: ten-host directory scan (same environment variables and default paths), versions, partial installs, foreign same-name collisions
+7. `hosts.installed`: twelve-host directory scan (same environment variables and default paths), versions, partial installs, foreign same-name collisions
 8. `claude.commands`: user-stage command files exist; legacy layout leftovers (`spec:<stage>.md` colon files, alias directories, the `spec.md` base file); claude-side probe — skipped unless claude is in `--host` scope
 9. `claude.agents`: the four orchestration sidecar contracts (orchestrator/planner/reviewer/confirmer) are published as installer-owned native copies in `~/.claude/agents` and stay in sync with the skill source; claude-side probe — skipped unless claude is in the `--host` scope
 10. `pi.prompts`: native Pi prompt templates (`/spec` + `/spec:<stage>`) — presence, stage-set/profile consistency, installer markers, thin-forwarder shape (quoted frontmatter, literal `$@`, contract-index pointer), plus installer-owned leftovers; pi-side probe — skipped unless pi is in `--host` scope
@@ -50,4 +50,3 @@ Output contract:
 - Human-readable markdown or `--format json` (checks/summary/fixLog/exitCode).
 - User-visible replies follow the script output: which foundations work, which are missing, which were fixed, which need manual action; never hand-write the check conclusions.
 - Repairs touch installer-owned paths only; any deletion goes to `~/.spec-skill-backups/doctor-<ts>/` first.
-

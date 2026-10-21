@@ -22,6 +22,8 @@ import chain_spawn_support as support
 
 def _safe_path(root: Path, path: Path) -> Path:
     """Refuse linked ancestors too, including links that resolve inside root."""
+    if root.is_symlink():
+        raise support.ChainSpawnError(f"chain path boundary is a symlink: {root}")
     try:
         parts = path.relative_to(root).parts
     except ValueError as exc:
@@ -108,11 +110,13 @@ def close_chain(root: Path, chain: str, *, dry_run: bool = False) -> Dict[str, o
     """
     root = root.resolve()
     summary = _safe_path(root, support.chain_dir(root, chain))
-    runtime = _safe_path(root, support.chain_runtime_dir(root, chain))
+    git_dir = support.chain_runtime_root(root).parent
+    runtime_root = _safe_path(git_dir, support.chain_runtime_root(root))
+    runtime = _safe_path(git_dir, support.chain_runtime_dir(root, chain))
     state_path = _safe_path(root, summary / support.CHAIN_STATE_FILE)
-    audit_path = _safe_path(root, runtime / support.CHAIN_SPAWNS_FILE)
+    audit_path = _safe_path(runtime_root, runtime / support.CHAIN_SPAWNS_FILE)
     history = _safe_path(root, summary / "history")
-    _safe_path(root, runtime / support.CHAIN_LOCK_FILE)
+    _safe_path(runtime_root, runtime / support.CHAIN_LOCK_FILE)
     try:
         with support.single_chain_lock(runtime, chain):
             if not state_path.exists():
@@ -123,6 +127,15 @@ def close_chain(root: Path, chain: str, *, dry_run: bool = False) -> Dict[str, o
                 raise support.ChainSpawnError("chain state is not a JSON object")
             if support.closed_chain_marker(state):
                 return {"status": "already_closed", "chain": chain, "archive": state.get("archive")}
+            if state.get("execution_mode") == "current" or (
+                isinstance(state.get("schema_version"), int)
+                and not isinstance(state.get("schema_version"), bool)
+                and state["schema_version"] >= 2
+            ):
+                raise support.ChainSpawnError(
+                    "current-session chain checkpoint is active; close it with "
+                    "scripts/chain_session.py close --owner <id> --expected-revision <n>"
+                )
             proof = recorded_plan(root, state)
             if not proof["complete"]:
                 raise support.ChainSpawnError("recorded chain has unfinished features; refusing close")

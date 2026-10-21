@@ -253,3 +253,29 @@ def test_build_releases_ruff_failure_raises_builderror(tmp_path):
             repo_copy,
             "ruff",
         )
+
+
+def test_run_cmd_timeout_reports_partial_output():
+    """A timed-out step must name what it was doing, not only the timeout."""
+    from build_release import PYTHON, BuildError, _run_cmd
+
+    script = "import sys, time; print('stalled-at-marker', flush=True); time.sleep(30)"
+    with pytest.raises(BuildError, match="timed out after 2s") as excinfo:
+        _run_cmd([PYTHON, "-c", script], ROOT, "probe", timeout=2)
+    assert "stalled-at-marker" in str(excinfo.value)
+
+
+def test_pytest_prebuild_step_is_diagnosable(monkeypatch):
+    """The release pytest step runs verbose with a per-test faulthandler dump."""
+    import build_release as module
+
+    calls = []
+    monkeypatch.setattr(module, "_run_cmd", lambda args, cwd, label, **kw: calls.append((label, args, kw)))
+    monkeypatch.setattr(module.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 1, "", ""))
+    try:
+        module.run_prebuild_checks(ROOT)
+    except Exception:
+        pass
+    label, args, kw = next(c for c in calls if c[0] == "pytest")
+    assert "-v" in args and "faulthandler_timeout=300" in args
+    assert kw["timeout"] == 1800

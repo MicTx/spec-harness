@@ -52,11 +52,21 @@ ANCHORS = {
         "must_not_contain": ["independently verify", "then use the safe spec:push flow"],
     },
     "autoplan": {
-        "must_contain": ["serial fresh-session chain", "no in-process subagent delegation"],
-        "must_not_contain": ["sidecar"],
+        "must_contain": [
+            "Desktop and IDE-plugin sessions use current-session",
+            "serial fresh-session chain",
+            "No in-process subagent delegation transfers chain ownership",
+            "main-session review",
+        ],
+        "must_not_contain": ["No in-process subagent delegation anywhere in autoplan"],
     },
     "autorun": {
-        "must_contain": ["round cap on by default", "--unbounded explicitly removes it"],
+        "must_contain": [
+            "round cap on by default",
+            "--unbounded explicitly removes it",
+            "desktop and IDE-plugin sessions continue in the current session",
+            "Do not launch another agent just because its CLI is on PATH",
+        ],
         "must_not_contain": ["Safety rails: round cap, single-chain lock, sequential spawn only."],
     },
 }
@@ -68,8 +78,14 @@ CONTRACT_ANCHORS = {
         "self-verify at the package's declared verification level",
         "The default stop is the local commit",
     ),
-    "autoplan": ("No pass in autoplan runs as an in-process subagent of the spawning session",),
-    "autorun": ("a restored default bounds every chain",),
+    "autoplan": (
+        "Desktop and IDE-plugin sessions use current-session",
+        "main-session review",
+    ),
+    "autorun": (
+        "a restored default bounds every chain",
+        "default current despite CLI markers/PATH",
+    ),
 }
 
 # Reverting any of these current phrases back to its audited old wording
@@ -81,8 +97,8 @@ REVERT_PAIRS = {
         "independently verify each delivery",
     ),
     "autoplan": (
-        "run the planning passes as a serial fresh-session chain with no in-process subagent delegation",
-        "delegate framework and detail planning to the planner sidecar",
+        "Desktop and IDE-plugin sessions use current-session",
+        "All hosts require an external CLI",
     ),
     "autorun": (
         "round cap on by default (5 rounds unless flagged; --unbounded explicitly removes it)",
@@ -147,6 +163,29 @@ def test_reverting_to_audited_old_wording_fails(stage: str) -> None:
     assert reverted != body
     with pytest.raises(AssertionError):
         assert_semantic_anchors(stage, reverted)
+
+
+@requires_bash
+@pytest.mark.parametrize(
+    ("anchor", "wrong"),
+    [
+        (
+            "desktop and IDE-plugin sessions continue in the current session",
+            "all sessions spawn a fresh agent window",
+        ),
+        (
+            "Do not launch another agent just because its CLI is on PATH",
+            "launch whichever agent CLI appears first on PATH",
+        ),
+    ],
+)
+def test_autorun_body_anchor_mutation_fails(anchor: str, wrong: str) -> None:
+    body = extract_command_body(INSTALLER, "autorun")
+    assert anchor in body
+    mutated = body.replace(anchor, wrong)
+    assert mutated != body
+    with pytest.raises(AssertionError):
+        assert_semantic_anchors("autorun", mutated)
 
 
 @pytest.mark.parametrize("stage", STAGES)

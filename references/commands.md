@@ -4,9 +4,9 @@ This page is the stage index: shared conventions plus one link per stage. Each s
 
 Shortest safe path: route from disk, make one bounded change, run its verification, let the next stage consume the recorded state. Do not read every stage file when one is enough.
 
-## CLI compatibility layer
+## Host compatibility layer
 
-The command inventory (command → stage → purpose) lives once in `SKILL.md`. Claude Code exposes `/spec:<command>`; Codex / generic skill-aware CLIs trigger `$spec` and then use `spec:<command>`. The route and tasks views remain internal script capabilities, not user commands. See the README installation section for the per-host install directory matrix.
+The command inventory lives once in `SKILL.md`. Claude Code exposes `/spec:<command>`; Codex/ZCode use `$spec`; Devin/Cursor can load `/spec`, then request `spec:<command>`. Other compatible hosts use their native skill entry. Stage names describe intent, not universal slash-command registration. The route and tasks views remain internal. See the README installation and execution matrices: installing a skill is not proof that the active client has workspace execution or subagent tools.
 
 Install profile boundary: `new / run / check / done / push` are the kernel stage commands every install ships. The extended stages (`goal`, `autoplan`, `autorun`, `update`, `status`, `doctor`, `organize`) belong to `INSTALL_PROFILE=full`; a core install (the default) answers an extended-stage invocation with the reinstall hint — `INSTALL_PROFILE=full bash install.sh` — instead of executing it.
 
@@ -41,11 +41,11 @@ One-shot chain `new` → `run` → `check` → `done`, push only on explicit aut
 
 ## `/spec:autoplan`
 
-Interactive planning rounds, then framework/detail/review passes as a serial fresh-session chain until autorun granularity — full contract: [`stages/autoplan.md`](stages/autoplan.md).
+Interactive planning and framework/detail/review passes in the current host or a verified fresh CLI session, stopping at autorun readiness — full contract: [`stages/autoplan.md`](stages/autoplan.md).
 
 ## `/spec:autorun`
 
-Recursive chain: finish the active package, plan the next round, spawn a fresh session, repeat until every planned feature is done — full contract: [`stages/autorun.md`](stages/autorun.md).
+Finish the active package, plan the next round and continue in the selected execution mode until the recorded scope is complete — full contract: [`stages/autorun.md`](stages/autorun.md).
 
 ## `/spec:run`
 
@@ -81,9 +81,38 @@ Structure audit, audit-only by default; `--apply` creates the package and fixes 
 
 ## Session backends
 
-Both spawn scripts (`autorun_spawn.py`, `autoplan_spawn.py`) accept `--terminal auto|terminal|tmux` (default `auto`): macOS selects Terminal.app, Linux/WSL2 selects tmux (tmux ≥3.2 + ps); `--terminal terminal` switches back on macOS only. The worker always runs as a full interactive session — visible TUI, session persisted, never headless. Native Windows is unsupported — spawn fails with WSL2 guidance. Failed handoffs (missing tmux, launch timeout, instantly dead worker) refuse without advancing chain state and leave no process behind (交接未确认 = 不留进程); window/pane lifecycle policy: source `docs/adr/0001-terminal-spawn-window-lifecycle.md`. `--dry-run` prints `launch_argv` and attach instructions only.
+### Resolve execution before transport
 
-Completed chains are closed explicitly with `python3 scripts/autoplan_spawn.py close --root <project>` (or the `autorun_spawn.py` equivalent; `--dry-run` validates only) — an internal maintenance operation, not a new `/spec:*` command. Close verifies every recorded plan document and its frozen feature set, refuses active packages or a held chain mutex, preserves the old summary and completion proof under `.spec/<chain>/history/`, and writes an audit-backed closed marker; it never kills sessions or closes windows (the mutex protects script transactions, not worker lifetime). Missing/changed plans or ambiguous state fail closed; no force/reset. A new chain starts at 1 without inheriting the old model lock. Status uses the recorded scope; proven completion needs no extra round even at the cap. Legacy states without a fingerprint remain readable but cannot be closed automatically.
+Keep agent identity, surface, actual tools and execution strategy separate. The main session supplies the actual `--client` and `--surface cli|ide-plugin|desktop|unknown` from session metadata or user instruction; an installed directory, outer editor, inherited CLI marker or binary on PATH is not that evidence. Unknown remains unknown, never guessed.
+
+```bash
+python3 scripts/chain_session.py route --chain autoplan --client devin --surface desktop --execution auto --format json
+```
+
+`auto` chooses fresh only for an explicitly identified CLI surface with an existing same-client Claude/Codex/Pi adapter; otherwise current. Devin/Cursor/ZCode and other CLIs without a verified fresh adapter can also use current. Explicit `fresh` accepts a verified `--worker`; specifying a worker with current is an error. Route returns requirements, not fabricated capability observations. Check actual read/write, Python ≥3.9, Git and user-interaction tools before starting. No exec tool → report the missing capability, not “install another agent”. Native workers are optional; never claim independent review when only the main session reviewed.
+
+### Current-session protocol
+
+Use `scripts/chain_session.py` with `--chain autoplan|autorun --root <project>`; it never calls an LLM, starts a worker or controls windows. Native host tools perform the actual work. Supported execution environments are macOS and Linux/WSL2; native Windows receives WSL2 guidance.
+
+- `status [--owner <id>]` reads the checkpoint and recovery action. `route`, current `status` and every current `--dry-run` are read-only, including malformed-state handling.
+- Mutations take `--chain-id <id> --owner <opaque-session-id> --expected-revision <n>`. Generate a fresh UUID once per new chain, retain it for retries, and never reuse a closed chain's id. Start at revision 0, then carry that chain's returned identity/revision. Never retarget a rejected request to another chain-id. Owner is a stable per-session identifier, not a command, path or secret; only its hash is stored in machine-local audit. All commands support `--format text|json`; mutations support `--dry-run`.
+- `begin --step-id <stable-id> --client <client> --surface <surface> [--plan <docs>]`: autoplan adds `--kind framework|detail|review [--target <doc>]`; autorun adds `--slug <package>`. Use the chain's `--max-passes`/`--max-rounds` or `--unbounded`; later current begins retain the recorded cap unless explicitly overridden. A repeated step resumes rather than re-spends budget; different work needs a new step after the previous one completed. Never invent a new step-id merely to bypass an error.
+- `finish`: attest only after actually doing the assigned work; the script validates its stage-specific evidence. Autoplan review requires `--review-mode main|independent --review-note <conclusion>`; `--outcome revise` records a review needing a repair pass, not readiness. Package finish proves archive acceptance, not commit or publication.
+- `pause --reason <reason>`: persist the stop, retaining unfinished work. Update package handoff when applicable. `resume` restores that same unit without another pass/round. A different owner must explicitly `--takeover` an active or unknown-owner unit, only after confirming the former session stopped; a paused unit is available for handoff.
+- Current models and permissions remain host-managed; CLI model/reasoning/bypass flags cannot configure the desktop host. Current mutations reject `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR` and `GIT_INDEX_FILE` overrides: resolve the environment explicitly, never silently redirect the target repository or edit Git configuration.
+- Journal persistence precedes the summary write. If the summary write fails, the transition may already be durable; persistent repair failures remain nonzero even on duplicate retries. Fix storage and retry the same identity/owner/revision, never reset state. Stale chain identities or revisions, conflicting owners, edited scope and unknown formats fail closed.
+- A torn final journal line is preserved verbatim in a machine-local `spawns.torn-<digest>.jsonl` backup before a valid mutation restores the complete prefix and appends its transition. Status/dry-run never repair files; malformed interior records still block.
+- `close` requires the same mutation arguments and a proven ready/complete chain. It preserves a history snapshot; autoplan verifies reviewed document identity and readiness with unchecked features, autorun verifies implemented scope and archived work. No force/reset and no session termination.
+- After planning readiness, a newly authorized framework step may explicitly revise the same selected masters, preserving earlier review receipts. Changed ready documents cannot be closed as if the old review still applied; clarify the revision before replanning. Autorun's frozen scope is never relaxed this way.
+
+Tasks and acceptance remain in the task package. `.spec/<chain>/chain.json` stores the continuation summary; the journal and owner hash live in the actual Git-dir's `spec-chain/<chain>/`, including linked worktrees. New writes use v3; existing v2 current checkpoints remain readable and upgrade on the first valid identity-bound mutation, advancing revision once without spending a pass/round. Old rows remain intact; downgrade after v3 is refused. The transaction/owner protocol is not an OS-level workspace lock or background scheduler. Closing the client stops execution; new sessions resume explicitly. Active legacy fresh chains and their model locks are never automatically converted.
+
+### Fresh CLI transport
+
+Both existing spawn scripts accept `--terminal auto|terminal|tmux`: macOS selects Terminal.app, Linux/WSL2 selects tmux (tmux ≥3.2 + ps). The worker remains a full interactive session — visible TUI, persisted, never headless. Native Windows uses WSL2. A fresh spawn refuses an active current checkpoint rather than overwriting it. Failed launches keep the legacy rollback contract (交接未确认 = 不留进程); window/pane lifecycle policy: source `docs/adr/0001-terminal-spawn-window-lifecycle.md`. Fresh `--dry-run` prints the selected launch and attach instructions without launching.
+
+Legacy `scripts/autoplan_spawn.py close` / `scripts/autorun_spawn.py close` retain their historical implemented-feature proof and do not close active current checkpoints. They preserve `.spec/<chain>/history/`, refuse missing/changed plans, active packages or a held mutex, and never kill sessions. A new closed-chain successor starts at 1 without inheriting the old model lock. Legacy states without a fingerprint remain readable but cannot be closed automatically.
 
 ## Script working-directory conventions
 

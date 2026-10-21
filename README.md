@@ -33,8 +33,8 @@ Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 
 - **明确的入口**：`new`、`goal`、`autoplan`、`autorun`、`run`、`check`、`done`、`push`、`update`、`status`、`doctor`、`organize`。
 - **可恢复的状态**：报告、失败原因、完成摘要和归档都来自磁盘文件，换会话仍能继续。
 - **会话边界交接**：任务包可选 `handoff.md`——生成式快照头 + append-only 条目日志，必填小节随协作模式（单人/多人/agent/集群）自适应，`spec_handoff.py` 维护、check 门禁校验、done 归档时冻结。
-- **交互式递归规划**：`autoplan` 在项目初期或阶段收口时多轮征询摸清目标，随后按 `autorun` 同款串联递归把框架规划、逐阶段细节规划与一致性复核逐个交给全新会话接力（不用于进程内子代理），细化到 autorun 颗粒度，结构门禁与独立复核通过后停在就绪报告，从不自动起链。
-- **递归自动链**：`autorun` 以项目规划文档的功能 checkbox 为终止条件——本轮跑完推送到 main 后，自动规划下一轮并在同路径开新交互会话注入提示词接续（macOS 用 Terminal.app，Linux/Windows WSL2 用 tmux）（沿用起链时的宿主 CLI，可用 `--host` 或 `SPEC_AUTORUN_HOST` 显式改选），直到全部功能勾选完成；每轮是完整交互会话，可旁观也可随时接管，macOS 旧窗口在新会话就位后自动回收，tmux 会话保留供重新连接；单链锁与「无合格规划文档拒绝起链」护栏防止失控递归；默认轮次上限 5（显式 `--max-rounds` 可改设，`--unbounded` 解除），worker 权限默认继承父会话、探测不到就不提权（`--permission-mode bypass` 才显式提权），规划特性集指纹冻结会拒绝链中途新增未勾选特性的自旋。
+- **交互式规划**：`autoplan` 澄清目标后依次完成框架、阶段细节和一致性复核；桌面及 IDE agent 插件在当前会话推进，已验证 CLI 可使用新会话链。无子代理时明确标注主会话复核；规划就绪即停止，不自动启动开发。
+- **可恢复的自动链**：`autorun` 按规划功能逐包执行与验证，完成已授权的 Git 收尾后推进下一轮。桌面端不因 PATH 上装了另一 CLI 就跳过去；暂停后从同一步恢复，默认最多 5 个已接纳轮次（`--max-rounds` 可改设，`--unbounded` 解除）。当前会话不承诺关闭客户端后继续后台运行。
 - **稳定的任务身份**：任务可用 `id:` 与 `depends-on` 声明身份与依赖；协议迁移不改写历史归档。
 - **受控的执行面**：主会话保留路由、集成、验收和 done/push 门禁；`workflow-runner` 与其他 slots 只执行有边界的工作段。
 - **两种运行形态**：本地 Skill 是参考实现；可选 `server/` 适配器只负责远端任务包的 start/result/health 投影。
@@ -64,10 +64,10 @@ Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 
 ## 环境要求
 
 - Python 3.9 或更高版本。
-- 能加载 `SKILL.md` 的宿主 CLI，例如 Claude Code、Codex、Gemini CLI、Grok Build、OpenCode、OpenClaw、Hermes、Pi 或 ZCode。
+- 能加载 `SKILL.md` 的 agent 客户端：CLI、IDE agent 插件或桌面应用；必须实际拥有项目读写与 Python/Git 执行工具。
 - 辅助脚本只使用 Python 标准库；开发测试额外需要 `pytest` 和 `ruff`。
-- 安装器需要 Bash；Windows 用户可使用 WSL2。自动规划/执行链的会话启动支持 macOS Terminal.app、Linux 和 Windows WSL2 下的 **tmux ≥3.2**；不支持原生 PowerShell/cmd/Git Bash 启动链会话。
-- Linux/WSL2 无需图形桌面；Ubuntu/Debian 先执行 `sudo apt-get install tmux procps`，并在同一 Linux/WSL 环境安装 Python 与 worker CLI。启动结果和 `status` 会给出 `tmux -L … attach-session …` 命令；按 `Ctrl-b d` 脱离而不终止会话。完整说明见[会话后端契约](references/commands.md#session-backends)。
+- 安装器需要 Bash；当前会话链支持 macOS、Linux/WSL2。原生 Windows 链请在 WSL2 内运行，不能把平台模拟测试视为原生支持。
+- 仅 fresh CLI 会话需要额外后端：macOS Terminal.app，或 Linux/WSL2 的 **tmux ≥3.2** 与 ps。current 模式不需要 tmux、osascript 或另一个 agent CLI。详见[执行与会话后端契约](references/commands.md#session-backends)。
 
 ## 安装说明
 
@@ -78,7 +78,7 @@ Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.19.1
+git checkout v0.20.1
 bash install.sh
 ```
 
@@ -100,6 +100,8 @@ bash install.sh
 | `hermes` | Hermes | `~/.hermes/skills` | 可用 `HERMES_HOME` 重定位 |
 | `pi` | Pi agent | `~/.pi/agent/skills` + `~/.pi/agent/prompts` | 可用 `PI_DIR` 重定位；同时写入 `/spec` 与 `/spec:<stage>` 原生命令模板（`PI_PROMPTS_DIR` 重定位，`/reload` 后生效） |
 | `zcode` | ZCode | `~/.zcode/skills` | 项目自有宿主 |
+| `devin`、`devin-desktop` | Devin CLI / Local | `~/.config/devin/skills` | 只安装 Skill；`DEVIN_SKILLS_DIR` 可重定位 |
+| `cursor`、`cursor-cli` | Cursor IDE / CLI | `~/.cursor/skills` | 只安装 Skill；`CURSOR_SKILLS_DIR` 可重定位 |
 | `desktop`、`rpi` | Claude Code + Codex | 两套默认目录 | 组合目标 |
 | `all` | 全部宿主 | 按上表写入 | 显式全量 |
 
@@ -119,6 +121,29 @@ INSTALL_PROFILE=full bash install.sh
 
 安装器默认拒绝覆盖没有 `.spec-skill-install` 所有权标记的同名 Skill；确认替换用户目录时才设置 `FORCE=1`。`pi` 现在表示 Pi agent，旧的 Claude + Codex 组合请使用 `rpi` 或 `desktop`。
 
+### 执行形态与支持边界
+
+安装目标选择“文件放哪里”，执行策略选择“这一会话如何推进”；两者不是同一张白名单。历史 `desktop` token 仍只组合 Claude Code + Codex，并非所有桌面端。
+
+| Agent / 运行形态 | `auto` 执行策略 | 条件与边界 |
+| --- | --- | --- |
+| Claude Code、Codex、Pi 的明确 CLI 会话 | fresh | 保留已有完整交互会话 adapter；显式 worker 可选择其他已验证 CLI |
+| Claude/Codex 等 IDE agent 插件 | current | 插件内使用现有工具，不把外层编辑器或继承环境变量当作 CLI 证据 |
+| Devin Desktop、Cursor 原生 Agent、ZCode | current | 当前主会话连续推进；不要求另装 agent CLI |
+| Devin/Cursor CLI、Gemini、Grok、OpenCode、OpenClaw、Hermes | current | 本仓未提供对应 fresh adapter，不代表产品没有 CLI |
+| Claude Desktop | 条件 current | 只有实际具备本地工作区读写与命令执行工具时才能完整执行；普通聊天或只读工具不足 |
+| 未知兼容客户端 | current | 显式加载 Skill，检查实际工具；不猜配置目录或命令 |
+
+需要这些扩展能力时安装 full，例如：
+
+```bash
+INSTALL_HOSTS=devin,cursor,zcode INSTALL_PROFILE=full bash install.sh
+```
+
+Devin/Cursor 使用 `/spec` 加载 Skill 后请求 `spec:autoplan` 或 `spec:autorun`；ZCode 使用 `$spec`。新装后按宿主方式刷新技能或开始新会话，不假定所有宿主都注册了 `/spec:<stage>`。主会话负责能力核对、权限边界与恢复，不依赖独立窗口或子代理；没有子代理的复核会明确标注为主会话复核。
+
+验证口径：自动化测试覆盖客户端 profile、恢复协议和隔离安装，不等于对应产品已逐个实机验收。Cursor/ZCode 桌面端、Linux/WSL2 与原生 Windows 的实际运行证据应分别记录；未实测不得标为 live verified。协议见[执行与会话后端契约](references/commands.md#session-backends)。
+
 ### 手动安装
 
 只导出运行时 Skill 包：
@@ -129,7 +154,7 @@ python3 scripts/export_skill_package.py --output /tmp/spec --force
 
 手动直调导出器不会自动跳过签名：无凭据环境需显式加 `--skip-signing`（安装器在同样条件下会自动附加并提示）。导出器同样接受 `--profile core|full`（缺省 `full`，与 release 载荷字节等价）。
 
-把导出的 `spec/` 目录放入宿主的 Skill 根目录，然后在 Codex/ZCode 中触发 `$spec`，在 Pi 中使用 `/spec`、`/spec:<stage>` 原生命令（参数经 `$@` 原样透传），或在 Claude Code 中使用 `/spec:goal`。
+把导出的 `spec/` 目录放入宿主的 Skill 根目录，然后在 Codex/ZCode 中触发 `$spec`，在 Pi 中使用 `/spec`、`/spec:<stage>` 原生命令（参数经 `$@` 原样透传），在 Claude Code 中使用 `/spec:goal`，或在 Devin/Cursor 中加载 `/spec` 后请求 `spec:goal`。
 
 ## 快速开始
 
@@ -223,6 +248,7 @@ spec/
 │   ├── autorun_spawn.py
 │   ├── chain_lifecycle.py
 │   ├── chain_recovery.py
+│   ├── chain_session.py
 │   ├── chain_spawn_support.py
 │   ├── check_all_spec_packages.py
 │   ├── check_spec_package.py

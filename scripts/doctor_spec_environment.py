@@ -45,6 +45,7 @@ STALE_STAGE_ALIASES = ("route", "tasks")
 # (agents live in ~/.claude/agents, not inside the skill directory).
 NATIVE_AGENT_NAMES = ("orchestrator", "planner", "reviewer", "confirmer")
 BUILTIN_SLOT_NAMES = ("team-loop", "workflow-runner")
+HOST_ALIASES = {"devin-desktop": "devin", "cursor-cli": "cursor"}
 
 # Install profiles (planning F16 sub-step 2, AUD-18): the marker's profile=
 # stamp selects the audit face. Markers predating the split carry no stamp
@@ -53,7 +54,7 @@ BUILTIN_SLOT_NAMES = ("team-loop", "workflow-runner")
 # alignment with the contract is pinned by tests/test_install_profile.py.
 PROFILE_VALUES = ("core", "full")
 CORE_STAGE_COMMANDS = ("new", "run", "check", "done", "push")
-EXTENSION_FILE_PREFIXES = ("agents/", "server/")
+EXTENSION_FILE_PREFIXES = ("agents/", "server/", "scripts/chain_session.py")
 
 
 def claude_agents_dir() -> Path:
@@ -93,6 +94,7 @@ REQUIRED_RUNTIME_FILES: Tuple[str, ...] = (
     "references/templates.md",
     "references/storage-and-archive.md",
     "scripts/check_all_spec_packages.py",
+    "scripts/chain_session.py",
     "scripts/check_spec_package.py",
     "scripts/complete_spec_package.py",
     "scripts/dashboard_support.py",
@@ -196,6 +198,8 @@ def _host_specs() -> List[HostSpec]:
             lambda: _home() / ".claude-desktop" / "skills",
         ),
         ("codex", "Codex", "CODEX_SKILLS_DIR", lambda: _home() / ".codex" / "skills"),
+        ("devin", "Devin", "DEVIN_SKILLS_DIR", lambda: _home() / ".config" / "devin" / "skills"),
+        ("cursor", "Cursor", "CURSOR_SKILLS_DIR", lambda: _home() / ".cursor" / "skills"),
         ("gemini", "Gemini CLI", "GEMINI_SKILLS_DIR", lambda: _home() / ".gemini" / "skills"),
         ("grok", "Grok Build", "GROK_SKILLS_DIR", lambda: _home() / ".grok" / "skills"),
         ("opencode", "OpenCode", "OPENCODE_SKILLS_DIR", lambda: _xdg_config() / "opencode" / "skills"),
@@ -331,7 +335,7 @@ class Doctor:
         hosts = _host_specs()
         if not self.host_filter:
             return hosts
-        wanted = {name.strip() for name in self.host_filter if name.strip()}
+        wanted = {HOST_ALIASES.get(name.strip(), name.strip()) for name in self.host_filter if name.strip()}
         unknown = wanted - {host[0] for host in hosts}
         if unknown:
             raise DoctorError(

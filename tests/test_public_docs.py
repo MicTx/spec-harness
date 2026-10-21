@@ -105,6 +105,22 @@ def test_root_readmes_form_a_bilingual_public_pair():
     assert "README-en.md" in PUBLIC_ROOT_FILES
 
 
+def test_readmes_carry_execution_surface_matrix_and_new_hosts():
+    chinese = (ROOT / "README.md").read_text(encoding="utf-8")
+    english = (ROOT / "README-en.md").read_text(encoding="utf-8")
+    assert "### 执行形态与支持边界" in chinese
+    assert "### Execution surfaces and support boundaries" in english
+    for text in (chinese, english):
+        assert "`devin`" in text and "devin-desktop" in text
+        assert "`cursor`" in text and "cursor-cli" in text
+        assert "~/.config/devin/skills" in text and "DEVIN_SKILLS_DIR" in text
+        assert "~/.cursor/skills" in text and "CURSOR_SKILLS_DIR" in text
+        assert "INSTALL_HOSTS=devin,cursor,zcode INSTALL_PROFILE=full bash install.sh" in text
+        assert "│   ├── chain_session.py" in text
+        assert "current" in text and "fresh" in text
+    assert "main-session review" in english
+
+
 def _controlled_slug_verbs() -> set[str]:
     """The slug verb table in references/naming-and-commits.md is the single source."""
     table = (ROOT / "references" / "naming-and-commits.md").read_text(encoding="utf-8")

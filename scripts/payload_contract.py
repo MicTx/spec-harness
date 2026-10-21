@@ -43,6 +43,7 @@ CORE_EXCLUDED_SCRIPTS = frozenset(
         "chain_spawn_support.py",
         "chain_recovery.py",
         "chain_lifecycle.py",
+        "chain_session.py",
         "sweep_chain_windows.py",
     }
 )

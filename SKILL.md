@@ -38,8 +38,8 @@ Read only the current stage's file under `references/stages/` ([`references/comm
 | Command | Purpose |
 | --- | --- |
 | `/spec:goal` | one-shot: plan, execute, review, archive, and commit |
-| `/spec:autoplan` | interactive planning rounds, then framework/detail/review passes as a serial fresh-session chain, gated to autorun readiness |
-| `/spec:autorun` | recursive chain: finish the active package, plan the next round, spawn a fresh session — until every planned feature is done |
+| `/spec:autoplan` | interactive planning, then framework/detail/review passes in the current host or a verified fresh CLI session, gated to readiness |
+| `/spec:autorun` | finish the active package and plan the next round; continue in the current host or a verified fresh CLI session until complete |
 | `/spec:doctor` | environment self-check and repair |
 | `/spec:organize` | structure audit; audit-only by default, `--apply` creates the package; never delete, archive under `archive/retired` |
 
@@ -64,7 +64,7 @@ Bounded internal reads: when one view replaces several reads use `route_spec_pac
 
 ## Progress and continuation
 
-Continuation is `/spec:run` itself: next ready task → verify → check off → repeat; after an interruption, re-running `/spec:run` resumes from `tasks.md` state. Cross-collaborator boundaries (pause, takeover, agent-cluster lanes) go through the optional `handoff.md` (`scripts/spec_handoff.py`; contract: [`references/handoff.md`](references/handoff.md)). User pause/abort, pending user messages, and project trust prompts always outrun the loop; the optional `hooks/claude_stop_guard.py` keeps convergence explicit without expanding Git authorization.
+Continuation is `/spec:run` itself: next ready task → verify → check off → repeat; after an interruption, re-running `/spec:run` resumes from `tasks.md` state. Cross-collaborator boundaries (pause, takeover, agent-cluster lanes) go through the optional `handoff.md` (`scripts/spec_handoff.py`; contract: [`references/handoff.md`](references/handoff.md)). Autoplan/autorun resolve client and surface before execution: desktop/IDE plugins default to the current session, never another agent found on PATH (contract: `references/commands.md`). User pause/abort, pending user messages, and project trust prompts always outrun the loop; the optional `hooks/claude_stop_guard.py` keeps convergence explicit without expanding Git authorization.
 
 ## Execution rules
 

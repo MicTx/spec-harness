@@ -1,42 +1,36 @@
 # `/spec:autoplan`
 
-Goal: interactive planning entry paired with [`autorun.md`](autorun.md) — interrogate the user in themed rounds, then run the planning passes (framework → per-phase detail → consistency review) as a serial fresh-session chain with `/spec:autorun`'s spawn discipline, until every feature reaches autorun granularity; gate the cluster and stop at readiness. `autoplan` creates no task package, writes only `.spec/autoplan/` pass-chain state, and never spawns (nor is invoked by) the autorun chain. No pass in autoplan runs as an in-process subagent of the spawning session.
+Goal: clarify, plan framework/details, review consistency, and stop at autorun readiness. No task package or autorun launch. Plans are project content; `.spec/autoplan/` holds pass receipts, not implementation completion.
 
 Compatible invocation:
 
-- Claude Code CLI: `/spec:autoplan [--plan <docs>] [--max-rounds <n>] [--max-passes <n>]`; other skill-aware CLIs: `spec:autoplan` via `$spec`. Pass windows get the per-host continuation prompt (shapes in [`../commands.md`](../commands.md)); assignments come from `.spec/autoplan/chain.json`.
+- Use the host's spec skill entry, then `spec:autoplan`; Claude Code also exposes `/spec:autoplan`. Options: `--plan <docs>`, interrogation `--max-rounds <n>` (default 5), pass `--max-passes <n>` or `--unbounded`, and `--execution auto|current|fresh`. Native command registration is host-specific, not inferred from this spelling.
 
-Planning-document discovery (`scripts/autoplan_gate.py discover --root <project> [--plan <path>...]`): same candidate rules as [`autorun.md`](autorun.md) — `--plan` wins, otherwise the canonical `.spec/plans/` scan, qualifying only with a markdown feature checkbox. An existing cluster → phase-boundary run (reconcile checked features, re-plan the remaining scope); empty scan → project-start run.
+Preflight: use [`../commands.md#session-backends`](../commands.md#session-backends) to resolve the actual client/surface and available tools. Desktop and IDE-plugin sessions use current-session passes by default; verified CLI adapters may use the serial fresh-session chain. Do not install or select another agent merely because its binary is on PATH. Native workers are optional bounded helpers, not replacement orchestrators.
 
 Execution order:
 
-1. Preflight with `discover` (project-start vs phase-boundary).
-2. Interrogation rounds, at most `--max-rounds` (default 5), themed in order: goal/users/value → scope/MVP/boundaries → technology/data/architecture → priorities/phases/dependencies → risks/verification. Answers land in the cluster's confirmed-facts / assumptions / open-questions sections. Converge when no project-shaping question remains or the user ends early, then seed/update the master document (default `.spec/plans/README.md` or first `--plan` doc).
-3. Framework planning pass — spawn the first pass window and end this session:
+1. Run `scripts/autoplan_gate.py discover --root <project> [--plan <docs>]`. Discovery matches [`autorun.md`](autorun.md): canonical `.spec/plans/*.md` and `*/master.md`, excluding archives; `--plan` is explicit scope. Empty discovery means project start, not planning complete. Existing cluster means reconcile completed features and clarify the remaining scope.
+2. Ask themed rounds: goal/users/value → scope/MVP → technology/data → priorities/dependencies → risks/verification. Record confirmed facts, assumptions and open questions. Stop questioning when no project-shaping question remains or the user ends early. Seed a dated cluster's `<cluster>/master.md` (or selected `--plan` master); keep the root README as an index without feature checkboxes.
+3. In **current** mode, inspect `scripts/chain_session.py status --chain autoplan` and use the shared owner/revision protocol. Start framework:
 
     ```bash
-    python3 scripts/autoplan_spawn.py spawn --root <project> --next framework [--plan <docs>] [--max-passes <n>] [--host/--model/--reasoning as `autorun` spawn]
+    python3 scripts/chain_session.py begin --chain autoplan --root <project> \
+      --client <client> --surface <surface> --chain-id <id> --owner <owner> --step-id framework-1 \
+      --expected-revision 0 --kind framework --plan <master> --format json
     ```
 
-    It enforces the pass-chain rails (cap, single-chain lock, sequential spawn, seeded master) and opens a session via the shared [session backends](../commands.md#session-backends). The framework pass expands the seed into the master under the planner mission ([`agents/planner.md`](../../agents/planner.md); write scope = its one document); existing PRD/design docs are reconciled, never duplicated.
-4. Detail passes: one pass window per phase detail document (`--next detail --target <doc>`; default `<cluster>/NN-<slug>.md`), written under the planner mission until every leaf feature directly supports a `/spec:new` package; after the last phase, the review pass. The feature checkbox index must live inside the autorun candidate set.
-5. Consistency review pass (`--next review`): run `scripts/autoplan_gate.py gate --root <project> [--plan ...]` (fail closed, exit 3) plus the independent reviewer pass under [`agents/reviewer.md`](../../agents/reviewer.md). Contradictions → record in open-questions, spawn a scoped fix pass (`--next detail --target <flagged doc>`), review again; repeat until both pass (bounded only by an explicit cap).
-6. Readiness report: run `scripts/autorun_spawn.py plan`; report readiness, suggest `/spec:autorun`, stop. Never spawn the autorun chain from autoplan.
+    New chains use a fresh chain-id and revision 0; retries retain both. Continue with the receipt's identity/revision. Expand the selected master under [`agents/planner.md`](../../agents/planner.md), reconciling existing PRD/design documents. `finish` records the completed framework's fingerprint, not the unfinished seed.
+4. Begin each detail with a new stable step-id, `--kind detail --target <linked-doc>`. One assigned document per pass; default `<cluster>/NN-<slug>.md`. Complete business logic, data model, flow, boundaries and acceptance hooks until each leaf supports `/spec:new`; `finish` verifies the five-section structure. Feature checkboxes stay only in candidate masters, not detail documents.
+5. Begin review with `--kind review`. Run `scripts/autoplan_gate.py gate` (not ready: exit 3) and actually review semantic consistency under [`agents/reviewer.md`](../../agents/reviewer.md). With available native review tools, use independent review; otherwise explicitly report main-session review. Finish with `--review-mode independent|main --review-note <conclusion>`. These fields attest to the performed review; the script only proves structure and document identity.
+6. Contradictions require a recorded review `finish --outcome revise`, a scoped repair pass, then review again. Do not pass a failed gate. Detail/review cannot silently alter the frozen master features; a user-authorized scope revision uses a new framework pass.
+7. A successful review records `ready` and the reviewed document digest. Run `scripts/autorun_spawn.py plan`, report readiness, suggest `/spec:autorun`, and stop. Unimplemented feature boxes remain unchecked. Changed documents invalidate readiness; current `close` verifies readiness, not implementation completion.
 
-Pass-chain rules (same discipline as [`autorun.md`](autorun.md)):
+Fresh CLI branch:
 
-- Fail fast, never spawn after failure: a failed pass (gate exit 3, contradiction, dead worker) stops the chain; recovery: re-run `/spec:autoplan`, follow `status`'s `resume:` decision.
-- Strictly sequential: one pass window per project at most (flock in `.git/spec-chain/autoplan/`); parallel pass chains are refused, never queued.
-- Pass cap: none by default (2026-10-19); `--max-passes <n>` is a caller-chosen cap; `--unbounded` explicit ([`autorun.md`](autorun.md)).
-- Permission mode, fingerprint, worker hosts, model identity: as [`autorun.md`](autorun.md) (no `--command` bypass here).
-- Terminal scope, window recycling, user interruptions: as [`autorun.md`](autorun.md); a pass session may ask the user directly in its own window (every pass is a full interactive session).
+- Use `scripts/autoplan_spawn.py spawn --root <project> --next framework|detail|review [--target <doc>] [--plan <docs>]` with the resolved worker and supported model/permission flags. Each pass is a full interactive session; the spawning session ends at handoff. No in-process subagent delegation transfers chain ownership.
+- Existing fresh-chain fingerprint, model lock, start confirmation and terminal lifecycle remain in force; settle seed feature identities before the first spawn. Legacy states are not automatically converted to current receipts.
 
-Constraints:
+Both modes: no pass cap by default; explicit `--max-passes` and `--unbounded` are mutually exclusive. Failure stops advancement. On pause/context boundary, persist progress; resume the same pass without spending another pass. A transaction lock is not a session-lifetime lock. Start interactively, never from autorun; noninteractive entry reports undecided items. Do not archive the planning cluster with a task package or put it under `.spec/autorun/`.
 
-- Interactive only: started by the user interactively; invoked non-interactively or from the autorun chain, stop and report undecided items. The question-list exemption covers the interrogation phase only (bounded by `--max-rounds`, default 5, and the convergence rule).
-- No in-process subagent delegation anywhere in autoplan: every pass runs as its own full session and adjudicates its one assigned document; the spawning session ends at the handoff.
-- The planning cluster is project content, never task-package state — never archived with a package or written under `.spec/autorun/`; `.spec/autoplan/` keeps the tracked summary (runtime in `.git/spec-chain/`), never archived.
-
-Output contract:
-
-- Follow the `/spec:autoplan` section in [`../output-contracts.md`](../output-contracts.md).
+Output: [`../output-contracts.md`](../output-contracts.md).

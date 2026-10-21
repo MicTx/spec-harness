@@ -1,17 +1,17 @@
 {
   "schema_version": 1,
   "sources": {
-    "SKILL.md": "441128bbf507063f4439ea20013a890bcbd6c2fb49d0307a547b2f0f00073d29",
+    "SKILL.md": "c815f64f491982e5c0f841a85a4ad3de876907b9952196ce1a35786e8995981f",
     "agents/planner.md": "63c33bc01d483d216ec2d57802216b13604810554268deb9d2b34e49bfb981f6",
-    "references/commands.md": "d72a23188bcb7c64a052875562457169c3cc0c218d5e141fd49e8d19c1a263bf",
+    "references/commands.md": "f3d881f34086477789f254f66b34474695fbec1181a9ff6aac3b1e1a734f5639",
     "references/handoff.md": "d091865d662b8de7873f50426370563209bb7642256674359ec43c2e200ca646",
     "references/naming-and-commits.md": "2ba4559044b7878ff3663b88cdb843303487de5462d35c48fd0cfc7ab28b2cb5",
     "references/orchestration.md": "ca95e147cc014f654ad29053086a21469509371f26300be0633bf7dfc609df07",
-    "references/output-contracts.md": "5ab53d3a0c2a89bde442f91f8da2fb874e50431eda934dcbc8df8ecb618db6ff",
-    "references/stages/autoplan.md": "d5ca2081525c90ffd71fac1db7e37f4e6bf1e3c06dabf9a0e0dd658be52c829f",
-    "references/stages/autorun.md": "3c3e66d1de298a6a578849d08e8e1926a3df6c866a0d2ba5296880dfbb0a7d67",
+    "references/output-contracts.md": "7fbf9d1b39e7264a5db30ed67fe388da1682b9111d0a304e511ead030a32d98f",
+    "references/stages/autoplan.md": "08ff0658d7768a05ea216fce8aa027587147d4ef4d11329f161524f345bd5ae8",
+    "references/stages/autorun.md": "283ef3bb790c4bf00ad570c3b37efed05307272e4b01f26ff9368a65bb346035",
     "references/stages/check.md": "6b95c21892f054e8e76bd9bc780ad8bb66121c6377e9d94680b7e9815b288fc6",
-    "references/stages/doctor.md": "9d53581740c09d36f927afa0f1f3bfe26fa6347fbc57d2cb1d183d36c1d5f2fd",
+    "references/stages/doctor.md": "3680fba2a6e13d315dc177bb676732ecdbf463830f1bbd2cbaf67ea1bcde9e79",
     "references/stages/done.md": "a33dc80a289afa527949da7b2998d0a3f57adf65e0bc17526e7e316809f8d98e",
     "references/stages/goal.md": "5efbff715abd478dcfd486cc46e2bea23dcb0b3d4c7488e669161992ff0ed36c",
     "references/stages/new.md": "66c66cecf318e433078c74ce7643814c2267c0ed91db8cfc6ef955649cce9d00",
@@ -163,7 +163,7 @@
       "context_available": [
         {
           "source": "SKILL.md",
-          "sha256": "441128bbf507063f4439ea20013a890bcbd6c2fb49d0307a547b2f0f00073d29"
+          "sha256": "c815f64f491982e5c0f841a85a4ad3de876907b9952196ce1a35786e8995981f"
         }
       ],
       "success_condition": "next ready task executed with its verify actually run",
@@ -257,7 +257,7 @@
       "context_available": [
         {
           "source": "SKILL.md",
-          "sha256": "441128bbf507063f4439ea20013a890bcbd6c2fb49d0307a547b2f0f00073d29"
+          "sha256": "c815f64f491982e5c0f841a85a4ad3de876907b9952196ce1a35786e8995981f"
         }
       ],
       "success_condition": "slot lane assignment contract satisfied; no second state machine",
@@ -361,7 +361,7 @@
       "context_available": [
         {
           "source": "SKILL.md",
-          "sha256": "441128bbf507063f4439ea20013a890bcbd6c2fb49d0307a547b2f0f00073d29"
+          "sha256": "c815f64f491982e5c0f841a85a4ad3de876907b9952196ce1a35786e8995981f"
         }
       ],
       "success_condition": "failure diagnosed, written back, fixed and fully re-verified in-round",
@@ -455,7 +455,7 @@
       "context_available": [
         {
           "source": "SKILL.md",
-          "sha256": "441128bbf507063f4439ea20013a890bcbd6c2fb49d0307a547b2f0f00073d29"
+          "sha256": "c815f64f491982e5c0f841a85a4ad3de876907b9952196ce1a35786e8995981f"
         }
       ],
       "success_condition": "legacy evidence completeness judged with full log, not first screen",
@@ -522,7 +522,7 @@
       "context_available": [
         {
           "source": "SKILL.md",
-          "sha256": "441128bbf507063f4439ea20013a890bcbd6c2fb49d0307a547b2f0f00073d29"
+          "sha256": "c815f64f491982e5c0f841a85a4ad3de876907b9952196ce1a35786e8995981f"
         }
       ],
       "success_condition": "package archived and committed with naming/commit contract",
@@ -608,7 +608,7 @@
       "context_available": [
         {
           "source": "SKILL.md",
-          "sha256": "441128bbf507063f4439ea20013a890bcbd6c2fb49d0307a547b2f0f00073d29"
+          "sha256": "c815f64f491982e5c0f841a85a4ad3de876907b9952196ce1a35786e8995981f"
         }
       ],
       "success_condition": "merge to main pushed on the recorded integration branch only",
@@ -777,7 +777,7 @@
       "context_available": [
         {
           "source": "SKILL.md",
-          "sha256": "441128bbf507063f4439ea20013a890bcbd6c2fb49d0307a547b2f0f00073d29"
+          "sha256": "c815f64f491982e5c0f841a85a4ad3de876907b9952196ce1a35786e8995981f"
         }
       ],
       "success_condition": "assigned detail document written per planner mission, nothing else",
@@ -827,12 +827,12 @@
           "source": "references/commands.md",
           "ranges": [
             [
-              42,
-              45
+              82,
+              116
             ]
           ],
-          "reason": "session backend contract for pass windows",
-          "contract_anchor": "commands.md autoplan",
+          "reason": "execution strategy, current-session recovery and fresh CLI transport contract",
+          "contract_anchor": "commands.md Session backends",
           "call_id": "read:commands",
           "expected_keys": [
             "backend-contract"
@@ -877,7 +877,7 @@
       "context_available": [
         {
           "source": "SKILL.md",
-          "sha256": "441128bbf507063f4439ea20013a890bcbd6c2fb49d0307a547b2f0f00073d29"
+          "sha256": "c815f64f491982e5c0f841a85a4ad3de876907b9952196ce1a35786e8995981f"
         }
       ],
       "success_condition": "fail-fast honored: chain stops, failure reported per goal contract",
@@ -927,12 +927,12 @@
           "source": "references/commands.md",
           "ranges": [
             [
-              46,
-              49
+              82,
+              116
             ]
           ],
-          "reason": "autorun backend contract",
-          "contract_anchor": "commands.md autorun",
+          "reason": "execution strategy, current-session recovery and fresh CLI transport contract",
+          "contract_anchor": "commands.md Session backends",
           "call_id": "read:commands",
           "expected_keys": [
             "backend-contract"
@@ -977,7 +977,7 @@
       "context_available": [
         {
           "source": "SKILL.md",
-          "sha256": "441128bbf507063f4439ea20013a890bcbd6c2fb49d0307a547b2f0f00073d29"
+          "sha256": "c815f64f491982e5c0f841a85a4ad3de876907b9952196ce1a35786e8995981f"
         }
       ],
       "success_condition": "spec/tasks updated with affected acceptance surface still coherent",

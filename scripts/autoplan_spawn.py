@@ -456,6 +456,9 @@ def _render_status_model(model: object) -> str:
 
 def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
     """Run the pass guards, open the pass window, and record chain state."""
+    from chain_session import refuse_current_spawn
+
+    refuse_current_spawn(root, "autoplan")
     backend = chain_support.resolve_terminal_backend(getattr(args, "terminal", "auto"))
     kind: str = args.next
     target = resolve_target(root, args.target, kind)
@@ -680,6 +683,11 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
 
 
 def status_payload(root: Path) -> Dict[str, object]:
+    from chain_session import current_status_view
+
+    current = current_status_view(root, "autoplan")
+    if current is not None:
+        return current
     # F16 step 3: migrate before reading so both layouts render identically.
     chain_support.migrate_legacy_chain_state(root, "autoplan")
     chain_dir = _chain_dir(root)
@@ -820,6 +828,10 @@ def _render_detail_docs(detail_docs: object) -> str:
 
 
 def _render_status(payload: Dict[str, object]) -> str:
+    if payload.get("execution_mode") == "current":
+        from chain_session import render_status as render_current_status
+
+        return render_current_status(payload)
     lines = [f"project: {payload['project']}", render_lock(payload.get("lock"))]
     if not payload.get("started"):
         if payload.get("state_status") == "corrupt":

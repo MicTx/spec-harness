@@ -4,6 +4,41 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [0.20.1] - 2026-10-21
+
+### Fixed
+
+- 发布构建的 pytest 预检超时时会附带测试输出尾部，并按测试名与线程栈定位卡住的用例；行为与 0.20.0 相同，0.20.0 未完成发布。
+- When the release build's pytest pre-check times out, the error now carries the output tail and names the stalled test with thread stacks; behavior is otherwise identical to 0.20.0, which was never published.
+
+## [0.20.0] - 2026-10-21
+
+### Added
+
+- autoplan/autorun 新增当前会话执行路径：具备工作区读写、Python、Git 与交互工具的桌面客户端和 IDE agent 插件可直接规划、执行、暂停与恢复，无需为续跑另装其他 agent CLI。
+- autoplan/autorun gain current-session execution: desktop clients and IDE agent plugins with workspace read/write, Python, Git and interaction tools can plan, execute, pause and resume without installing another agent CLI just to continue.
+- 安装器与 doctor 增加 Devin、Cursor 宿主及 alias、full/core 载荷检查；公开宿主矩阵区分安装入口、执行形态和验证证据。
+- The installer and doctor add Devin/Cursor hosts, aliases and full/core payload checks; the public host matrix separates installation, execution surface and validation evidence.
+
+### Changed
+
+- 客户端身份、运行形态与执行策略分开判断：桌面/IDE 默认 current；已确认的 Claude/Codex/Pi CLI 保留 fresh 新会话链。PATH 上存在某个 CLI 不再成为跨客户端跳转依据。
+- Client identity, surface and execution strategy are resolved separately: desktop/IDE sessions default to current; identified Claude/Codex/Pi CLI sessions retain fresh-session chains. A CLI merely being on PATH is no longer a reason to switch clients.
+- 当前会话采用 v3 检查点协议，变更请求必须携带 chain-id、owner 和 revision；早期 v2 current 检查点保留进度并安全升级。规划就绪不等于功能完成，暂停恢复不重复消耗已接纳轮次。
+- Current sessions use the v3 checkpoint protocol with chain-id, owner and revision on mutations; earlier v2 current checkpoints upgrade without resetting progress. Planning readiness is distinct from feature completion, and resuming an admitted unit does not spend it twice.
+
+### Fixed
+
+- 拒绝旧代请求误操作新链、Git 定位环境覆盖导致的跨仓库状态分裂，以及摘要修复失败却返回成功；同时覆盖日志尾部恢复、并发接管、最后一轮恢复和真实归档证据校验。
+- Reject stale-generation requests against a new chain, repository relocation through inherited Git environment variables, and success acknowledgements while summary repair still fails; recovery coverage also includes torn journal tails, concurrent takeover, final-unit resume and real archive evidence.
+
+### Compatibility and validation
+
+- current 能力随 full 安装提供；legacy fresh CLI 的参数、模型/权限和终端生命周期保持兼容。关闭客户端会停止 current 执行，Git 发布仍需明确授权；原生 Windows 请使用 WSL2。
+- Current-session support ships with full installs; legacy fresh CLI arguments, model/permission controls and terminal lifecycle remain compatible. Closing the client stops current execution, Git publication still requires explicit authorization, and native Windows users should use WSL2.
+- 自动化 profile、安装/导出和故障回归不等于客户端 GUI 实机认证；Cursor/ZCode 等桌面端的交互式实机验收仍单独报告。
+- Automated profile, installer/export and fault-regression checks are not live GUI certification; interactive real-client validation for Cursor/ZCode and other desktop hosts remains a separate claim.
+
 ## [0.19.1] - 2026-10-19
 
 ### Added

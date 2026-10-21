@@ -759,6 +759,9 @@ def _render_status_model(model: object) -> str:
 
 def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
     """Run the spawn guards, open an interactive session, and record chain state."""
+    from chain_session import refuse_current_spawn
+
+    refuse_current_spawn(root, "autorun")
     backend = chain_support.resolve_terminal_backend(getattr(args, "terminal", "auto"))
     # F16 step 3: legacy runtime files (and summary volatile fields) migrate
     # to .git/spec-chain/ before any read or lock — the rename preserves the
@@ -990,6 +993,11 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
 
 
 def status_payload(root: Path) -> Dict[str, object]:
+    from chain_session import current_status_view
+
+    current = current_status_view(root, "autorun")
+    if current is not None:
+        return current
     # F16 step 3: migrate before reading so both layouts render identically.
     chain_support.migrate_legacy_chain_state(root, "autorun")
     summary_dir = _chain_dir(root)
@@ -1178,6 +1186,10 @@ def render_resume(resume: object) -> str:
 
 
 def _render_status(payload: Dict[str, object]) -> str:
+    if payload.get("execution_mode") == "current":
+        from chain_session import render_status as render_current_status
+
+        return render_current_status(payload)
     lines = [f"project: {payload['project']}", render_lock(payload.get("lock"))]
     if not payload.get("started"):
         if payload.get("state_status") == "corrupt":

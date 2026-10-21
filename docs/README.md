@@ -13,6 +13,7 @@
 
 - [Git 工作流（中文）](git-workflow.md)
 - [Git workflow (English)](git-workflow.en.md)
+- [客户端执行矩阵](../README.md#执行形态与支持边界)：区分 CLI、IDE agent 插件、桌面端与实际验证边界。
 - 根目录 [README（中文）](../README.md)：安装、宿主选择、导出运行时包和回归命令。
 - Root [README (English)](../README-en.md): installation, host selection, runtime export, and regression commands.
 

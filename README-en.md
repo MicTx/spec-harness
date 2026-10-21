@@ -33,8 +33,8 @@ Pick your entry point by what you want to do: to understand the idea first, read
 - **Explicit stages**: `new`, `goal`, `autoplan`, `autorun`, `run`, `check`, `done`, `push`, `update`, `status`, `doctor`, and `organize`.
 - **Recoverable state**: reports, failures, completion summaries, and archives come from files on disk, so another session can continue.
 - **Session-boundary handoff**: packages may carry an optional `handoff.md` — a generated snapshot head plus an append-only entry log whose required slots adapt to the collaboration mode (solo / team / agent / cluster); maintained by `spec_handoff.py`, validated by the check gate, and frozen by a terminal entry at archive time.
-- **Interactive recursive planning**: `autoplan` interrogates the user in themed rounds at project start or a phase boundary, then hands framework planning, per-phase detail planning, and the consistency review to fresh full sessions chained serially with the same spawn discipline as `autorun` (never in-process subagents), down to autorun granularity; it stops at the readiness report once the structural gate and an independent review pass — it never starts the chain itself.
-- **Recursive autorun chain**: `autorun` terminates on the feature checkboxes of the project planning documents — after this round is pushed to main, it plans the next round and opens a fresh interactive session in the same path with the prompt injected (Terminal.app on macOS; tmux on Linux/Windows WSL2) (keeping the host CLI that started the chain; override with `--host` or `SPEC_AUTORUN_HOST`), recursing until every planned feature is checked; each round is a full interactive session you can watch and step into at any time, the previous macOS window recycles once the next session is running, while tmux sessions remain attachable; a single-chain lock and a refuse-to-start-without-planning guard keep the recursion sane; rounds default to a cap of 5 (an explicit `--max-rounds` overrides, `--unbounded` removes it), the worker inherits the parent session's permissions with no silent escalation (`--permission-mode bypass` opts in explicitly), and a frozen feature-set fingerprint refuses spawns when the plan grows mid-chain.
+- **Interactive planning**: `autoplan` clarifies the goal, then runs framework, phase-detail and consistency-review passes. Desktop and IDE agent plugins proceed in the current session; verified CLIs may use a fresh-session chain. Without a native reviewer, the result is explicitly main-session review. Readiness stops planning; it never starts development automatically.
+- **Recoverable autorun**: `autorun` executes and verifies each planned package, then advances after authorized Git closeout. A desktop session never switches to another agent just because its CLI is on PATH. Paused work resumes the same unit; the default cap is 5 admitted rounds (`--max-rounds` changes it, `--unbounded` removes it). Current-session execution does not continue after the client is closed.
 - **Stable task identity**: tasks can declare an `id:` and explicit `depends-on`; protocol migrations never rewrite historical archives.
 - **Controlled execution**: the main session keeps routing, integration, acceptance, and done/push gates; `workflow-runner` and other slots only execute bounded work.
 - **Two runtime forms**: the local Skill is the reference implementation; the optional `server/` adapter projects remote task-package start/result/health operations.
@@ -64,10 +64,10 @@ Runtime task packages default to `.spec/` in target projects; this source reposi
 ## Requirements
 
 - Python 3.9 or newer.
-- A host CLI that loads `SKILL.md` skills, such as Claude Code, Codex, Gemini CLI, Grok Build, OpenCode, OpenClaw, Hermes, Pi, or ZCode.
+- An agent client that loads `SKILL.md`: CLI, IDE agent extension or desktop app, with actual workspace read/write and Python/Git execution tools.
 - Runtime helpers use only the Python standard library; development checks additionally use `pytest` and `ruff`.
-- The installer requires Bash; Windows users can use WSL2. Planning/execution chain spawning supports macOS Terminal.app and **tmux ≥3.2** on Linux and Windows WSL2, not native PowerShell/cmd/Git Bash.
-- Linux/WSL2 needs no graphical desktop. On Ubuntu/Debian, run `sudo apt-get install tmux procps`; install Python and the worker CLI inside the same Linux/WSL environment. Spawn output and `status` provide a `tmux -L … attach-session …` command; press `Ctrl-b d` to detach without terminating the session. See the [session backend contract](references/commands.md#session-backends).
+- The installer requires Bash; current-session chains target macOS and Linux/WSL2. Native Windows chains must run inside WSL2; platform-mocked tests do not establish native support.
+- Only fresh CLI sessions need an additional transport: macOS Terminal.app, or **tmux ≥3.2** and ps on Linux/WSL2. Current mode needs neither tmux/osascript nor another agent CLI. See the [execution and session backend contract](references/commands.md#session-backends).
 
 ## Installation
 
@@ -78,7 +78,7 @@ Run the installer from a checked-out source or release tree:
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.19.1
+git checkout v0.20.1
 bash install.sh
 ```
 
@@ -100,6 +100,8 @@ Installing from a source tree needs no signing credentials: when none are found 
 | `hermes` | Hermes | `~/.hermes/skills` | relocatable with `HERMES_HOME` |
 | `pi` | Pi agent | `~/.pi/agent/skills` + `~/.pi/agent/prompts` | relocatable with `PI_DIR`; also writes `/spec` and `/spec:<stage>` native prompt templates (`PI_PROMPTS_DIR` relocation, effective after `/reload`) |
 | `zcode` | ZCode | `~/.zcode/skills` | project-owned host |
+| `devin`, `devin-desktop` | Devin CLI / Local | `~/.config/devin/skills` | Skill only; relocatable with `DEVIN_SKILLS_DIR` |
+| `cursor`, `cursor-cli` | Cursor IDE / CLI | `~/.cursor/skills` | Skill only; relocatable with `CURSOR_SKILLS_DIR` |
 | `desktop`, `rpi` | Claude Code + Codex | both default directories | combined targets |
 | `all` | all hosts | as listed above | explicit full set |
 
@@ -119,6 +121,29 @@ INSTALL_PROFILE=full bash install.sh
 
 The installer refuses to overwrite a same-name Skill without its `.spec-skill-install` ownership marker. Set `FORCE=1` only when intentionally replacing a user-owned directory. `pi` now means the Pi agent; use `rpi` or `desktop` for the former Claude + Codex combination.
 
+### Execution surfaces and support boundaries
+
+The install target chooses where files live; execution policy chooses how this session proceeds. They are not the same allowlist. The historical `desktop` token still combines only Claude Code + Codex, not every desktop client.
+
+| Agent / surface | `auto` execution | Requirements and limits |
+| --- | --- | --- |
+| Explicit Claude Code, Codex or Pi CLI session | fresh | Existing full interactive adapters; an explicit worker can select another verified CLI |
+| Claude/Codex and other IDE agent extensions | current | Use extension tools; the outer editor and inherited markers do not prove a CLI surface |
+| Devin Desktop, native Cursor Agent, ZCode | current | Continue in the main session without installing another agent CLI |
+| Devin/Cursor CLI, Gemini, Grok, OpenCode, OpenClaw, Hermes | current | No corresponding fresh adapter in this repository; this does not mean the product has no CLI |
+| Claude Desktop | conditional current | Requires actual local workspace read/write and command tools; ordinary chat or read-only tools are insufficient |
+| Unknown compatible client | current | Load the Skill explicitly and check real tools; do not guess configuration paths or commands |
+
+Install full for these extended capabilities, for example:
+
+```bash
+INSTALL_HOSTS=devin,cursor,zcode INSTALL_PROFILE=full bash install.sh
+```
+
+In Devin/Cursor, load `/spec` then request `spec:autoplan` or `spec:autorun`; in ZCode use `$spec`. Refresh skills or start a new session as the host requires after installation; do not assume universal `/spec:<stage>` registration. The main session owns capability checks, permission boundaries and recovery. Neither a separate window nor subagents are required; review without a native reviewer is labeled main-session review.
+
+Evidence levels: automated tests cover client profiles, recovery and isolated installs, not a live run of every product. Record Cursor/ZCode desktop, Linux/WSL2 and native Windows evidence separately; untested surfaces are not live verified. See the [execution and session backend contract](references/commands.md#session-backends).
+
 ### Manual install
 
 Export only the runtime Skill package:
@@ -129,7 +154,7 @@ python3 scripts/export_skill_package.py --output /tmp/spec --force
 
 Calling the exporter directly never auto-skips signing: in a keyless environment add `--skip-signing` explicitly (the installer applies it automatically under the same conditions). The exporter also accepts `--profile core|full` (default `full`, byte-identical to the release payload).
 
-Place the exported `spec/` directory in the host's Skill directory. Trigger it with `$spec` in Codex/ZCode, use the native `/spec` and `/spec:<stage>` commands in Pi (arguments forwarded verbatim via `$@`), or `/spec:goal` in Claude Code.
+Place the exported `spec/` directory in the host's Skill directory. Trigger it with `$spec` in Codex/ZCode, use the native `/spec` and `/spec:<stage>` commands in Pi (arguments forwarded verbatim via `$@`), `/spec:goal` in Claude Code, or load `/spec` then request `spec:goal` in Devin/Cursor.
 
 ## Quick Start
 
@@ -223,6 +248,7 @@ spec/
 │   ├── autorun_spawn.py
 │   ├── chain_lifecycle.py
 │   ├── chain_recovery.py
+│   ├── chain_session.py
 │   ├── chain_spawn_support.py
 │   ├── check_all_spec_packages.py
 │   ├── check_spec_package.py

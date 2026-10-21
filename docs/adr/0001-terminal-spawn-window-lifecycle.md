@@ -4,6 +4,8 @@
 - 范围：`scripts/autorun_spawn.py`、`scripts/autoplan_spawn.py`、`scripts/sweep_chain_windows.py`
 - 关联运行时契约：`references/stages/autorun.md`、`references/stages/autoplan.md`（本文件承载设计依据与政策沿革，运行时文档只留契约）
 
+补充范围（2026-10-20）：本文记录的是显式 fresh CLI adapter 的窗口生命周期，不再是所有宿主的全局执行前提。桌面与 IDE agent 插件默认走当前会话协议（`scripts/chain_session.py`），不调用本文的 Terminal/tmux 路径；旧 fresh 状态和政策沿革保留。当前会话中断后显式恢复，不承诺客户端退出后的后台执行。
+
 ## 背景
 
 autorun 每轮、autoplan 每个 pass 都需要一个全新的完整交互会话（可见 TUI、会话持久化，绝不以 headless print/exec 模式偷跑）。macOS 上这个需求落在 Terminal.app + osascript；Linux/WSL2 落在私有 tmux server。窗口/会话的打开、确认、回收涉及 AppleScript 自动化与进程生命周期管理，细节多次演进，故把「为什么这样设计」与沿革集中于此。

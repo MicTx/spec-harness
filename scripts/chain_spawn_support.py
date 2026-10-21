@@ -265,6 +265,41 @@ def chain_dir(root: Path, chain: str) -> Path:
     raise ChainSpawnError(f"unknown chain: {chain!r} (expected 'autorun' or 'autoplan')")
 
 
+GIT_REPOSITORY_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE")
+
+
+def chain_git_probe_env() -> Dict[str, str]:
+    return {key: value for key, value in os.environ.items() if key not in GIT_REPOSITORY_ENV}
+
+
+def _linked_git_dir(root: Path) -> Optional[Path]:
+    try:
+        probe = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--absolute-git-dir"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+            env=chain_git_probe_env(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if probe.returncode != 0 or not probe.stdout.strip():
+        return None
+    candidate = Path(probe.stdout.strip())
+    if not candidate.is_absolute():
+        candidate = (root / candidate).resolve()
+    return candidate
+
+
+def chain_runtime_root(root: Path) -> Path:
+    if (root / ".git").is_file():
+        resolved = _linked_git_dir(root)
+        if resolved is not None:
+            return resolved / "spec-chain"
+    return root / CHAIN_RUNTIME_ROOT
+
+
 def chain_runtime_dir(root: Path, chain: str) -> Path:
     """The per-machine runtime directory of one chain (lock, logs, volatile).
 
@@ -273,7 +308,7 @@ def chain_runtime_dir(root: Path, chain: str) -> Path:
     """
     if chain not in ("autorun", "autoplan"):
         raise ChainSpawnError(f"unknown chain: {chain!r} (expected 'autorun' or 'autoplan')")
-    return root / CHAIN_RUNTIME_ROOT / chain
+    return chain_runtime_root(root) / chain
 
 
 def split_volatile_state(state: Dict[str, object]) -> Tuple[Dict[str, object], Dict[str, object]]:
@@ -549,6 +584,8 @@ def read_state(summary_dir: Path, runtime_dir: Path, chain: str = "unknown") -> 
             pass  # A malformed close receipt is corrupt, never a fresh chain.
 
     record, line_number = last_audit_record(runtime_dir / CHAIN_SPAWNS_FILE)
+    if record is not None and record.get("event") == "current_transition":
+        return None, READ_CORRUPT
     if record is None:
         return None, READ_CORRUPT
     try:
@@ -611,6 +648,7 @@ def single_chain_lock(
     *,
     error: Callable[[str], Exception] = ChainSpawnError,
     busy_message: Optional[str] = None,
+    record_holder: bool = True,
 ) -> Iterator[Any]:
     """Hold the chain's flock for the wrapped block, recording the holder.
 
@@ -630,7 +668,8 @@ def single_chain_lock(
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
             raise error(busy_message) from exc
-        write_lock_holder(lock_handle, chain)
+        if record_holder:
+            write_lock_holder(lock_handle, chain)
         try:
             yield lock_handle
         finally:

@@ -72,11 +72,23 @@ def read_version(root: Path) -> str:
 # --------------------------------------------------------------------------- #
 
 
+def _tail(output: str | bytes | None, limit: int = 8000) -> str:
+    """Last ``limit`` characters of captured output (TimeoutExpired may carry bytes)."""
+    if not output:
+        return ""
+    text = output.decode("utf-8", "replace") if isinstance(output, bytes) else output
+    return text.strip()[-limit:]
+
+
 def _run_cmd(args: list[str], cwd: Path, label: str, *, timeout: int = 600) -> subprocess.CompletedProcess[str]:
     try:
         result = subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
-        raise BuildError(f"{label} timed out after {timeout}s") from exc
+        # Surface the partial output: a release-runner hang is otherwise
+        # opaque (v0.20.0 run 1310 reported only "timed out").
+        # Both streams: pytest -v names tests on stdout, faulthandler dumps on stderr.
+        detail = "\n".join(part for part in (_tail(exc.stdout), _tail(exc.stderr)) if part)
+        raise BuildError(f"{label} timed out after {timeout}s" + (f":\n{detail}" if detail else "")) from exc
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip()
         raise BuildError(f"{label} failed (exit {result.returncode}):\n{detail}")
@@ -108,7 +120,15 @@ def run_prebuild_checks(root: Path) -> None:
     # runner is slower than a dev workstation and exceeded the generic 600s
     # budget (v0.19.0 run 1217, v0.19.1 run 1272), so this step owns a wider
     # ceiling; the suite still has to pass as a whole, nothing is skipped.
-    _run_cmd([PYTHON, "-m", "pytest", "tests", "slots", "-q"], root, "pytest", timeout=1800)
+    # -v names each test as it runs and faulthandler dumps every thread's
+    # stack once a single test exceeds 300s, so a timeout's output tail
+    # identifies the stalled test instead of a bare "timed out".
+    _run_cmd(
+        [PYTHON, "-m", "pytest", "tests", "slots", "-v", "-o", "faulthandler_timeout=300"],
+        root,
+        "pytest",
+        timeout=1800,
+    )
     print("ok")
 
     print("  ruff ........", end=" ", flush=True)
