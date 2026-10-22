@@ -471,3 +471,37 @@ def test_init_produces_falsified_paths_section_without_new_gap(tmp_path):
     spec = (tmp_path / ".spec" / "specs" / slug / "spec.md").read_text(encoding="utf-8")
     assert "### 2.5 已证伪路径" in spec
     assert not [gap for gap in clarification_gaps(spec) if "2.5" in gap or "证伪" in gap]
+
+
+# -- tasks.md optional `claim:` convention (issue #2): advisory, no machine key --
+
+
+def test_task_fences_document_claim_convention_as_advisory():
+    templates = _read("templates.md")
+    assert "optional `claim: <claimant> <ISO time>` line" in templates
+    assert "`claim: <认领者> <ISO 时间>`" in templates
+    assert "not a lock" in templates and "非锁" in templates
+    philosophy = _read("engineering-philosophy.md")
+    assert "Coordination boundary" in philosophy
+    assert "never a lock" in philosophy and "host layer" in philosophy
+
+
+def test_claim_line_is_inert_for_task_parsing():
+    import sys
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from spec_package_support import parse_task_records, task_dependencies
+
+    base = (
+        "- [ ] a\n  - boundary: b\n  - verify: `true`\n"
+        "- [ ] c\n  - depends-on: task_0001\n  - boundary: b\n  - verify: `true`\n"
+    )
+    claimed = base.replace(
+        "- [ ] a\n", "- [ ] a\n  - claim: @worker-2 2026-10-22T15:00+08:00\n"
+    )
+    plain, with_claim = parse_task_records(base), parse_task_records(claimed)
+    assert [(r.id, r.checked, r.blocked, r.boundary, r.verify) for r in plain] == [
+        (r.id, r.checked, r.blocked, r.boundary, r.verify) for r in with_claim
+    ]
+    assert task_dependencies(with_claim[1]) == ("task_0001",)
+    assert "claim" not in {"boundary", "verify", "depends-on"}

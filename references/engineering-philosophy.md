@@ -43,6 +43,8 @@ Each step touches only what the current task needs.
 
 Landing in Spec: every task in `tasks.md` declares `boundary`; `/spec:run` confirms the current task's boundary before executing; `/spec:check` specifically looks for unrelated changes mixed in.
 
+Coordination boundary: the record declares what may change (`boundary`) and how it is proven (`verify`). Who is working on a task right now is an optional informational `claim:` line, never a lock; enforcement, presence detection, and notification belong to the host layer outside the record, and conflicts are resolved by people.
+
 ### 4. Verification first
 
 Define how completion is proven before starting implementation.

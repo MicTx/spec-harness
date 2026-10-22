@@ -3,7 +3,7 @@
   "sources": {
     "SKILL.md": "c815f64f491982e5c0f841a85a4ad3de876907b9952196ce1a35786e8995981f",
     "agents/planner.md": "63c33bc01d483d216ec2d57802216b13604810554268deb9d2b34e49bfb981f6",
-    "references/commands.md": "f3d881f34086477789f254f66b34474695fbec1181a9ff6aac3b1e1a734f5639",
+    "references/commands.md": "50d411c00669b0c41e63a0434b728be72d329c42057fcdd6d37214447c4f5ab4",
     "references/handoff.md": "d091865d662b8de7873f50426370563209bb7642256674359ec43c2e200ca646",
     "references/naming-and-commits.md": "2ba4559044b7878ff3663b88cdb843303487de5462d35c48fd0cfc7ab28b2cb5",
     "references/orchestration.md": "ca95e147cc014f654ad29053086a21469509371f26300be0633bf7dfc609df07",
@@ -20,7 +20,7 @@
     "references/stages/run.md": "b433c8f85db30fe317e8b3c2da4b4fa5b2c1c3f0b3d2c4e8377dede3fc322497",
     "references/stages/status.md": "4e6c757677932ae634886b2c0b1d1c0559145b44da3a320cfcd2e7e7733503bb",
     "references/stages/update.md": "07e8d4fc71da1cc02b9899dd75b712819fa5f0d5a5e628fe761e5abae9fa4fb5",
-    "references/templates.md": "c03ab24bb321050b5752705e797f477adbe154d74efd4066fb1cfeff9cd41696",
+    "references/templates.md": "8d5699dd4b9ba10b016d8e64a7fe361d79f77adaf2e7e58ef65a6e97b2640d5a",
     "slots/team-loop/README.md": "1dc5b58e74bdb0b0deeac3e94a7cb796fc8e680b5b43a659cab5396282762a44",
     "tests/fixtures/skill_surface/inputs/handoff-snapshot.md": "8b04243b0211414d1b0d15d328bfd6092b1d29c4154fc813f45f7e4790729f1a",
     "tests/fixtures/skill_surface/inputs/pkg-large/tasks.md": "5cd8c2f991948e35a64eb5c323494201edd7ae2860f66943ff5f4c9a01bfec4b",
@@ -140,7 +140,7 @@
             ],
             [
               86,
-              110
+              111
             ]
           ],
           "reason": "spec/tasks init fences instantiated per new package",

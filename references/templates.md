@@ -91,6 +91,7 @@ When tasks depend on each other, declare `- depends-on: task_0001, task_0002` (c
 - 发现的可执行问题必须回写本包，并在本轮做完
 - 新任务包使用 `YYYY-MM-DD_<verb>-<object>`，详见 `references/naming-and-commits.md`
 - verify 命令不得自引用本包 check 门禁（自指命令在「最近一条」语义下不可满足）
+- 多会话/多 agent 共享时，任务可选加一行 `claim: <认领者> <ISO 时间>` 声明在做者；纯信息约定，非锁、无机器键、不进门禁，勾选即失效，归档保留
 
 ## 阶段一：实现
 - [ ] 初始化最小项目骨架
@@ -216,6 +217,7 @@ The default init fences stay Chinese (`init_spec_package.py` renders the Chinese
 - actionable issues found during execution are written back to this package and fixed in the same round
 - new packages use `YYYY-MM-DD_<verb>-<object>`; see `references/naming-and-commits.md`
 - a verify command must never invoke this package's own check gate (a self-referential command is unsatisfiable under latest-record semantics)
+- when sessions or agents share a package, a task may carry an optional `claim: <claimant> <ISO time>` line naming who is working on it; an informational convention, not a lock, no machine key, never gated, stale once checked, kept in the archive
 
 ## Stage 1: Implementation
 - [ ] Initialize the minimal project skeleton

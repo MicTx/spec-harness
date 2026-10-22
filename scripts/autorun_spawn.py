@@ -1337,7 +1337,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         root = _resolve_root(args.root)
         if args.subcommand == "close":
             _emit(
-                chain_lifecycle.close_chain(root, "autorun", dry_run=args.dry_run),
+                chain_lifecycle.close_chain(
+                    root,
+                    "autorun",
+                    dry_run=args.dry_run,
+                    legacy_scope_commit=args.legacy_scope_commit,
+                    legacy_completion_commit=args.legacy_completion_commit,
+                ),
                 chain_lifecycle.render_close,
                 args.format == "json",
             )
