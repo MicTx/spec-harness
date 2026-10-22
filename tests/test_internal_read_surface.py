@@ -927,3 +927,61 @@ class TestExportTreeCallability:
         )
         assert run_help.returncode == 0
         assert "--task" in run_help.stdout and "--all" in run_help.stdout
+
+
+# --------------------------------------------------------------------------- #
+# brief falsifiedPaths field (add-only; plain JSON and panel stay untouched)
+# --------------------------------------------------------------------------- #
+
+
+def _install_with_falsified_section(root: Path, section: str | None) -> None:
+    package = install_fixture_package(root)
+    if section is not None:
+        spec = package / "spec.md"
+        text = spec.read_text(encoding="utf-8")
+        marker = "### 2.3 待确认问题\n- 无\n"
+        assert marker in text
+        spec.write_text(text.replace(marker, f"{marker}\n{section}\n", 1), encoding="utf-8")
+
+
+def test_brief_lists_falsified_path_entries(tmp_path):
+    root = init_repo(tmp_path / "project")
+    _install_with_falsified_section(
+        root,
+        "### 2.5 已证伪路径\n"
+        "- 整份重跑归档脚本：改写无关文案，见 diff，2026-10-22\n"
+        "- 无法追加到 check.md：预算已满，2026-10-22",
+    )
+    payload = json.loads(brief_cli(root, "--slug", FIXTURE_SLUG).stdout)
+    assert payload["falsifiedPaths"] == [
+        "整份重跑归档脚本：改写无关文案，见 diff，2026-10-22",
+        "无法追加到 check.md：预算已满，2026-10-22",
+    ]
+
+
+def test_brief_falsified_paths_empty_for_none_declaration_and_missing_section(tmp_path):
+    for index, section in enumerate(("### 2.5 已证伪路径\n- 无（暂无证伪记录）", None)):
+        root = init_repo(tmp_path / f"project{index}")
+        _install_with_falsified_section(root, section)
+        payload = json.loads(brief_cli(root, "--slug", FIXTURE_SLUG).stdout)
+        assert payload["falsifiedPaths"] == [], section
+
+
+def test_brief_reads_english_falsified_paths_heading(tmp_path):
+    root = init_repo(tmp_path / "project")
+    _install_with_falsified_section(
+        root,
+        "<!-- spec:falsified-paths -->\n"
+        "### 2.5 Falsified Paths\n"
+        "- tried bumping the ceiling, ruled out by the ratchet test, 2026-10-22",
+    )
+    payload = json.loads(brief_cli(root, "--slug", FIXTURE_SLUG).stdout)
+    assert payload["falsifiedPaths"] == ["tried bumping the ceiling, ruled out by the ratchet test, 2026-10-22"]
+
+
+def test_plain_json_and_panel_do_not_carry_falsified_paths(tmp_path):
+    root = init_repo(tmp_path / "project")
+    _install_with_falsified_section(root, "### 2.5 已证伪路径\n- 某方案，依据见日志，2026-10-22")
+    plain = json.loads(route_cli(root, "--slug", FIXTURE_SLUG, "--format", "json").stdout)
+    assert "falsifiedPaths" not in plain
+    assert "某方案" not in route_cli(root, "--slug", FIXTURE_SLUG).stdout

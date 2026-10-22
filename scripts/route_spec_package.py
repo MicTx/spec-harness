@@ -32,6 +32,7 @@ from spec_package_support import (
     active_package_slugs,
     add_specs_dir_arg,
     extract_title_from_content,
+    falsified_path_entries,
     parse_task_records,
     read_regular_text,
     ready_task_ids,
@@ -470,6 +471,7 @@ def route_for_package(
                 records_for_slice = []
                 ready = set()
             payload["title"] = title
+            payload["falsifiedPaths"] = falsified_path_entries(spec_content)
             payload["branch_binding"] = validate_branch_bound_package(
                 root, slug, spec_content, allow_legacy_convention=True
             )[1]

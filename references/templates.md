@@ -155,6 +155,7 @@ The default init fences stay Chinese (`init_spec_package.py` renders the Chinese
 ### 2.4 Interpretations & Trade-offs
 - current choice: xxx -> reason
 
+<!-- spec:falsified-paths -->
 ### 2.5 Falsified Paths
 - None (no falsification records yet; entry: approach + falsifying evidence anchor + date)
 

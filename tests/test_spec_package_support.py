@@ -9,6 +9,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from spec_package_support import (
+    PACKAGE_SECTION_KEYS,
+    SECTION_FALSIFIED_PATHS,
     SECTION_MINIMAL_PATH,
     SECTION_PLACEHOLDER_ITEMS,
     active_package_slugs,
@@ -23,6 +25,7 @@ from spec_package_support import (
     extract_pending_questions,
     extract_section_bullets,
     extract_structured_section_fields,
+    falsified_path_entries,
     has_command_evidence,
     is_placeholder_value,
     normalize_items,
@@ -1040,3 +1043,54 @@ def test_orchestration_strategy_errors_rejects_invalid_and_missing_route():
     content = "### 5.4 编排策略\n- route: local\n- route: review\n"
     errors = orchestration_strategy_errors(content)
     assert errors and "唯一" in errors[0]
+
+
+# -- falsified-paths section (2.5): keyed, parsed, never gated --
+
+
+def test_falsified_paths_key_is_registered_with_bilingual_headings():
+    assert PACKAGE_SECTION_KEYS["falsified-paths"] is SECTION_FALSIFIED_PATHS
+    assert SECTION_FALSIFIED_PATHS.canonical == "### 2.5 已证伪路径"
+    assert "### 2.5 Falsified Paths" in SECTION_FALSIFIED_PATHS.aliases
+
+
+@pytest.mark.parametrize(
+    "heading, bullet",
+    [
+        ("### 2.5 已证伪路径", "- 无（暂无证伪记录；条目写：方案概述 + 证伪依据出处 + 日期）"),
+        ("### 2.5 Falsified Paths", "- None (no falsification records yet; entry: approach + evidence + date)"),
+        ("### 2.5 已证伪路径", "- 无"),
+        ("### 2.5 已证伪路径", "- `无`。"),
+        ("### 2.5 Falsified Paths", "- none"),
+    ],
+)
+def test_falsified_path_entries_treats_none_declarations_as_empty(heading, bullet):
+    spec = f"### 2.4 x\n- a\n\n{heading}\n{bullet}\n\n## 3. 功能范围\n- 不相关\n"
+    assert falsified_path_entries(spec) == []
+
+
+def test_falsified_path_entries_returns_real_entries_in_order():
+    spec = (
+        "### 2.5 已证伪路径\n"
+        "- 方案 A：整份重跑脚本，依据 diff 改写无关文案，2026-10-22\n"
+        "- 无法在 check.md 追加：预算 5120 B 已满，2026-10-22\n"
+        "\n## 3. 功能范围\n- 不相关\n"
+    )
+    assert falsified_path_entries(spec) == [
+        "方案 A：整份重跑脚本，依据 diff 改写无关文案，2026-10-22",
+        "无法在 check.md 追加：预算 5120 B 已满，2026-10-22",
+    ]
+
+
+def test_falsified_path_entries_missing_section_and_anchor_form():
+    assert falsified_path_entries("### 2.4 x\n- a\n") == []
+    anchored = (
+        "<!-- spec:falsified-paths -->\n### 2.5 Falsified Paths\n- tried X, ruled out by log line 12, 2026-10-22\n"
+    )
+    assert falsified_path_entries(anchored) == ["tried X, ruled out by log line 12, 2026-10-22"]
+
+
+def test_falsified_paths_section_never_adds_clarification_gaps():
+    base = "### 2.3 待确认问题\n- 无\n"
+    assert not [g for g in clarification_gaps(base) if "2.5" in g or "证伪" in g]
+    assert not [g for g in clarification_gaps(base + "### 2.5 已证伪路径\n- 无\n") if "2.5" in g or "证伪" in g]

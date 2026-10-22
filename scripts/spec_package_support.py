@@ -135,6 +135,7 @@ class SectionKey:
 SECTION_CONFIRMED_FACTS = SectionKey("confirmed-facts", "### 2.1 已确认事实", "### 2.1 Confirmed Facts")
 SECTION_KEY_ASSUMPTIONS = SectionKey("key-assumptions", "### 2.2 关键假设", "### 2.2 Key Assumptions")
 SECTION_OPEN_QUESTIONS = SectionKey("open-questions", "### 2.3 待确认问题", "### 2.3 Open Questions")
+SECTION_FALSIFIED_PATHS = SectionKey("falsified-paths", "### 2.5 已证伪路径", "### 2.5 Falsified Paths")
 SECTION_OUT_OF_SCOPE = SectionKey("out-of-scope", "### 3.3 不在范围内", "### 3.3 Out of Scope")
 SECTION_MINIMAL_PATH = SectionKey("minimal-path", "## 4. 最小实现路径", "## 4. Minimal Implementation Path")
 SECTION_VERIFICATION_STRATEGY = SectionKey("verification-strategy", "### 5.1 验证策略", "### 5.1 Verification Strategy")
@@ -155,6 +156,7 @@ PACKAGE_SECTION_KEYS: dict[str, SectionKey] = {
         SECTION_CONFIRMED_FACTS,
         SECTION_KEY_ASSUMPTIONS,
         SECTION_OPEN_QUESTIONS,
+        SECTION_FALSIFIED_PATHS,
         SECTION_OUT_OF_SCOPE,
         SECTION_MINIMAL_PATH,
         SECTION_VERIFICATION_STRATEGY,
@@ -714,6 +716,26 @@ def extract_section_bullets(content: str, heading: str | SectionKey) -> list[str
             if match:
                 bullets.append(match.group(1).strip())
     return bullets
+
+
+#: A bare "none" declaration, optionally followed by one parenthesised note.
+#: "无法…" and other prose that merely starts with 无 is a real entry.
+_NO_FALSIFIED_PATHS_DECLARATION = re.compile(r"(?:无|none)(?:\s*[（(][^（）()]*[）)])?[。.]?", re.IGNORECASE)
+
+
+def falsified_path_entries(spec_content: str) -> list[str]:
+    """Entries of the advisory ``2.5 已证伪路径`` section; a "none" declaration yields ``[]``.
+
+    Informational only: the section is keyed so scripts can read it, but no gate
+    consumes it and the entry format is not validated.
+    """
+    entries: list[str] = []
+    for bullet in extract_section_bullets(spec_content, SECTION_FALSIFIED_PATHS):
+        text = bullet.replace("`", "").strip()
+        if not text or _NO_FALSIFIED_PATHS_DECLARATION.fullmatch(text):
+            continue
+        entries.append(bullet)
+    return entries
 
 
 def extract_structured_section_fields(content: str, heading_prefix: str | SectionKey) -> dict[str, str]:

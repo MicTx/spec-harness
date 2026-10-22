@@ -416,21 +416,25 @@ def test_spec_fences_carry_advisory_falsified_paths_section():
     assert en.index("### 2.4") < en.index("### 2.5") < en.index("## 3.")
 
 
-def test_falsified_paths_section_has_no_machine_key():
+def test_falsified_paths_section_is_keyed_but_never_gated():
     import sys
 
     sys.path.insert(0, str(ROOT / "scripts"))
     from spec_package_support import PACKAGE_SECTION_KEYS
 
+    section = PACKAGE_SECTION_KEYS["falsified-paths"]
+    assert section.canonical == "### 2.5 已证伪路径"
     templates = _read("templates.md")
-    for fence in (_spec_fence(templates), _english_spec_fence(templates)):
-        heading = next(line for line in fence.splitlines() if "2.5" in line and line.startswith("###"))
-        assert "spec:" not in heading, "2.5 must stay anchor-free (advisory, not a gated section)"
-        before = fence.splitlines()[fence.splitlines().index(heading) - 1]
-        assert "spec:" not in before
-    for section in PACKAGE_SECTION_KEYS.values():
-        assert "2.5" not in section.canonical
-        assert "已证伪" not in section.canonical and "Falsified" not in section.canonical
+    zh_lines = _spec_fence(templates).splitlines()
+    en_lines = _english_spec_fence(templates).splitlines()
+    # English fence carries the key anchor directly above the heading (house style);
+    # the Chinese default fence stays anchor-free like the other keyed 2.x sections.
+    assert en_lines[en_lines.index("### 2.5 Falsified Paths") - 1] == "<!-- spec:falsified-paths -->"
+    assert not any("spec:falsified-paths" in line for line in zh_lines)
+    # Keyed is not gated: the gate scripts never name the section.
+    for name in ("check_spec_package.py", "complete_spec_package.py"):
+        text = (ROOT / "scripts" / name).read_text(encoding="utf-8")
+        assert "FALSIFIED_PATHS" not in text and "falsified" not in text.lower(), name
 
 
 def test_check_stage_prompts_falsified_path_recheck_as_advisory():

@@ -4,6 +4,13 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [0.20.3] - 2026-10-22
+
+### Added
+
+- spec.md 的「2.5 已证伪路径」现在带机器键 `falsified-paths`，脚本可解析；`scripts/route_spec_package.py --brief` 新增只增字段 `falsifiedPaths`，恢复会话时一次读取就能看到已证伪的路线。「无」声明解析为空列表，该段仍不进任何门禁，空段合法；plain JSON 与面板输出不变。
+- The spec.md "2.5 Falsified Paths" section now carries the machine key `falsified-paths` so scripts can parse it, and `scripts/route_spec_package.py --brief` gains an add-only `falsifiedPaths` field, so a resumed session sees ruled-out approaches in one read. A "none" declaration parses to an empty list; the section is still not gated and may stay empty, and plain JSON and the panel output are unchanged.
+
 ## [0.20.2] - 2026-10-22
 
 ### Added
