@@ -82,7 +82,12 @@ PRIVATE_PATH_PARTS = {
     "sessions",
 }
 # These tests inspect real private history rather than portable fixtures.
-PRIVATE_TEST_FILES = {"tests/test_host_evidence_notes.py", "tests/test_module_dag.py", "tests/test_plans_root.py"}
+PRIVATE_TEST_FILES = {
+    "tests/test_host_evidence_notes.py",
+    "tests/test_module_dag.py",
+    "tests/test_plans_root.py",
+    "tests/test_publish_public_snapshot.py",
+}
 PRIVATE_SUFFIXES = {".pyc", ".pyo", ".log", ".bak", ".backup", ".key", ".pem", ".crt", ".cer", ".p12", ".pfx"}
 PRIVATE_TEXT_PATTERNS = (
     re.compile(r"https?://[^/\s]+\.internal(?:[:/]|$)", re.IGNORECASE),

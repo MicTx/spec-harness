@@ -10,7 +10,7 @@
     "references/output-contracts.md": "7fbf9d1b39e7264a5db30ed67fe388da1682b9111d0a304e511ead030a32d98f",
     "references/stages/autoplan.md": "08ff0658d7768a05ea216fce8aa027587147d4ef4d11329f161524f345bd5ae8",
     "references/stages/autorun.md": "283ef3bb790c4bf00ad570c3b37efed05307272e4b01f26ff9368a65bb346035",
-    "references/stages/check.md": "6b95c21892f054e8e76bd9bc780ad8bb66121c6377e9d94680b7e9815b288fc6",
+    "references/stages/check.md": "419db6a8ce8e9266bbb4acdd9faae4de8b998a335d7fd8927beb3216df1442f7",
     "references/stages/doctor.md": "3680fba2a6e13d315dc177bb676732ecdbf463830f1bbd2cbaf67ea1bcde9e79",
     "references/stages/done.md": "a33dc80a289afa527949da7b2998d0a3f57adf65e0bc17526e7e316809f8d98e",
     "references/stages/goal.md": "5efbff715abd478dcfd486cc46e2bea23dcb0b3d4c7488e669161992ff0ed36c",
@@ -20,7 +20,7 @@
     "references/stages/run.md": "b433c8f85db30fe317e8b3c2da4b4fa5b2c1c3f0b3d2c4e8377dede3fc322497",
     "references/stages/status.md": "4e6c757677932ae634886b2c0b1d1c0559145b44da3a320cfcd2e7e7733503bb",
     "references/stages/update.md": "07e8d4fc71da1cc02b9899dd75b712819fa5f0d5a5e628fe761e5abae9fa4fb5",
-    "references/templates.md": "c87da0101a34f4990b9191232c395219a9c33fccaf9926b2bb674a55f9f6080b",
+    "references/templates.md": "9613db12819968b6e0573bbc156419ff2f78cb6dcc8f8488682382acc9f27899",
     "slots/team-loop/README.md": "1dc5b58e74bdb0b0deeac3e94a7cb796fc8e680b5b43a659cab5396282762a44",
     "tests/fixtures/skill_surface/inputs/handoff-snapshot.md": "8b04243b0211414d1b0d15d328bfd6092b1d29c4154fc813f45f7e4790729f1a",
     "tests/fixtures/skill_surface/inputs/pkg-large/tasks.md": "5cd8c2f991948e35a64eb5c323494201edd7ae2860f66943ff5f4c9a01bfec4b",
@@ -136,11 +136,11 @@
           "ranges": [
             [
               10,
-              69
+              72
             ],
             [
-              83,
-              107
+              86,
+              110
             ]
           ],
           "reason": "spec/tasks init fences instantiated per new package",

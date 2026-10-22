@@ -396,3 +396,74 @@ def test_storage_layout_tree_lists_optional_orchestration_assets():
     assert "optional orchestration assets: script + run ledger" in text, (
         "the orchestration/ entry must stay annotated as optional script + run ledger"
     )
+
+
+# -- spec.md §2.5 falsified paths (issue #1): advisory section, no machine key --
+
+
+def _english_spec_fence(templates: str) -> str:
+    return _init_fence(templates, "# [Project Name] - Project Scope")
+
+
+def test_spec_fences_carry_advisory_falsified_paths_section():
+    templates = _read("templates.md")
+    zh = _spec_fence(templates)
+    en = _english_spec_fence(templates)
+    assert "### 2.5 已证伪路径\n- 无（" in zh
+    assert "### 2.5 Falsified Paths\n- None (" in en
+    # 2.5 sits right after 2.4 and before §3 in both fences
+    assert zh.index("### 2.4") < zh.index("### 2.5") < zh.index("## 3.")
+    assert en.index("### 2.4") < en.index("### 2.5") < en.index("## 3.")
+
+
+def test_falsified_paths_section_has_no_machine_key():
+    import sys
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from spec_package_support import PACKAGE_SECTION_KEYS
+
+    templates = _read("templates.md")
+    for fence in (_spec_fence(templates), _english_spec_fence(templates)):
+        heading = next(line for line in fence.splitlines() if "2.5" in line and line.startswith("###"))
+        assert "spec:" not in heading, "2.5 must stay anchor-free (advisory, not a gated section)"
+        before = fence.splitlines()[fence.splitlines().index(heading) - 1]
+        assert "spec:" not in before
+    for section in PACKAGE_SECTION_KEYS.values():
+        assert "2.5" not in section.canonical
+        assert "已证伪" not in section.canonical and "Falsified" not in section.canonical
+
+
+def test_check_stage_prompts_falsified_path_recheck_as_advisory():
+    check = _read("stages/check.md")
+    assert "falsified path" in check
+    assert "§2.5" in check
+    assert "Advisory" in check
+
+
+def test_init_produces_falsified_paths_section_without_new_gap(tmp_path):
+    import subprocess
+    import sys
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from spec_package_support import clarification_gaps
+
+    slug = "2026-10-22_add-falsified-probe"
+    subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "init_spec_package.py"),
+            "--root",
+            str(tmp_path),
+            "--slug",
+            slug,
+            "--title",
+            "probe",
+            "--skip-git-branch",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    spec = (tmp_path / ".spec" / "specs" / slug / "spec.md").read_text(encoding="utf-8")
+    assert "### 2.5 已证伪路径" in spec
+    assert not [gap for gap in clarification_gaps(spec) if "2.5" in gap or "证伪" in gap]

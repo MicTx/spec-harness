@@ -4,6 +4,13 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [0.20.2] - 2026-10-22
+
+### Added
+
+- 新任务包的 spec.md 模板在 2.4 后增加可选段「2.5 已证伪路径」，用来记录方案级证伪（方案概述、证据锚点、日期），避免跨会话恢复或换 worker 后重试已被证伪的路线；该段无机器键、不进门禁，空段合法。`/spec:check` 增加一条是否重试已证伪路径的提示。
+- The spec.md template gains an optional section 2.5 "Falsified Paths" after 2.4 for approach-level falsification records (approach, evidence anchor, date), so a resumed session or a new worker does not retry a route already ruled out. The section has no machine key, is not gated, and may stay empty. `/spec:check` adds a prompt to confirm no falsified path was retried.
+
 ## [0.20.1] - 2026-10-21
 
 ### Fixed

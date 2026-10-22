@@ -30,6 +30,9 @@ Section identity is language-neutral: every gated heading carries a stable machi
 ### 2.4 可选解释与取舍
 - 当前选择：xxx -> 理由
 
+### 2.5 已证伪路径
+- 无（暂无证伪记录；条目写：方案概述 + 证伪依据出处 + 日期）
+
 ## 3. 功能范围
 
 ### 3.1 核心功能（MVP）
@@ -151,6 +154,9 @@ The default init fences stay Chinese (`init_spec_package.py` renders the Chinese
 
 ### 2.4 Interpretations & Trade-offs
 - current choice: xxx -> reason
+
+### 2.5 Falsified Paths
+- None (no falsification records yet; entry: approach + falsifying evidence anchor + date)
 
 ## 3. Feature Scope
 
