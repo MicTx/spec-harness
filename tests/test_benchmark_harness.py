@@ -16,6 +16,14 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BENCH_DIR = REPO_ROOT / "bench"
+if not BENCH_DIR.is_dir():
+    # The measurement harness lives in the development tree; the public export
+    # ships this test but not bench/. Skipping at module level keeps the suite
+    # collectible here instead of failing every run on the imports below.
+    pytest.skip(
+        "bench/ measurement harness is not part of the public export",
+        allow_module_level=True,
+    )
 if str(BENCH_DIR) not in sys.path:
     sys.path.insert(0, str(BENCH_DIR))
 
