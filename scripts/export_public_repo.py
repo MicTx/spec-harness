@@ -84,6 +84,8 @@ PRIVATE_PATH_PARTS = {
 }
 # These tests inspect real private history rather than portable fixtures.
 PRIVATE_TEST_FILES = {
+    # Imports bench/, which is development tooling outside PUBLIC_DIRS.
+    "tests/test_benchmark_harness.py",
     "tests/test_host_evidence_notes.py",
     "tests/test_module_dag.py",
     "tests/test_plans_root.py",

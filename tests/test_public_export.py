@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -73,3 +74,34 @@ def test_public_publish_does_not_create_on_github_lookup_failure(monkeypatch, tm
     monkeypatch.setattr(export_public_repo.subprocess, "run", failed_view)
     with pytest.raises(PublicExportError, match="lookup failed"):
         export_public_repo.publish_public_tree(tmp_path, "MicTx/spec-harness", "v0.13.9")
+
+
+_DIR_ASSIGN_RE = re.compile(r'^(\w+)\s*=\s*\w*ROOT\w*\s*/\s*"([^"/]+)"', re.MULTILINE)
+_SYS_PATH_RE = re.compile(r"sys\.path\.insert\(\s*\d+\s*,\s*str\((\w+)\)")
+
+
+def test_public_export_tests_only_import_exported_dirs(tmp_path: Path):
+    """An exported test must not put an unexported directory on sys.path.
+
+    Such a test aborts collection for the whole public suite (bench/ did).
+    """
+    output = tmp_path / "public"
+    build_public_tree(ROOT, output)
+    offenders = []
+    for test in sorted((output / "tests").glob("test_*.py")):
+        text = test.read_text(encoding="utf-8")
+        dirs = dict(_DIR_ASSIGN_RE.findall(text))
+        for name in _SYS_PATH_RE.findall(text):
+            target = dirs.get(name)
+            if target and not (output / target).is_dir():
+                offenders.append(f"{test.name} -> {target}/")
+    assert offenders == []
+
+
+def test_ci_public_ignores_only_name_exported_files(tmp_path: Path):
+    output = tmp_path / "public"
+    build_public_tree(ROOT, output)
+    workflow = (ROOT / ".github" / "workflows" / "ci-public.yml").read_text(encoding="utf-8")
+    ignored = re.findall(r"--ignore=(\S+)", workflow)
+    assert ignored
+    assert [path for path in ignored if not (output / path).is_file()] == []

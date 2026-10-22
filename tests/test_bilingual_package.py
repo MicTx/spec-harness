@@ -667,6 +667,7 @@ def test_mixed_v1_checklist_with_english_headings_keeps_legacy_gates():
     assert chinese == english
 
 
+@pytest.mark.skipif(not ARCHIVE_ROOT.is_dir(), reason="private .spec/ history is not part of the public export")
 def test_real_archived_chinese_packages_keep_pre_keying_verdicts():
     """Verdict lock against real archives, captured before the keying change
     (rg-audited snapshot, 2026-10-13): conclusions must not move."""

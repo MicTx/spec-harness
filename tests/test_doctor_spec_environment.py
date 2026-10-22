@@ -680,6 +680,64 @@ def test_project_hooks_foreign_hook_is_info(tmp_path):
     assert "项目自有" in check.detail
 
 
+@requires_git
+def test_project_hooks_rendered_installer_hook_is_managed(tmp_path):
+    """Rendering removes the fingerprint, so a real install must still be owned.
+
+    install_git_hooks.py substitutes the template placeholder with the checker
+    path; the fingerprint therefore never survives into .git/hooks. Detection
+    that keys on the fingerprint alone reports a freshly installed gate as a
+    project-owned hook.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    hooks_dir = repo / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    checker = ROOT / "scripts" / "check_all_spec_packages.py"
+    (hooks_dir / "pre-commit").write_text(
+        f'#!/bin/sh\nchecker="{checker}"\nexec "$checker" --root .\n', encoding="utf-8"
+    )
+    doctor = Doctor(skill_root=ROOT, project_root=repo)
+    doctor.check_project_hooks(repo.resolve())
+    check = check_by_id(doctor, "project.hooks")
+    assert check.status == "ok"
+    assert "指向当前 skill" in check.detail
+
+
+@requires_git
+def test_project_hooks_foreign_checker_is_info(tmp_path):
+    """A checker= line alone is not enough to claim a project-owned hook."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    hooks_dir = repo / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    (hooks_dir / "pre-commit").write_text('#!/bin/sh\nchecker="/usr/local/bin/team-lint"\n', encoding="utf-8")
+    doctor = Doctor(skill_root=ROOT, project_root=repo)
+    doctor.check_project_hooks(repo.resolve())
+    check = check_by_id(doctor, "project.hooks")
+    assert check.status == "info"
+    assert "项目自有" in check.detail
+
+
+@requires_git
+def test_project_hooks_checker_name_substring_is_info(tmp_path):
+    """Only an exact checker basename claims the hook, not a substring."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    hooks_dir = repo / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    (hooks_dir / "pre-commit").write_text(
+        '#!/bin/sh\nchecker="/opt/team/my_check_all_spec_packages.py.sh"\n', encoding="utf-8"
+    )
+    doctor = Doctor(skill_root=ROOT, project_root=repo)
+    doctor.check_project_hooks(repo.resolve())
+    check = check_by_id(doctor, "project.hooks")
+    assert check.status == "info"
+
+
 def test_doctor_cli_json_contract(isolated_home, tmp_path):
     completed = run_doctor_cli("--root", str(tmp_path), "--format", "json")
     assert completed.returncode in (0, 1)

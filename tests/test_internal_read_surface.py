@@ -18,6 +18,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 REPO = Path(__file__).resolve().parents[1]
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "internal_surface"
@@ -762,6 +764,7 @@ class TestSchedulingDecisionTable:
         for text in (route_help, verify_help):
             assert "--read" not in text and "--file" not in text and "--cat" not in text
 
+    @pytest.mark.skipif(not (REPO / ".spec").is_dir(), reason="private .spec/ history is not part of the public export")
     def test_row_stage_contract_chain_doc_capability_is_adjudicated_not_assumed(self):
         # doc was rejected with data (T4): no runtime slice reader exists, and
         # the adjudication record is the auditable artifact of that rejection

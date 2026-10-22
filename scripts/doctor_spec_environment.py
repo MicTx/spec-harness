@@ -70,6 +70,21 @@ def claude_agents_dir() -> Path:
 # retired layout artifact.
 STALE_SUBDIR_STAGES = ("assemble", "combat", "marshal")
 HOOK_CHECKER_FINGERPRINT = "SPEC_CHECK_ALL_SCRIPT_PLACEHOLDER"
+# install_git_hooks.py renders the template placeholder into the real checker
+# path, so an installed gate hook no longer carries the fingerprint. Claim a
+# hook when it still holds the placeholder (unrendered template) or when it
+# points at the gate checker by name; anything else stays project-owned.
+HOOK_CHECKER_NAME = "check_all_spec_packages.py"
+HOOK_CHECKER_RE = re.compile(r'^checker="([^"]+)"', re.MULTILINE)
+
+
+def spec_owned_hook(content: str) -> bool:
+    """True when hook content belongs to the Spec gate (rendered or template)."""
+    match = HOOK_CHECKER_RE.search(content)
+    if match is None:
+        return False
+    return HOOK_CHECKER_FINGERPRINT in content or Path(match.group(1)).name == HOOK_CHECKER_NAME
+
 
 # Runtime files every healthy install must carry. Mirrors the layout
 # assertion in smoke_test_spec_skill.py; export/build scripts are
@@ -1172,10 +1187,10 @@ class Doctor:
             if not hook.is_file():
                 continue
             content = hook.read_text(encoding="utf-8")
-            if HOOK_CHECKER_FINGERPRINT not in content:
+            if not spec_owned_hook(content):
                 unmanaged.append(f"{name}：项目自有 hook（未接管）")
                 continue
-            match = re.search(r'^checker="([^"]+)"', content, re.MULTILINE)
+            match = HOOK_CHECKER_RE.search(content)
             rendered = Path(match.group(1)) if match else None
             if rendered is None or "__SPEC_CHECK_ALL_" in str(rendered):
                 problems.append(f"{name}：模板未渲染，checker 占位符仍在")
@@ -1229,7 +1244,7 @@ class Doctor:
             content = hook.read_text(encoding="utf-8")
             # Only spec-owned hooks are backed up; a refusal from the
             # installer on project-owned hooks leaves them untouched.
-            if HOOK_CHECKER_FINGERPRINT in content:
+            if spec_owned_hook(content):
                 backed_up = self.move_to_backup(hook)
                 self.fix_log.append(f"backed up stale {hook} -> {backed_up}")
             else:
