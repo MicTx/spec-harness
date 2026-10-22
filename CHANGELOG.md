@@ -4,6 +4,15 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [0.20.4] - 2026-10-22
+
+### Added
+
+- `chain close` 新增成对的 `--legacy-scope-commit` / `--legacy-completion-commit`，凭本地 Git 祖先链与同路径特征身份关闭没有 `feature_fingerprint` 的历史链；先用 `--dry-run` 预演，正常关闭检查与 current-session 守卫不放宽。
+- 任务可选加一行 `claim: <认领者> <ISO 时间>` 声明谁在做；这是纯信息约定，非锁、无机器键、不进门禁，勾选即失效，归档保留。`engineering-philosophy` 同步写明协调边界：锁、在线检测、通知属于宿主层。
+- `chain close` gains the paired `--legacy-scope-commit` / `--legacy-completion-commit` flags, which close a legacy chain that has no `feature_fingerprint` using the local Git ancestor chain and same-path identity; preview with `--dry-run`, the normal close checks and the current-session guard stay as strict as before.
+- A task may carry an optional `claim: <claimant> <ISO time>` line naming who is working on it. It is an informational convention, not a lock: no machine key, never gated, stale once checked, kept in the archive. The engineering philosophy now states the coordination boundary: locks, presence detection, and notification belong to the host layer.
+
 ## [0.20.3] - 2026-10-22
 
 ### Added

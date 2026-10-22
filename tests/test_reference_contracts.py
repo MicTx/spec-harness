@@ -496,9 +496,7 @@ def test_claim_line_is_inert_for_task_parsing():
         "- [ ] a\n  - boundary: b\n  - verify: `true`\n"
         "- [ ] c\n  - depends-on: task_0001\n  - boundary: b\n  - verify: `true`\n"
     )
-    claimed = base.replace(
-        "- [ ] a\n", "- [ ] a\n  - claim: @worker-2 2026-10-22T15:00+08:00\n"
-    )
+    claimed = base.replace("- [ ] a\n", "- [ ] a\n  - claim: @worker-2 2026-10-22T15:00+08:00\n")
     plain, with_claim = parse_task_records(base), parse_task_records(claimed)
     assert [(r.id, r.checked, r.blocked, r.boundary, r.verify) for r in plain] == [
         (r.id, r.checked, r.blocked, r.boundary, r.verify) for r in with_claim
