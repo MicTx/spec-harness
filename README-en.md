@@ -78,7 +78,7 @@ Run the installer from a checked-out source or release tree:
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.21.0
+git checkout v0.21.1
 bash install.sh
 ```
 
@@ -359,6 +359,12 @@ Spec Harness provides task packages, workflow instructions, templates, verificat
 
 > [!WARNING]
 > `server/` is an optional self-hosted HTTP adapter. Before exposing it publicly, configure `SPEC_SERVER_TOKEN` and `ALLOWED_ROOTS`, and terminate TLS at a trusted reverse proxy. `/health` is anonymous for probes; `/start` and `/result` require a Bearer token.
+
+## Acknowledgements
+
+Thanks to [@h565656445](https://github.com/h565656445) for [#3](https://github.com/MicTx/spec-harness/pull/3) and [#4](https://github.com/MicTx/spec-harness/pull/4), which found that `doctor` treated rendered gate hooks as project-owned and that public CI aborted during test collection. Both fixes ship in v0.21.1.
+
+Thanks to [@wait4xx](https://github.com/wait4xx) for [#1](https://github.com/MicTx/spec-harness/issues/1) (the "Falsified Paths" section in `spec.md`) and [#2](https://github.com/MicTx/spec-harness/issues/2) (the lightweight `claim:` line in `tasks.md`); both suggestions have shipped.
 
 ## License
 

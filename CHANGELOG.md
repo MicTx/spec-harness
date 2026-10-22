@@ -4,6 +4,15 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [0.21.1] - 2026-10-23
+
+### Fixed
+
+- `doctor` 现在把由 `scripts/install_git_hooks.py` 渲染的 gate hook 识别为 Spec 所有（以 `checker=` 的文件名精确匹配为准），不再误报「项目自有 hook（未接管）」，`doctor --fix` 也能备份并重装过期 gate。感谢 @h565656445（#3）。
+- 公开源码树的 `pytest` 不再在收集阶段中断：依赖未导出目录的测试不再导出，读取私有历史的用例在缺少该历史时跳过；新增导出一致性测试防止复发。感谢 @h565656445（#4）。
+- `doctor` now recognizes gate hooks rendered by `scripts/install_git_hooks.py` as Spec-owned (exact `checker=` basename match) instead of reporting them as unmanaged project hooks, and `doctor --fix` can back up and reinstall a stale gate. Thanks @h565656445 (#3).
+- `pytest` on the public source tree no longer aborts during collection: tests that depend on unexported directories are not exported, and cases that read private history skip when it is absent; new export consistency tests prevent regressions. Thanks @h565656445 (#4).
+
 ## [0.21.0] - 2026-10-22
 
 ### Added

@@ -78,7 +78,7 @@ Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.21.0
+git checkout v0.21.1
 bash install.sh
 ```
 
@@ -359,6 +359,12 @@ Spec Harness 提供任务包、工作流指令、模板、验证脚本和可选�
 
 > [!WARNING]
 > `server/` 是可选的自托管 HTTP 接入层。公网部署前必须设置 `SPEC_SERVER_TOKEN` 与 `ALLOWED_ROOTS`，并在受信反向代理后提供 TLS；`/health` 仅用于探活，`/start` 和 `/result` 需要 Bearer token。
+
+## 致谢
+
+感谢 [@h565656445](https://github.com/h565656445) 提交 [#3](https://github.com/MicTx/spec-harness/pull/3) 与 [#4](https://github.com/MicTx/spec-harness/pull/4)：定位了 `doctor` 把已渲染 gate hook 误判为项目自有，以及公开 CI 在测试收集阶段中断的问题。两项修复已在 v0.21.1 吸收。
+
+感谢 [@wait4xx](https://github.com/wait4xx) 提出 [#1](https://github.com/MicTx/spec-harness/issues/1)（`spec.md` 的「已证伪路径」段）与 [#2](https://github.com/MicTx/spec-harness/issues/2)（`tasks.md` 的轻量 `claim:` 声明），两项建议均已落地。
 
 ## 许可协议
 
