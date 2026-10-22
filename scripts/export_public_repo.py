@@ -62,6 +62,7 @@ PRIVATE_PATH_PARTS = {
     ".maintainer",
     ".spec",
     ".zcode",
+    ".dsh",
     ".claude",
     ".codex",
     ".pi",

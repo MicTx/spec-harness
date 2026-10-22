@@ -1,0 +1,50 @@
+// Spec Harness skill provider for DeepSeek Harness (dsh).
+// Registers the bundled skill on `ctx.skills`; no runtime dependencies.
+import { readFile } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
+
+const SKILL_NAME = {{SKILL_NAME_JSON}}
+const DESCRIPTION = {{SKILL_DESCRIPTION_JSON}}
+const BODY_URL = new URL('./skills/' + SKILL_NAME + '/SKILL.md', import.meta.url)
+const RESOURCE_BASE = {
+  kind: 'directory',
+  path: fileURLToPath(new URL('./skills/' + SKILL_NAME + '/', import.meta.url)),
+}
+const INVOCATION = { modelInvocable: true, userInvocable: true }
+// Same rank dsh uses for bundled skills (BUNDLED_SKILL_RANK).
+const BUNDLED_RANK = 600
+const PROVIDER_NAME = 'spec-harness'
+
+const CANDIDATE = {
+  name: SKILL_NAME,
+  description: DESCRIPTION,
+  invocation: INVOCATION,
+  provider: PROVIDER_NAME,
+  source: 'bundled',
+  resourceBase: RESOURCE_BASE,
+  rank: BUNDLED_RANK,
+  locator: BODY_URL,
+}
+
+// Drop the YAML frontmatter block; dsh takes name/description from the candidate.
+function stripFrontmatter(text) {
+  return text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '')
+}
+
+const provider = {
+  name: PROVIDER_NAME,
+  list: () => Promise.resolve([CANDIDATE]),
+  async get() {
+    return {
+      ...CANDIDATE,
+      content: stripFrontmatter(await readFile(BODY_URL, 'utf8')),
+    }
+  },
+}
+
+export const name = 'spec-harness-skill'
+export const inject = ['skills']
+
+export function apply(ctx) {
+  ctx.skills.registerProvider(() => provider)
+}

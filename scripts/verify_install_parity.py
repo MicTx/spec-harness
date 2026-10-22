@@ -79,6 +79,7 @@ HOST_SKILL_DIRS: Tuple[str, ...] = (
     ".openclaw/skills",
     ".pi/agent/skills",
     ".zcode/skills",
+    ".dsh/skills",
 )
 
 VERSION_PATTERN = re.compile(r'^version\s*=\s*"([^"]+)"', re.MULTILINE)

@@ -9,6 +9,7 @@ __pycache__/
 
 .trae/
 .zcode/
+.dsh/
 
 # Agent-host local state (memory, runtime); never source assets.
 .agents/

@@ -1,0 +1,13 @@
+{
+  "name": "{{NAME}}",
+  "version": "{{VERSION}}",
+  "description": "{{DESCRIPTION}}",
+  "homepage": "{{HOMEPAGE}}",
+  "repository": "{{REPOSITORY}}",
+  "license": "{{LICENSE}}",
+  "keywords": {{KEYWORDS}},
+  "type": "module",
+  "main": "index.js",
+  "files": ["index.js", "cordis.patch.yml", "skills", "LICENSE"],
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+}

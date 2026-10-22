@@ -35,18 +35,25 @@ if str(SCRIPTS_DIR) not in sys.path:
 from path_safety import UnsafePathError, validate_source_tree  # noqa: E402
 from payload_contract import COPY_DIRS, IGNORE_PATTERNS, SCRIPT_BLACKLIST  # noqa: E402
 
-FORMATS = ("agent-plugins", "claude-code")
+FORMATS = ("agent-plugins", "claude-code", "dsh")
 DEFAULT_FORMAT = "agent-plugins"
 
 TEMPLATE_DIR = "agent-plugin"
 TEMPLATE_FILES = {
     "agent-plugins": "plugin.json.template",
     "claude-code": "claude-plugin.json.template",
+    "dsh": "dsh-package.json.template",
+}
+# dsh bundle companions rendered next to package.json: <template> -> <plugin-root file>
+DSH_COMPANION_TEMPLATES = {
+    "dsh-cordis.patch.yml.template": "cordis.patch.yml",
+    "dsh-index.js.template": "index.js",
 }
 # 清单在插件内的落点（相对插件根）
 MANIFEST_RELATIVE_PATH = {
     "agent-plugins": Path("plugin.json"),
     "claude-code": Path(".claude-plugin") / "plugin.json",
+    "dsh": Path("package.json"),
 }
 
 # Agent Plugins 1.0 清单：顶层字段封闭（规范 §5.2），$schema 必须精确等于该值
@@ -69,6 +76,7 @@ AGENT_PLUGINS_TOP_LEVEL_FIELDS = frozenset(
 AGENT_PLUGINS_NAME_PATTERN = re.compile(r"^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$")
 AGENT_PLUGINS_AUTHOR_FIELDS = frozenset({"name", "email", "url"})
 # Claude Code plugin.json：name 为 kebab-case（无空格/控制字符/双向格式字符）
+DSH_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 CLAUDE_CODE_NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 # 与 export_skill_package.py 保持一致的载荷布局（LICENSE 另放插件根，对齐官方示例布局）
@@ -153,6 +161,29 @@ def read_skill_name(root: Path) -> str:
     if not match:
         raise ValueError(f"SKILL.md frontmatter has no name field: {skill_file}")
     return match.group(1)
+
+
+def read_skill_description(root: Path) -> str:
+    """Extract the (possibly folded) description from SKILL.md frontmatter."""
+    frontmatter = (root / "SKILL.md").read_text(encoding="utf-8").split("---", 2)
+    if len(frontmatter) < 3:
+        raise ValueError(f"SKILL.md has no frontmatter block: {root / 'SKILL.md'}")
+    lines = frontmatter[1].splitlines()
+    for index, line in enumerate(lines):
+        if not line.startswith("description:"):
+            continue
+        inline = line.split(":", 1)[1].strip()
+        if inline and inline not in (">", ">-", "|", "|-"):
+            return inline.strip("\"'")
+        parts = []
+        for follow in lines[index + 1 :]:
+            if follow and not follow[0].isspace():
+                break
+            parts.append(follow.strip())
+        text = " ".join(part for part in parts if part)
+        if text:
+            return text
+    raise ValueError(f"SKILL.md frontmatter has no description field: {root / 'SKILL.md'}")
 
 
 def render_template(template: str, values: dict[str, str]) -> str:
@@ -253,7 +284,36 @@ def validate_claude_code_manifest(manifest: object) -> list[str]:
     return errors
 
 
+def validate_dsh_manifest(manifest: object) -> list[str]:
+    """Validate the package.json fields a dsh bundle needs (publish.md: dsh.bundle.patch)."""
+    errors: list[str] = []
+    if not isinstance(manifest, dict):
+        return ["manifest must be a JSON object"]
+
+    name = manifest.get("name")
+    if not isinstance(name, str) or not name:
+        errors.append("required field 'name' must be a non-empty string")
+    elif not DSH_NAME_PATTERN.match(name):
+        errors.append(f"'name' must be a lowercase npm package name: {name!r}")
+
+    for field in ("version", "description", "homepage", "repository", "license", "main"):
+        value = manifest.get(field)
+        if field in manifest and not isinstance(value, str):
+            errors.append(f"'{field}' must be a string, got {type(value).__name__}")
+    if manifest.get("type") != "module":
+        errors.append("'type' must be 'module'")
+
+    dsh = manifest.get("dsh")
+    bundle = dsh.get("bundle") if isinstance(dsh, dict) else None
+    patch = bundle.get("patch") if isinstance(bundle, dict) else None
+    patches = [patch] if isinstance(patch, str) else patch
+    if not isinstance(patches, list) or not patches or not all(isinstance(item, str) and item for item in patches):
+        errors.append("'dsh.bundle.patch' must be a patch file path or a non-empty list of paths")
+    return errors
+
+
 VALIDATORS = {
+    "dsh": validate_dsh_manifest,
     "agent-plugins": validate_agent_plugins_manifest,
     "claude-code": validate_claude_code_manifest,
 }
@@ -295,7 +355,14 @@ def copy_skill_payload(root: Path, skill_dir: Path, script_files: tuple[str, ...
 
 
 def generate_plugin_readme(name: str, version: str, description: str, fmt: str, skill_name: str) -> str:
-    if fmt == "agent-plugins":
+    if fmt == "dsh":
+        install_lines = (
+            "Install into a DeepSeek Harness profile (this directory is a dsh bundle):\n"
+            f"  dsh plugin --profile <profile> add ./{name}\n"
+            "then boot with `dsh --profile <profile>`; the skill is registered on `ctx.skills`.\n"
+            "Reference: https://github.com/deepseek-ai/deepseek-harness (docs/user/develop/basic/publish.md)"
+        )
+    elif fmt == "agent-plugins":
         install_lines = (
             "Install from a plugin marketplace (e.g. the Awesome Copilot marketplace in\n"
             "VS Code: search `@agentPlugins` in the Extensions view) or point a compatible\n"
@@ -321,6 +388,7 @@ def generate_plugin_readme(name: str, version: str, description: str, fmt: str, 
         f"- `skills/{skill_name}/` — the runtime skill (SKILL.md, scripts,\n"
         "  references, hooks, agents, server, slots)\n"
         "- `LICENSE`\n"
+        + ("- `index.js` / `cordis.patch.yml` — dsh plugin entry and bundle patch\n" if fmt == "dsh" else "")
     )
 
 
@@ -348,6 +416,9 @@ def build_manifest(root: Path, args: argparse.Namespace) -> tuple[dict, str, str
         "LICENSE": DEFAULT_LICENSE,
         "KEYWORDS": json.dumps(DEFAULT_KEYWORDS),
     }
+    if args.format == "dsh":
+        values["SKILL_NAME_JSON"] = json.dumps(read_skill_name(root))
+        values["SKILL_DESCRIPTION_JSON"] = json.dumps(read_skill_description(root), ensure_ascii=False)
     rendered = render_template(template_path.read_text(encoding="utf-8"), values)
     try:
         manifest = json.loads(rendered)
@@ -361,6 +432,23 @@ def build_manifest(root: Path, args: argparse.Namespace) -> tuple[dict, str, str
     return manifest, manifest["name"], version
 
 
+def write_dsh_companions(root: Path, args: argparse.Namespace, plugin_dir: Path, name: str, version: str) -> None:
+    """Render the dsh bundle patch and plugin entry beside package.json."""
+    values = {
+        "NAME": name,
+        "VERSION": version,
+        "SKILL_NAME_JSON": json.dumps(read_skill_name(root)),
+        "SKILL_DESCRIPTION_JSON": json.dumps(read_skill_description(root), ensure_ascii=False),
+    }
+    for template_name, target in DSH_COMPANION_TEMPLATES.items():
+        template_path = root / TEMPLATE_DIR / template_name
+        if not template_path.is_file():
+            raise FileNotFoundError(f"missing dsh template: {template_path}")
+        (plugin_dir / target).write_text(
+            render_template(template_path.read_text(encoding="utf-8"), values), encoding="utf-8"
+        )
+
+
 def build_plugin_dir(root: Path, args: argparse.Namespace, staging: Path) -> tuple[Path, str, str]:
     """Assemble the plugin inside staging; return (plugin_dir, name, version)."""
     manifest, name, version = build_manifest(root, args)
@@ -372,10 +460,13 @@ def build_plugin_dir(root: Path, args: argparse.Namespace, staging: Path) -> tup
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
-    for name in PLUGIN_ROOT_FILES:
-        source = root / name
+    if args.format == "dsh":
+        write_dsh_companions(root, args, plugin_dir, name, version)
+
+    for root_file in PLUGIN_ROOT_FILES:
+        source = root / root_file
         if source.is_file():
-            shutil.copy2(source, plugin_dir / name)
+            shutil.copy2(source, plugin_dir / root_file)
 
     skill_dir = plugin_dir / "skills" / skill_name
     copy_skill_payload(root, skill_dir, collect_script_files(root))

@@ -15,6 +15,9 @@ CLAUDE_COMMANDS_DIR="${CLAUDE_COMMANDS_DIR:-$HOME/.claude/commands}"
 CLAUDE_AGENTS_DIR="${CLAUDE_AGENTS_DIR:-$HOME/.claude/agents}"
 CODEX_SKILLS_DIR="${CODEX_SKILLS_DIR:-$HOME/.codex/skills}"
 ZCODE_SKILLS_DIR="${ZCODE_SKILLS_DIR:-$HOME/.zcode/skills}"
+# DeepSeek Harness (dsh): user-level skills root is <dshHome>/skills, with dshHome
+# = $DSH_HOME (blank ignored) else ~/.dsh.
+DSH_SKILLS_DIR="${DSH_SKILLS_DIR:-${DSH_HOME:-$HOME/.dsh}/skills}"
 DEVIN_SKILLS_DIR="${DEVIN_SKILLS_DIR:-$HOME/.config/devin/skills}"
 CURSOR_SKILLS_DIR="${CURSOR_SKILLS_DIR:-$HOME/.cursor/skills}"
 # Each host skills directory below follows that agent's own standard location,
@@ -178,7 +181,7 @@ abs_path() {
 # directory and no host-specific command files are written. Pi left this
 # list in F4: it now also receives native prompt-template commands
 # (install_pi) alongside the skill copy.
-SKILL_ONLY_HOSTS=(claude-desktop codex devin cursor gemini grok opencode openclaw hermes zcode)
+SKILL_ONLY_HOSTS=(claude-desktop codex devin cursor gemini grok opencode openclaw hermes zcode dsh)
 
 skill_dir_for() {
   case "$1" in
@@ -193,6 +196,7 @@ skill_dir_for() {
     hermes) printf '%s\n' "$HERMES_SKILLS_DIR" ;;
     pi) printf '%s\n' "$PI_SKILLS_DIR" ;;
     zcode) printf '%s\n' "$ZCODE_SKILLS_DIR" ;;
+    dsh) printf '%s\n' "$DSH_SKILLS_DIR" ;;
     *) return 1 ;;
   esac
 }
@@ -210,6 +214,7 @@ host_label_for() {
     hermes) printf '%s\n' "Hermes" ;;
     pi) printf '%s\n' "Pi" ;;
     zcode) printf '%s\n' "ZCode" ;;
+    dsh) printf '%s\n' "DeepSeek Harness" ;;
     *) printf '%s\n' "$1" ;;
   esac
 }
@@ -227,6 +232,7 @@ default_skill_dir_for() {
     hermes) printf '%s\n' "$(default_hermes_home)/skills" ;;
     pi) printf '%s\n' "$HOME/.pi/agent/skills" ;;
     zcode) printf '%s\n' "$HOME/.zcode/skills" ;;
+    dsh) printf '%s\n' "${DSH_HOME:-$HOME/.dsh}/skills" ;;
     *) return 1 ;;
   esac
 }
@@ -236,6 +242,7 @@ host_trigger_hint() {
   case "$1" in
     codex|zcode|pi) printf '%s\n' 'trigger $spec' ;;
     devin|cursor) printf '%s\n' 'load /spec, then ask spec:goal' ;;
+    dsh) printf '%s\n' 'load the spec skill via the skill tool, then ask spec:goal' ;;
     *) printf '%s\n' 'trigger the spec skill' ;;
   esac
 }
@@ -246,7 +253,7 @@ host_trigger_hint() {
 # CLI is optional — the directory probe catches those.
 host_cli_for() {
   case "$1" in
-    claude|codex|gemini|grok|opencode|openclaw|hermes|pi|zcode) printf '%s\n' "$1" ;;
+    claude|codex|gemini|grok|opencode|openclaw|hermes|pi|zcode|dsh) printf '%s\n' "$1" ;;
     devin) printf '%s\n' "devin" ;;
     cursor) printf '%s\n' "cursor-agent" ;;
     *) return 1 ;;
@@ -271,6 +278,7 @@ host_dir_probe_root() {
     hermes) printf '%s\n' "$(default_hermes_home)" ;;
     pi) printf '%s\n' "$HOME/.pi/agent" ;;
     zcode) printf '%s\n' "$HOME/.zcode" ;;
+    dsh) printf '%s\n' "$HOME/.dsh" ;;
     *) return 1 ;;
   esac
 }
@@ -338,7 +346,7 @@ host_enabled() {
     grok) tokens="grok grokbuild" ;;
     devin) tokens="devin devin-desktop" ;;
     cursor) tokens="cursor cursor-cli" ;;
-    claude-desktop|gemini|opencode|openclaw|hermes|pi|zcode) tokens="$host" ;;
+    claude-desktop|gemini|opencode|openclaw|hermes|pi|zcode|dsh) tokens="$host" ;;
     *) return 1 ;;
   esac
   local IFS=' '
@@ -358,12 +366,12 @@ validate_hosts() {
   local host enabled=0
   for host in $INSTALL_HOSTS; do
     case "$host" in
-      all|claude|claude-desktop|codex|codex-desktop|cursor|cursor-cli|desktop|devin|devin-desktop|gemini|grok|grokbuild|opencode|openclaw|hermes|pi|rpi|zcode) enabled=1 ;;
+      all|claude|claude-desktop|codex|codex-desktop|cursor|cursor-cli|desktop|devin|devin-desktop|gemini|grok|grokbuild|opencode|openclaw|hermes|pi|rpi|zcode|dsh) enabled=1 ;;
       "") ;;
       *) fail "unknown INSTALL_HOSTS entry: $host" ;;
     esac
   done
-  [ "$enabled" = "1" ] || fail "INSTALL_HOSTS must include a supported host: all, claude, claude-desktop, codex, codex-desktop, cursor, cursor-cli, desktop, devin, devin-desktop, gemini, grok, grokbuild, opencode, openclaw, hermes, pi, rpi, or zcode"
+  [ "$enabled" = "1" ] || fail "INSTALL_HOSTS must include a supported host: all, claude, claude-desktop, codex, codex-desktop, cursor, cursor-cli, desktop, devin, devin-desktop, gemini, grok, grokbuild, opencode, openclaw, hermes, pi, rpi, zcode, or dsh"
 }
 
 # Extended stages = USER_STAGES minus CORE_STAGES, computed so a future
@@ -526,6 +534,7 @@ backup_namespace() {
     "$HOME/.claude/agents") printf '%s\n' ".claude-agents" ;;
     "$HOME/.codex/skills") printf '%s\n' ".codex-skills" ;;
     "$HOME/.zcode/skills") printf '%s\n' ".zcode-skills" ;;
+    "$HOME/.dsh/skills") printf '%s\n' ".dsh-skills" ;;
     "$HOME/.config/devin/skills") printf '%s\n' ".config-devin-skills" ;;
     "$HOME/.cursor/skills") printf '%s\n' ".cursor-skills" ;;
     "$HOME/.claude-desktop/skills") printf '%s\n' ".claude-desktop-skills" ;;

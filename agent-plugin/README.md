@@ -13,6 +13,7 @@
 |---|---|---|
 | `plugin.json.template` | Agent Plugins 1.0（主轨，默认） | 插件根 `plugin.json` |
 | `claude-plugin.json.template` | Claude Code plugin | `.claude-plugin/plugin.json` |
+| `dsh-package.json.template` + `dsh-cordis.patch.yml.template` + `dsh-index.js.template` | DeepSeek Harness (dsh) bundle | 插件根 `package.json`（`dsh.bundle.patch`）、`cordis.patch.yml`、`index.js` |
 
 ## 占位符
 
@@ -34,6 +35,9 @@ python3 scripts/package_agent_plugin.py
 
 # Claude Code 格式
 python3 scripts/package_agent_plugin.py --format claude-code
+
+# dsh bundle 格式（解压后 `dsh plugin --profile <name> add ./spec-harness`）
+python3 scripts/package_agent_plugin.py --format dsh
 
 # 自定义输出与元数据
 python3 scripts/package_agent_plugin.py --name spec-harness --version 1.2.3 \
@@ -61,3 +65,5 @@ Claude Code 格式仅清单位置不同（`.claude-plugin/plugin.json`），skil
 - 两种格式的清单 schema 姿态相反：Agent Plugins 顶层字段**封闭**（模板不要新增字段，
   客户端特定数据只能放 `extensions`）；Claude Code 顶层字段开放（未知字段被忽略）。
 - 模板必须保持合法 JSON（占位符除外），脚本渲染后会拒绝任何残留 `{{...}}`。
+
+- dsh 格式：`index.js` 是无依赖 Cordis 插件（`inject=['skills']`），在 `ctx.skills` 注册 `bundled`（rank 600）提供者并剥离 frontmatter；`package.json` 声明 `dsh.bundle.patch`。依据 dsh `docs/user/develop/basic/publish.md` 与 `packages/experimental/skill-badge`，dsh 为 developer preview，未做 live 验收。

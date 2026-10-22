@@ -1,0 +1,3 @@
+- insert:
+    - id: spec-harness-skill
+      name: {{NAME}}

@@ -4,6 +4,17 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [0.21.0] - 2026-10-22
+
+### Added
+
+- 新增 DeepSeek Harness（`dsh`）宿主：`INSTALL_HOSTS=dsh bash install.sh` 把 Skill 装到 `${DSH_HOME:-~/.dsh}/skills`，可用 `DSH_SKILLS_DIR` 重定位；未显式指定宿主时，本机有 `dsh` 命令或 `~/.dsh` 目录即被自动探测。`doctor`、安装一致性检查与公开导出规则同步，导出会排除 `.dsh/`。
+- `scripts/package_agent_plugin.py` 新增 `--format dsh`：产出可经 `dsh plugin --profile <name> add ./spec-harness` 装入 profile 的 bundle（清单声明 `dsh.bundle.patch`，入口模块在 `ctx.skills` 注册 `bundled` 提供者）。目录安装与 bundle 二选一即可，不要重复装。
+- 已在一个定制的 dsh 构建上验证 bundle：`skills/list` 返回 `spec`，不装时没有。官方 dsh 处于 developer preview，目录安装路径与官方文档一致但未逐版本实机验收。
+- Adds DeepSeek Harness (`dsh`) as a host: `INSTALL_HOSTS=dsh bash install.sh` installs the skill into `${DSH_HOME:-~/.dsh}/skills`, relocatable with `DSH_SKILLS_DIR`. Without an explicit host list, a `dsh` command on PATH or a `~/.dsh` directory is auto-detected. `doctor`, the install parity check, and the public export rules are in sync; the export excludes `.dsh/`.
+- `scripts/package_agent_plugin.py` gains `--format dsh`, which builds a bundle installable with `dsh plugin --profile <name> add ./spec-harness` (the manifest declares `dsh.bundle.patch`; the entry module registers a `bundled` provider on `ctx.skills`). Use either the directory install or the bundle, not both.
+- The bundle was verified on a customized dsh build: `skills/list` returns `spec` with the bundle and omits it without. Upstream dsh is a developer preview; the directory path follows its documentation but is not live verified per release.
+
 ## [0.20.4] - 2026-10-22
 
 ### Added

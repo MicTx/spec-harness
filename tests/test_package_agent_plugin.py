@@ -16,6 +16,7 @@ from package_agent_plugin import (
     strip_empty_fields,
     validate_agent_plugins_manifest,
     validate_claude_code_manifest,
+    validate_dsh_manifest,
 )
 
 SKILL_ROOT = Path(__file__).resolve().parent.parent
@@ -482,3 +483,54 @@ def test_plugin_skill_payload_matches_runtime_export(tmp_path: Path):
             if name.startswith(prefix) and not name.endswith("/")
         }
     assert plugin_files == runtime_files
+
+
+# ---------- dsh bundle 格式 ----------
+
+
+def _base_dsh_manifest() -> dict:
+    return {
+        "name": "spec-harness",
+        "version": "1.2.3",
+        "type": "module",
+        "main": "index.js",
+        "dsh": {"bundle": {"patch": "./cordis.patch.yml"}},
+    }
+
+
+def test_dsh_valid_manifest_has_no_errors():
+    assert validate_dsh_manifest(_base_dsh_manifest()) == []
+
+
+def test_dsh_missing_bundle_patch_is_error():
+    manifest = _base_dsh_manifest()
+    del manifest["dsh"]
+    assert any("dsh.bundle.patch" in error for error in validate_dsh_manifest(manifest))
+
+
+def test_dsh_requires_module_type_and_lowercase_name():
+    manifest = _base_dsh_manifest()
+    manifest["type"] = "commonjs"
+    manifest["name"] = "Spec Harness"
+    errors = validate_dsh_manifest(manifest)
+    assert any("'type'" in error for error in errors)
+    assert any("'name'" in error for error in errors)
+
+
+def test_build_dsh_bundle_end_to_end():
+    with tempfile.TemporaryDirectory() as tmpname:
+        result = _run_build(Path(tmpname), "--format", "dsh")
+        assert result.returncode == 0, result.stderr
+        with zipfile.ZipFile(Path(tmpname) / "plugin.zip") as archive:
+            names = set(archive.namelist())
+            prefix = f"{DEFAULT_NAME}/"
+            for required in ("package.json", "cordis.patch.yml", "index.js", "skills/spec/SKILL.md"):
+                assert prefix + required in names
+            manifest = json.loads(archive.read(prefix + "package.json"))
+            patch = archive.read(prefix + "cordis.patch.yml").decode("utf-8")
+            entry = archive.read(prefix + "index.js").decode("utf-8")
+        assert validate_dsh_manifest(manifest) == []
+        assert manifest["version"] == _project_version()
+        assert f"name: {DEFAULT_NAME}" in patch
+        assert "{{" not in entry and "registerProvider" in entry
+        assert "export const inject = ['skills']" in entry

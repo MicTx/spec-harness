@@ -36,6 +36,7 @@ ALL_HOST_ROOTS = (
     ("hermes", ".hermes"),
     ("pi", ".pi/agent"),
     ("zcode", ".zcode"),
+    ("dsh", ".dsh"),
 )
 
 
@@ -68,6 +69,8 @@ def sandbox_env(home: Path, stub_dir: Path | None = None) -> dict[str, str]:
         "DEVIN_SKILLS_DIR",
         "CURSOR_SKILLS_DIR",
         "ZCODE_SKILLS_DIR",
+        "DSH_SKILLS_DIR",
+        "DSH_HOME",
         "CLAUDE_DESKTOP_SKILLS_DIR",
         "GEMINI_SKILLS_DIR",
         "GROK_SKILLS_DIR",

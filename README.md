@@ -78,7 +78,7 @@ Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.20.4
+git checkout v0.21.0
 bash install.sh
 ```
 
@@ -100,6 +100,7 @@ bash install.sh
 | `hermes` | Hermes | `~/.hermes/skills` | 可用 `HERMES_HOME` 重定位 |
 | `pi` | Pi agent | `~/.pi/agent/skills` + `~/.pi/agent/prompts` | 可用 `PI_DIR` 重定位；同时写入 `/spec` 与 `/spec:<stage>` 原生命令模板（`PI_PROMPTS_DIR` 重定位，`/reload` 后生效） |
 | `zcode` | ZCode | `~/.zcode/skills` | 项目自有宿主 |
+| `dsh` | DeepSeek Harness | `${DSH_HOME:-~/.dsh}/skills` | 只安装 Skill；`DSH_SKILLS_DIR` 可重定位；dsh 处于 developer preview，未做 live 验收 |
 | `devin`、`devin-desktop` | Devin CLI / Local | `~/.config/devin/skills` | 只安装 Skill；`DEVIN_SKILLS_DIR` 可重定位 |
 | `cursor`、`cursor-cli` | Cursor IDE / CLI | `~/.cursor/skills` | 只安装 Skill；`CURSOR_SKILLS_DIR` 可重定位 |
 | `desktop`、`rpi` | Claude Code + Codex | 两套默认目录 | 组合目标 |
@@ -155,6 +156,8 @@ python3 scripts/export_skill_package.py --output /tmp/spec --force
 手动直调导出器不会自动跳过签名：无凭据环境需显式加 `--skip-signing`（安装器在同样条件下会自动附加并提示）。导出器同样接受 `--profile core|full`（缺省 `full`，与 release 载荷字节等价）。
 
 把导出的 `spec/` 目录放入宿主的 Skill 根目录，然后在 Codex/ZCode 中触发 `$spec`，在 Pi 中使用 `/spec`、`/spec:<stage>` 原生命令（参数经 `$@` 原样透传），在 Claude Code 中使用 `/spec:goal`，或在 Devin/Cursor 中加载 `/spec` 后请求 `spec:goal`。
+
+DeepSeek Harness（dsh）插件模式：`python3 scripts/package_agent_plugin.py --format dsh` 产出 dsh bundle（`package.json` 声明 `dsh.bundle.patch`，`index.js` 在 `ctx.skills` 注册提供者），解压后用 `dsh plugin --profile <name> add ./spec-harness` 装入 profile，`dsh plugin --profile <name> remove spec-harness` 卸载。dsh 处于 developer preview，未做 live 验收。
 
 ## 快速开始
 

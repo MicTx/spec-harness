@@ -184,6 +184,12 @@ def _hermes_home() -> Path:
     return _home() / ".hermes"
 
 
+def _dsh_home() -> Path:
+    """dsh home: $DSH_HOME (blank ignored) else ~/.dsh."""
+    override = os.environ.get("DSH_HOME", "").strip()
+    return Path(override) if override else _home() / ".dsh"
+
+
 def _pi_home() -> Path:
     return Path(os.environ.get("PI_DIR", str(_home() / ".pi")))
 
@@ -207,6 +213,7 @@ def _host_specs() -> List[HostSpec]:
         ("hermes", "Hermes", "HERMES_SKILLS_DIR", lambda: _hermes_home() / "skills"),
         ("pi", "Pi", "PI_SKILLS_DIR", lambda: _pi_home() / "agent" / "skills"),
         ("zcode", "ZCode", "ZCODE_SKILLS_DIR", lambda: _home() / ".zcode" / "skills"),
+        ("dsh", "DeepSeek Harness", "DSH_SKILLS_DIR", lambda: _dsh_home() / "skills"),
     ]
 
 

@@ -78,7 +78,7 @@ Run the installer from a checked-out source or release tree:
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.20.4
+git checkout v0.21.0
 bash install.sh
 ```
 
@@ -100,6 +100,7 @@ Installing from a source tree needs no signing credentials: when none are found 
 | `hermes` | Hermes | `~/.hermes/skills` | relocatable with `HERMES_HOME` |
 | `pi` | Pi agent | `~/.pi/agent/skills` + `~/.pi/agent/prompts` | relocatable with `PI_DIR`; also writes `/spec` and `/spec:<stage>` native prompt templates (`PI_PROMPTS_DIR` relocation, effective after `/reload`) |
 | `zcode` | ZCode | `~/.zcode/skills` | project-owned host |
+| `dsh` | DeepSeek Harness | `${DSH_HOME:-~/.dsh}/skills` | Skill only; relocate with `DSH_SKILLS_DIR`; dsh is a developer preview, not live verified |
 | `devin`, `devin-desktop` | Devin CLI / Local | `~/.config/devin/skills` | Skill only; relocatable with `DEVIN_SKILLS_DIR` |
 | `cursor`, `cursor-cli` | Cursor IDE / CLI | `~/.cursor/skills` | Skill only; relocatable with `CURSOR_SKILLS_DIR` |
 | `desktop`, `rpi` | Claude Code + Codex | both default directories | combined targets |
@@ -155,6 +156,8 @@ python3 scripts/export_skill_package.py --output /tmp/spec --force
 Calling the exporter directly never auto-skips signing: in a keyless environment add `--skip-signing` explicitly (the installer applies it automatically under the same conditions). The exporter also accepts `--profile core|full` (default `full`, byte-identical to the release payload).
 
 Place the exported `spec/` directory in the host's Skill directory. Trigger it with `$spec` in Codex/ZCode, use the native `/spec` and `/spec:<stage>` commands in Pi (arguments forwarded verbatim via `$@`), `/spec:goal` in Claude Code, or load `/spec` then request `spec:goal` in Devin/Cursor.
+
+DeepSeek Harness (dsh) plugin mode: `python3 scripts/package_agent_plugin.py --format dsh` builds a dsh bundle (`package.json` declares `dsh.bundle.patch`; `index.js` registers a provider on `ctx.skills`). Unzip it, install with `dsh plugin --profile <name> add ./spec-harness`, remove with `dsh plugin --profile <name> remove spec-harness`. dsh is a developer preview and is not live verified.
 
 ## Quick Start
 
