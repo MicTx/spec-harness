@@ -3693,3 +3693,19 @@ class TestSpawnEntryMigration:
         volatile = json.loads((runtime / "volatile.json").read_text(encoding="utf-8"))
         assert volatile["prev_tty"] == "/dev/ttys012"
         assert (runtime / "chain.lock").is_file()
+
+
+def test_codex_worker_carves_common_git_dir_in_linked_worktree(tmp_path):
+    main = tmp_path / "main"
+    main.mkdir()
+
+    def run(*args):
+        subprocess.run(["git", *args], cwd=main, check=True, capture_output=True)
+
+    run("init", "-b", "main")
+    run("-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "init")
+    wt = tmp_path / "wt"
+    run("worktree", "add", str(wt), "-b", "side")
+    codex = build_worker_command("codex", wt, "PROMPT")
+    carve = "sandbox_workspace_write.writable_roots=[{}]".format(json.dumps(str((main / ".git").resolve())))
+    assert carve in codex

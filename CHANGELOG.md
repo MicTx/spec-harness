@@ -4,6 +4,15 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [0.21.3] - 2026-10-23
+
+### Fixed
+
+- `doctor` 现在按 Git 自身解析定位 hooks 目录（`git rev-parse --git-path hooks`），尊重 `core.hooksPath`：门禁放在 `.githooks/` 等目录时不再误报「未安装磁盘真源 hooks」，`doctor --fix` 也会修复该目录里的过期 gate，而不是装入被架空的 `.git/hooks/`。`core.hooksPath` 指向仓库外（如用户级全局设置）时，提示会说明安装器拒绝写入，不再给出无效的修复命令。感谢 @wait4xx（#5）。
+- 同类修复：codex worker 的沙箱可写目录在 linked worktree 中改为指向 Git common dir，不再指向 worktree 里的 `.git` 文件。
+- `doctor` now locates the hooks directory through Git itself (`git rev-parse --git-path hooks`) and honors `core.hooksPath`: gates kept in a directory such as `.githooks/` are no longer reported as "disk-truth hooks not installed", and `doctor --fix` repairs a stale gate in that directory instead of installing a shadowed copy into `.git/hooks/`. When `core.hooksPath` points outside the repository (for example a user-level global setting), the hint explains that the installer refuses to write there instead of suggesting a command with no effect. Thanks @wait4xx (#5).
+- Same class of fix: in a linked worktree, the codex worker's sandbox writable root now points at the Git common dir instead of the worktree's `.git` file.
+
 ## [0.21.2] - 2026-10-23
 
 ### Fixed

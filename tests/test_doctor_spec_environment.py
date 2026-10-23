@@ -1262,3 +1262,69 @@ def test_foreign_devin_skill_dir_is_protected(isolated_home):
     assert [host[0] for host in doctor.active_hosts()] == ["devin"]
     assert doctor.is_foreign_skill(foreign) is True
     assert doctor.is_installer_owned(foreign) is False
+
+
+def _repo_with_hooks_path(tmp_path, rel=".githooks"):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "core.hooksPath", rel], cwd=repo, check=True)
+    hooks_dir = repo / rel
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    return repo, hooks_dir
+
+
+@requires_git
+def test_project_hooks_honors_core_hooks_path_rendered_gate(tmp_path):
+    repo, hooks_dir = _repo_with_hooks_path(tmp_path)
+    checker = ROOT / "scripts" / "check_all_spec_packages.py"
+    (hooks_dir / "pre-commit").write_text(f'#!/bin/sh\nchecker="{checker}"\n', encoding="utf-8")
+    doctor = Doctor(skill_root=ROOT, project_root=repo)
+    doctor.check_project_hooks(repo.resolve())
+    check = check_by_id(doctor, "project.hooks")
+    assert check.status == "ok"
+    assert "指向当前 skill" in check.detail
+
+
+@requires_git
+def test_project_hooks_path_stale_gate_fix_targets_hooks_path(tmp_path):
+    repo, hooks_dir = _repo_with_hooks_path(tmp_path)
+    (hooks_dir / "pre-commit").write_text(
+        '#!/bin/sh\nchecker="/gone/skills/spec/scripts/check_all_spec_packages.py"\n', encoding="utf-8"
+    )
+    doctor = Doctor(skill_root=ROOT, project_root=repo)
+    doctor.check_project_hooks(repo.resolve())
+    assert check_by_id(doctor, "project.hooks").status == "fail"
+    doctor = Doctor(skill_root=ROOT, project_root=repo, fix=True)
+    doctor.check_project_hooks(repo.resolve())
+    assert check_by_id(doctor, "project.hooks").status == "fixed"
+    rendered = (hooks_dir / "pre-commit").read_text(encoding="utf-8")
+    assert str(ROOT / "scripts" / "check_all_spec_packages.py") in rendered
+    assert not (repo / ".git" / "hooks" / "pre-commit").exists()
+
+
+@requires_git
+def test_project_hooks_path_foreign_hook_is_info(tmp_path):
+    repo, hooks_dir = _repo_with_hooks_path(tmp_path)
+    (hooks_dir / "pre-commit").write_text("#!/bin/sh\necho project-owned\n", encoding="utf-8")
+    doctor = Doctor(skill_root=ROOT, project_root=repo)
+    doctor.check_project_hooks(repo.resolve())
+    check = check_by_id(doctor, "project.hooks")
+    assert check.status == "info"
+    assert "项目自有" in check.detail
+
+
+@requires_git
+def test_project_hooks_path_outside_repo_hint_is_not_installer_only(tmp_path):
+    outside = tmp_path / "global-hooks"
+    outside.mkdir()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "core.hooksPath", str(outside)], cwd=repo, check=True)
+    doctor = Doctor(skill_root=ROOT, project_root=repo)
+    doctor.check_project_hooks(repo.resolve())
+    check = check_by_id(doctor, "project.hooks")
+    assert check.status == "warn"
+    assert str(outside) in check.detail
+    assert "仓库外" in check.fix_note

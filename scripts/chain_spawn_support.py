@@ -292,6 +292,27 @@ def _linked_git_dir(root: Path) -> Optional[Path]:
     return candidate
 
 
+def _git_common_dir(root: Path) -> Path:
+    # Linked worktrees keep objects/refs in the main repo's common dir, so
+    # sandbox carve-outs must target it rather than the worktree's .git file.
+    if (root / ".git").is_dir():
+        return root / ".git"
+    try:
+        probe = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+            env=chain_git_probe_env(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return root / ".git"
+    if probe.returncode != 0 or not probe.stdout.strip():
+        return root / ".git"
+    return Path(probe.stdout.strip())
+
+
 def chain_runtime_root(root: Path) -> Path:
     if (root / ".git").is_file():
         resolved = _linked_git_dir(root)
@@ -1053,7 +1074,7 @@ def build_worker_command(
         # `git add`/`git commit` die with EPERM at the round's commit stage
         # (verified 2026-10-07 against codex-cli 0.160.1). Carve the repo's
         # .git back into the writable roots; everything else stays sandboxed.
-        git_root = json.dumps(str(root / ".git"))
+        git_root = json.dumps(str(_git_common_dir(root)))
         argv = [
             "codex",
             "--cd",

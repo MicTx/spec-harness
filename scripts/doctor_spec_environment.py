@@ -1176,7 +1176,7 @@ class Doctor:
                 "非 Git 仓库，跳过（适用外）",
             )
             return
-        hooks_dir = git_toplevel / ".git" / "hooks"
+        hooks_dir = self.resolve_hooks_dir(git_toplevel)
         managed: List[str] = []
         other_copy: List[str] = []
         unmanaged: List[str] = []
@@ -1211,7 +1211,7 @@ class Doctor:
                 "Git hooks 指针",
                 "fail",
                 "；".join(problems),
-                f"python3 {self.skill_root / 'scripts' / 'install_git_hooks.py'} --root {git_toplevel}",
+                self.install_hint(git_toplevel, hooks_dir),
             )
             return
         detail_parts = managed + other_copy + unmanaged
@@ -1223,8 +1223,8 @@ class Doctor:
                 "project.hooks",
                 "Git hooks 指针",
                 "warn",
-                "未安装磁盘真源 hooks（门禁不生效）",
-                f"需要时运行 python3 {self.skill_root / 'scripts' / 'install_git_hooks.py'} --root {git_toplevel}",
+                f"未安装磁盘真源 hooks（门禁不生效；hooks 目录 {hooks_dir}）",
+                self.install_hint(git_toplevel, hooks_dir),
             )
             return
         if other_copy:
@@ -1234,8 +1234,37 @@ class Doctor:
         else:
             self.record("project.hooks", "Git hooks 指针", "info", "；".join(detail_parts))
 
+    def resolve_hooks_dir(self, git_toplevel: Path) -> Path:
+        # Git's own resolution honors core.hooksPath (local or global) and
+        # linked worktrees; a hardcoded .git/hooks misses both.
+        completed = subprocess.run(
+            ["git", "rev-parse", "--git-path", "hooks"],
+            cwd=str(git_toplevel),
+            capture_output=True,
+            text=True,
+            env=self.clean_env(),
+        )
+        if completed.returncode != 0 or not completed.stdout.strip():
+            return git_toplevel / ".git" / "hooks"
+        hooks_dir = Path(completed.stdout.strip())
+        if not hooks_dir.is_absolute():
+            hooks_dir = (git_toplevel / hooks_dir).resolve()
+        return hooks_dir
+
+    def install_hint(self, git_toplevel: Path, hooks_dir: Path) -> str:
+        installer = f"python3 {self.skill_root / 'scripts' / 'install_git_hooks.py'} --root {git_toplevel}"
+        top = git_toplevel.resolve()
+        if hooks_dir == top or top in hooks_dir.parents or ".git" in hooks_dir.parts:
+            return f"需要时运行 {installer}"
+        # install_git_hooks refuses hooks dirs outside the repository, so the
+        # hint must not suggest a command that cannot take effect.
+        return (
+            f"core.hooksPath 指向仓库外的 {hooks_dir}，安装器拒绝写入；"
+            f"请在该目录自行放置门禁，或取消 core.hooksPath 后运行 {installer}"
+        )
+
     def _reinstall_hooks(self, git_toplevel: Path, problems: List[str]) -> bool:
-        hooks_dir = git_toplevel / ".git" / "hooks"
+        hooks_dir = self.resolve_hooks_dir(git_toplevel)
         stale_ok = True
         for name in ("pre-commit", "pre-push"):
             hook = hooks_dir / name
