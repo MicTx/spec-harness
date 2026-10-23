@@ -11,7 +11,7 @@ Execution order:
 
 1. Route with `python3 scripts/route_spec_package.py --root <project>`; with a clear goal and no resumable package, create or resume the package and its integration branch per `/spec:new`, self-planning scope, tasks, and acceptance from the goal — write down whatever can be reasonably assumed instead of blocking on a question list.
 2. Self-run per `/spec:run` and self-verify at the package's declared verification level; after every change round, self-supervise for boundary violations, unrequested abstractions, and needed syncs (`SKILL.md`, `references/*`, `README*`, `agents/openai.yaml`, script contracts, the Module DAG, package documents).
-3. Self-review per `/spec:check` until `checklist.md` is fully checked with `**验收结果**：通过`, then self-archive and commit per `/spec:done`. The default stop is the local commit: print the command below as the next-step suggestion and stop. Run the push segment only when the invocation carried `--push` or the user explicitly asks to push in this session:
+3. Self-review per `/spec:check` until the acceptance surface passes (rule: [`templates.md`](../templates.md)), then self-archive and commit per `/spec:done`. The default stop is the local commit: print the command below as the next-step suggestion and stop. Run the push segment only when the invocation carried `--push` or the user explicitly asks to push in this session:
 
     ```bash
     python3 scripts/push_spec_package.py --root <git-repo> --branch <working-branch> --main-branch main --remote origin --slug <slug>

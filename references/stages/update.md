@@ -10,19 +10,19 @@ Execution order:
 2. Determine whether the user wants to add, remove, or reorder tasks; executable gaps found during execution also go through this stage's write-back — no separate user homework lists.
 3. State explicitly: new assumptions, overturned assumptions, scope changes, and whether the minimal path changed.
 4. When a change touches principles or script contracts, update the source-of-truth file; other carriers get pointers, not copied gate lists.
-5. Commit a Git WIP recovery point before the first rewrite of the three documents, then update `tasks.md`.
-6. When the change affects scope, acceptance, or technical decisions, sync `spec.md`; when it affects acceptance criteria, sync `checklist.md`; after the last rewrite, review the diff against the WIP commit and continue this round's flow — the recovery point rides in Git history, nothing to clear.
+5. Commit a Git WIP recovery point before the first rewrite of the package documents, then update `tasks.md`.
+6. When the change affects scope, acceptance, or technical decisions, sync `spec.md`; when it affects acceptance criteria, sync the acceptance surface; after the last rewrite, review the diff against the WIP commit and continue this round's flow — the recovery point rides in Git history, nothing to clear.
 
 ### Delivered-task stability
 
 Adding tasks must not invalidate existing deliverables.
 
 1. **Append a new heading section after the original text**: keep the old task blocks, their trailing `---`, the progress footer, and other tail text verbatim; after all old content open the appended section with a new heading (e.g. `## Appended tasks (this round)`) and write the new tasks there — never delete or reorder old tasks so positional IDs drift; new tasks use unique explicit IDs.
-2. **Caller acceptance after the rewrite**: re-parse the three documents and confirm every previously delivered task still exists, stays checked, and has unchanged `boundary`/`verify` text. Deleting or unchecking a delivered task breaks the contract — restore first (`git diff` / `git restore` against the WIP commit), then re-verify.
+2. **Caller acceptance after the rewrite**: re-parse the package documents and confirm every previously delivered task still exists, stays checked, and has unchanged `boundary`/`verify` text. Deleting or unchecking a delivered task breaks the contract — restore first (`git diff` / `git restore` against the WIP commit), then re-verify.
 
 ### Update rollback-safety contract (Git WIP)
 
-In-place rewrites of the three documents must be wrapped in a Git WIP recovery point — never bare edits. The integration branch allows WIP commits (see `stages/push.md`), so the recovery point is ordinary Git history: it covers the whole worktree including Git state, needs no extra state machine, and is the single source of truth for update rollback safety. This replaces the retired `update-checkpoint.json` snapshot mechanism.
+In-place rewrites of the package documents must be wrapped in a Git WIP recovery point — never bare edits. The integration branch allows WIP commits (see `stages/push.md`), so the recovery point is ordinary Git history: it covers the whole worktree including Git state, needs no extra state machine, and is the single source of truth for update rollback safety. This replaces the retired `update-checkpoint.json` snapshot mechanism.
 
 1. **WIP commit (before rewriting)**: on the package's integration branch, commit the current state as the recovery point:
 
@@ -30,7 +30,7 @@ In-place rewrites of the three documents must be wrapped in a Git WIP recovery p
    git add -A && git commit -m "Spec-WIP: YYYY-MM-DD_<slug> update checkpoint"
    ```
 
-2. **Rewrite the three documents**: rewrite `tasks.md` per the execution order and sync `spec.md` / `checklist.md` as impacted.
+2. **Rewrite the package documents**: rewrite `tasks.md` per the execution order and sync `spec.md` as impacted.
 3. **Rollback (interrupted update)**: restore the whole worktree from the recovery point — `git reset --hard <WIP-commit>` while the branch is unpushed, `git revert <WIP-commit>` when already pushed. Nothing to clear afterwards: the recovery point stays in Git history.
 4. **Keep-new confirmation**: when the applied update is the wanted one, simply continue; the WIP commit folds into the branch's history like any other in-flight commit.
 

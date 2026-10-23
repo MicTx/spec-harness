@@ -7,7 +7,7 @@ Compatible invocation: Claude Code `/spec:done`; other skill-aware CLIs trigger 
 Preconditions:
 
 - `tasks.md` fully complete.
-- The `check` gate passed and the acceptance surface satisfied: legacy `checklist.md` fully checked and passing; v2 every `spec.md` §6 checkbox checked with executable evidence in force.
+- The `check` gate passed and the acceptance surface satisfied per [`templates.md`](../templates.md).
 - On this record's integration branch; never a protected branch (truth: `scripts/spec_package_support.py` `PROTECTED_BRANCHES`/`PROTECTED_PREFIXES` + the remote default).
 - At least one script/test/build evidence item (or the `evidence: runs` gate for v2); optional gate headings present have their sections passed.
 - `spec.md` declares a verification level; `done` reuses the declared `package`/`integration`/`project` scope and its evidence, never widening it implicitly (enforced at `--archive` — a non-archive draft records the level without blocking, the draft is local, the archive is the gate).

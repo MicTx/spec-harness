@@ -10,7 +10,7 @@
 
 - 一份说清目标、事实和边界的 `spec.md`。
 - 一组每一步都有 `boundary` 和 `verify` 的 `tasks.md`。
-- 一份带真实证据的 `checklist.md`。
+- 一份带真实证据、全部勾选的 `spec.md` §6 成功标准。
 - 一套中断后可以继续的磁盘记录。
 - 一个只包含这项工作的 Git 提交。
 
@@ -23,7 +23,7 @@
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.17.0
+git checkout v0.21.2
 bash install.sh
 ```
 
@@ -118,7 +118,7 @@ python3 /tmp/spec-harness/slots/workflow-runner/scripts/workflow_fanout.py \
 
 1. 改动有没有越过 `boundary`？
 2. `verify` 里的命令是否真的运行？
-3. 失败是否写进 `checklist.md`？
+3. 失败是否写回 `tasks.md` / §6？
 4. 下一位接手的人是否知道下一步？
 
 需要暂停时，不要写“基本完成”。保留任务包和工作树，下次先运行：

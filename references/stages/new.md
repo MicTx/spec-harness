@@ -26,7 +26,7 @@ Execution order:
 python3 scripts/init_spec_package.py --root <project> --slug YYYY-MM-DD_<slug> --title "<project title>" [--main-branch main --branch spec/YYYY-MM-DD_<slug>]
 ```
 
-7. Fill the three documents under `.spec/specs/YYYY-MM-DD_<slug>/` per [`../templates.md`](../templates.md). Every task carries `boundary` and `verify` written to the complete-verify recipe (运行目录/前置条件/完整命令/成功判定/失败处理，存在即写) — replace the template examples with real boundaries and verification commands that prove delivery before execution.
+7. Fill the package documents under `.spec/specs/YYYY-MM-DD_<slug>/` per [`../templates.md`](../templates.md). Every task carries `boundary` and `verify` written to the complete-verify recipe (运行目录/前置条件/完整命令/成功判定/失败处理，存在即写) — replace the template examples with real boundaries and verification commands that prove delivery before execution.
 8. When the task involves judging whether the project layout is reasonable, write the first-principles audit conclusion into `spec.md` first: directory responsibilities, module boundaries, dependency direction, runtime/source/state separation, entry discoverability, test and documentation support. If unreasonable, add the target tree, a migration/merge table, a reference migration map, a deprecated-item list, and verification; if reasonable, state why no restructuring happens.
 9. Lock the minimal implementation path in `spec.md` and name the abstractions, extensions, and configurability not done this round.
 10. After creation, continue straight into execution when no project-shaping decision is pending; only genuinely undecidable items go to the user.
@@ -37,7 +37,7 @@ Constraints:
 - `spec.md` states key assumptions and open questions.
 - In a Git repository, `spec.md` records the integration branch (step 4 rules; `run`/`check`/`done` continue only on it).
 - `tasks.md` must be executable, every task with `boundary` and `verify`.
-- `checklist.md` must be verifiable; avoid vague adjectives.
+- `spec.md` §6 success criteria must be verifiable; no vague adjectives.
 - For directory optimization, `tasks.md` must split out structure audit, migration/merge, reference verification, documentation sync, and deprecated-item cleanup tasks; never collapse "tidy the directory" into one unauditable task.
 
 Output contract:

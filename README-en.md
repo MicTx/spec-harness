@@ -28,7 +28,7 @@ Pick your entry point by what you want to do: to understand the idea first, read
 
 ## What You Get
 
-- **One task package**: `spec.md` and `tasks.md` under `.spec/specs/YYYY-MM-DD_slug/` (new-format packages carry no `checklist.md`; acceptance runs through the `spec.md` §6 success criteria, while legacy packages keep theirs).
+- **One task package**: `spec.md` and `tasks.md` under `.spec/specs/YYYY-MM-DD_slug/` (acceptance-surface rule: [`references/templates.md`](references/templates.md)).
 - **One evidence chain**: `goal -> scope -> tasks -> verification -> archive -> commit -> push`; every task declares a `boundary` and a `verify` command.
 - **Explicit stages**: `new`, `goal`, `autoplan`, `autorun`, `run`, `check`, `done`, `push`, `update`, `status`, `doctor`, and `organize`.
 - **Recoverable state**: reports, failures, completion summaries, and archives come from files on disk, so another session can continue.
@@ -78,7 +78,7 @@ Run the installer from a checked-out source or release tree:
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.21.1
+git checkout v0.21.2
 bash install.sh
 ```
 

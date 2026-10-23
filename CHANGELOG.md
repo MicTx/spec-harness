@@ -4,6 +4,13 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [0.21.2] - 2026-10-23
+
+### Fixed
+
+- 阶段契约、评审 agent 与教程不再把 `checklist.md` 当作新版任务包的必需验收面：`/spec:goal` 的停止条件改为验收面通过（新版包原条件永远无法满足），`run`/`new`/`update`/`check` 与 reviewer/confirmer 同步；验收面规则收拢到 `references/templates.md` 单一真源，README 与各阶段页改为链接。文档中的安装版本示例更新到当前版本。
+- Stage contracts, review agents, and tutorials no longer treat `checklist.md` as a required acceptance surface for new-format packages: the `/spec:goal` stop condition is now "acceptance surface passes" (the old condition could never be met on v2 packages), with `run`/`new`/`update`/`check` and reviewer/confirmer in sync. The acceptance-surface rule now lives only in `references/templates.md`; the READMEs and stage pages link to it. Install examples in the docs point at the current version.
+
 ## [0.21.1] - 2026-10-23
 
 ### Fixed

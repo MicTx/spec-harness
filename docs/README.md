@@ -31,4 +31,4 @@
 - **runtime reference**：[`SKILL.md`](../SKILL.md) 与 [`references/`](../references/00-readme.md)：命令、模板、编排、槽位和归档的运行时契约。
 - **maintainer-only**：[`agent-plugin/README.md`](../agent-plugin/README.md)——源码库独有的插件清单打包模板说明，不进运行时导出树。
 
-命令、任务包文档（新版 `spec.md` + `tasks.md`，`checklist.md` 为旧包可选）和机器门禁的精确契约在 [`references/`](../references/00-readme.md)。它们回答“必须满足什么”；本目录的教程回答“为什么这样安排、下一步怎么走”。
+命令、任务包文档（`spec.md` + `tasks.md`，验收面规则见 [`references/templates.md`](../references/templates.md)）和机器门禁的精确契约在 [`references/`](../references/00-readme.md)。它们回答“必须满足什么”；本目录的教程回答“为什么这样安排、下一步怎么走”。

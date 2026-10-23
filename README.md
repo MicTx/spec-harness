@@ -28,7 +28,7 @@ Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 
 
 ## 你会得到什么
 
-- **一个任务包**：在 `.spec/specs/YYYY-MM-DD_slug/` 中保存 `spec.md` 和 `tasks.md`（新版包不含 `checklist.md`，验收走 `spec.md` §6 成功标准；旧包的 `checklist.md` 继续有效）。
+- **一个任务包**：在 `.spec/specs/YYYY-MM-DD_slug/` 中保存 `spec.md` 和 `tasks.md`（验收面规则见 [`references/templates.md`](references/templates.md)）。
 - **一条可验证链**：`目标 → 范围 → 任务 → 验证 → 归档 → 提交 → 推送`，每个任务都声明 `boundary` 与 `verify`。
 - **明确的入口**：`new`、`goal`、`autoplan`、`autorun`、`run`、`check`、`done`、`push`、`update`、`status`、`doctor`、`organize`。
 - **可恢复的状态**：报告、失败原因、完成摘要和归档都来自磁盘文件，换会话仍能继续。
@@ -78,7 +78,7 @@ Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.21.1
+git checkout v0.21.2
 bash install.sh
 ```
 
