@@ -16,6 +16,7 @@ from path_safety import UnsafePathError, ensure_output_outside_root, validate_so
 from payload_contract import (
     CORE_EXCLUDED_DIRS,
     CORE_EXCLUDED_SCRIPTS,
+    CORE_KEPT_FILES,
     IGNORE_PATTERNS,
     PROFILE_VALUES,
     ROOT_FILES,
@@ -150,6 +151,9 @@ def main() -> int:
 
     for name in copy_dirs:
         copy_tree(root / name, output / name)
+    if args.profile == "core":
+        for rel in CORE_KEPT_FILES:
+            copy_file(root / rel, output / rel)
 
     scripts_output = output / "scripts"
     scripts_output.mkdir(parents=True, exist_ok=True)

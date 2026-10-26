@@ -10,8 +10,13 @@ so existing projects can still be inspected and completed by later gates.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+import os
+import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import NamedTuple
 
@@ -19,6 +24,7 @@ from spec_package_support import (
     PROTECTED_BRANCHES,
     PROTECTED_PREFIXES,
     active_branch_bindings,
+    active_package_slugs,
     add_specs_dir_arg,
     combined_process_output,
     is_development_record_slug,
@@ -64,6 +70,30 @@ def parse_args() -> argparse.Namespace:
         "--skip-git-branch",
         action="store_true",
         help="Do not create/switch Git branches before writing the package",
+    )
+    parser.add_argument(
+        "--adopt",
+        action="store_true",
+        help=(
+            "Explicit takeover of in-flight work: bind the package to the CURRENT non-protected branch and record the "
+            "dirty baseline, without switching branch, stashing, committing, or touching anyone's files"
+        ),
+    )
+    parser.add_argument(
+        "--confirm-adopt",
+        action="store_true",
+        help="Required with --adopt: confirm that binding in-flight work to a package is intended",
+    )
+    parser.add_argument(
+        "--teammate",
+        action="append",
+        default=[],
+        help="With --adopt: name of an existing teammate working in this tree (reused, never recreated)",
+    )
+    parser.add_argument(
+        "--writers-paused",
+        action="store_true",
+        help="With --adopt: operator attests running writers were paused or handed off (recorded as a claim)",
     )
     parser.add_argument(
         "--disable-git-hooks",
@@ -344,6 +374,236 @@ def create_integration_branch_from_main(
     return BranchCreation(branch, "synced")
 
 
+TEAMMATE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+ADOPTION_FILE = "adoption.json"
+MAX_BASELINE_ENTRIES = 500
+MAX_HASHED_FILE_BYTES = 64 * 1024 * 1024  # larger files are listed, never read whole
+
+
+class AdoptionError(RuntimeError):
+    pass
+
+
+def _dirty_baseline(repo_root: Path) -> list[dict[str, str]]:
+    """Path, status and content hash of every dirty entry; contents are never stored."""
+    # --no-optional-locks: a plain `git status` may refresh and rewrite .git/index (and fight a
+    # teammate for index.lock); adoption must stay strictly read-only on Git state.
+    completed = subprocess.run(
+        ["git", "--no-optional-locks", "status", "--porcelain", "-z", "--untracked-files=all"],
+        cwd=repo_root,
+        capture_output=True,
+        check=True,
+    )
+    # bytes -> str with surrogateescape: a path git reports in another encoding must not abort adoption
+    raw = completed.stdout.decode("utf-8", errors="surrogateescape")
+    entries: list[dict[str, str]] = []
+    fields = [field for field in raw.split("\0") if field]
+    index = 0
+    while index < len(fields):
+        record = fields[index]
+        status, path = record[:2], record[3:]
+        if "R" in status or "C" in status:
+            index += 1  # rename/copy carries the origin path as a second field
+        index += 1
+        if path.startswith(".spec/"):
+            continue
+        digest = ""
+        entry: dict[str, str] = {"path": path, "status": status.strip() or "?"}
+        target = repo_root / path
+        if target.is_file() and not target.is_symlink():
+            if target.stat().st_size > MAX_HASHED_FILE_BYTES:
+                entry["skipped"] = "too_large"
+            else:
+                hasher = hashlib.sha256()
+                with target.open("rb") as handle:
+                    for block in iter(lambda: handle.read(1 << 20), b""):
+                        hasher.update(block)
+                digest = hasher.hexdigest()
+        entry["sha256"] = digest
+        entry["path"] = entry["path"].encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
+        entries.append(entry)
+        if len(entries) >= MAX_BASELINE_ENTRIES:
+            break
+    return entries
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, owned by someone else
+    return True
+
+
+OWNERLESS_GRACE_SECONDS = 120
+
+
+def _claim_stale_lock(lock_dir: Path, observed_owner: str | None) -> bool:
+    """Atomically take a stale lock out of the way; True only if WE removed this exact lock.
+
+    Reading the owner and deleting it are two steps, so a second adopter could replace the lock in
+    between and have its fresh lock deleted. Renaming the directory to a unique name is a single
+    atomic step: whoever wins the rename owns the stale lock, and we then verify it still holds the
+    owner record we judged dead before discarding it.
+    """
+    graveyard = lock_dir.with_name(f".adopt.lock.stale-{os.getpid()}-{time.time_ns()}")
+    try:
+        os.rename(lock_dir, graveyard)
+    except OSError:
+        return False
+    try:
+        owner = (graveyard / "owner").read_text(encoding="utf-8").strip() if (graveyard / "owner").exists() else None
+    except OSError:
+        owner = None
+    if owner != observed_owner:
+        # it changed hands before our rename: put it back if the slot is free, never delete it
+        try:
+            os.rename(graveyard, lock_dir)
+        except OSError:
+            pass
+        return False
+    for leftover in graveyard.iterdir():
+        leftover.unlink()
+    graveyard.rmdir()
+    return True
+
+
+def _acquire_adoption_lock(lock_dir: Path) -> None:
+    """Exclusive per-project lock; only a provably dead or long-abandoned holder is displaced.
+
+    A lock with a live owner is never taken. A lock with no owner record is either a holder between
+    mkdir and its owner write (seconds) or a crash leftover; it is reclaimed only after a grace window.
+    """
+    busy = AdoptionError("another adoption is in progress for this project; retry after it finishes")
+    for _attempt in range(3):
+        try:
+            lock_dir.mkdir()  # atomic: a concurrent adopter fails here
+        except FileExistsError:
+            owner_file = lock_dir / "owner"
+            try:
+                observed = owner_file.read_text(encoding="utf-8").strip()
+                holder = int(observed)
+            except (OSError, ValueError):
+                observed, holder = None, None
+            if holder is not None:
+                if _pid_alive(holder):
+                    raise busy from None
+            else:
+                try:
+                    age = time.time() - lock_dir.stat().st_mtime
+                except OSError:
+                    continue  # it vanished: retry the mkdir
+                if age < OWNERLESS_GRACE_SECONDS:
+                    raise busy from None
+            if not _claim_stale_lock(lock_dir, observed):
+                raise busy from None
+            continue
+        (lock_dir / "owner").write_text(str(os.getpid()), encoding="utf-8")
+        return
+    raise busy
+
+
+def _release_adoption_lock(lock_dir: Path) -> None:
+    try:
+        (lock_dir / "owner").unlink()
+        lock_dir.rmdir()
+    except OSError:
+        pass
+
+
+def adopt_in_flight_work(args: argparse.Namespace, slug: str, title: str, specs_root: Path, skill_root: Path) -> int:
+    """Bind a new package to the current branch; strictly additive under .spec/."""
+    if not args.confirm_adopt:
+        raise AdoptionError("--adopt requires --confirm-adopt: binding in-flight work to a package must be deliberate")
+    target_root = Path(args.root).resolve()
+    repo_root = repository_root(target_root)
+    if repo_root is None:
+        raise AdoptionError("adoption needs a Git repository; this directory is not one")
+    for name in args.teammate:
+        if not TEAMMATE_RE.match(name):
+            raise AdoptionError("teammate names must be 1-64 letters, digits, '.', '_' or '-'")
+    branch = git_stdout(repo_root, "branch", "--show-current")
+    if not branch:
+        raise AdoptionError("adoption needs a named branch; detached HEAD cannot be bound")
+    ensure_safe_branch_name(repo_root, branch, "current branch")
+    try:
+        ensure_not_protected(branch)
+    except GitPreflightError as exc:
+        raise AdoptionError(str(exc)) from exc
+    package_dir = resolve_specs_child(specs_root, "specs", slug)
+    lock_dir = specs_root / ".adopt.lock"
+    specs_root.mkdir(parents=True, exist_ok=True)
+    _acquire_adoption_lock(lock_dir)
+    try:
+        return _adopt_locked(args, slug, title, specs_root, skill_root, repo_root, branch, package_dir)
+    finally:
+        _release_adoption_lock(lock_dir)
+
+
+def _adopt_locked(
+    args: argparse.Namespace,
+    slug: str,
+    title: str,
+    specs_root: Path,
+    skill_root: Path,
+    repo_root: Path,
+    branch: str,
+    package_dir: Path,
+) -> int:
+    if package_dir.exists():
+        raise AdoptionError(f"task package already exists: {package_dir}")
+    owners = active_branch_bindings(repo_root).get(branch, ())
+    if owners:
+        raise AdoptionError(f"branch {branch} is already bound to active task package(s): {', '.join(owners)}")
+    foreign = active_package_slugs(resolve_specs_child(specs_root, "specs"))
+    if foreign:
+        raise AdoptionError(
+            "ambiguous ownership: another active package exists (" + ", ".join(foreign) + "); "
+            "finish or archive it before adopting this work"
+        )
+    templates = load_reference_templates(skill_root)
+    head = git_stdout(repo_root, "rev-parse", "HEAD")
+    baseline = {
+        "version": 1,
+        "branch": branch,
+        "head": head,
+        "dirty": _dirty_baseline(repo_root),
+        "teammates": list(args.teammate),
+        "coordinator": "main-session",
+        "writers_paused": bool(args.writers_paused),
+        "writers_paused_source": "operator-attested" if args.writers_paused else "none",
+    }
+    note = f"接管在途工作：绑定当前分支，基线 {head[:12]}，不切换分支、不改动任何队友文件"
+    staging = package_dir.with_name(f".{package_dir.name}.adopt-{os.getpid()}")
+    try:
+        staging.mkdir(parents=True)
+        for filename, template in templates.items():
+            write_text(staging / filename, render_template(template, title, branch, note))
+        write_text(staging / ADOPTION_FILE, json.dumps(baseline, indent=2, sort_keys=True) + "\n")
+        package_dir.parent.mkdir(parents=True, exist_ok=True)
+        os.rename(staging, package_dir)  # atomic claim: a concurrent adopter loses here
+    except OSError as exc:
+        raise AdoptionError(
+            f"could not claim the package atomically ({exc.__class__.__name__}); nothing was written"
+        ) from exc
+    finally:
+        if staging.exists():
+            for leftover in staging.iterdir():
+                leftover.unlink()
+            staging.rmdir()
+    print(f"adopted: {package_dir}")
+    print(f"branch: {branch} (unchanged)")
+    print(f"baseline: {len(baseline['dirty'])} dirty entries recorded by hash")
+    if args.teammate and not args.writers_paused:
+        print(
+            "note: running writers were not confirmed paused. Ask each teammate to pause or hand off at a clean point "
+            "before assuming a stable baseline; adoption does not stop or direct anyone."
+        )
+    return 0
+
+
 def main() -> int:
     args = parse_args()
 
@@ -374,6 +634,13 @@ def main() -> int:
     if package_dir.exists() and not args.force:
         print(f"error: task package already exists: {package_dir}", file=sys.stderr)
         return 1
+
+    if args.adopt:
+        try:
+            return adopt_in_flight_work(args, slug, title, specs_root, skill_root)
+        except (AdoptionError, GitPreflightError, ValueError, subprocess.CalledProcessError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
 
     # Load templates BEFORE creating branches so a template failure doesn't
     # leave the user stranded on a feature branch with no package files.

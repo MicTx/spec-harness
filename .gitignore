@@ -25,3 +25,5 @@ tmp/
 # Local watermark identity and key. Never commit; tests use an in-memory sample.
 .watermark-identity.json
 .watermark-key
+.spec/specs/*/work/
+.spec/specs/*/work-*/

@@ -105,6 +105,46 @@ def make_archived_package(repo: Path, slug: str = "2026-07-13_fix-hook-attributi
     return package
 
 
+def archive_commit_fixture(tmp_path: Path) -> tuple[Path, str]:
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    git(repo, "checkout", "-b", "spec/2026-07-13_fix-hook-attribution")
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "base")
+    install_hook(repo, PRE_COMMIT)
+    make_incomplete_package(repo)
+    slug = "2026-07-13_fix-hook-attribution"
+    make_archived_package(repo, slug)
+    return repo, slug
+
+
+def test_archive_commit_checks_its_archive_not_unrelated_in_progress_work(tmp_path):
+    repo, slug = archive_commit_fixture(tmp_path)
+    git(repo, "add", ".spec")
+
+    result = git(repo, "commit", "-m", "archive", "-m", f"Spec: {slug}", check=False)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert git(repo, "show", "--format=", "--name-only", "HEAD").stdout.count(slug) >= 1
+
+
+@pytest.mark.parametrize("invalid", ["archive", "active"])
+def test_archive_commit_still_rejects_invalid_archive_or_active_structure(tmp_path, invalid):
+    repo, slug = archive_commit_fixture(tmp_path)
+    original_head = git(repo, "rev-parse", "HEAD").stdout.strip()
+    if invalid == "archive":
+        (repo / ".spec/specs/archive" / slug / "completion-summary.md").write_text("", encoding="utf-8")
+    else:
+        (repo / ".spec/specs/2026-07-13_fix-git-hook/tasks.md").unlink()
+    git(repo, "add", ".spec")
+
+    result = git(repo, "commit", "-m", "archive", "-m", f"Spec: {slug}", check=False)
+
+    assert result.returncode != 0
+    assert git(repo, "rev-parse", "--verify", "HEAD").stdout.strip() == original_head
+
+
 def test_installed_hook_ignores_runtime_python_override(tmp_path):
     repo = tmp_path / "repo"
     init_repo(repo)

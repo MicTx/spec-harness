@@ -43,27 +43,10 @@ if [ "$python" != "${python##*/}" ] && [ ! -x "$python" ]; then
   exit 1
 fi
 
-# Branch-aware gate routing (AUD-07): the full gate guards the irreversible
-# paths — commits on the main branch (the merge destination) and commits
-# carrying archive paths on any branch. In-flight WIP commits on spec/*
-# integration branches get the structural lint only; the full gate
-# re-engages at the main-branch merge (pre-push + push_spec_package).
-# The channel is decided by objective Git facts (branch name, staged
-# paths), never by a committer-declared footer.
-branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
-case "$branch" in
-  spec/*)
-    if git diff --cached --name-only --diff-filter=ACMRT 2>/dev/null | grep -q "specs/archive/"; then
-      : # Archive-carrying commits keep the full gate on every branch.
-    else
-      printf '%s\n' \
-        "spec gate: WIP commit on integration branch $branch — structural lint only;" \
-        "the full gate runs for main-branch and archive-carrying commits" >&2
-      exec "$python" "$checker" --root "$repo" --lint-only
-    fi
-    ;;
-esac
-
+# Branch-aware gate routing (AUD-07): main commits get the full gate. On a
+# spec/* branch an archive commit fully checks its archived packages while
+# unrelated active work still gets structural lint; WIP commits get lint only.
+# The channel is decided by staged paths, never a committer-declared footer.
 baseline=""
 for ref in refs/heads/main refs/heads/master; do
   if baseline=$(git rev-parse --verify "$ref" 2>/dev/null); then
@@ -71,6 +54,48 @@ for ref in refs/heads/main refs/heads/master; do
   fi
   baseline=""
 done
+branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+case "$branch" in
+  spec/*)
+    git diff --cached --name-only --diff-filter=ACMRT >/dev/null || exit 1
+    archive_slugs=$(git diff --cached --name-only --diff-filter=ACMRT -z |
+      "$python" -c '
+import re
+import sys
+slugs = set()
+for raw in sys.stdin.buffer.read().split(b"\0"):
+    if not raw:
+        continue
+    parts = raw.decode("utf-8", "surrogateescape").split("/")
+    for i in range(len(parts) - 3):
+        if parts[i] not in (".spec", ".trae") or parts[i + 1:i + 3] != ["specs", "archive"]:
+            continue
+        slug = parts[i + 3]
+        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}_[a-z0-9][a-z0-9_-]*", slug):
+            raise SystemExit("spec gate: invalid staged archive slug")
+        slugs.add(slug)
+print("\n".join(sorted(slugs)))
+') || exit 1
+    if [ -z "$archive_slugs" ]; then
+      printf '%s\n' \
+        "spec gate: WIP commit on integration branch $branch — structural lint only;" \
+        "the full gate runs for main-branch and archive-carrying commits" >&2
+      exec "$python" "$checker" --root "$repo" --lint-only
+    fi
+    "$python" "$checker" --root "$repo" --lint-only
+    "$python" "$checker" --root "$repo" --index --lint-only
+    set --
+    if [ -n "$baseline" ]; then
+      set -- --legacy-baseline "$baseline"
+    fi
+    for slug in $archive_slugs; do
+      set -- "$@" --slug "$slug"
+    done
+    "$python" "$checker" --root "$repo" "$@"
+    exec "$python" "$checker" --root "$repo" --index "$@"
+    ;;
+esac
+
 set --
 if [ -n "$baseline" ]; then
   set -- --legacy-baseline "$baseline"

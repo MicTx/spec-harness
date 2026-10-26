@@ -432,9 +432,16 @@ def assert_core_layout(root: Path) -> None:
     for relative in required_paths:
         if not (root / relative).exists():
             raise AssertionError(f"missing core runtime file: {root / relative}")
-    for excluded in ("slots", "agents", "server"):
+    for excluded in ("slots", "server"):
         if (root / excluded).exists():
             raise AssertionError(f"core profile must not ship {excluded}/: {root / excluded}")
+    # agents/ keeps only host discovery metadata (payload_contract CORE_KEPT_FILES,
+    # pinned inline like the chain scripts below); agent contracts stay extension.
+    agents_dir = root / "agents"
+    if agents_dir.exists():
+        extra = sorted(p.name for p in agents_dir.iterdir() if p.name != "openai.yaml")
+        if extra:
+            raise AssertionError(f"core profile must not ship agents/ contracts: {extra}")
     # Chain-family scripts are extension surface (F16 sub-step 2): the
     # kernel gates never import them. payload_contract is maintainer-side
     # (never shipped), so the smoke pins the same list inline.

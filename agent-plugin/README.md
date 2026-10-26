@@ -67,3 +67,7 @@ Claude Code 格式仅清单位置不同（`.claude-plugin/plugin.json`），skil
 - 模板必须保持合法 JSON（占位符除外），脚本渲染后会拒绝任何残留 `{{...}}`。
 
 - dsh 格式：`index.js` 是无依赖 Cordis 插件（`inject=['skills']`），在 `ctx.skills` 注册 `bundled`（rank 600）提供者并剥离 frontmatter；`package.json` 声明 `dsh.bundle.patch`。依据 dsh `docs/user/develop/basic/publish.md` 与 `packages/experimental/skill-badge`，dsh 为 developer preview，未做 live 验收。
+
+## 主动启用与插件
+
+插件包只分发技能文件（含 `hooks/claude_activation_guard.py`、`scripts/install_activation_hooks.py`），**不会**修改宿主的 `settings.json`，因此装插件不等于接通了主动评估。需要时由用户在宿主侧显式执行一次 `install_activation_hooks.py --mode on`；`spec:doctor` 会如实标注“未接线”与“未经 live 验证”。

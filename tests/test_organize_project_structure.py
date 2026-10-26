@@ -1086,3 +1086,25 @@ def test_unreferenced_is_one_hop_reference_counting(tmp_path):
     code = unreferenced_code(root)
     assert "src/deadRoot.ts" in code
     assert "src/deadLeaf.ts" not in code  # reported after deadRoot is archived and the audit reruns
+
+
+def test_adoption_baseline_is_a_protocol_artifact_not_a_dangling_repo_path():
+    """`adoption.json` is a package member written at adoption time, like `runs.jsonl`."""
+    import organize_project_structure as organize
+
+    assert "adoption.json" in organize.PROTOCOL_ARTIFACT_NAMES
+
+
+def test_scenario_prepackages_are_fixture_content_not_repo_wiring(tmp_path):
+    """A seeded package names its *sandbox's* paths; that is not this repo's drift.
+
+    ``bench/activation/scenarios/P3/prepackage/tasks.md`` declares
+    ``boundary: app/users.py`` for the throwaway repo the benchmark builds. Those
+    files never exist here, and "fixing" them would break the fixture.
+    """
+    from scripts.organize_project_structure import is_retired_candidate_excluded
+
+    assert is_retired_candidate_excluded("bench/activation/scenarios/P3/prepackage/tasks.md", set(), set())
+    assert is_retired_candidate_excluded("bench/activation/scenarios/P1/seed/app/users.py", set(), set())
+    # ordinary docs keep being audited
+    assert not is_retired_candidate_excluded("docs/tutorial.md", set(), set())

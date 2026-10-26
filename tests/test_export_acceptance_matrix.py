@@ -344,8 +344,10 @@ def test_matrix_core_downgrade_sweeps_and_keeps_capabilities(tmp_path):
     skill = skill_dir(home)
     for name in CORE_EXCLUDED_SCRIPTS:
         assert not (skill / "scripts" / name).exists(), name
-    for excluded in ("agents", "server", "slots"):
+    for excluded in ("server", "slots"):
         assert not (skill / excluded).exists(), excluded
+    # agents/ keeps only the host discovery metadata; the agent contracts stay extension surface.
+    assert sorted(entry.name for entry in (skill / "agents").iterdir()) == ["openai.yaml"]
 
     parity = run_parity(skill, "core")
     assert parity.returncode == 0, parity.stdout

@@ -78,7 +78,7 @@ Run the installer from a checked-out source or release tree:
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.21.3
+git checkout v0.22.0
 bash install.sh
 ```
 
@@ -144,6 +144,22 @@ INSTALL_HOSTS=devin,cursor,zcode INSTALL_PROFILE=full bash install.sh
 In Devin/Cursor, load `/spec` then request `spec:autoplan` or `spec:autorun`; in ZCode use `$spec`. Refresh skills or start a new session as the host requires after installation; do not assume universal `/spec:<stage>` registration. The main session owns capability checks, permission boundaries and recovery. Neither a separate window nor subagents are required; review without a native reviewer is labeled main-session review.
 
 Evidence levels: automated tests cover client profiles, recovery and isolated installs, not a live run of every product. Record Cursor/ZCode desktop, Linux/WSL2 and native Windows evidence separately; untested surfaces are not live verified. See the [execution and session backend contract](references/commands.md#session-backends).
+
+### Proactive admission (optional, one-time)
+
+Installing only places files; it never edits your Claude settings, so per-task assessment is **not** automatic by default. To have multi-feature or multi-implementer requests checked for "does this need a record?" before work starts, opt in once:
+
+```bash
+python3 ~/.claude/skills/spec/scripts/install_activation_hooks.py --mode on    # undo: --mode off; default preserve changes nothing
+```
+
+- The judgment is about the work's shape: independent acceptance surfaces, actual implementers, a resumable in-flight task. File count, text length, and idle teammates in a room never decide alone. Small fixes, read-only investigation, throwaway experiments, and an explicit "no task package" go straight through.
+- It manages only its own entries and keeps your other hooks, `permissions`, and unknown fields; a broken file is refused, writes are backed up, and `--mode off` undoes it.
+- Coverage is Edit/Write/MultiEdit/NotebookEdit plus Agent/Task/SendMessage. Bash, MCP, and custom tools are not parsed and not claimed. Teammates and subagents never create packages; they consume the coordinator's assignment.
+- This is a reminder gate for a cooperating agent, not a security boundary: shape and role are reported by the agent itself, verdict-shaped facts (opt-out, reversible-small, read-only) are rejected as inputs - an explicit user opt-out is honored only by the user at the host level (allowing the denied call or disabling the wiring) - and a recorded `direct` expires on a new user prompt or after 2 hours. It stops forgetting to assess, not under-reporting.
+- Event wiring targets Claude Code only. Other hosts share the same discovery text but have no equivalent event guarantee.
+- `spec:doctor` separates "not installed / not wired / wired", and even when wired it always reads "not live-verified": file presence and hook exit codes cannot show a model adopts on its own.
+- When work is already in flight on a dirty branch with teammates running, do not re-run `new` (it demands a clean tree). Use `init_spec_package.py --adopt --confirm-adopt`: it keeps the current branch and every change, records only baseline hashes, and never switches branch, stashes, or commits.
 
 ### Manual install
 
@@ -219,6 +235,7 @@ spec/
 ├── hooks/
 │   ├── pre-commit
 │   ├── pre-push
+│   ├── claude_activation_guard.py
 │   └── claude_stop_guard.py
 ├── references/
 │   ├── 00-readme.md
@@ -246,6 +263,8 @@ spec/
 │       ├── status.md
 │       └── update.md
 ├── scripts/
+│   ├── activation_state.py
+│   ├── assess_spec_activation.py
 │   ├── autoplan_gate.py
 │   ├── autoplan_spawn.py
 │   ├── autorun_spawn.py
@@ -261,6 +280,7 @@ spec/
 │   ├── generate_changelog.py
 │   ├── handoff_support.py
 │   ├── init_spec_package.py
+│   ├── install_activation_hooks.py
 │   ├── install_git_hooks.py
 │   ├── install_slot_hooks.py
 │   ├── issue_closure_support.py

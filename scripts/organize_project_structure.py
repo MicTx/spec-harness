@@ -122,6 +122,8 @@ PROTOCOL_ARTIFACT_NAMES = frozenset(
         "completion-summary.md",
         "REVIEW.md",
         "update-checkpoint.json",
+        # Written into a package by `init_spec_package.py --adopt`; never a repo path.
+        "adoption.json",
         "chain.json",
         "volatile.json",
         "MANIFEST.md",
@@ -443,11 +445,27 @@ def is_planning_record(rel: str) -> bool:
     return rel.startswith(".spec/plans/") or rel.startswith("plans/")
 
 
+def is_fixture_record(rel: str) -> bool:
+    """Files that are *content for another program*, not live repository wiring.
+
+    ``bench/activation/scenarios/*/prepackage/`` holds a task package that a
+    benchmark seeds into a throwaway sandbox; its ``boundary:`` lines name the
+    paths of *that* sandbox (``app/users.py``), which never exist here. Auditing
+    them as this repo's references reports drift that cannot be fixed without
+    destroying the fixture. Seeded repos and acceptance suites live under the
+    same scenario roots, so the whole ``bench/activation/scenarios/`` tree is
+    fixture content.
+    """
+    return rel.startswith("bench/activation/scenarios/")
+
+
 def is_retired_candidate_excluded(rel: str, declared: set[str], whitelist: set[str]) -> bool:
     path = Path(rel)
     if path.name in ENTRY_BASENAMES:
         return True
     if "tests" in path.parts:
+        return True
+    if is_fixture_record(rel):
         return True
     if rel in declared or rel in whitelist:
         return True

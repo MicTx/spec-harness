@@ -1,0 +1,295 @@
+{
+  "version": 1,
+  "decisions": [
+    "direct",
+    "create",
+    "resume",
+    "defer",
+    "invalid"
+  ],
+  "factors": [
+    "acceptance_surfaces",
+    "implementers",
+    "resume_match",
+    "read_only",
+    "reversible_small",
+    "opt_out",
+    "identity_conflict",
+    "unsafe_state",
+    "verdict_fact_injection"
+  ],
+  "cases": [
+    {
+      "id": "P1",
+      "prompts": [
+        "把用户列表加上筛选，设置页增加开关，导出支持 CSV，并把测试补齐。",
+        "Add a filter to the user list, a toggle on the settings page, and CSV export, with tests for each.",
+        "用户列表要能筛选；设置里加个开关；导出再支持 CSV。别忘了测试。"
+      ],
+      "facts": {
+        "acceptance_surfaces": 3,
+        "implementers": 1,
+        "idle_members": 0,
+        "files": 12,
+        "read_only": false,
+        "reversible_small": false,
+        "opt_out": false,
+        "matching_active_package": false
+      },
+      "expected": "create",
+      "decisive": [
+        "acceptance_surfaces"
+      ]
+    },
+    {
+      "id": "P2",
+      "prompts": [
+        "三位队友已经在房间里，把用户列表筛选、设置开关和 CSV 导出分头做完并补测试。",
+        "The team is already in the room: split the user-list filter, settings toggle and CSV export between you, tests included."
+      ],
+      "facts": {
+        "acceptance_surfaces": 3,
+        "implementers": 3,
+        "idle_members": 0,
+        "files": 12,
+        "read_only": false,
+        "reversible_small": false,
+        "opt_out": false,
+        "matching_active_package": false
+      },
+      "expected": "create",
+      "decisive": [
+        "acceptance_surfaces",
+        "implementers"
+      ]
+    },
+    {
+      "id": "P3",
+      "prompts": [
+        "继续把上次没做完的那个需求做完。",
+        "Pick up where we left off and finish it."
+      ],
+      "facts": {
+        "acceptance_surfaces": 2,
+        "implementers": 1,
+        "idle_members": 0,
+        "files": 6,
+        "read_only": false,
+        "reversible_small": false,
+        "opt_out": false,
+        "matching_active_package": true
+      },
+      "expected": "resume",
+      "decisive": [
+        "resume_match"
+      ]
+    },
+    {
+      "id": "P4",
+      "prompts": [
+        "修一下导出按钮点了没反应的问题。"
+      ],
+      "facts": {
+        "acceptance_surfaces": 3,
+        "implementers": 1,
+        "idle_members": 0,
+        "files": 9,
+        "read_only": false,
+        "reversible_small": false,
+        "opt_out": false,
+        "matching_active_package": false,
+        "scope_grew_after_reading": true
+      },
+      "expected": "create",
+      "decisive": [
+        "acceptance_surfaces"
+      ]
+    },
+    {
+      "id": "N1",
+      "prompts": [
+        "把 README 里这个拼错的单词改一下。",
+        "Fix the typo in the README heading."
+      ],
+      "facts": {
+        "acceptance_surfaces": 1,
+        "implementers": 1,
+        "idle_members": 0,
+        "files": 1,
+        "read_only": false,
+        "reversible_small": true,
+        "opt_out": false,
+        "matching_active_package": false
+      },
+      "expected": "direct",
+      "decisive": [
+        "reversible_small"
+      ]
+    },
+    {
+      "id": "N2",
+      "prompts": [
+        "看看导出模块是怎么处理空数据的，给我讲讲。"
+      ],
+      "facts": {
+        "acceptance_surfaces": 0,
+        "implementers": 0,
+        "idle_members": 3,
+        "files": 14,
+        "read_only": true,
+        "reversible_small": false,
+        "opt_out": false,
+        "matching_active_package": false
+      },
+      "expected": "direct",
+      "decisive": [
+        "read_only"
+      ]
+    },
+    {
+      "id": "N3",
+      "prompts": [
+        "我只想试一下这个正则，不用留记录。"
+      ],
+      "facts": {
+        "acceptance_surfaces": 1,
+        "implementers": 1,
+        "idle_members": 0,
+        "files": 1,
+        "read_only": false,
+        "reversible_small": true,
+        "opt_out": false,
+        "matching_active_package": false
+      },
+      "expected": "direct",
+      "decisive": [
+        "reversible_small"
+      ]
+    },
+    {
+      "id": "N4",
+      "prompts": [
+        "把全站里的“客户”统一替换成“用户”。"
+      ],
+      "facts": {
+        "acceptance_surfaces": 1,
+        "implementers": 1,
+        "idle_members": 0,
+        "files": 12,
+        "read_only": false,
+        "reversible_small": false,
+        "opt_out": false,
+        "matching_active_package": false
+      },
+      "expected": "direct",
+      "decisive": [
+        "acceptance_surfaces"
+      ]
+    },
+    {
+      "id": "N5",
+      "prompts": [
+        "房间里的队友都空着，你自己把这个 typo 改了就行。"
+      ],
+      "facts": {
+        "acceptance_surfaces": 1,
+        "implementers": 1,
+        "idle_members": 3,
+        "files": 1,
+        "read_only": false,
+        "reversible_small": true,
+        "opt_out": false,
+        "matching_active_package": false
+      },
+      "expected": "direct",
+      "decisive": [
+        "implementers",
+        "reversible_small"
+      ]
+    },
+    {
+      "id": "N6",
+      "prompts": [
+        "这次不要建任务包，直接改就行：用户列表加筛选、设置加开关、导出加 CSV。"
+      ],
+      "facts": {
+        "acceptance_surfaces": 3,
+        "implementers": 1,
+        "idle_members": 0,
+        "files": 12,
+        "read_only": false,
+        "reversible_small": false,
+        "opt_out": true,
+        "matching_active_package": false
+      },
+      "expected": "invalid",
+      "decisive": [
+        "verdict_fact_injection"
+      ]
+    },
+    {
+      "id": "S1",
+      "prompts": [
+        "接着做导出。"
+      ],
+      "facts": {
+        "acceptance_surfaces": 2,
+        "implementers": 1,
+        "idle_members": 0,
+        "files": 6,
+        "read_only": false,
+        "reversible_small": false,
+        "opt_out": false,
+        "matching_active_package": false,
+        "foreign_active_package": true
+      },
+      "expected": "defer",
+      "decisive": [
+        "identity_conflict"
+      ]
+    },
+    {
+      "id": "S2",
+      "prompts": [
+        "队友已经在改了，范围比想的大，把这些纳入统一记录。"
+      ],
+      "facts": {
+        "acceptance_surfaces": 3,
+        "implementers": 3,
+        "idle_members": 0,
+        "files": 12,
+        "read_only": false,
+        "reversible_small": false,
+        "opt_out": false,
+        "matching_active_package": false,
+        "dirty_tree": true,
+        "teammates_running": true
+      },
+      "expected": "defer",
+      "decisive": [
+        "unsafe_state"
+      ]
+    },
+    {
+      "id": "S3",
+      "prompts": [
+        "在 main 上把筛选、开关、导出一起做了。"
+      ],
+      "facts": {
+        "acceptance_surfaces": 3,
+        "implementers": 1,
+        "idle_members": 0,
+        "files": 12,
+        "read_only": false,
+        "reversible_small": false,
+        "opt_out": false,
+        "matching_active_package": false,
+        "protected_branch": true
+      },
+      "expected": "defer",
+      "decisive": [
+        "unsafe_state"
+      ]
+    }
+  ]
+}

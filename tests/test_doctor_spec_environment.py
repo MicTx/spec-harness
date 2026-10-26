@@ -125,6 +125,7 @@ def test_probe_ids_registry_is_ordered_complete_and_unique():
         "hosts.installed",
         "claude.commands",
         "claude.agents",
+        "claude.activation",
         "pi.prompts",
         "migration.wrappers",
         "zcode.symlink",
@@ -153,6 +154,7 @@ def test_check_catalog_is_stable_on_repo_root(tmp_path, isolated_home):
     optional = {
         "claude.commands",
         "claude.agents",
+        "claude.activation",
         "pi.prompts",
         "migration.wrappers",
         "zcode.symlink",

@@ -47,6 +47,18 @@ CORE_EXCLUDED_SCRIPTS = (
     "sweep_chain_windows.py",
 )
 
+CORE_KEPT_AGENT_FILES = ("openai.yaml",)
+
+
+def assert_excluded_dir_absent(base: Path, name: str) -> None:
+    """A core-excluded component is absent; agents/ may keep only its discovery metadata."""
+    target = base / name
+    if name == "agents" and target.exists():
+        assert sorted(entry.name for entry in target.iterdir()) == list(CORE_KEPT_AGENT_FILES), name
+        return
+    assert not target.exists(), name
+
+
 requires_bash = pytest.mark.skipif(
     subprocess.run(["bash", "--version"], capture_output=True).returncode != 0 or not Path("/bin/bash").exists(),
     reason="bash not available",
@@ -139,7 +151,7 @@ def test_export_core_excludes_extension_components(tmp_path):
     assert (output / "scripts" / "init_spec_package.py").is_file()
     assert (output / "hooks" / "pre-commit").is_file()
     for excluded in CORE_EXCLUDED_DIRS:
-        assert not (output / excluded).exists(), excluded
+        assert_excluded_dir_absent(output, excluded)
     for excluded in CORE_EXCLUDED_SCRIPTS:
         assert not (output / "scripts" / excluded).exists(), excluded
     assert "profile: core" in result.stdout
@@ -166,8 +178,13 @@ def test_extension_classification_stays_pinned_across_carriers():
     assert sorted(payload_contract.CORE_EXCLUDED_SCRIPTS) == sorted(CORE_EXCLUDED_SCRIPTS)
 
     installer_text = (ROOT / "install.sh").read_text(encoding="utf-8")
+    assert tuple(f"agents/{name}" for name in CORE_KEPT_AGENT_FILES) == payload_contract.CORE_KEPT_FILES
+    kept_block = re.search(r"CORE_KEPT_FILES=\(([^)]*)\)", installer_text)
+    assert kept_block, "install.sh CORE_KEPT_FILES array not found"
+    assert tuple(kept_block.group(1).split()) == payload_contract.CORE_KEPT_FILES
     installer_block = re.search(
-        r"CORE_EXCLUDED_DIRS=\(([^)]*)\)\nCORE_EXCLUDED_SCRIPTS=\(([^)]*)\)",
+        r"CORE_EXCLUDED_DIRS=\(([^)]*)\)\n(?:#[^\n]*\n)*(?:CORE_KEPT_FILES=\([^)]*\)\n)?"
+        r"CORE_EXCLUDED_SCRIPTS=\(([^)]*)\)",
         installer_text,
         re.DOTALL,
     )
@@ -235,7 +252,7 @@ def test_sandbox_default_profile_installs_core(tmp_path):
     for name in ("SKILL.md", "pyproject.toml") + KEPT_COMPONENT_DIRS:
         assert (skill / name).exists(), name
     for excluded in CORE_EXCLUDED_DIRS:
-        assert not (skill / excluded).exists(), excluded
+        assert_excluded_dir_absent(skill, excluded)
     for excluded in CORE_EXCLUDED_SCRIPTS:
         assert not (skill / "scripts" / excluded).exists(), excluded
 
@@ -289,7 +306,7 @@ def test_sandbox_core_upgrade_sweeps_full_artifacts(tmp_path):
 
     skill = home / ".claude" / "skills" / "spec"
     for excluded in CORE_EXCLUDED_DIRS:
-        assert not (skill / excluded).exists(), excluded
+        assert_excluded_dir_absent(skill, excluded)
     for excluded in CORE_EXCLUDED_SCRIPTS:
         assert not (skill / "scripts" / excluded).exists(), excluded
     assert claude_stage_commands(home) == sorted(f"{stage}.md" for stage in CORE_STAGES)
@@ -317,7 +334,7 @@ def test_sandbox_copy_path_prunes_core_components(tmp_path):
 
     skill = home / ".claude" / "skills" / "spec"
     for excluded in CORE_EXCLUDED_DIRS:
-        assert not (skill / excluded).exists(), excluded
+        assert_excluded_dir_absent(skill, excluded)
     for excluded in CORE_EXCLUDED_SCRIPTS:
         assert not (skill / "scripts" / excluded).exists(), excluded
     assert (skill / "hooks" / "pre-commit").is_file()
@@ -428,3 +445,94 @@ def test_smoke_default_profile_is_full_and_rejects_unknown():
 
     source = smoke.read_text(encoding="utf-8")
     assert 'default="full"' in source
+
+
+# ---------------------------------------------------------------------------
+# Discovery metadata survives core (proactive admission)
+# ---------------------------------------------------------------------------
+
+ACTIVATION_RUNTIME_FILES = (
+    "hooks/claude_activation_guard.py",
+    "scripts/assess_spec_activation.py",
+    "scripts/activation_state.py",
+    "scripts/install_activation_hooks.py",
+)
+
+
+def test_export_core_keeps_discovery_metadata_but_no_agent_contracts(tmp_path):
+    output = tmp_path / "core-export"
+    assert run_export(output, "--profile", "core").returncode == 0
+    assert (output / "agents" / "openai.yaml").is_file()
+    shipped = sorted(p.name for p in (output / "agents").iterdir())
+    assert shipped == list(CORE_KEPT_AGENT_FILES), shipped
+    for contract in ("orchestrator.md", "planner.md", "reviewer.md", "confirmer.md"):
+        assert not (output / "agents" / contract).exists(), contract
+
+
+def test_export_core_ships_the_activation_runtime_without_slots(tmp_path):
+    output = tmp_path / "core-export"
+    assert run_export(output, "--profile", "core").returncode == 0
+    for rel in ACTIVATION_RUNTIME_FILES:
+        assert (output / rel).is_file(), rel
+    assert not (output / "slots").exists()
+    assert not (output / "server").exists()
+
+
+def test_full_export_is_unchanged_by_the_core_metadata_rule(tmp_path):
+    default_output = tmp_path / "default-export"
+    full_output = tmp_path / "full-export"
+    assert run_export(default_output).returncode == 0
+    assert run_export(full_output, "--profile", "full").returncode == 0
+    assert tree_manifest(default_output) == tree_manifest(full_output)
+    assert (full_output / "agents" / "orchestrator.md").is_file()
+
+
+@requires_bash
+def test_sandbox_core_install_keeps_metadata_and_does_not_wire_settings(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    result = run_installer(home)
+    assert result.returncode == 0, result.stderr
+    skill = home / ".claude" / "skills" / "spec"
+    assert (skill / "agents" / "openai.yaml").is_file()
+    assert not (skill / "agents" / "orchestrator.md").exists()
+    assert not (home / ".claude" / "agents").exists()
+    assert not (home / ".claude" / "settings.json").exists()
+    for rel in ACTIVATION_RUNTIME_FILES:
+        assert (skill / rel).is_file(), rel
+
+
+@requires_bash
+def test_sandbox_core_copy_path_prunes_agents_but_keeps_metadata(tmp_path):
+    release_tree = tmp_path / "release-tree"
+    assert run_export(release_tree).returncode == 0
+    home = tmp_path / "home"
+    home.mkdir()
+    result = run_installer(home, {"SOURCE_DIR": str(release_tree)})
+    assert result.returncode == 0, result.stderr
+    skill = home / ".claude" / "skills" / "spec"
+    assert (skill / "agents" / "openai.yaml").is_file()
+    assert not (skill / "agents" / "orchestrator.md").exists()
+
+
+@requires_bash
+def test_sandbox_full_to_core_downgrade_keeps_metadata(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    assert run_installer(home, {"INSTALL_PROFILE": "full"}).returncode == 0
+    assert run_installer(home).returncode == 0
+    skill = home / ".claude" / "skills" / "spec"
+    assert (skill / "agents" / "openai.yaml").is_file()
+    assert not (skill / "agents" / "planner.md").exists()
+
+
+@requires_bash
+def test_sandbox_install_reports_unwired_activation_and_the_one_time_command(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    result = run_installer(home)
+    assert result.returncode == 0, result.stderr
+    output = result.stdout + result.stderr
+    assert "not wired by default" in output
+    assert "install_activation_hooks.py --mode on" in output
+    assert not (home / ".claude" / "settings.json").exists()

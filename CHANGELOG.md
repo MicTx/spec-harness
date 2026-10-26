@@ -4,6 +4,16 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [0.22.0] - 2026-10-26
+
+### Added
+
+- 主动启用：安装后 `/spec` 会主动判断多步工作是否值得建任务包——无 spec 术语的需求入口提示，加上首次受管修改/实施派工前的评估检查；判定区分 direct / create / resume / defer，defer 只表示证据或安全条件不足，不自动扩大授权。小修、只读、实验与显式退出的反例规则同步内置。
+- 安装模式：`install.sh` 支持 `--mode on|off|keep` 显式启用、关闭或保留主动启用配置，安装与撤销幂等，第三方配置无损。
+- `doctor` 扩展：把技能可见、配置已注册、宿主能力可用、live 已验证拆为四级诊断，不再把文件存在或静态测试当作已接线。
+- 已有团队安全接入：复用现有队友身份与共享包；脏树与分支接管保留源改动，受保护分支和歧义路径拒绝，无隐式 stash/commit/checkout。
+- Claude Code 宿主接入：激活判定 hooks（含 `claude_activation_guard`）随安装器接线，worker 不递归建包，敏感内容不进提示。
+
 ## [0.21.3] - 2026-10-23
 
 ### Fixed

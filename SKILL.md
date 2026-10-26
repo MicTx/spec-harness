@@ -1,9 +1,9 @@
 ---
 name: spec
 description: >-
-  Spec Harness turns multi-step work into a recoverable, verifiable task package. Use for spec commands
-  and tracked multi-step development. The main session plans, executes,
-  verifies, and archives inside one session. Skip simple fixes and experiments.
+  Spec Harness turns multi-step work into a recoverable, verifiable task package. Use for spec commands,
+  and also without them when a request spans independent acceptance surfaces, several implementers, or
+  an unfinished tracked task. Skip small reversible fixes, read-only work, and experiments.
 ---
 
 # Spec Workflow
@@ -14,7 +14,7 @@ The contract is intentionally small. Every task says what it may change (`bounda
 
 ## When to use
 
-Use spec for multi-step or cross-session development that needs tracked scope, tasks, and acceptance criteria, when the user explicitly requests spec mode or task packages, or at a project start / phase boundary needing an interactive planning pass before the autonomous chain. Skip it for small reversible fixes, one-off experiments, or work whose plan and proof fit one short command sequence: for an obviously small task (one-line reversible fix with its test, typo, copy tweak), advise against a package and offer the lightweight path — fix + test directly, then push with a `Spec: none (<非空理由>)` footer; the user decides whether they want the record anyway.
+Decide from the work's shape before the first substantive edit or implementation hand-off; the user never needs to say "spec". Create a record for independent acceptance surfaces (separately verifiable features or contracts), several implementers who need ownership boundaries, or a handoff/resume need; resume the active package that matches this task and branch. File count, long text, and a populated room with idle members never decide alone: a mechanical rename with one acceptance, read-only investigation, and one real implementer stay direct. Re-decide when reading code grows the scope. Also use it when the user requests spec commands or packages, or at a project start / phase boundary needing a planning pass. An explicit opt out is a user host-level action, never self-reported; unsafe state (foreign active package, dirty tree with running teammates, protected branch) defers to a safe takeover, never an improvised one. For a small reversible task (one-line fix with its test, typo, copy tweak) advise against a package and take the lightweight path: fix + test directly, then push with a `Spec: none (<非空理由>)` footer; the user decides whether they want the record anyway.
 
 ## Commands
 
@@ -43,28 +43,27 @@ Read only the current stage's file under `references/stages/` ([`references/comm
 | `/spec:doctor` | environment self-check and repair |
 | `/spec:organize` | structure audit; audit-only by default, `--apply` creates the package; never delete, archive under `archive/retired` |
 
-Install profile: `new / run / check / done / push` ship in every install; the extended stages need `INSTALL_PROFILE=full` — a core install answers them with the reinstall hint instead of executing them (boundary: [`references/commands.md`](references/commands.md)).
+Install profile: `new / run / check / done / push` ship in every install; extended stages need `INSTALL_PROFILE=full` — core answers them with the reinstall hint ([`references/commands.md`](references/commands.md)).
 
 ## Core capability: single-orchestrator execution
 
-The main session is the orchestrator and owns routing, acceptance, and the `done`/`push` gates; it does planning, integration, independent verification, and all shared glue files itself. Bounded sidecar work may go to in-process subagents only after a machine route decision (`python3 scripts/route_decision.py --root <project> --slug <slug>`) and a written assignment contract (goal / scope / excluded areas / output / verification); delegation never moves routing, acceptance, or gate authorization out of the main session, and one session owns one package on one integration branch. With `channel_profile.shared_pool`, keep fanning out under the constrained-channel protocol in [`references/orchestration.md`](references/orchestration.md); never clamp lane count. The full delegation contract (five routes, lane ownership, `### 5.4 编排策略`) lives there and is never restated here.
+The main session is the orchestrator and owns routing, acceptance, and the `done`/`push` gates; it does planning, integration, independent verification, and all shared glue files itself. Bounded sidecar work may go to in-process subagents only after a machine route decision (`python3 scripts/route_decision.py --root <project> --slug <slug>`) and a written assignment contract (goal / scope / excluded areas / output / verification); delegation never moves routing, acceptance, or gate authorization out of the main session, and one session owns one package on one integration branch. With `channel_profile.shared_pool`, keep fanning out under the constrained-channel protocol; never clamp lane count. The full delegation contract (five routes, lane ownership, `### 5.4 编排策略`) lives in [`references/orchestration.md`](references/orchestration.md) and is never restated here.
 
 ### Managed paths
 
 - `local` (default): the main session executes on its own.
-- Sidecar lanes: `explore` / `build` / `review` with clean ownership slices → bounded in-process subagents under the assignment contract; the main session merges and verifies. Orchestrator/planner contracts: `agents/orchestrator.md`, `agents/planner.md`.
-- Slot protocol: slot-trigger shapes hand the execution segment to the slot's README protocol (see [Extension slots](#extension-slots)); no fake task results.
-- Invariants that never move: `boundary`/`verify` discipline, honest checkbox verification, check gates, and `done`/`push` authorization.
+- Sidecar lanes: `explore` / `build` / `review` with clean ownership slices → bounded in-process subagents under the assignment contract; the main session merges and verifies. Contracts: `agents/orchestrator.md`, `agents/planner.md`.
+- Slot-trigger shapes hand the execution segment to the slot's README protocol ([Extension slots](#extension-slots)); `boundary`/`verify`, honest checkboxes, check gates, and `done`/`push` authorization never move.
 
 ## Execution loop
 
 Route first (`scripts/route_spec_package.py`; no active package → `new`), verify the integration branch, and give every task a `boundary` (what may change) and a `verify` (how completion is proven), with `depends-on` when order matters. Produce the route decision (`python3 scripts/route_decision.py --root <project> --slug <slug>`; contract: [`references/stages/run.md`](references/stages/run.md)) and write `### 5.4 编排策略` when the route is not `local`, then work ready tasks in dependency order — a task is checked off only after its `verify` actually ran. Converge: all tasks checked → check gates → the acceptance surface with real evidence → `done`/`push` as authorized; a blocked task gets a `!` marker and surfaces to the user, never a silent skip.
 
-Bounded internal reads: when one view replaces several reads use `route_spec_package.py --brief` (state, contracts) or `spec_verify.py show` (evidence, freshness); single files and `measure_skill_surface.py` stay direct; on error use plain reads.
+Bounded reads: use `route_spec_package.py --brief` (state, contracts) or `spec_verify.py show` (evidence, freshness) when one view replaces several reads; single files stay direct; on error read plainly.
 
 ## Progress and continuation
 
-Continuation is `/spec:run` itself: next ready task → verify → check off → repeat; after an interruption, re-running `/spec:run` resumes from `tasks.md` state. Cross-collaborator boundaries (pause, takeover, agent-cluster lanes) go through the optional `handoff.md` (`scripts/spec_handoff.py`; contract: [`references/handoff.md`](references/handoff.md)). Autoplan/autorun resolve client and surface before execution: desktop/IDE plugins default to the current session, never another agent found on PATH (contract: `references/commands.md`). User pause/abort, pending user messages, and project trust prompts always outrun the loop; the optional `hooks/claude_stop_guard.py` keeps convergence explicit without expanding Git authorization.
+Continuation is `/spec:run` itself: next ready task → verify → check off → repeat; after an interruption it resumes from `tasks.md` state. Cross-collaborator boundaries (pause, takeover, agent-cluster lanes) go through the optional `handoff.md` (`scripts/spec_handoff.py`; contract: [`references/handoff.md`](references/handoff.md)). Autoplan/autorun resolve client and surface before execution: desktop/IDE plugins default to the current session, never another agent found on PATH (contract: `references/commands.md`). User pause/abort, pending messages, and trust prompts always outrun the loop; the optional `hooks/claude_stop_guard.py` keeps convergence explicit without expanding Git authorization.
 
 ## Execution rules
 

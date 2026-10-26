@@ -1,5 +1,7 @@
 # `/spec:run`
 
+Orchestration never decides admission; a matching active package is resumed, never recreated.
+
 Goal: the main session completes the whole task package on its own: execute tasks in dependency order, verify each item, and check them off — not just a slice.
 
 Compatible invocation: Claude Code `/spec:run`; other skill-aware CLIs trigger `spec:run` via `$spec`.

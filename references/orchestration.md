@@ -142,6 +142,10 @@ Optional section under `## 5. 技术决策` in `spec.md`. When present, `check_s
 - workflow: <编排面说明（可选）>
 ```
 
+## Existing teams
+
+A room that already exists is reused, never rebuilt. One main coordinator owns the single package; each teammate receives an assignment contract below and consumes it — workers never create or adopt packages. Taking over work that is already running goes through the explicit adoption path in [handoff.md](handoff.md), which preserves the branch, index, and every teammate-owned byte.
+
 ## Anti-patterns
 
 - Fuzzy scope, overlapping write ownership, or delegating the immediate blocker and idling

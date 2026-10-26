@@ -489,9 +489,13 @@ def test_pre_commit_archive_paths_keep_full_gate_on_spec_branch(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert "WIP commit on integration branch" not in result.stderr
     invocations = gate_invocations(marker)
-    assert invocations
-    assert all("--lint-only" not in line for line in invocations)
-    assert all("--legacy-baseline" in line for line in invocations)
+    assert len(invocations) == 4
+    assert all("--lint-only" in line for line in invocations[:2])
+    assert "--index" not in invocations[0] and "--index" in invocations[1]
+    assert all("--lint-only" not in line for line in invocations[2:])
+    assert all("--legacy-baseline" in line for line in invocations[2:])
+    assert all("--slug 2026-01-01_probe" in line for line in invocations[2:])
+    assert "--index" not in invocations[2] and "--index" in invocations[3]
 
 
 def test_pre_push_releases_spec_branch_handoff(tmp_path):

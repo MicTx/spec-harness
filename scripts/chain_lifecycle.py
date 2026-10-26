@@ -241,6 +241,82 @@ def _append_closure(path: Path, marker: Dict[str, object]) -> None:
         os.fsync(handle.fileno())
 
 
+def independent_successor_proof(
+    root: Path, chain: str, state: Dict[str, object], slug: str, active: list
+) -> Dict[str, object]:
+    """Prove an active package is new work, never the closing chain's own package.
+
+    The chain state records no package membership, so the parameter itself proves
+    nothing. What this CAN show: the package was added after both anchors and is not
+    a rename or copy of earlier work. What it CANNOT show: that a package whose
+    content was wholly rewritten under a new slug is unrelated to the chain's work.
+    That residual gap is inherent to Git history (an operator who deliberately
+    replaces a package's entire content defeats any content heuristic), so the
+    flag is an explicit, auditable operator assertion backed by this evidence,
+    not an automatic proof of independence. Independence is shown by Git history only: the package was added after
+    both the chain's final committed state and the commit that last touched its
+    recorded plan documents, so the recorded scope was already settled when the
+    package appeared. Anything unproven refuses, writing nothing.
+    """
+    from spec_package_support import is_development_record_slug
+
+    if not isinstance(slug, str) or "/" in slug or not is_development_record_slug(slug):
+        raise support.ChainSpawnError("independent package must be a Development Record slug")
+    if active != [slug]:
+        raise support.ChainSpawnError("independent package must be the only active package")
+    package = _safe_path(root, root / ".spec/specs" / slug / "spec.md")
+    if package.is_symlink() or not package.is_file():
+        raise support.ChainSpawnError("independent package has no regular spec.md")
+    if Path(_git(root, "rev-parse", "--show-toplevel").decode().strip()).resolve() != root:
+        raise support.ChainSpawnError("independent package evidence root must be the Git repository root")
+    state_name = f".spec/{chain}/{support.CHAIN_STATE_FILE}"
+    plan_names = list(state.get("plan_docs") or [])
+    package_name = f".spec/specs/{slug}/spec.md"
+    # The proven artifacts (chain state, recorded plans) must equal HEAD; the package
+    # itself only has to be committed, since its later edits do not change its origin.
+    _git(root, "diff", "--quiet", "HEAD", "--", state_name, *plan_names)
+    _git(root, "cat-file", "-e", f"HEAD:{package_name}")
+    # Detect renames and copies: a package merely moved under a new slug is the same work.
+    added = _git(
+        root,
+        "log",
+        "-M",
+        "-C",
+        "--topo-order",
+        "--reverse",
+        "--diff-filter=ACR",
+        "--format=%H",
+        "HEAD",
+        "--",
+        package_name,
+    )
+    added_commits = added.decode().split()
+    if not added_commits:
+        raise support.ChainSpawnError("independent package has no committed history")
+    package_commit = added_commits[0]
+    # The first appearance must be a pure addition. If git sees it as a rename or copy of a path that
+    # already existed at or before an anchor, this is the closing chain's own package under a new slug.
+    origin = _git(
+        root, "diff-tree", "-M", "-C", "-r", "--no-commit-id", "--name-status", "--diff-filter=RC", package_commit, "--"
+    ).decode()
+    for line in origin.splitlines():
+        fields = line.split("\t")
+        if len(fields) == 3 and fields[2].startswith(".spec/specs/") and fields[2].endswith("/spec.md"):
+            if fields[2] == package_name and fields[1] != package_name:
+                raise support.ChainSpawnError("independent package is a rename or copy of earlier work, not new work")
+    state_commit = _git(root, "log", "-1", "--format=%H", "HEAD", "--", state_name).decode().strip()
+    if not state_commit:
+        raise support.ChainSpawnError("chain state has no committed history")
+    anchors = {"state": state_commit}
+    for name in plan_names:
+        anchors[name] = _git(root, "log", "-1", "--format=%H", "HEAD", "--", name).decode().strip()
+    for label, anchor in anchors.items():
+        if not anchor or anchor == package_commit:
+            raise support.ChainSpawnError(f"independent package is not strictly newer than {label}")
+        _git(root, "merge-base", "--is-ancestor", anchor, package_commit)
+    return {"slug": slug, "added_commit": package_commit, "state_commit": state_commit, "plan_commits": anchors}
+
+
 def close_chain(
     root: Path,
     chain: str,
@@ -248,6 +324,7 @@ def close_chain(
     dry_run: bool = False,
     legacy_scope_commit: Optional[str] = None,
     legacy_completion_commit: Optional[str] = None,
+    independent_package: Optional[str] = None,
 ) -> Dict[str, object]:
     """Close a completed recorded chain; no force/reset or new-scope override.
 
@@ -294,8 +371,19 @@ def close_chain(
             if not proof["complete"]:
                 raise support.ChainSpawnError("recorded chain has unfinished features; refusing close")
             packages = _safe_path(root, root / ".spec/specs")
-            if packages.exists() and any(p.is_dir() and p.name != "archive" for p in packages.iterdir()):
-                raise support.ChainSpawnError("active package exists; finish/archive it before closing the chain")
+            active = (
+                sorted(p.name for p in packages.iterdir() if p.is_dir() and p.name != "archive")
+                if packages.exists()
+                else []
+            )
+            if independent_package is None:
+                if active:
+                    raise support.ChainSpawnError("active package exists; finish/archive it before closing the chain")
+            else:
+                proof = {
+                    **proof,
+                    "independent_package": independent_successor_proof(root, chain, state, independent_package, active),
+                }
             counter_key = "pass" if chain == "autoplan" else "round"
             counter = state.get(counter_key)
             if isinstance(counter, bool) or not isinstance(counter, int) or counter < 1:
@@ -374,6 +462,10 @@ def add_close_parser(subparsers) -> None:
     parser.add_argument("--dry-run", action="store_true", help="validate only; preserve active state and history")
     parser.add_argument("--legacy-scope-commit", help="explicit legacy evidence: last committed chain-state change")
     parser.add_argument("--legacy-completion-commit", help="paired legacy evidence: same features, all checked")
+    parser.add_argument(
+        "--independent-package",
+        help="slug of the single active package proven by Git history to postdate this chain's final state and plan",
+    )
     parser.add_argument("--format", choices=("text", "json"), default="text")
 
 

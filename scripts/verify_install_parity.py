@@ -42,6 +42,7 @@ from payload_contract import (  # noqa: E402
     COPY_DIRS,
     CORE_EXCLUDED_DIRS,
     CORE_EXCLUDED_SCRIPTS,
+    CORE_KEPT_FILES,
     IGNORE_PATTERNS,
     PROFILE_VALUES,
     ROOT_FILES,
@@ -151,6 +152,8 @@ def audit_install(install: Path, repo: Path, profile: str = "full") -> Dict[str,
         failures.append(f"version drift: install {install_version} != repo {repo_version}")
 
     shipped = shipped_files(repo, copy_dirs_for_profile(profile), excluded_scripts_for_profile(profile))
+    if profile == "core":
+        shipped = [*shipped, *(repo / rel for rel in CORE_KEPT_FILES if (repo / rel).is_file())]
     checked = 0
     for source in shipped:
         relative = source.relative_to(repo)

@@ -78,7 +78,7 @@ Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.21.3
+git checkout v0.22.0
 bash install.sh
 ```
 
@@ -144,6 +144,22 @@ INSTALL_HOSTS=devin,cursor,zcode INSTALL_PROFILE=full bash install.sh
 Devin/Cursor 使用 `/spec` 加载 Skill 后请求 `spec:autoplan` 或 `spec:autorun`；ZCode 使用 `$spec`。新装后按宿主方式刷新技能或开始新会话，不假定所有宿主都注册了 `/spec:<stage>`。主会话负责能力核对、权限边界与恢复，不依赖独立窗口或子代理；没有子代理的复核会明确标注为主会话复核。
 
 验证口径：自动化测试覆盖客户端 profile、恢复协议和隔离安装，不等于对应产品已逐个实机验收。Cursor/ZCode 桌面端、Linux/WSL2 与原生 Windows 的实际运行证据应分别记录；未实测不得标为 live verified。协议见[执行与会话后端契约](references/commands.md#session-backends)。
+
+### 主动启用（可选，一次性）
+
+安装只放文件，不改你的 Claude 配置，所以默认**不会**逐任务自动评估。想让多功能改动、多人实施的需求在动手前自动先过一遍"是否需要任务记录"，显式开启一次：
+
+```bash
+python3 ~/.claude/skills/spec/scripts/install_activation_hooks.py --mode on    # 关闭：--mode off；默认 preserve 不改任何配置
+```
+
+- 判据看交付形状：独立验收面、实际实施者、可恢复的在途任务；文件数、文字长短、房间里空闲队友的人数都不单独决定。小修、只读调查、一次性实验、明确说"不要任务包"都直接做。
+- 只管理自己写入的条目，保留你的其他 hooks、`permissions` 和未知字段；坏配置拒写，写前备份，可随时 `--mode off`。
+- 覆盖面是 Edit/Write/MultiEdit/NotebookEdit 与 Agent/Task/SendMessage；不解析 Bash、MCP 和自定义工具，也不声称覆盖它们。队友/子代理不会建包，只接收主协调者的分配。
+- 这是给配合型 agent 的提醒门，不是安全边界：形状与角色事实由 agent 自行报告，但退出 / 小改 / 只读这类结论性事实一律拒绝注入（注入即报错），用户明确拒绝只能由用户本人在宿主层覆盖（放行该次调用或关闭接线）；已记录的 `direct` 在新的用户输入或 2 小时后失效。它防的是“忘了评估”，不防刻意少报改动面。
+- 事件接线目前只针对 Claude Code。其他宿主共用同一份发现说明，但没有同等的事件保证。
+- `spec:doctor` 会区分"未安装 / 未接线 / 已接线"；已接线也始终标注"未经 live 验证"——文件存在或钩子退出码都不能证明模型实际主动采用。
+- 作业已在脏分支上进行、队友已开工时，不要重跑 `new`（它要求干净树）。用 `init_spec_package.py --adopt --confirm-adopt` 显式接管：保留当前分支与全部改动，只记录基线哈希，不切分支、不 stash、不提交。
 
 ### 手动安装
 
@@ -219,6 +235,7 @@ spec/
 ├── hooks/
 │   ├── pre-commit
 │   ├── pre-push
+│   ├── claude_activation_guard.py
 │   └── claude_stop_guard.py
 ├── references/
 │   ├── 00-readme.md
@@ -246,6 +263,8 @@ spec/
 │       ├── status.md
 │       └── update.md
 ├── scripts/
+│   ├── activation_state.py
+│   ├── assess_spec_activation.py
 │   ├── autoplan_gate.py
 │   ├── autoplan_spawn.py
 │   ├── autorun_spawn.py
@@ -261,6 +280,7 @@ spec/
 │   ├── generate_changelog.py
 │   ├── handoff_support.py
 │   ├── init_spec_package.py
+│   ├── install_activation_hooks.py
 │   ├── install_git_hooks.py
 │   ├── install_slot_hooks.py
 │   ├── issue_closure_support.py

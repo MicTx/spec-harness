@@ -22,13 +22,14 @@ import json
 import os
 import py_compile
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 try:
     from slot_registry import discover_slots, validate_slot
@@ -167,6 +168,7 @@ PROBE_IDS: Tuple[str, ...] = (
     "hosts.installed",
     "claude.commands",
     "claude.agents",
+    "claude.activation",
     "pi.prompts",
     "migration.wrappers",
     "zcode.symlink",
@@ -951,6 +953,123 @@ class Doctor:
         commands_dir = claude_commands_dir()
         return all((commands_dir / "spec" / f"{stage}.md").is_file() for stage in stages)
 
+    ACTIVATION_MARKER = "hooks/claude_activation_guard.py"
+    ACTIVATION_FILES = (
+        "hooks/claude_activation_guard.py",
+        "scripts/assess_spec_activation.py",
+        "scripts/activation_state.py",
+    )
+    ACTIVATION_EVENTS = ("UserPromptSubmit", "PreToolUse")
+
+    def _activation_wired(self, settings: Path) -> bool:
+        """True when settings hold any guard entry; unreadable settings count as not wired."""
+        try:
+            hooks = json.loads(settings.read_text(encoding="utf-8")).get("hooks")
+        except (OSError, ValueError, AttributeError):
+            return False
+        if not isinstance(hooks, dict):
+            return False
+        return any(self.ACTIVATION_MARKER in json.dumps(hooks.get(event, [])) for event in self.ACTIVATION_EVENTS)
+
+    def check_claude_activation(self) -> None:
+        """Read-only: files present, wired, runnable, and (never inferred) live.
+
+        Wiring is the user's one-time choice, so this check never repairs it:
+        `--fix` leaves settings untouched.
+        """
+        title = "主动启用接线"
+        missing = [rel for rel in self.ACTIVATION_FILES if not (self.skill_root / rel).is_file()]
+        settings = _home() / ".claude" / "settings.json"
+        hint = f"python3 {self.skill_root / 'scripts/install_activation_hooks.py'} --mode on"
+        if missing and not self._activation_wired(settings):
+            self.record(
+                "claude.activation",
+                title,
+                "info",
+                "启用守卫未安装（缺少 " + "、".join(missing) + "）；技能本身不受影响",
+            )
+            return
+        if not settings.is_file():
+            self.record(
+                "claude.activation",
+                title,
+                "info",
+                "启用守卫文件已安装，但未接线：新任务不会自动评估（启用是一次性选择，默认保留现有设置）",
+                hint,
+            )
+            return
+        try:
+            payload = json.loads(settings.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("top level is not an object")
+        except (OSError, ValueError) as exc:
+            self.record("claude.activation", title, "warn", f"无法解析 Claude settings，未能判断接线状态：{exc}")
+            return
+        hooks = payload.get("hooks") if isinstance(payload.get("hooks"), dict) else {}
+        found: Dict[str, List[str]] = {}
+        for event in self.ACTIVATION_EVENTS:
+            groups = hooks.get(event) if isinstance(hooks.get(event), list) else []
+            for group in groups:
+                entries = group.get("hooks") if isinstance(group, dict) and isinstance(group.get("hooks"), list) else []
+                for entry in entries:
+                    command = entry.get("command") if isinstance(entry, dict) else None
+                    if isinstance(command, str) and self.ACTIVATION_MARKER in command:
+                        found.setdefault(event, []).append(command)
+        if not found:
+            self.record(
+                "claude.activation",
+                title,
+                "info",
+                "启用守卫文件已安装，但未接线：新任务不会自动评估（启用是一次性选择，默认保留现有设置）",
+                hint,
+            )
+            return
+        absent = [event for event in self.ACTIVATION_EVENTS if event not in found]
+        if absent:
+            self.record(
+                "claude.activation",
+                title,
+                "warn",
+                "接线不完整，缺少事件：" + "、".join(absent) + "；先 off 再 on 以修复",
+                hint,
+            )
+            return
+        expected = str(self.skill_root / self.ACTIVATION_MARKER)
+
+        def points_here(command: str) -> bool:
+            try:
+                return expected in shlex.split(command)
+            except ValueError:
+                return False
+
+        stale = [event for event, commands in found.items() if not any(points_here(c) for c in commands)]
+        if stale:
+            self.record(
+                "claude.activation",
+                title,
+                "warn",
+                "接线指向其他安装根（与当前技能目录不一致）：" + "、".join(stale) + "；重新执行 on 以迁移",
+                hint,
+            )
+            return
+        broken = [] if not missing else list(found)
+        if broken:
+            self.record(
+                "claude.activation",
+                title,
+                "warn",
+                "已接线但守卫不可执行（目标文件缺失）：" + "、".join(broken) + "；钩子触发时会报错而不是评估",
+                hint,
+            )
+            return
+        self.record(
+            "claude.activation",
+            title,
+            "info",
+            "已接线且守卫可执行；未经 live 验证：文件存在与钩子退出码不能证明模型实际主动采用，"
+            "该状态只由已记录的真实对照运行改变",
+        )
+
     def check_pi_prompts(self) -> Optional[bool]:
         """Native Pi prompt templates (F4): /spec + /spec:<stage> forwarders.
 
@@ -1310,6 +1429,9 @@ class Doctor:
         if layout_ok:
             self.check_claude_commands()
             self.check_claude_agents()
+        # Independent of layout: "files missing" is itself one of the states it reports.
+        self.check_claude_activation()
+        if layout_ok:
             self.check_pi_prompts()
         self.check_migration_wrappers()
         self.check_zcode_symlink()

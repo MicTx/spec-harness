@@ -31,6 +31,14 @@ PROFILE_VALUES = ("core", "full")
 #: surface, and ``server/`` is the optional always-on companion service.
 CORE_EXCLUDED_DIRS = ("agents", "server", "slots")
 
+#: Files kept from an otherwise excluded component under ``core``. Host skill
+#: discovery reads ``agents/openai.yaml`` (listing text and the implicit-
+#: invocation policy), so dropping the whole ``agents/`` directory would also drop
+#: the metadata that lets a host offer the skill for work that never names it.
+#: The agent contracts next to it (orchestrator, planner, ...) stay extension
+#: surface. Keep this in sync with CORE_KEPT_FILES in install.sh.
+CORE_KEPT_FILES = ("agents/openai.yaml",)
+
 #: Chain-family scripts that exist only to spawn/recycle fresh agent sessions
 #: (autorun/autoplan recursion, chain state, window sweeps). They belong to
 #: the extension surface: the kernel gates never import or subprocess them,

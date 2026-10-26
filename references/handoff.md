@@ -84,3 +84,9 @@ The snapshot anchors `head` (git HEAD) and `progress` (task counts). `show` comp
 - One writer at a time: a single session owns the package while it works and writes the boundary entry before releasing it; the format assumes no concurrent writers — coordination is by the mode lattice's ownership slots, not by locking.
 - The departing side writes; the receiving side fills the 回执 slot on takeover.
 - Escalate early with full context rather than letting a stale session drift; a handoff nobody updates is worse than none — the snapshot and the check gate exist to keep that from happening silently.
+
+## Adopting in-flight work
+
+When the scope grows after teammates already started, `scripts/init_spec_package.py --adopt --confirm-adopt [--teammate <name> ...] [--writers-paused]` binds a package to the current branch instead of the strict `/spec:new` path (which still demands a clean tree and a fresh `spec/` branch). It is strictly additive under `.spec/`: no checkout, stash, commit, reset, or edit of anyone's files, and the dirty baseline is stored as paths and hashes only in the package member `adoption.json` (not a gated file).
+
+It refuses a protected or detached branch, a branch already bound to another package, any other active package, an existing slug, a non-Git directory, and a concurrent adopter; one succeeds, the rest write nothing. Teammates are named, never recreated. `--writers-paused` is an operator attestation recorded as such; without it the output says running writers were not confirmed paused, because a member list never proves writes have stopped.

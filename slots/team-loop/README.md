@@ -12,7 +12,7 @@ execution segment only; the main session still owns routing, acceptance, and `do
 
 | Gap | Solution |
 |---|---|
-| (1) No automatic triggering (manual skill loading) | Hook triggering (Stop convergence guard / TeammateIdle gate) + code triggering (`loop_route.py`, callable from any session) |
+| (1) No code-level trigger or convergence guard | `loop_route.py` (callable from any session) decides loop shape; the Stop / TeammateIdle guards only enforce an already-registered run. They do not start a loop or adopt an existing team; whether work needs a record at all is the separate admission layer (`scripts/assess_spec_activation.py`) |
 | (2) Loops not generic (bound to one domain) | Domain-agnostic run/round/task state machine with three modes: `until-converged / fixed-rounds / batch-fanout` |
 | (3) No retry/concurrency/heartbeat/interrupt primitives | `loop_control.py`: exponential backoff with jitter, concurrency admission, staleness watchdog with reap, cooperative interrupt recovery, composable termination conditions (including an external STOP) |
 

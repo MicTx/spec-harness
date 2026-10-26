@@ -133,6 +133,9 @@ CORE_STAGES=(new run check done push)
 # so the copy path prunes them here; alignment with the contract is pinned
 # by tests/test_install_profile.py.
 CORE_EXCLUDED_DIRS=(agents server slots)
+# Kept from excluded directories under core (host discovery metadata); mirrors
+# payload_contract.py CORE_KEPT_FILES. Pinned by tests/test_install_profile.py.
+CORE_KEPT_FILES=(agents/openai.yaml)
 CORE_EXCLUDED_SCRIPTS=(
   autorun_spawn.py
   autoplan_spawn.py
@@ -505,10 +508,24 @@ export_runtime() {
   # this path prunes the staged copy — the staging dir is never user-visible,
   # which keeps the single-exit rule meaningful where an exit exists.
   if [ "$INSTALL_PROFILE" = "core" ]; then
-    local excluded_dir excluded_script
+    local excluded_dir excluded_script kept_file kept_stash
+    kept_stash="$(mktemp -d "${TMPDIR:-/tmp}/spec-core-keep.XXXXXX")"
+    for kept_file in "${CORE_KEPT_FILES[@]}"; do
+      if [ -f "$output_dir/$kept_file" ]; then
+        mkdir -p "$kept_stash/$(dirname "$kept_file")"
+        cp "$output_dir/$kept_file" "$kept_stash/$kept_file"
+      fi
+    done
     for excluded_dir in "${CORE_EXCLUDED_DIRS[@]}"; do
       rm -rf -- "$output_dir/$excluded_dir"
     done
+    for kept_file in "${CORE_KEPT_FILES[@]}"; do
+      if [ -f "$kept_stash/$kept_file" ]; then
+        mkdir -p "$output_dir/$(dirname "$kept_file")"
+        cp "$kept_stash/$kept_file" "$output_dir/$kept_file"
+      fi
+    done
+    rm -rf -- "$kept_stash"
     for excluded_script in "${CORE_EXCLUDED_SCRIPTS[@]}"; do
       rm -f -- "$output_dir/scripts/$excluded_script"
     done
@@ -1240,6 +1257,12 @@ main() {
     log "  $PYTHON_BIN $(skill_dir_for "$host")/$SKILL_NAME/scripts/smoke_test_spec_skill.py"
     log "  $(host_label_for "$host"): $(host_trigger_hint "$host"), then use $(format_stage_aliases 'spec:' ' / ')"
   done
+
+  if host_enabled claude; then
+    log ""
+    log "Automatic admission (opt-in, not wired by default): the activation guard files are installed but no Claude settings were changed."
+    log "  Enable once: python3 $CLAUDE_SKILLS_DIR/$SKILL_NAME/scripts/install_activation_hooks.py --mode on   (undo: --mode off; check: spec:doctor)"
+  fi
 
   # AGENTS.md 兼读提示：AGENTS.md 是 Codex/OpenCode/Gemini CLI 等 agent 的
   # 指令入口，与 SKILL.md 同层生效。仅提示，不改安装逻辑。
