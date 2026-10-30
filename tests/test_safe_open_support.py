@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import sys
 import threading
 from pathlib import Path
@@ -233,3 +234,50 @@ def test_production_readers_never_close_a_borrowed_descriptor(tmp_path, monkeypa
     monkeypatch.setattr(os, "fdopen", borrowed)
     {"json": read_json_file, "text": read_regular_text, "archive": _read_archive_file_bytes}[reader](target)
     assert len(checked) == 1
+
+
+def test_replace_preserving_mode_keeps_bits_and_cleans_up_on_failure(tmp_path, monkeypatch):
+    from safe_open_support import replace_preserving_mode
+
+    previous = os.umask(0o022)
+    try:
+        existing = tmp_path / "kept.json"
+        existing.write_text("old", encoding="utf-8")
+        existing.chmod(0o640)
+        replace_preserving_mode(existing, b"new")
+        assert existing.read_bytes() == b"new"
+        assert stat.S_IMODE(existing.stat().st_mode) == 0o640
+
+        fresh = tmp_path / "fresh.json"
+        replace_preserving_mode(fresh, b"{}")
+        assert stat.S_IMODE(fresh.stat().st_mode) == 0o600
+
+        def fail(*_args, **_kwargs):
+            raise OSError("simulated rename failure")
+
+        monkeypatch.setattr(os, "replace", fail)
+        with pytest.raises(OSError):
+            replace_preserving_mode(existing, b"lost")
+    finally:
+        os.umask(previous)
+    assert existing.read_bytes() == b"new"
+    assert sorted(os.listdir(tmp_path)) == ["fresh.json", "kept.json"]
+
+
+def test_replace_preserving_mode_survives_a_filesystem_without_chmod(tmp_path, monkeypatch):
+    """vfat, exFAT and some network mounts refuse chmod; the rewrite must still land (mkstemp keeps it 0600)."""
+    from safe_open_support import replace_preserving_mode
+
+    target = tmp_path / "settings.json"
+    target.write_text("old", encoding="utf-8")
+
+    def refuse(*args):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "fchmod", refuse, raising=False)
+    try:
+        replace_preserving_mode(target, b"new")
+    except OSError as exc:
+        pytest.fail(f"the rewrite failed on a filesystem without chmod: {exc}")
+    assert target.read_bytes() == b"new"
+    assert sorted(os.listdir(tmp_path)) == ["settings.json"]

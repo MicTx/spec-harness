@@ -546,3 +546,58 @@ def test_pre_push_rejects_malformed_none_footer(tmp_path, footer, expected_messa
     assert result.returncode != 0
     assert expected_message in result.stdout + result.stderr
     assert git(remote, "show-ref", "--verify", "refs/heads/main", check=False).returncode != 0
+
+
+def _spec_branch_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    git(repo, "checkout", "-b", "spec/2026-07-13_fix-hook-attribution")
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "base")
+    install_hook(repo, PRE_COMMIT)
+    return repo
+
+
+@pytest.mark.parametrize("rel", [".spec/specs/archive/retired/2026-07-13/old-note.md", ".spec/specs/archive/README.md"])
+def test_archive_commit_accepts_retired_and_plain_archive_files(tmp_path, rel):
+    """organize's retired container and plain files under archive/ are not package slugs."""
+    repo = _spec_branch_repo(tmp_path)
+    target = repo / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("retired\n", encoding="utf-8")
+    git(repo, "add", rel)
+    result = git(repo, "commit", "-m", "chore: retire", check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_invalid_archive_slug_error_names_the_path(tmp_path):
+    repo = _spec_branch_repo(tmp_path)
+    target = repo / ".spec/specs/archive/Bad_Name/spec.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("# x\n", encoding="utf-8")
+    git(repo, "add", ".spec")
+    result = git(repo, "commit", "-m", "archive", check=False)
+    assert result.returncode != 0
+    assert "Bad_Name" in result.stderr, result.stderr
+
+
+@pytest.mark.parametrize("kind", ["file", "symlink"])
+def test_a_slug_named_entry_directly_under_archive_still_gets_the_full_gate(tmp_path, kind):
+    """A direct archive child named like a package claims to be one: it is gated, not waved through as content."""
+    repo = _spec_branch_repo(tmp_path)
+    original_head = git(repo, "rev-parse", "HEAD").stdout.strip()
+    archive = repo / ".spec/specs/archive"
+    archive.mkdir(parents=True)
+    entry = archive / "2026-07-13_fix-entry"
+    if kind == "file":
+        entry.write_text("not a package\n", encoding="utf-8")
+    else:
+        elsewhere = repo / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "spec.md").write_text("# not a package\n", encoding="utf-8")
+        entry.symlink_to("../../../elsewhere")
+    git(repo, "add", "-A")
+    result = git(repo, "commit", "-m", "archive entry", check=False)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert git(repo, "rev-parse", "HEAD").stdout.strip() == original_head

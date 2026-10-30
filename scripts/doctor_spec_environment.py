@@ -56,6 +56,9 @@ HOST_ALIASES = {"devin-desktop": "devin", "cursor-cli": "cursor"}
 PROFILE_VALUES = ("core", "full")
 CORE_STAGE_COMMANDS = ("new", "run", "check", "done", "push")
 EXTENSION_FILE_PREFIXES = ("agents/", "server/", "scripts/chain_session.py")
+#: Files core keeps from an otherwise excluded prefix (host discovery metadata).
+#: Mirrors payload_contract.CORE_KEPT_FILES; pinned by tests/test_doctor_spec_environment.py.
+CORE_KEPT_FILES = ("agents/openai.yaml",)
 
 
 def claude_agents_dir() -> Path:
@@ -331,7 +334,11 @@ class Doctor:
         """The layout face this install's profile must carry (F16: core drops
         agents/, server/, and the slot manifests)."""
         if self.install_profile() == "core":
-            return tuple(name for name in REQUIRED_RUNTIME_FILES if not name.startswith(EXTENSION_FILE_PREFIXES))
+            return tuple(
+                name
+                for name in REQUIRED_RUNTIME_FILES
+                if not name.startswith(EXTENSION_FILE_PREFIXES) or name in CORE_KEPT_FILES
+            )
         return REQUIRED_RUNTIME_FILES
 
     def _pyproject_version(self, root: Path) -> str:
@@ -961,50 +968,18 @@ class Doctor:
     )
     ACTIVATION_EVENTS = ("UserPromptSubmit", "PreToolUse")
 
-    def _activation_wired(self, settings: Path) -> bool:
-        """True when settings hold any guard entry; unreadable settings count as not wired."""
-        try:
-            hooks = json.loads(settings.read_text(encoding="utf-8")).get("hooks")
-        except (OSError, ValueError, AttributeError):
-            return False
-        if not isinstance(hooks, dict):
-            return False
-        return any(self.ACTIVATION_MARKER in json.dumps(hooks.get(event, [])) for event in self.ACTIVATION_EVENTS)
+    def _activation_scopes(self) -> List[Tuple[str, Path, str]]:
+        """(label, settings file, enabling command) for each settings file the installer can wire."""
+        enable = f"python3 {shlex.quote(str(self.skill_root / 'scripts' / 'install_activation_hooks.py'))} --mode on"
+        user = _home() / ".claude" / "settings.json"
+        project = self.project_root / ".claude" / "settings.json"
+        scopes = [("用户级", user, enable)]
+        if project.resolve() != user.resolve():
+            project_root = shlex.quote(str(self.project_root))
+            scopes.append(("项目级", project, f"{enable} --scope project --project-root {project_root}"))
+        return scopes
 
-    def check_claude_activation(self) -> None:
-        """Read-only: files present, wired, runnable, and (never inferred) live.
-
-        Wiring is the user's one-time choice, so this check never repairs it:
-        `--fix` leaves settings untouched.
-        """
-        title = "主动启用接线"
-        missing = [rel for rel in self.ACTIVATION_FILES if not (self.skill_root / rel).is_file()]
-        settings = _home() / ".claude" / "settings.json"
-        hint = f"python3 {self.skill_root / 'scripts/install_activation_hooks.py'} --mode on"
-        if missing and not self._activation_wired(settings):
-            self.record(
-                "claude.activation",
-                title,
-                "info",
-                "启用守卫未安装（缺少 " + "、".join(missing) + "）；技能本身不受影响",
-            )
-            return
-        if not settings.is_file():
-            self.record(
-                "claude.activation",
-                title,
-                "info",
-                "启用守卫文件已安装，但未接线：新任务不会自动评估（启用是一次性选择，默认保留现有设置）",
-                hint,
-            )
-            return
-        try:
-            payload = json.loads(settings.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict):
-                raise ValueError("top level is not an object")
-        except (OSError, ValueError) as exc:
-            self.record("claude.activation", title, "warn", f"无法解析 Claude settings，未能判断接线状态：{exc}")
-            return
+    def _activation_entries(self, payload: dict) -> Dict[str, List[str]]:
         hooks = payload.get("hooks") if isinstance(payload.get("hooks"), dict) else {}
         found: Dict[str, List[str]] = {}
         for event in self.ACTIVATION_EVENTS:
@@ -1013,25 +988,80 @@ class Doctor:
                 entries = group.get("hooks") if isinstance(group, dict) and isinstance(group.get("hooks"), list) else []
                 for entry in entries:
                     command = entry.get("command") if isinstance(entry, dict) else None
-                    if isinstance(command, str) and self.ACTIVATION_MARKER in command:
+                    if self._activation_command(command):
                         found.setdefault(event, []).append(command)
-        if not found:
+        return found
+
+    def _activation_command(self, command: object) -> bool:
+        """install_activation_hooks._is_ours: exactly `python3 <path>/hooks/claude_activation_guard.py`.
+
+        A command that merely mentions the guard (or chains more after it) is not wiring that
+        `--mode off` would remove, so it is never reported as wired.
+        """
+        if not isinstance(command, str):
+            return False
+        try:
+            words = shlex.split(command)
+        except ValueError:
+            return False
+        return len(words) == 2 and words[0] == "python3" and words[1].endswith("/" + self.ACTIVATION_MARKER)
+
+    def _activation_compile_errors(self) -> List[str]:
+        # builtin compile(): unlike py_compile it writes no bytecode into the skill tree
+        errors: List[str] = []
+        for rel in self.ACTIVATION_FILES:
+            path = self.skill_root / rel
+            try:
+                compile(path.read_bytes(), str(path), "exec", dont_inherit=True)
+            except (OSError, SyntaxError, ValueError) as exc:
+                errors.append(f"{rel}（{type(exc).__name__}）")
+        return errors
+
+    def check_claude_activation(self) -> None:
+        """Read-only: files present, wired in user or project settings, compilable, and (never inferred) live.
+
+        Wiring is the user's one-time choice, so this check never repairs it:
+        `--fix` leaves settings untouched. Like the other claude probes it is
+        skipped when --host excludes claude.
+        """
+        if self.host_filter is not None and "claude" not in {name.strip() for name in self.host_filter}:
+            return
+        title = "主动启用接线"
+        missing = [rel for rel in self.ACTIVATION_FILES if not (self.skill_root / rel).is_file()]
+        scopes = self._activation_scopes()
+        wired: List[Tuple[str, str, Dict[str, List[str]]]] = []
+        unreadable = ""
+        for label, settings, hint in scopes:
+            if not settings.is_file():
+                continue
+            try:
+                payload = json.loads(settings.read_text(encoding="utf-8"))
+                if not isinstance(payload, dict):
+                    raise ValueError("top level is not an object")
+            except (OSError, ValueError, RecursionError) as exc:
+                unreadable = unreadable or f"无法解析{label} Claude settings（{settings}），未能判断接线状态：{exc}"
+                continue
+            found = self._activation_entries(payload)
+            if found:
+                wired.append((label, hint, found))
+        if missing and not wired:
+            self.record(
+                "claude.activation",
+                title,
+                "info",
+                "启用守卫未安装（缺少 " + "、".join(missing) + "）；技能本身不受影响",
+            )
+            return
+        if unreadable:
+            self.record("claude.activation", title, "warn", unreadable)
+            return
+        if not wired:
             self.record(
                 "claude.activation",
                 title,
                 "info",
                 "启用守卫文件已安装，但未接线：新任务不会自动评估（启用是一次性选择，默认保留现有设置）",
-                hint,
-            )
-            return
-        absent = [event for event in self.ACTIVATION_EVENTS if event not in found]
-        if absent:
-            self.record(
-                "claude.activation",
-                title,
-                "warn",
-                "接线不完整，缺少事件：" + "、".join(absent) + "；先 off 再 on 以修复",
-                hint,
+                scopes[0][2],
             )
             return
         expected = str(self.skill_root / self.ACTIVATION_MARKER)
@@ -1042,31 +1072,50 @@ class Doctor:
             except ValueError:
                 return False
 
-        stale = [event for event, commands in found.items() if not any(points_here(c) for c in commands)]
-        if stale:
+        problems: List[str] = []
+        hints: List[str] = []
+        for label, hint, found in wired:
+            absent = [event for event in self.ACTIVATION_EVENTS if event not in found]
+            stale = [event for event, commands in found.items() if not any(points_here(c) for c in commands)]
+            if absent:
+                problems.append(f"{label}接线不完整，缺少事件：" + "、".join(absent) + "；先 off 再 on 以修复")
+            elif stale:
+                problems.append(
+                    f"{label}接线指向其他安装根（与当前技能目录不一致）：" + "、".join(stale) + "；重新执行 on 以迁移"
+                )
+            else:
+                continue
+            hints.append(hint)
+        if problems:
+            self.record("claude.activation", title, "warn", "；".join(problems), "；".join(hints))
+            return
+        labels = "、".join(label for label, _hint, _found in wired)
+        wired_hints = "；".join(hint for _label, hint, _found in wired)
+        if missing:
             self.record(
                 "claude.activation",
                 title,
                 "warn",
-                "接线指向其他安装根（与当前技能目录不一致）：" + "、".join(stale) + "；重新执行 on 以迁移",
-                hint,
+                f"已接线（{labels}）但守卫不可执行（目标文件缺失：" + "、".join(missing) + "）；"
+                "钩子触发时会报错而不是评估",
+                wired_hints,
             )
             return
-        broken = [] if not missing else list(found)
-        if broken:
+        errors = self._activation_compile_errors()
+        if errors:
             self.record(
                 "claude.activation",
                 title,
                 "warn",
-                "已接线但守卫不可执行（目标文件缺失）：" + "、".join(broken) + "；钩子触发时会报错而不是评估",
-                hint,
+                f"已接线（{labels}）但守卫文件无法编译：" + "、".join(errors) + "；钩子触发时会报错而不是评估",
+                "重新执行 bash install.sh 恢复技能文件",
             )
             return
         self.record(
             "claude.activation",
             title,
             "info",
-            "已接线且守卫可执行；未经 live 验证：文件存在与钩子退出码不能证明模型实际主动采用，"
+            f"已接线（{labels}）且守卫可执行；未经 live 验证：文件存在与钩子退出码不能证明模型实际主动采用，"
             "该状态只由已记录的真实对照运行改变",
         )
 
@@ -1305,7 +1354,8 @@ class Doctor:
             hook = hooks_dir / name
             if not hook.is_file():
                 continue
-            content = hook.read_text(encoding="utf-8")
+            # hooks may carry any encoding; ownership is decided on the ASCII checker line
+            content = hook.read_text(encoding="utf-8", errors="replace")
             if not spec_owned_hook(content):
                 unmanaged.append(f"{name}：项目自有 hook（未接管）")
                 continue
@@ -1315,6 +1365,8 @@ class Doctor:
                 problems.append(f"{name}：模板未渲染，checker 占位符仍在")
             elif not rendered.is_file():
                 problems.append(f"{name}：指向不存在的 {rendered}（skill 已移动/删除）")
+            elif not os.access(hook, os.X_OK):
+                problems.append(f"{name}：缺少执行权限，Git 会跳过它，门禁不生效")
             elif rendered.resolve() != current_checker:
                 other_copy.append(f"{name}：可用但指向另一份 skill 副本（{rendered}）")
             else:
@@ -1370,10 +1422,28 @@ class Doctor:
             hooks_dir = (git_toplevel / hooks_dir).resolve()
         return hooks_dir
 
+    def hooks_dir_installable(self, git_toplevel: Path, hooks_dir: Path) -> bool:
+        """Whether install_git_hooks.py would accept this repository, decided by its own ``git_paths``.
+
+        ``hooks_dir`` is doctor's (resolved) view, used only in messages; the installer compares paths
+        lexically, so a reimplemented rule disagrees on symlinked hooksPath values.
+        """
+        try:
+            from install_git_hooks import git_paths
+        except ImportError:
+            return False
+        try:
+            git_paths(git_toplevel)
+        except (OSError, ValueError):
+            return False
+        return True
+
     def install_hint(self, git_toplevel: Path, hooks_dir: Path) -> str:
-        installer = f"python3 {self.skill_root / 'scripts' / 'install_git_hooks.py'} --root {git_toplevel}"
-        top = git_toplevel.resolve()
-        if hooks_dir == top or top in hooks_dir.parents or ".git" in hooks_dir.parts:
+        installer = (
+            f"python3 {shlex.quote(str(self.skill_root / 'scripts' / 'install_git_hooks.py'))} "
+            f"--root {shlex.quote(str(git_toplevel))}"
+        )
+        if self.hooks_dir_installable(git_toplevel, hooks_dir):
             return f"需要时运行 {installer}"
         # install_git_hooks refuses hooks dirs outside the repository, so the
         # hint must not suggest a command that cannot take effect.
@@ -1384,35 +1454,51 @@ class Doctor:
 
     def _reinstall_hooks(self, git_toplevel: Path, problems: List[str]) -> bool:
         hooks_dir = self.resolve_hooks_dir(git_toplevel)
-        stale_ok = True
+        # Decide everything the installer would refuse BEFORE moving a hook: a repair that
+        # backs up the gate and then fails leaves the repository (or a shared hooks dir) ungated.
+        if not self.hooks_dir_installable(git_toplevel, hooks_dir):
+            self.fix_log.append(f"skipped hook repair: {hooks_dir} is outside the repository; the installer refuses it")
+            return False
+        owned: List[Path] = []
         for name in ("pre-commit", "pre-push"):
             hook = hooks_dir / name
             if not hook.is_file():
                 continue
-            content = hook.read_text(encoding="utf-8")
-            # Only spec-owned hooks are backed up; a refusal from the
-            # installer on project-owned hooks leaves them untouched.
-            if spec_owned_hook(content):
+            if not spec_owned_hook(hook.read_text(encoding="utf-8", errors="replace")):
+                self.fix_log.append(f"skipped hook repair: {hook} is project-owned; chain the Spec gate manually")
+                return False
+            owned.append(hook)
+        moved: List[Tuple[Path, Path]] = []
+        repaired = False
+        try:
+            for hook in owned:
                 backed_up = self.move_to_backup(hook)
+                moved.append((hook, backed_up))
                 self.fix_log.append(f"backed up stale {hook} -> {backed_up}")
-            else:
-                stale_ok = False
-        if not stale_ok:
-            return False
-        completed = subprocess.run(
-            [sys.executable, str(self.skill_root / "scripts" / "install_git_hooks.py"), "--root", str(git_toplevel)],
-            capture_output=True,
-            text=True,
-        )
-        self.fix_log.append(
-            "install_git_hooks: exit "
-            + str(completed.returncode)
-            + (("\n" + completed.stdout[-300:]) if completed.stdout else "")
-            + (("\n" + completed.stderr[-300:]) if completed.stderr else "")
-        )
-        if completed.returncode != 0:
-            return False
-        return (hooks_dir / "pre-commit").is_file() and (hooks_dir / "pre-push").is_file()
+            installer = self.skill_root / "scripts" / "install_git_hooks.py"
+            completed = subprocess.run(
+                [sys.executable, str(installer), "--root", str(git_toplevel)],
+                capture_output=True,
+                text=True,
+            )
+            self.fix_log.append(
+                "install_git_hooks: exit "
+                + str(completed.returncode)
+                + (("\n" + completed.stdout[-300:]) if completed.stdout else "")
+                + (("\n" + completed.stderr[-300:]) if completed.stderr else "")
+            )
+            repaired = completed.returncode == 0 and all(
+                (hooks_dir / name).is_file() for name in ("pre-commit", "pre-push")
+            )
+        except OSError as exc:
+            self.fix_log.append(f"hook repair stopped: {exc.__class__.__name__}: {exc}")
+        finally:
+            if not repaired:
+                for hook, backed_up in moved:  # a failed repair must never remove a gate
+                    if not hook.exists():
+                        shutil.move(str(backed_up), str(hook))
+                        self.fix_log.append(f"restored {hook} after the failed reinstall")
+        return repaired
 
     # ------------------------------------------------------------------- run
 

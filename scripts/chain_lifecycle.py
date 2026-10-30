@@ -241,15 +241,48 @@ def _append_closure(path: Path, marker: Dict[str, object]) -> None:
         os.fsync(handle.fileno())
 
 
+#: Similarity at which git pairs a new spec.md with an existing package spec.md as a rename or copy.
+#: Every package starts from the same template, so git's default 50% pairs unrelated packages.
+COPY_SIMILARITY = 90
+
+
+def _committed(root: Path, spec: str) -> bool:
+    try:
+        _git(root, "cat-file", "-e", spec)
+    except support.ChainSpawnError:
+        return False
+    return True
+
+
+def _interrupted_successor(archive: Path, raw: str) -> Optional[str]:
+    """Slug of the successor proven by an interrupted close of this exact state, if any.
+
+    The stored proof is never trusted as is: the caller recomputes it and the archive must match.
+    """
+    if archive.is_symlink() or not archive.is_file():
+        return None
+    try:
+        existing = json.loads(archive.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(existing, dict) or existing.get("previous_state_text") != raw:
+        return None
+    proof = existing.get("proof")
+    successor = proof.get("independent_package") if isinstance(proof, dict) else None
+    slug = successor.get("slug") if isinstance(successor, dict) else None
+    return slug if isinstance(slug, str) else None
+
+
 def independent_successor_proof(
-    root: Path, chain: str, state: Dict[str, object], slug: str, active: list
+    root: Path, chain: str, state: Dict[str, object], slug: str, active: list, *, replay: bool = False
 ) -> Dict[str, object]:
     """Prove an active package is new work, never the closing chain's own package.
 
     The chain state records no package membership, so the parameter itself proves
     nothing. What this CAN show: the package was added after both anchors and is not
-    a rename or copy of earlier work. What it CANNOT show: that a package whose
-    content was wholly rewritten under a new slug is unrelated to the chain's work.
+    a rename or copy (at least COPY_SIMILARITY percent alike) of any earlier file.
+    What it CANNOT show: that a package whose content was wholly rewritten, or edited
+    below that similarity, under a new slug is unrelated to the chain's work.
     That residual gap is inherent to Git history (an operator who deliberately
     replaces a package's entire content defeats any content heuristic), so the
     flag is an explicit, auditable operator assertion backed by this evidence,
@@ -262,11 +295,19 @@ def independent_successor_proof(
 
     if not isinstance(slug, str) or "/" in slug or not is_development_record_slug(slug):
         raise support.ChainSpawnError("independent package must be a Development Record slug")
-    if active != [slug]:
-        raise support.ChainSpawnError("independent package must be the only active package")
-    package = _safe_path(root, root / ".spec/specs" / slug / "spec.md")
-    if package.is_symlink() or not package.is_file():
-        raise support.ChainSpawnError("independent package has no regular spec.md")
+    if replay:
+        # Finishing an interrupted close after the successor itself was archived: the Git history
+        # below is recomputed in full; only "still active" and "still at its active path" are waived.
+        if active:
+            raise support.ChainSpawnError("independent package must be the only active package")
+        if not any(_committed(root, f"HEAD:{base}/{slug}/spec.md") for base in (".spec/specs", ".spec/specs/archive")):
+            raise support.ChainSpawnError("independent package has no committed spec.md")
+    else:
+        if active != [slug]:
+            raise support.ChainSpawnError("independent package must be the only active package")
+        package = _safe_path(root, root / ".spec/specs" / slug / "spec.md")
+        if package.is_symlink() or not package.is_file():
+            raise support.ChainSpawnError("independent package has no regular spec.md")
     if Path(_git(root, "rev-parse", "--show-toplevel").decode().strip()).resolve() != root:
         raise support.ChainSpawnError("independent package evidence root must be the Git repository root")
     state_name = f".spec/{chain}/{support.CHAIN_STATE_FILE}"
@@ -275,7 +316,8 @@ def independent_successor_proof(
     # The proven artifacts (chain state, recorded plans) must equal HEAD; the package
     # itself only has to be committed, since its later edits do not change its origin.
     _git(root, "diff", "--quiet", "HEAD", "--", state_name, *plan_names)
-    _git(root, "cat-file", "-e", f"HEAD:{package_name}")
+    if not replay:
+        _git(root, "cat-file", "-e", f"HEAD:{package_name}")
     # Detect renames and copies: a package merely moved under a new slug is the same work.
     added = _git(
         root,
@@ -294,16 +336,28 @@ def independent_successor_proof(
     if not added_commits:
         raise support.ChainSpawnError("independent package has no committed history")
     package_commit = added_commits[0]
-    # The first appearance must be a pure addition. If git sees it as a rename or copy of a path that
-    # already existed at or before an anchor, this is the closing chain's own package under a new slug.
+    # The first appearance must be a pure addition. If git sees it as a rename or copy of another package
+    # spec, this is earlier work (possibly the closing chain's own package) under a new slug.
+    # --find-copies-harder: an unmodified source is a copy source too; -l0: no rename limit.
     origin = _git(
-        root, "diff-tree", "-M", "-C", "-r", "--no-commit-id", "--name-status", "--diff-filter=RC", package_commit, "--"
+        root,
+        "diff-tree",
+        "-l0",
+        f"-M{COPY_SIMILARITY}%",
+        f"-C{COPY_SIMILARITY}%",
+        "--find-copies-harder",
+        "-r",
+        "--no-commit-id",
+        "--name-status",
+        "--diff-filter=RC",
+        package_commit,
+        "--",
     ).decode()
     for line in origin.splitlines():
         fields = line.split("\t")
-        if len(fields) == 3 and fields[2].startswith(".spec/specs/") and fields[2].endswith("/spec.md"):
-            if fields[2] == package_name and fields[1] != package_name:
-                raise support.ChainSpawnError("independent package is a rename or copy of earlier work, not new work")
+        # any source counts (an older `.trae/specs/` layout included): only provably new content is independent
+        if len(fields) == 3 and fields[2] == package_name and fields[1] != package_name:
+            raise support.ChainSpawnError("independent package is a rename or copy of earlier work, not new work")
     state_commit = _git(root, "log", "-1", "--format=%H", "HEAD", "--", state_name).decode().strip()
     if not state_commit:
         raise support.ChainSpawnError("chain state has no committed history")
@@ -370,25 +424,40 @@ def close_chain(
             )
             if not proof["complete"]:
                 raise support.ChainSpawnError("recorded chain has unfinished features; refusing close")
+            # Hidden entries (a killed adopter's `.<slug>.adopt-<pid>` staging dir) are not packages; any
+            # other directory, even a half-written one, still blocks the close (fail closed).
             packages = _safe_path(root, root / ".spec/specs")
             active = (
-                sorted(p.name for p in packages.iterdir() if p.is_dir() and p.name != "archive")
+                sorted(
+                    p.name
+                    for p in packages.iterdir()
+                    if p.is_dir() and p.name != "archive" and not p.name.startswith(".")
+                )
                 if packages.exists()
                 else []
             )
+            digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+            archive = _safe_path(root, history / f"{digest}.json")
+            # An interrupted close may have stored its successor proof before the successor was archived;
+            # finishing it replays that proof against Git instead of requiring the successor to be active.
+            prior_successor = _interrupted_successor(archive, raw)
+            if independent_package is None and prior_successor and not active:
+                independent_package = prior_successor
             if independent_package is None:
                 if active:
                     raise support.ChainSpawnError("active package exists; finish/archive it before closing the chain")
             else:
+                replay = independent_package == prior_successor and independent_package not in active
                 proof = {
                     **proof,
-                    "independent_package": independent_successor_proof(root, chain, state, independent_package, active),
+                    "independent_package": independent_successor_proof(
+                        root, chain, state, independent_package, active, replay=replay
+                    ),
                 }
             counter_key = "pass" if chain == "autoplan" else "round"
             counter = state.get(counter_key)
             if isinstance(counter, bool) or not isinstance(counter, int) or counter < 1:
                 raise support.ChainSpawnError(f"invalid chain {counter_key}; refusing close")
-            digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
             tail = support.read_audit_tail(runtime)
             if audit_path.exists() and tail is None:
                 raise support.ChainSpawnError("chain audit unreadable; refusing close")
@@ -411,7 +480,6 @@ def close_chain(
                     }
                 if not matches:
                     raise support.ChainSpawnError("chain summary and audit diverged; inspect/recover before close")
-            archive = _safe_path(root, history / f"{digest}.json")
             payload = {
                 "status": "would_close",
                 "chain": chain,

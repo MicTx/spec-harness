@@ -10,7 +10,7 @@ Compatible invocation:
 Execution order:
 
 1. Clarify the most critical information: project goal, target users, MVP, technology preferences, boundaries, and exclusions.
-2. Write out explicitly: confirmed facts, key assumptions, open questions, optional interpretations, and current trade-offs.
+2. Record facts, assumptions, questions and trade-offs. For 1–2 uncertain claims that could change the conclusion, write primary sources, a falsifier and task `verify` before implementation in existing §2/§5.1/§6; no invented uncertainty. Missing sources stay unverified; independent-oracle examples: [`../templates.md`](../templates.md).
 3. Name the package with a stable, readable `YYYY-MM-DD_<verb>-<object>` Development Record slug (e.g. `2026-06-12_add-login-rate-limit`); verbs come from the controlled vocabulary in [`../naming-and-commits.md`](../naming-and-commits.md).
 4. In a Git repository, run the `/spec:new` branch preflight before writing any package file:
    - Require a clean tree; with uncommitted or untracked changes, stop and output triage advice (commit, stash, or move unrelated changes into their own Development Record). One class of dirt is carried instead of blocking: entries consisting solely of another active package's own documents under `<specs>/specs/<slug>/` (checklist ticks, evidence, handoff) are attributed per file with `--untracked-files=all` and skipped, so a previous round's unarchived documents never block the next package. Business files and `archive/` dirt still stop.
@@ -27,14 +27,13 @@ python3 scripts/init_spec_package.py --root <project> --slug YYYY-MM-DD_<slug> -
 ```
 
 7. Fill the package documents under `.spec/specs/YYYY-MM-DD_<slug>/` per [`../templates.md`](../templates.md). Every task carries `boundary` and `verify` written to the complete-verify recipe (运行目录/前置条件/完整命令/成功判定/失败处理，存在即写) — replace the template examples with real boundaries and verification commands that prove delivery before execution.
-8. When the task involves judging whether the project layout is reasonable, write the first-principles audit conclusion into `spec.md` first: directory responsibilities, module boundaries, dependency direction, runtime/source/state separation, entry discoverability, test and documentation support. If unreasonable, add the target tree, a migration/merge table, a reference migration map, a deprecated-item list, and verification; if reasonable, state why no restructuring happens.
+8. For layout judgments, record a first-principles audit in `spec.md`: directory/module responsibilities, dependency direction, runtime/source/state separation, entry discoverability, tests/docs. If unreasonable, add target tree, migration/merge and reference maps, deprecated items, verification; otherwise explain no restructuring.
 9. Lock the minimal implementation path in `spec.md` and name the abstractions, extensions, and configurability not done this round.
 10. After creation, continue straight into execution when no project-shaping decision is pending; only genuinely undecidable items go to the user.
 
 Constraints:
 
 - `spec.md` states both in-scope and out-of-scope content.
-- `spec.md` states key assumptions and open questions.
 - In a Git repository, `spec.md` records the integration branch (step 4 rules; `run`/`check`/`done` continue only on it).
 - `tasks.md` must be executable, every task with `boundary` and `verify`.
 - `spec.md` §6 success criteria must be verifiable; no vague adjectives.

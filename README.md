@@ -78,7 +78,7 @@ Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.22.0
+git checkout v0.22.2
 bash install.sh
 ```
 
@@ -155,7 +155,7 @@ python3 ~/.claude/skills/spec/scripts/install_activation_hooks.py --mode on    #
 
 - 判据看交付形状：独立验收面、实际实施者、可恢复的在途任务；文件数、文字长短、房间里空闲队友的人数都不单独决定。小修、只读调查、一次性实验、明确说"不要任务包"都直接做。
 - 只管理自己写入的条目，保留你的其他 hooks、`permissions` 和未知字段；坏配置拒写，写前备份，可随时 `--mode off`。
-- 覆盖面是 Edit/Write/MultiEdit/NotebookEdit 与 Agent/Task/SendMessage；不解析 Bash、MCP 和自定义工具，也不声称覆盖它们。队友/子代理不会建包，只接收主协调者的分配。
+- 覆盖面是 Edit/Write/MultiEdit/NotebookEdit 与 Agent/Task/SendMessage；不解析 Bash、MCP 和自定义工具，也不声称覆盖它们。队友/子代理不会建包，只接收主协调者的分配；按宿主的 `agent_id` 识别，以 `--agent` 启动的主会话仍按主会话检查；分屏模式的队友是独立进程，实测其提示事件不带 `agent_id`，因此同样按主会话处理。
 - 这是给配合型 agent 的提醒门，不是安全边界：形状与角色事实由 agent 自行报告，但退出 / 小改 / 只读这类结论性事实一律拒绝注入（注入即报错），用户明确拒绝只能由用户本人在宿主层覆盖（放行该次调用或关闭接线）；已记录的 `direct` 在新的用户输入或 2 小时后失效。它防的是“忘了评估”，不防刻意少报改动面。
 - 事件接线目前只针对 Claude Code。其他宿主共用同一份发现说明，但没有同等的事件保证。
 - `spec:doctor` 会区分"未安装 / 未接线 / 已接线"；已接线也始终标注"未经 live 验证"——文件存在或钩子退出码都不能证明模型实际主动采用。

@@ -63,11 +63,11 @@ Bounded reads: use `route_spec_package.py --brief` (state, contracts) or `spec_v
 
 ## Progress and continuation
 
-Continuation is `/spec:run` itself: next ready task → verify → check off → repeat; after an interruption it resumes from `tasks.md` state. Cross-collaborator boundaries (pause, takeover, agent-cluster lanes) go through the optional `handoff.md` (`scripts/spec_handoff.py`; contract: [`references/handoff.md`](references/handoff.md)). Autoplan/autorun resolve client and surface before execution: desktop/IDE plugins default to the current session, never another agent found on PATH (contract: `references/commands.md`). User pause/abort, pending messages, and trust prompts always outrun the loop; the optional `hooks/claude_stop_guard.py` keeps convergence explicit without expanding Git authorization.
+Resume `/spec:run` from `tasks.md`: next ready task → verify → check off. An all-green package receiving a new goal must update scope and unfinished tasks via `update` or `new` before implementation; `resume` proves identity only. Handover/pause/escalation/lane-end use optional `handoff.md` ([`references/handoff.md`](references/handoff.md)). Autoplan/autorun resolve client/surface first: desktop/IDE stays in-session, never another agent on PATH (`references/commands.md`). User interruptions and trust prompts outrun the loop; `hooks/claude_stop_guard.py` never expands Git authorization.
 
 ## Execution rules
 
-1. **User-facing output**: Spec Harness is the internal method, not the user's subject. Every update starts from the user's goal and actual project progress: readable project name, real tasks, current work, concrete issues, delivered results, and verification. Do not expose the stage pipeline, gate counts, package maintenance, or `/spec:*` command handoffs as the main narrative; use [`references/output-contracts.md`](references/output-contracts.md), where script output is authoritative.
+1. **User-facing output**: lead with project goal, readable name, real tasks/progress, current work, concrete issues, delivered results and verification. Keep stage pipelines, gate counts, package maintenance and `/spec:*` handoffs out of the main narrative; script output is authoritative ([`references/output-contracts.md`](references/output-contracts.md)).
 
 2. **Blocking conditions**:
    - Can't `run` while `spec.md` has template placeholders or blockers
@@ -77,7 +77,7 @@ Continuation is `/spec:run` itself: next ready task → verify → check off →
 
 3. **Issue handling**: Actionable issues found during `check` must be written back to the current package and fixed in the same round. Do not output executable fixes as user deliverables. Only ask the user about a project-shaping constraint, a decision that cannot be reasonably assumed, or an external dependency the agent cannot resolve. Closed issues must have one of: `resolved_current`, `resolved_followup`, `accepted_risk`, `external_blocked`, `non_actionable`.
 
-4. **Validation**: declare the verification level in `spec.md` (`package` / `integration` / `project`); `check`/`done` run that declared level with real evidence — a verbal "passed" never counts (contract: `references/stages/check.md`).
+4. **Validation**: declare and run `package` / `integration` / `project` ([`references/stages/check.md`](references/stages/check.md)). For 1–2 decisive uncertain claims, record primary sources, a falsifier and task `verify` before implementation in existing sections; invent none. Oracle independence, 已核验 / 推断 / 未核验 and examples: [`references/templates.md`](references/templates.md). Execution/freshness alone proves neither correctness nor model compliance.
 
 5. **Commit/push separation**: only `done` archives and commits; only `push` merges, pushes, and deletes branches; never combine file changes and a commit in one bash call; never `--no-verify` (contract: `references/stages/done.md`, `references/stages/push.md`).
 

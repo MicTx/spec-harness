@@ -14,12 +14,14 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import NamedTuple
 
+from safe_open_support import SafeOpenError, open_regular_read
 from spec_package_support import (
     PROTECTED_BRANCHES,
     PROTECTED_PREFIXES,
@@ -100,7 +102,31 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help=argparse.SUPPRESS,
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.adopt:
+        conflicting = [
+            flag
+            for flag, used in (("--branch", args.branch is not None), ("--skip-git-branch", args.skip_git_branch))
+            if used
+        ]
+        if conflicting:
+            parser.error(
+                "cannot be combined with --adopt: " + ", ".join(conflicting) + " (adoption binds the current branch; "
+                "it never creates or skips one)"
+            )
+    else:
+        adopt_only = [
+            flag
+            for flag, used in (
+                ("--confirm-adopt", args.confirm_adopt),
+                ("--teammate", bool(args.teammate)),
+                ("--writers-paused", args.writers_paused),
+            )
+            if used
+        ]
+        if adopt_only:
+            parser.error("these options need --adopt: " + ", ".join(adopt_only))
+    return args
 
 
 def render_template(
@@ -378,14 +404,44 @@ TEAMMATE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 ADOPTION_FILE = "adoption.json"
 MAX_BASELINE_ENTRIES = 500
 MAX_HASHED_FILE_BYTES = 64 * 1024 * 1024  # larger files are listed, never read whole
+ADOPT_LOCK_NAME = ".adopt.lock"
+#: Names the archive layout uses below ``specs/``; a package must never take one.
+RESERVED_SLUGS = frozenset({"archive", "retired"})
 
 
 class AdoptionError(RuntimeError):
     pass
 
 
-def _dirty_baseline(repo_root: Path) -> list[dict[str, str]]:
-    """Path, status and content hash of every dirty entry; contents are never stored."""
+def _baseline_entry(repo_root: Path, path: str, status: str) -> dict[str, str]:
+    entry: dict[str, str] = {"path": path, "status": status.strip() or "?"}
+    digest = ""
+    target = repo_root / path
+    try:
+        if target.is_file() and not target.is_symlink():
+            if target.stat().st_size > MAX_HASHED_FILE_BYTES:
+                entry["skipped"] = "too_large"
+            else:
+                hasher = hashlib.sha256()
+                with target.open("rb") as handle:
+                    for block in iter(lambda: handle.read(1 << 20), b""):
+                        hasher.update(block)
+                digest = hasher.hexdigest()
+    except OSError:
+        entry["skipped"] = "unreadable"  # listed by path; an unreadable file must not abort the adoption
+        digest = ""
+    entry["sha256"] = digest
+    entry["path"] = entry["path"].encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
+    return entry
+
+
+def _dirty_baseline(repo_root: Path, exclude: str | None = None) -> tuple[list[dict[str, str]], int]:
+    """Path, status and content hash of every dirty entry; contents are never stored.
+
+    Returns the recorded entries (at most MAX_BASELINE_ENTRIES) and the total dirty count, so a
+    truncated record never passes for the whole tree. ``exclude`` is the adopter's own lock directory
+    (repo-relative); teammates' edits under the specs tree are recorded like any other entry.
+    """
     # --no-optional-locks: a plain `git status` may refresh and rewrite .git/index (and fight a
     # teammate for index.lock); adoption must stay strictly read-only on Git state.
     completed = subprocess.run(
@@ -397,6 +453,7 @@ def _dirty_baseline(repo_root: Path) -> list[dict[str, str]]:
     # bytes -> str with surrogateescape: a path git reports in another encoding must not abort adoption
     raw = completed.stdout.decode("utf-8", errors="surrogateescape")
     entries: list[dict[str, str]] = []
+    total = 0
     fields = [field for field in raw.split("\0") if field]
     index = 0
     while index < len(fields):
@@ -405,26 +462,19 @@ def _dirty_baseline(repo_root: Path) -> list[dict[str, str]]:
         if "R" in status or "C" in status:
             index += 1  # rename/copy carries the origin path as a second field
         index += 1
-        if path.startswith(".spec/"):
+        if exclude and (path == exclude or path.startswith(exclude + "/")):
             continue
-        digest = ""
-        entry: dict[str, str] = {"path": path, "status": status.strip() or "?"}
-        target = repo_root / path
-        if target.is_file() and not target.is_symlink():
-            if target.stat().st_size > MAX_HASHED_FILE_BYTES:
-                entry["skipped"] = "too_large"
-            else:
-                hasher = hashlib.sha256()
-                with target.open("rb") as handle:
-                    for block in iter(lambda: handle.read(1 << 20), b""):
-                        hasher.update(block)
-                digest = hasher.hexdigest()
-        entry["sha256"] = digest
-        entry["path"] = entry["path"].encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
-        entries.append(entry)
-        if len(entries) >= MAX_BASELINE_ENTRIES:
-            break
-    return entries
+        total += 1
+        if len(entries) < MAX_BASELINE_ENTRIES:
+            entries.append(_baseline_entry(repo_root, path, status))
+    return entries, total
+
+
+def _repo_relative(path: Path, repo_root: Path) -> str | None:
+    try:
+        return path.resolve(strict=False).relative_to(repo_root).as_posix()
+    except ValueError:
+        return None
 
 
 def _pid_alive(pid: int) -> bool:
@@ -438,6 +488,27 @@ def _pid_alive(pid: int) -> bool:
 
 
 OWNERLESS_GRACE_SECONDS = 120
+MAX_OWNER_BYTES = 64
+
+
+def _read_owner(lock_dir: Path) -> str | None:
+    """The owner record as written (stripped), or None when it is absent, unreadable, or not a small
+    regular file. A FIFO or device planted as the owner is never read (reading one can block forever)."""
+    owner = lock_dir / "owner"
+    try:
+        with open_regular_read(owner, max_bytes=MAX_OWNER_BYTES) as descriptor:
+            data = os.read(descriptor, MAX_OWNER_BYTES + 1)
+    except SafeOpenError as exc:
+        if exc.reason != "unsupported":
+            return None
+        try:  # platforms without O_NOFOLLOW (Windows): no FIFOs or devices to plant there
+            with owner.open("rb") as handle:
+                data = handle.read(MAX_OWNER_BYTES + 1)
+        except OSError:
+            return None
+    except OSError:
+        return None
+    return data.decode("utf-8", errors="replace").strip()
 
 
 def _claim_stale_lock(lock_dir: Path, observed_owner: str | None) -> bool:
@@ -445,48 +516,54 @@ def _claim_stale_lock(lock_dir: Path, observed_owner: str | None) -> bool:
 
     Reading the owner and deleting it are two steps, so a second adopter could replace the lock in
     between and have its fresh lock deleted. Renaming the directory to a unique name is a single
-    atomic step: whoever wins the rename owns the stale lock, and we then verify it still holds the
-    owner record we judged dead before discarding it.
+    atomic step: whoever wins the rename owns the stale lock, and we then verify it is still a plain
+    directory holding the owner record we judged dead before discarding it.
     """
     graveyard = lock_dir.with_name(f".adopt.lock.stale-{os.getpid()}-{time.time_ns()}")
     try:
         os.rename(lock_dir, graveyard)
     except OSError:
         return False
-    try:
-        owner = (graveyard / "owner").read_text(encoding="utf-8").strip() if (graveyard / "owner").exists() else None
-    except OSError:
-        owner = None
-    if owner != observed_owner:
-        # it changed hands before our rename: put it back if the slot is free, never delete it
+    if graveyard.is_symlink() or not graveyard.is_dir() or _read_owner(graveyard) != observed_owner:
+        # swapped for a link or changed hands before our rename: put it back if the slot is free, never delete it
         try:
             os.rename(graveyard, lock_dir)
         except OSError:
             pass
         return False
-    for leftover in graveyard.iterdir():
-        leftover.unlink()
-    graveyard.rmdir()
+    try:
+        (graveyard / "owner").unlink(missing_ok=True)
+        graveyard.rmdir()
+    except OSError:
+        pass  # already out of the way under a unique name; anything unexpected inside is left for inspection
     return True
 
 
 def _acquire_adoption_lock(lock_dir: Path) -> None:
     """Exclusive per-project lock; only a provably dead or long-abandoned holder is displaced.
 
-    A lock with a live owner is never taken. A lock with no owner record is either a holder between
-    mkdir and its owner write (seconds) or a crash leftover; it is reclaimed only after a grace window.
+    A lock with a live owner is never taken. A lock without a usable owner record (missing, empty, or
+    not a pid) is either a holder between mkdir and its owner write (seconds) or a crash leftover; it
+    is reclaimed only after a grace window. A lock path that is not a plain directory is never followed.
     """
     busy = AdoptionError("another adoption is in progress for this project; retry after it finishes")
     for _attempt in range(3):
         try:
             lock_dir.mkdir()  # atomic: a concurrent adopter fails here
         except FileExistsError:
-            owner_file = lock_dir / "owner"
+            if lock_dir.is_symlink() or not lock_dir.is_dir():
+                # stale-lock cleanup would act on whatever a link points at
+                raise AdoptionError(
+                    f"refusing the adoption lock: {lock_dir} is not a plain directory; remove it by hand"
+                ) from None
+            observed = _read_owner(lock_dir)
             try:
-                observed = owner_file.read_text(encoding="utf-8").strip()
-                holder = int(observed)
-            except (OSError, ValueError):
-                observed, holder = None, None
+                holder = int(observed) if observed is not None else None
+            except ValueError:
+                holder = None
+            if holder is not None and not 0 < holder < 2**31:
+                # not one process: 0 and negatives address process groups, larger values overflow pid_t
+                holder = None
             if holder is not None:
                 if _pid_alive(holder):
                     raise busy from None
@@ -500,14 +577,21 @@ def _acquire_adoption_lock(lock_dir: Path) -> None:
             if not _claim_stale_lock(lock_dir, observed):
                 raise busy from None
             continue
-        (lock_dir / "owner").write_text(str(os.getpid()), encoding="utf-8")
+        try:
+            (lock_dir / "owner").write_text(str(os.getpid()), encoding="utf-8")
+        except OSError as exc:
+            # an ownerless lock would block every adoption for the grace window
+            _release_adoption_lock(lock_dir)
+            raise AdoptionError(
+                f"could not record the adoption lock owner ({exc.__class__.__name__}); nothing was adopted"
+            ) from exc
         return
     raise busy
 
 
 def _release_adoption_lock(lock_dir: Path) -> None:
     try:
-        (lock_dir / "owner").unlink()
+        (lock_dir / "owner").unlink(missing_ok=True)
         lock_dir.rmdir()
     except OSError:
         pass
@@ -518,11 +602,13 @@ def adopt_in_flight_work(args: argparse.Namespace, slug: str, title: str, specs_
     if not args.confirm_adopt:
         raise AdoptionError("--adopt requires --confirm-adopt: binding in-flight work to a package must be deliberate")
     target_root = Path(args.root).resolve()
+    if not target_root.is_dir():
+        raise AdoptionError(f"adoption needs an existing project directory; {target_root} is not a directory")
     repo_root = repository_root(target_root)
     if repo_root is None:
         raise AdoptionError("adoption needs a Git repository; this directory is not one")
     for name in args.teammate:
-        if not TEAMMATE_RE.match(name):
+        if not TEAMMATE_RE.fullmatch(name):
             raise AdoptionError("teammate names must be 1-64 letters, digits, '.', '_' or '-'")
     branch = git_stdout(repo_root, "branch", "--show-current")
     if not branch:
@@ -530,10 +616,14 @@ def adopt_in_flight_work(args: argparse.Namespace, slug: str, title: str, specs_
     ensure_safe_branch_name(repo_root, branch, "current branch")
     try:
         ensure_not_protected(branch)
+        if branch == args.main_branch:
+            raise GitPreflightError(
+                f"refusing to use protected integration branch: {branch} (the declared --main-branch)"
+            )
     except GitPreflightError as exc:
         raise AdoptionError(str(exc)) from exc
     package_dir = resolve_specs_child(specs_root, "specs", slug)
-    lock_dir = specs_root / ".adopt.lock"
+    lock_dir = specs_root / ADOPT_LOCK_NAME
     specs_root.mkdir(parents=True, exist_ok=True)
     _acquire_adoption_lock(lock_dir)
     try:
@@ -565,11 +655,14 @@ def _adopt_locked(
         )
     templates = load_reference_templates(skill_root)
     head = git_stdout(repo_root, "rev-parse", "HEAD")
+    dirty, dirty_total = _dirty_baseline(repo_root, _repo_relative(specs_root / ADOPT_LOCK_NAME, repo_root))
     baseline = {
         "version": 1,
         "branch": branch,
         "head": head,
-        "dirty": _dirty_baseline(repo_root),
+        "dirty": dirty,
+        "dirty_total": dirty_total,
+        "dirty_truncated": dirty_total > len(dirty),
         "teammates": list(args.teammate),
         "coordinator": "main-session",
         "writers_paused": bool(args.writers_paused),
@@ -577,8 +670,10 @@ def _adopt_locked(
     }
     note = f"接管在途工作：绑定当前分支，基线 {head[:12]}，不切换分支、不改动任何队友文件"
     staging = package_dir.with_name(f".{package_dir.name}.adopt-{os.getpid()}")
+    created = False
     try:
         staging.mkdir(parents=True)
+        created = True
         for filename, template in templates.items():
             write_text(staging / filename, render_template(template, title, branch, note))
         write_text(staging / ADOPTION_FILE, json.dumps(baseline, indent=2, sort_keys=True) + "\n")
@@ -589,17 +684,32 @@ def _adopt_locked(
             f"could not claim the package atomically ({exc.__class__.__name__}); nothing was written"
         ) from exc
     finally:
-        if staging.exists():
+        # clean only the directory this call created; a pre-existing path (or a link) is never followed
+        if created and staging.is_dir() and not staging.is_symlink():
             for leftover in staging.iterdir():
                 leftover.unlink()
             staging.rmdir()
     print(f"adopted: {package_dir}")
     print(f"branch: {branch} (unchanged)")
-    print(f"baseline: {len(baseline['dirty'])} dirty entries recorded by hash")
-    if args.teammate and not args.writers_paused:
+    if baseline["dirty_truncated"]:
+        print(
+            f"baseline: {len(dirty)} of {dirty_total} dirty entries recorded by hash "
+            f"(truncated at {MAX_BASELINE_ENTRIES}; the rest are counted, not listed)"
+        )
+    else:
+        print(f"baseline: {len(dirty)} dirty entries recorded by hash")
+    if not args.writers_paused:
         print(
             "note: running writers were not confirmed paused. Ask each teammate to pause or hand off at a clean point "
             "before assuming a stable baseline; adoption does not stop or direct anyone."
+        )
+    if not branch.startswith("spec/"):
+        print(
+            "note: this branch is outside `spec/`. With the Spec git hooks installed, pre-commit runs the full "
+            "gate here, so commits (teammates' included) fail until this package passes its check, and spec:push "
+            f"merges only `spec/` branches. Rename it now (git branch -m {shlex.quote(branch)} spec/<name>) and "
+            "update the "
+            "package's `Git integration branch` line to match."
         )
     return 0
 
@@ -611,6 +721,9 @@ def main() -> int:
         slug = validate_slug(args.slug.strip())
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if slug in RESERVED_SLUGS:
+        print(f"error: slug '{slug}' is reserved for the archive layout under specs/", file=sys.stderr)
         return 1
 
     title = args.title.strip()
@@ -638,7 +751,7 @@ def main() -> int:
     if args.adopt:
         try:
             return adopt_in_flight_work(args, slug, title, specs_root, skill_root)
-        except (AdoptionError, GitPreflightError, ValueError, subprocess.CalledProcessError) as exc:
+        except (AdoptionError, GitPreflightError, ValueError, subprocess.CalledProcessError, OSError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
 

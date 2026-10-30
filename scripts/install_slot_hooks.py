@@ -22,7 +22,6 @@ from __future__ import annotations
 import argparse
 import copy
 import json
-import shutil
 import sys
 import time
 from pathlib import Path
@@ -32,6 +31,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
+from safe_open_support import copy_private, replace_preserving_mode  # noqa: E402
 from slot_registry import REPO_ROOT, SlotError, load_manifest, validate_slot  # noqa: E402
 
 HOOK_TIMEOUT_SECONDS = 20
@@ -180,11 +180,10 @@ def write_settings(path: Path, payload: dict[str, Any]) -> None:
     backup = None
     if path.is_file():
         backup = path.with_name(path.name + f".bak-{int(time.time())}")
-        shutil.copy2(path, backup)
+        copy_private(path, backup)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    # settings often hold credentials: keep the file's mode instead of taking the umask default
+    replace_preserving_mode(path, (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
 
 
 def main(argv: Optional[list[str]] = None) -> int:

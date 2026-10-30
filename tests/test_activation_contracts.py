@@ -201,3 +201,48 @@ def test_the_guard_is_documented_as_a_reminder_gate_not_a_security_boundary():
     for readme in ("README.md", "README-en.md"):
         body = (ROOT / readme).read_text(encoding="utf-8")
         assert "安全边界" in body or "security boundary" in body, readme
+
+
+# --- update rollback and adoption branch contract (week review, reproduced before the fix) ---
+
+
+def _adoption_section() -> str:
+    text = (ROOT / "references/handoff.md").read_text(encoding="utf-8")
+    start = text.index("## Adopting in-flight work")
+    end = text.find("\n## ", start + 1)
+    return text[start:] if end == -1 else text[start:end]
+
+
+def test_adopted_update_checkpoint_stages_only_the_package():
+    """An adopted package shares the tree with teammates: `git add -A` would commit their work and a
+    whole-tree reset would discard it, so its recovery point and rollback stay inside the package."""
+    update = (ROOT / "references/stages/update.md").read_text(encoding="utf-8")
+    assert "adoption.json" in update
+    assert "git add -- <pkg> && git commit" in update
+    assert "git restore --source=<WIP-commit> --staged --worktree -- <pkg>" in update
+    assert "stages/update.md" in _adoption_section()
+
+
+def test_rollback_guidance_reverts_the_update_not_the_recovery_point():
+    """The WIP commit holds the pre-update work: reverting it undoes that work and keeps the update."""
+    update = (ROOT / "references/stages/update.md").read_text(encoding="utf-8")
+    cli = (ROOT / "scripts/update_checkpoint.py").read_text(encoding="utf-8")
+    gate = (ROOT / "scripts/check_spec_package.py").read_text(encoding="utf-8")
+    assert re.search(r"git revert <WIP-commit>(?!\.\.)", update) is None
+    assert "git revert --no-edit <WIP-commit>..HEAD" in update
+    assert re.search(r"git revert <WIP 提交 sha>(?!\.\.)", cli) is None
+    assert "git revert --no-edit <WIP 提交 sha>..HEAD" in cli
+    assert "git revert 更新前 WIP 提交" not in gate and "git revert 其后的提交" in gate
+    assert ".- **Resolution**" not in update, "two bullets of the retired-checkpoint list run together"
+    # An interrupted update is usually not committed yet: WIP..HEAD is then empty and `git revert` fails.
+    rollback = next(line for line in update.splitlines() if line.startswith("3. **Rollback"))
+    assert "uncommitted" in rollback, rollback
+    assert "改写尚未提交" in cli
+    assert "未提交的改写" in gate
+
+
+def test_adoption_doc_names_the_spec_branch_rename():
+    section = _adoption_section()
+    assert "pre-commit" in section and "full gate" in section
+    assert "git branch -m <branch> spec/<name>" in section
+    assert "Git integration branch" in section

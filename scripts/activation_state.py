@@ -22,10 +22,11 @@ from pathlib import Path
 
 DECISIONS = ("direct", "create", "resume", "defer")
 MAX_STATE_BYTES = 4096
-#: A "direct" verdict is only trusted for a short window: nothing else bounds it if the user keeps
-#: talking in one long session. create/resume are anchored by a package instead.
+#: Every decision expires on the next main-session prompt. Direct also expires
+#: by age when no new prompt arrives; create/resume still require reassessment per request.
 DIRECT_TTL_SECONDS = 2 * 3600
 SAFE = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
+MAX_SESSION_LENGTH = 256
 
 
 def safe_key(value: object) -> str:
@@ -34,9 +35,9 @@ def safe_key(value: object) -> str:
 
 
 def valid_session(value: object) -> bool:
-    """Any non-empty printable id up to 256 characters. The file name is a hash, so the id never
-    reaches the filesystem and nothing about its spelling can traverse or collide."""
-    return isinstance(value, str) and 0 < len(value) <= 256 and value.isprintable()
+    """Any non-empty printable id up to MAX_SESSION_LENGTH characters. The file name is a hash, so
+    the id never reaches the filesystem and nothing about its spelling can traverse or collide."""
+    return isinstance(value, str) and 0 < len(value) <= MAX_SESSION_LENGTH and value.isprintable()
 
 
 def state_dir(root: Path) -> Path:
@@ -137,19 +138,18 @@ def read_assessment(root: Path, session: str) -> dict[str, str] | None:
     return {key: str(record.get(key, "")) for key in ("decision", "task", "scope")}
 
 
-def invalidate_direct(root: Path, session: str) -> None:
-    """A new user request voids a `direct` verdict; a package-backed verdict stays.
+def invalidate_assessment(root: Path, session: str) -> None:
+    """A new user request voids every prior decision, including create/resume.
 
-    PreToolUse carries no task or scope field, so a fresh UserPromptSubmit is the only real
-    signal that the work may have changed. Best effort: a failure here leaves the TTL as backstop.
+    PreToolUse carries no task or scope field; an active package is not proof that
+    it covers this request. Best effort, preserving the hook's I/O fail-open boundary.
     """
     path = state_path(root, session)
     try:
         _refuse_links(path)
-        record = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(record, dict) and record.get("decision") == "direct":
+        if _trusted_dir(path.parent):
             path.unlink()
-    except (OSError, ValueError):
+    except OSError:
         pass
 
 

@@ -460,7 +460,7 @@ def test_baseline_survives_a_non_utf8_path(repo, monkeypatch):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     _git_returning(monkeypatch, module, b"?? bad\xff.txt\0?? ok.txt\0")
-    entries = module._dirty_baseline(repo)
+    entries, _total = module._dirty_baseline(repo)
     assert {e["path"] for e in entries} >= {"ok.txt"} and len(entries) == 2
     assert all(isinstance(e["path"], str) for e in entries)
     json.dumps(entries)  # the record must be serialisable
@@ -479,3 +479,222 @@ def test_dirty_check_treats_unreadable_output_as_dirty_not_a_crash(tmp_path, mon
 
     monkeypatch.setattr(policy.subprocess, "run", fake)
     assert policy._worktree_dirty(tmp_path) is True
+
+
+# --- lock safety (week review, reproduced before the fix) ---------------------------------
+
+
+def test_a_symlinked_lock_is_refused_and_its_target_kept(repo, tmp_path):
+    import os
+    import time
+
+    dirty(repo)
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    (target / "a.txt").write_text("keep a\n")
+    (target / "b.txt").write_text("keep b\n")
+    old = time.time() - 600
+    os.utime(target, (old, old))
+    lock = repo / ".spec" / ".adopt.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.symlink_to(target, target_is_directory=True)
+    completed = adopt(repo)
+    assert sorted(p.name for p in target.iterdir()) == ["a.txt", "b.txt"], "stale-lock cleanup followed the link"
+    assert completed.returncode != 0 and "not a plain directory" in completed.stderr
+    assert lock.is_symlink()
+    assert not (repo / ".spec/specs" / SLUG).exists()
+
+
+@pytest.mark.parametrize("owner", ["", "abc"])
+def test_an_unparseable_owner_lock_is_reclaimed_after_the_grace_window(repo, owner):
+    import os
+    import time
+
+    dirty(repo)
+    lock = plant_lock(repo, owner)
+    fresh = adopt(repo)
+    assert fresh.returncode != 0 and "in progress" in fresh.stderr, "a fresh lock must still be respected"
+    old = time.time() - 600
+    os.utime(lock, (old, old))
+    completed = adopt(repo)
+    assert completed.returncode == 0, completed.stderr
+    assert (repo / ".spec/specs" / SLUG / "spec.md").is_file()
+    assert not lock.exists()
+
+
+def test_a_failed_owner_write_releases_the_lock(repo, monkeypatch):
+    import errno
+    import importlib.util
+    import pathlib
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    spec = importlib.util.spec_from_file_location("init_pkg_owner_write", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    real_write = pathlib.Path.write_text
+
+    def full_disk(self, *args, **kwargs):
+        if self.name == "owner":
+            real_write(self, "", encoding="utf-8")  # the file is created, then the write fails
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_write(self, *args, **kwargs)
+
+    lock = repo / ".spec" / ".adopt.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(pathlib.Path, "write_text", full_disk)
+    with pytest.raises((module.AdoptionError, OSError)) as raised:
+        module._acquire_adoption_lock(lock)
+    monkeypatch.undo()
+    assert not lock.exists(), "a failed owner write left a lock that blocks every later adoption"
+    assert isinstance(raised.value, module.AdoptionError), "the CLI only reports AdoptionError cleanly"
+    dirty(repo)
+    assert adopt(repo).returncode == 0
+
+
+# --- adoption inputs and baseline fidelity (week review, reproduced before the fix) -------
+
+
+def test_baseline_reports_truncation(repo):
+    for number in range(505):
+        (repo / f"bulk{number:03d}.txt").write_text("x\n")
+    completed = adopt(repo)
+    assert completed.returncode == 0, completed.stderr
+    baseline = json.loads((repo / ".spec/specs" / SLUG / "adoption.json").read_text())
+    assert len(baseline["dirty"]) == 500
+    assert baseline["dirty_total"] == 505 and baseline["dirty_truncated"] is True
+    assert "500 of 505" in completed.stdout and "truncated" in completed.stdout
+
+
+@pytest.mark.parametrize("specs_dir", [None, "docs/specstore"])
+def test_baseline_keeps_spec_edits_and_skips_only_the_lock(repo, specs_dir):
+    plans = repo / ".spec" / "plans"
+    plans.mkdir(parents=True)
+    (plans / "p.md").write_text("v1\n")
+    git(repo, "add", ".spec")
+    git(repo, "commit", "-qm", "plan")
+    (plans / "p.md").write_text("teammate edit\n")
+    (plans / "new.md").write_text("draft\n")
+    completed = adopt(repo, *(["--specs-dir", specs_dir] if specs_dir else []))
+    assert completed.returncode == 0, completed.stderr
+    record = repo / (specs_dir or ".spec") / "specs" / SLUG / "adoption.json"
+    paths = {entry["path"] for entry in json.loads(record.read_text())["dirty"]}
+    assert {".spec/plans/p.md", ".spec/plans/new.md"} <= paths, "teammates' .spec edits were dropped"
+    assert not any(".adopt.lock" in path for path in paths), "the adopter's own lock was recorded"
+
+
+def test_unreadable_dirty_file_is_recorded_not_fatal(repo, monkeypatch):
+    import importlib.util
+    import pathlib
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    spec = importlib.util.spec_from_file_location("init_pkg_unreadable", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    (repo / "locked.txt").write_text("private\n")
+    (repo / "ok.txt").write_text("fine\n")
+    real_open = pathlib.Path.open
+
+    def deny(self, *args, **kwargs):
+        if self.name == "locked.txt":
+            raise PermissionError(13, "Permission denied")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "open", deny)
+    entries, total = module._dirty_baseline(repo)
+    by_path = {entry["path"]: entry for entry in entries}
+    assert total == 2
+    assert by_path["locked.txt"]["skipped"] == "unreadable" and by_path["locked.txt"]["sha256"] == ""
+    assert by_path["ok.txt"]["sha256"] == hashlib.sha256(b"fine\n").hexdigest()
+
+
+@pytest.mark.parametrize("branch, rename_note", [("feature/export", True), ("spec/export-suite", False)])
+def test_unconfirmed_writers_and_non_spec_branch_are_flagged(repo, branch, rename_note):
+    if branch != "feature/export":
+        git(repo, "checkout", "-q", "-b", branch)
+    dirty(repo)
+    completed = adopt(repo)  # no --teammate and no --writers-paused
+    assert completed.returncode == 0, completed.stderr
+    assert "not confirmed paused" in completed.stdout
+    assert ("git branch -m feature/export spec/" in completed.stdout) is rename_note
+    assert ("pre-commit" in completed.stdout) is rename_note, "the note must say commits are gated, not only push"
+
+
+ADOPT = ["--adopt", "--confirm-adopt"]
+
+
+@pytest.mark.parametrize(
+    "extra, slug, needle, missing_root",
+    [
+        pytest.param([*ADOPT, "--teammate", "alice\n"], SLUG, "teammate", False, id="teammate-newline"),
+        pytest.param([*ADOPT, "--branch", "spec/x"], SLUG, "--branch", False, id="adopt-with-branch"),
+        pytest.param([*ADOPT, "--skip-git-branch"], SLUG, "--skip-git-branch", False, id="adopt-with-skip"),
+        pytest.param([*ADOPT, "--main-branch", "feature/export"], SLUG, "protected", False, id="declared-main"),
+        pytest.param(ADOPT, "archive", "reserved", False, id="adopt-archive-slug"),
+        pytest.param([], "retired", "reserved", False, id="new-retired-slug"),
+        pytest.param(["--teammate", "alice"], SLUG, "--adopt", False, id="teammate-without-adopt"),
+        pytest.param(["--writers-paused"], SLUG, "--adopt", False, id="paused-without-adopt"),
+        pytest.param(ADOPT, SLUG, "not a directory", True, id="missing-root"),
+    ],
+)
+def test_invalid_adoption_inputs_are_refused(repo, extra, slug, needle, missing_root):
+    before = snapshot(repo)
+    root = repo.parent / "missing" if missing_root else repo
+    completed = subprocess.run(
+        [sys.executable, str(SCRIPT), "--root", str(root), "--slug", slug, "--title", "Export suite", *extra],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert completed.returncode != 0, completed.stdout
+    assert needle in completed.stderr and "Traceback" not in completed.stderr, completed.stderr
+    assert snapshot(repo) == before
+    assert not (repo / ".spec").exists()
+
+
+# --- security review of this round's adoption changes (reproduced before the fix) ----------
+
+
+def test_the_rename_hint_quotes_the_branch(repo):
+    git(repo, "checkout", "-q", "-b", "x$(id)")  # a valid ref name: pasting it unquoted runs `id`
+    dirty(repo)
+    completed = adopt(repo)
+    assert completed.returncode == 0, completed.stderr
+    assert "git branch -m 'x$(id)' spec/" in completed.stdout, completed.stdout
+
+
+def test_an_out_of_range_owner_pid_is_treated_as_ownerless(repo):
+    import os
+    import time
+
+    dirty(repo)
+    lock = plant_lock(repo, 10**30)
+    fresh = adopt(repo)
+    assert "Traceback" not in fresh.stderr, fresh.stderr
+    assert fresh.returncode != 0 and "in progress" in fresh.stderr
+    old = time.time() - 600
+    os.utime(lock, (old, old))
+    completed = adopt(repo)
+    assert completed.returncode == 0, completed.stderr
+    assert not lock.exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="FIFOs are POSIX-only")
+def test_an_owner_that_is_not_a_regular_file_is_never_read(repo):
+    import os
+    import time
+
+    dirty(repo)
+    lock = repo / ".spec" / ".adopt.lock"
+    lock.mkdir(parents=True)
+    os.mkfifo(lock / "owner")  # reading a FIFO with no writer blocks forever
+    args = [sys.executable, str(SCRIPT), "--root", str(repo), "--slug", SLUG, "--title", "Export suite"]
+    args += ["--adopt", "--confirm-adopt"]
+    try:
+        fresh = subprocess.run(args, capture_output=True, text=True, timeout=20)
+    except subprocess.TimeoutExpired:
+        pytest.fail("adoption blocked reading a lock owner that is not a regular file")
+    assert fresh.returncode != 0 and "in progress" in fresh.stderr, fresh.stderr
+    old = time.time() - 600
+    os.utime(lock, (old, old))
+    completed = subprocess.run(args, capture_output=True, text=True, timeout=20)
+    assert completed.returncode == 0, completed.stderr

@@ -42,7 +42,7 @@ def make_skill_root(base: Path, with_guard=True):
     return root
 
 
-def doctor(home, skill_root, project):
+def doctor(home, skill_root, project, host="claude"):
     env = {**os.environ, "HOME": str(home)}
     completed = subprocess.run(
         [
@@ -53,7 +53,7 @@ def doctor(home, skill_root, project):
             "--skill-root",
             str(skill_root),
             "--host",
-            "claude",
+            host,
             "--format",
             "json",
         ],
@@ -221,3 +221,107 @@ def test_a_root_with_a_single_quote_is_not_misreported_as_another_install_root(e
     assert install(home, skill, "on").returncode == 0
     check, _ = doctor(home, skill, project)
     assert check["status"] == "info" and "已接线" in check["detail"], check
+
+
+# --- scope, host filter and compile check (week review, reproduced before the fix) -----
+
+
+def install_project(home, skill_root, project, mode="on"):
+    return subprocess.run(
+        [
+            sys.executable,
+            str(INSTALLER),
+            "--mode",
+            mode,
+            "--root",
+            str(skill_root),
+            "--scope",
+            "project",
+            "--project-root",
+            str(project),
+        ],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HOME": str(home)},
+        timeout=30,
+    )
+
+
+def test_project_scope_wiring_is_reported_as_wired(env):
+    home, project, base = env
+    skill = make_skill_root(base)
+    assert install_project(home, skill, project).returncode == 0
+    check, _ = doctor(home, skill, project)
+    assert check["status"] == "info", check
+    assert "已接线" in check["detail"] and "项目级" in check["detail"], check
+    assert "未接线" not in check["detail"]
+    assert not (home / ".claude" / "settings.json").exists()
+
+
+def test_incomplete_project_wiring_hints_the_project_command(env):
+    home, project, base = env
+    skill = make_skill_root(base)
+    assert install_project(home, skill, project).returncode == 0
+    path = project / ".claude" / "settings.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["hooks"].pop("PreToolUse")
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    before = path.read_bytes()
+    check, _ = doctor(home, skill, project)
+    assert check["status"] == "warn" and "PreToolUse" in check["detail"], check
+    assert "--scope project" in check.get("fixNote", ""), check
+    assert path.read_bytes() == before
+
+
+def test_activation_check_respects_the_host_scope(env):
+    home, project, base = env
+    skill = make_skill_root(base)
+    assert install(home, skill, "on").returncode == 0
+    check, _ = doctor(home, skill, project, host="pi")
+    assert check is None, check
+
+
+def test_a_guard_that_does_not_compile_is_flagged(env):
+    home, project, base = env
+    skill = make_skill_root(base)
+    assert install(home, skill, "on").returncode == 0
+    (skill / "hooks/claude_activation_guard.py").write_text("def broken(:\n", encoding="utf-8")
+    check, _ = doctor(home, skill, project)
+    assert check["status"] == "warn", check
+    assert "编译" in check["detail"], check
+    assert not list((skill / "hooks").glob("__pycache__")), "the compile check must not write bytecode"
+
+
+def test_deeply_nested_project_settings_do_not_crash_doctor(env):
+    """Project settings come from the repository: a pathological file is reported, never a traceback."""
+    home, project, base = env
+    skill = make_skill_root(base)
+    (project / ".claude").mkdir()
+    (project / ".claude" / "settings.json").write_text("[" * 100000, encoding="utf-8")
+    completed = subprocess.run(
+        [sys.executable, str(DOCTOR), "--root", str(project), "--skill-root", str(skill), "--host", "claude"]
+        + ["--format", "json"],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HOME": str(home)},
+        timeout=120,
+    )
+    assert "Traceback" not in completed.stderr, completed.stderr[-400:]
+    check = next(c for c in json.loads(completed.stdout)["checks"] if c["id"] == CHECK_ID)
+    assert check["status"] == "warn" and "settings" in check["detail"], check
+
+
+def test_a_rewritten_guard_command_is_not_reported_as_wired(env):
+    """Only the installer's own command shape is wiring; `--mode off` would not remove anything else either."""
+    home, project, base = env
+    skill = make_skill_root(base)
+    assert install(home, skill, "on").returncode == 0
+    path = home / ".claude" / "settings.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    for event in ("UserPromptSubmit", "PreToolUse"):
+        for group in payload["hooks"][event]:
+            for entry in group["hooks"]:
+                entry["command"] += " && echo extra"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    check, _ = doctor(home, skill, project)
+    assert "已接线（" not in check["detail"], check

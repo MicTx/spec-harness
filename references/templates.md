@@ -77,6 +77,10 @@ Writing requirements:
 - `2. 假设与待确认` (assumptions & open questions) must not be empty; write uncertainties down.
 - `4. 最小实现路径` (minimal implementation path) must have at least 3 items and answer "why not more this round".
 - Do not put optional governance headings into the default package.
+- In existing §2/§5.1/§6, focus on 1–2 uncertain claims that could change the conclusion: record primary sources, a falsifier (what result would refute the claim), and a linked task `verify` before implementation. Do not invent uncertainty or add default headings/files; revisit when scope or evidence changes and preserve counterevidence in §2.5.
+- Independence concerns the oracle's source: implementation-generated expected values merely mirror current behavior and cannot prove it is correct. Example: computing expected totals with the same aggregation under test is self-confirmation; derive them from trusted raw data or an independent reference method instead. Code explains what runs; requirements, standards or raw observations establish what should happen. A different agent repeating the same assumptions adds no independent proof; the same model checking independent sources is not excluded by identity.
+- Label decisive conclusions 已核验 / 推断 / 未核验 (verified / inferred / unverified). Missing material must be named and stays unverified; do not tick dependent success criteria. Conflicting summaries yield to primary evidence with the conflict stated. A passing execution/freshness record proves neither the oracle nor semantic correctness; static contract regression does not prove model compliance.
+- An all-green package receiving a new goal must update scope and unfinished tasks via `update` or `new` before implementation. A fresh `resume` establishes package identity only; neither it nor old green tasks proves the new goal is covered.
 
 When tasks depend on each other, declare `- depends-on: task_0001, task_0002` (comma-separated positional IDs) under the dependent task; execution follows dependencies, reordering must keep the IDs in sync, and without a declaration tasks stay independent.
 

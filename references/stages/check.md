@@ -14,7 +14,7 @@ Check items are whatever `scripts/check_spec_package.py` outputs — never hand-
 
 Execution requirements:
 
-- Walk the acceptance surface plus the checker output item by item: no verbal-only judgments, evidence attached, never a bare "passed".
+- Trace each decisive claim → primary source → falsifier → actual result, linked to task verify; Execution/freshness does not prove semantic correctness. Missing evidence stays 未核验 and dependent criteria stay unchecked; resume is package identity, not scope coverage. Review acceptance plus checker output, never a bare "passed".
 - Retried a §2.5 falsified path? Needs new evidence. Advisory.
 - Select checks before acceptance (先选检查再验收): read `spec.md` `### 5.1 验证策略`, inventory the project's checks (scripts, Makefile, CI), choose at the declared level: `package` (default) requires a real quick check; `integration` adds affected cross-module paths; `project` the full suite + recorded upgrade trigger. The gate enforces `验证范围` matches the declaration; command fit is reviewed against recorded scope.
 - Run the declared level's decisive check for real (裁决性检查必真跑一次): the strongest check in the declared scope runs at least once before `**验收结果**：通过`. A project-wide command is not required for a package/integration scope merely because one exists — required only at `project` scope or a documented upgrade trigger. A slow check gets time or an honest not-verified record; an existing unrun check is never marked `out of scope`.
@@ -27,7 +27,7 @@ Execution requirements:
 - Single disposition vocabulary: the five closure types (SKILL rule 3) are the only closure words; the retired labels (`fix_this_round` / `followup`) never appear in new writebacks.
 - Dual stop conditions end the check→fix loop; both readable from the package docs: (a) semantic — a round produces `无新增项`; (b) budget — `最多 3 轮` by default; `spec.md` may declare a different N.
 - Stop-loss attribution: 同一门禁连续 N 轮失败即停止重跑 that gate; 拆细 an over-broad standard, fix the `verify` itself, or mark 转人工.
-- Cross-round accounting: findings live on disk on the acceptance surface (stable IDs dedupe); each round returns a three-state count — fixed / still failing / newly found.
+- Findings stay on the acceptance surface (stable IDs dedupe); three-state count: fixed / still failing / newly found.
 - Do not enter `done` before passing.
 
 Output contract:

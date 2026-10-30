@@ -199,10 +199,36 @@ def test_repeated_event_is_stable_and_creates_nothing(project):
 # --- workers and recursion -----------------------------------------------------------
 
 
-@pytest.mark.parametrize("extra", [{"agent_id": "agent-7"}, {"teammate_name": "impl-1"}, {"agent_type": "worker"}])
+@pytest.mark.parametrize(
+    "extra",
+    [{"agent_id": "agent-7"}, {"teammate_name": "impl-1"}, {"agent_id": "agent-8", "agent_type": "general-purpose"}],
+)
 def test_worker_events_are_never_gated_or_asked_to_create(project, extra):
     assert run_hook(tool_event(project, **extra), cwd=project).stdout.strip() == ""
     assert run_hook(prompt_event(project, **extra), cwd=project).stdout.strip() == ""
+
+
+# Claude Code's hook schema: agent_id is present only inside a subagent, "absent for the main
+# thread, even in --agent sessions"; agent_type alone marks the main thread of an --agent session.
+AGENT_MAIN_THREAD = {"agent_type": "code-reviewer"}
+
+
+def test_agent_type_without_agent_id_is_a_gated_main_thread(project):
+    reminder = decision_of(run_hook(prompt_event(project, **AGENT_MAIN_THREAD), cwd=project))
+    assert reminder is not None and "assess_spec_activation.py" in reminder["additionalContext"]
+    denied = decision_of(run_hook(tool_event(project, **AGENT_MAIN_THREAD), cwd=project))
+    assert denied is not None, "an --agent main thread edited without any assessment"
+    assert denied["permissionDecision"] == "deny"
+
+
+def test_agent_type_without_agent_id_prompt_voids_the_prior_grant(project):
+    record_assessment(project, decision="direct")
+    assert run_hook(tool_event(project, **AGENT_MAIN_THREAD), cwd=project).stdout.strip() == ""
+    run_hook(prompt_event(project, prompt="a different request", **AGENT_MAIN_THREAD), cwd=project)
+    for extra in (AGENT_MAIN_THREAD, {}):
+        denied = decision_of(run_hook(tool_event(project, **extra), cwd=project))
+        assert denied is not None, "a new --agent prompt left the previous grant in place"
+        assert denied["permissionDecision"] == "deny"
 
 
 # --- existing packages and verdict-fact refusal ---------------------------------------
@@ -423,15 +449,82 @@ def test_a_direct_assessment_does_not_survive_a_new_user_prompt(project):
     assert "new request" in out["permissionDecisionReason"].lower()
 
 
-def test_create_and_resume_survive_follow_up_prompts_because_a_package_exists(project):
-    subprocess.run(["git", "-C", str(project), "checkout", "-q", "-b", "feature/y"], check=True)
-    assess_and_record(project, WIDE)
-    run_hook(prompt_event(project, prompt="继续"), cwd=project)
+def make_bound_package(project, *, completed=False):
+    slug = "2026-10-27_add-export"
+    package = project / ".spec/specs" / slug
+    package.mkdir(parents=True)
+    (package / "spec.md").write_text("# Export\n- Git integration branch: `feature/x`\n", encoding="utf-8")
+    mark = "x" if completed else " "
+    (package / "tasks.md").write_text(
+        f"# Tasks\n- [{mark}] Original goal\n  - boundary: original feature\n  - verify: manual: original goal\n",
+        encoding="utf-8",
+    )
+    return slug, package
+
+
+@pytest.mark.parametrize("decision", ["direct", "create", "resume"])
+def test_new_prompt_invalidates_prior_grants(project, decision):
+    facts = SMALL if decision == "direct" else WIDE
+    if decision == "resume":
+        slug, _ = make_bound_package(project)
+        facts = {**facts, "package_slug": slug}
+    assessed = assess_and_record(project, facts)
+    assert assessed.returncode == 0, assessed.stderr
+    assert json.loads(assessed.stdout)["decision"] == decision
     assert run_hook(tool_event(project), cwd=project).stdout.strip() == ""
 
+    run_hook(prompt_event(project, prompt="Add a new export behavior"), cwd=project)
+    denied = decision_of(run_hook(tool_event(project), cwd=project))
+    assert denied is not None, f"old {decision} still authorized a new request"
+    assert denied["permissionDecision"] == "deny"
+    assert "new request" in denied["permissionDecisionReason"]
 
-def test_a_prompt_event_does_not_invalidate_an_unrelated_session(project):
-    assess_and_record(project, SMALL, session="mine")
+
+def test_same_package_continuation_requires_fresh_resume(project):
+    slug, package = make_bound_package(project)
+    facts = {**WIDE, "package_slug": slug}
+    assert json.loads(assess_and_record(project, facts).stdout)["decision"] == "resume"
+    original_tasks = (package / "tasks.md").read_bytes()
+
+    run_hook(prompt_event(project, prompt="继续"), cwd=project)
+    denied = decision_of(run_hook(tool_event(project), cwd=project))
+    assert denied is not None, "continuation reused the previous request's grant"
+    assert denied["permissionDecision"] == "deny"
+    resumed = assess_and_record(project, facts)
+    assert resumed.returncode == 0, resumed.stderr
+    assert json.loads(resumed.stdout)["decision"] == "resume"
+    assert run_hook(tool_event(project), cwd=project).stdout.strip() == ""
+    assert sorted(path.name for path in package.parent.iterdir()) == [slug]
+    assert (package / "tasks.md").read_bytes() == original_tasks
+
+
+def test_checked_package_requires_reassessment_for_new_request(project):
+    slug, package = make_bound_package(project, completed=True)
+    facts = {**SMALL, "package_slug": slug}
+    assert json.loads(assess_and_record(project, facts).stdout)["decision"] == "resume"
+    original_tasks = (package / "tasks.md").read_bytes()
+
+    run_hook(prompt_event(project, prompt="Now add filtering and CSV export"), cwd=project)
+    denied = decision_of(run_hook(tool_event(project), cwd=project))
+    assert denied is not None, "checked tasks must not grant permission for a new request"
+    assert denied["permissionDecision"] == "deny"
+    # A fresh resume establishes package identity, not coverage of the new goal.
+    reassessed = assess_and_record(project, {**WIDE, "package_slug": slug, "scope_grew": True})
+    assert reassessed.returncode == 0, reassessed.stderr
+    assert json.loads(reassessed.stdout)["decision"] == "resume"
+    assert (package / "tasks.md").read_bytes() == original_tasks
+
+
+def test_new_prompt_does_not_turn_a_defer_into_permission(project):
+    subprocess.run(["git", "-C", str(project), "checkout", "-q", "-B", "main"], check=True)
+    assert json.loads(assess_and_record(project, WIDE).stdout)["decision"] == "defer"
+    run_hook(prompt_event(project), cwd=project)
+    assert decision_of(run_hook(tool_event(project), cwd=project))["permissionDecision"] == "deny"
+
+
+@pytest.mark.parametrize("decision", ["direct", "create", "resume"])
+def test_a_prompt_event_does_not_invalidate_an_unrelated_session(project, decision):
+    record_assessment(project, decision=decision, session="mine")
     run_hook(prompt_event(project, session_id="someone-else"), cwd=project)
     assert run_hook(tool_event(project, session_id="mine"), cwd=project).stdout.strip() == ""
 
@@ -454,8 +547,9 @@ def test_the_guard_no_longer_reads_fields_the_host_does_not_send():
     assert "scope_digest" not in source and 'get("task_id")' not in source
 
 
-def test_worker_prompt_events_never_invalidate_the_coordinators_assessment(project):
-    assess_and_record(project, SMALL)
+@pytest.mark.parametrize("decision", ["direct", "create", "resume"])
+def test_worker_prompt_events_never_invalidate_the_coordinators_assessment(project, decision):
+    record_assessment(project, decision=decision)
     run_hook(prompt_event(project, agent_id="agent-9"), cwd=project)
     assert run_hook(tool_event(project), cwd=project).stdout.strip() == ""
 
@@ -578,6 +672,17 @@ def test_unusable_session_ids_are_rejected_without_writing(project, session):
     completed = assess_and_record(project, SMALL, session=session)
     assert completed.returncode == 2
     assert not state_dir_of(project).exists() or not list(state_dir_of(project).glob("*.json"))
+
+
+def test_session_rejection_names_the_accepted_shape(project):
+    """The refusal must describe the rule valid_session enforces, or a caller retrying with a
+    'fixed' id (letters and digits only, under 96) is chasing a rule that does not exist."""
+    rejected = assess_and_record(project, SMALL, session="x" * 600)
+    assert rejected.returncode == 2
+    assert "1-256" in rejected.stderr and "printable" in rejected.stderr
+    assert "letters" not in rejected.stderr and "96" not in rejected.stderr
+    for session in ("abc:def", "a b"):
+        assert assess_and_record(project, SMALL, session=session).returncode == 0, session
 
 
 def test_a_null_byte_session_id_is_not_valid():

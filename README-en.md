@@ -78,7 +78,7 @@ Run the installer from a checked-out source or release tree:
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.22.0
+git checkout v0.22.2
 bash install.sh
 ```
 
@@ -155,7 +155,7 @@ python3 ~/.claude/skills/spec/scripts/install_activation_hooks.py --mode on    #
 
 - The judgment is about the work's shape: independent acceptance surfaces, actual implementers, a resumable in-flight task. File count, text length, and idle teammates in a room never decide alone. Small fixes, read-only investigation, throwaway experiments, and an explicit "no task package" go straight through.
 - It manages only its own entries and keeps your other hooks, `permissions`, and unknown fields; a broken file is refused, writes are backed up, and `--mode off` undoes it.
-- Coverage is Edit/Write/MultiEdit/NotebookEdit plus Agent/Task/SendMessage. Bash, MCP, and custom tools are not parsed and not claimed. Teammates and subagents never create packages; they consume the coordinator's assignment.
+- Coverage is Edit/Write/MultiEdit/NotebookEdit plus Agent/Task/SendMessage. Bash, MCP, and custom tools are not parsed and not claimed. Teammates and subagents never create packages; they consume the coordinator's assignment. They are recognised by the host's `agent_id`, so a main session started with `--agent` is still checked as a main session; a split-pane teammate runs as its own process, and its prompt events (probed) carry no `agent_id`, so it is handled the same way.
 - This is a reminder gate for a cooperating agent, not a security boundary: shape and role are reported by the agent itself, verdict-shaped facts (opt-out, reversible-small, read-only) are rejected as inputs - an explicit user opt-out is honored only by the user at the host level (allowing the denied call or disabling the wiring) - and a recorded `direct` expires on a new user prompt or after 2 hours. It stops forgetting to assess, not under-reporting.
 - Event wiring targets Claude Code only. Other hosts share the same discovery text but have no equivalent event guarantee.
 - `spec:doctor` separates "not installed / not wired / wired", and even when wired it always reads "not live-verified": file presence and hook exit codes cannot show a model adopts on its own.

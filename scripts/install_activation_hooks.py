@@ -27,11 +27,16 @@ from __future__ import annotations
 import argparse
 import json
 import shlex
-import shutil
 import sys
 import time
 from pathlib import Path
 from typing import Any
+
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
+from safe_open_support import copy_private, replace_preserving_mode  # noqa: E402
 
 MARKER = "hooks/claude_activation_guard.py"
 GUARD_REL = "hooks/claude_activation_guard.py"
@@ -157,14 +162,9 @@ def write_settings(path: Path, payload: dict[str, Any]) -> None:
     path = resolve_target(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_file():
-        shutil.copy2(path, path.with_name(path.name + f".bak-{time.time_ns()}"))
-    tmp = path.with_name(path.name + f".{time.time_ns()}.tmp")
-    try:
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        tmp.replace(path)
-    finally:
-        if tmp.exists():
-            tmp.unlink()
+        copy_private(path, path.with_name(path.name + f".bak-{time.time_ns()}"))
+    # settings often hold credentials: keep the file's mode instead of taking the umask default
+    replace_preserving_mode(path, (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
 
 
 def run(mode: str, root: Path, scope: str, project_root: Path | None, dry_run: bool) -> dict[str, Any]:

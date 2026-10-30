@@ -51,9 +51,13 @@ GIT_REPLACEMENT_GUIDANCE = """\
 替代流程（Git WIP 承担回滚保障）：
   1) 更新前，在集成分支提交恢复点：
        git add -A && git commit -m "Spec-WIP: <slug> update checkpoint"
+     已接管的包（含 adoption.json）只提交包目录：
+       git add -- <包目录> && git commit -m "Spec-WIP: <slug> update checkpoint" -- <包目录>
   2) 更新中断需要回滚时：
-       git reset --hard <WIP 提交 sha>   （集成分支未推送时）
-       git revert <WIP 提交 sha>         （已推送时）
+       git restore --source=<WIP 提交 sha> --staged --worktree -- <包目录>   （改写尚未提交时）
+       git reset --hard <WIP 提交 sha>                  （集成分支未推送时）
+       git revert --no-edit <WIP 提交 sha>..HEAD        （已推送时：撤销恢复点之后的更新提交）
+       git restore --source=<WIP 提交 sha> -- <包目录>   （已接管的包：只恢复包目录）
   3) 历史遗留的 update-checkpoint.json：按上述流程用 Git 历史确认/恢复
      三件套后，直接删除该文件，再用 status 复核。
 """

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import stat
 import sys
 from pathlib import Path
 from typing import Any
@@ -159,6 +161,22 @@ def test_write_settings_creates_backup(tmp_path):
     assert len(backups) == 1
 
 
+def test_write_settings_keeps_the_file_mode(tmp_path):
+    """A private settings file stays private: the rewrite must not take the umask default."""
+    settings = tmp_path / "settings.json"
+    settings.write_text("{}", encoding="utf-8")
+    settings.chmod(0o600)
+    payload, _ = install_slot_hooks.apply_install({}, "team-loop", SLOT_DIR, SLOT_EVENTS)
+    previous = os.umask(0o022)
+    try:
+        install_slot_hooks.write_settings(settings, payload)
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE(settings.stat().st_mode) == 0o600
+    assert json.loads(settings.read_text(encoding="utf-8")) == payload
+    assert not [name for name in os.listdir(tmp_path) if name.endswith(".tmp")]
+
+
 def test_remove_recycles_legacy_entries_of_deleted_hooks():
     """issue-20：manifest 已删脚本的旧版注册也要能被 --remove 回收。
 
@@ -192,3 +210,28 @@ def test_remove_legacy_only_leaves_clean_settings():
     payload, removed = install_slot_hooks.apply_remove(base, "team-loop", SLOT_DIR, SLOT_EVENTS)
     assert removed == 1
     assert "hooks" not in payload
+
+
+def test_a_slot_backup_is_never_more_readable_than_the_settings(tmp_path, monkeypatch):
+    import shutil
+
+    settings = tmp_path / "settings.json"
+    settings.write_text('{"env": {"TOKEN": "placeholder"}}', encoding="utf-8")
+    settings.chmod(0o600)
+    payload, _ = install_slot_hooks.apply_install({}, "team-loop", SLOT_DIR, SLOT_EVENTS)
+
+    def refuse(*args, **kwargs):
+        raise OSError("this filesystem rejects metadata copies")
+
+    monkeypatch.setattr(shutil, "copystat", refuse)
+    previous = os.umask(0o022)
+    try:
+        try:
+            install_slot_hooks.write_settings(settings, payload)
+        except OSError:
+            pass
+    finally:
+        os.umask(previous)
+    backups = list(tmp_path.glob("settings.json.bak-*"))
+    assert len(backups) == 1
+    assert stat.S_IMODE(backups[0].stat().st_mode) & 0o077 == 0, oct(backups[0].stat().st_mode)

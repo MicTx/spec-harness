@@ -66,14 +66,21 @@ slugs = set()
 for raw in sys.stdin.buffer.read().split(b"\0"):
     if not raw:
         continue
-    parts = raw.decode("utf-8", "surrogateescape").split("/")
+    path = raw.decode("utf-8", "surrogateescape")
+    parts = path.split("/")
+    # A package is a directory under archive/. A plain file there (README.md)
+    # and the organize retired/ container are archive content; a direct child
+    # named like a package claims to be one and gets the full gate.
     for i in range(len(parts) - 3):
         if parts[i] not in (".spec", ".trae") or parts[i + 1:i + 3] != ["specs", "archive"]:
             continue
         slug = parts[i + 3]
-        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}_[a-z0-9][a-z0-9_-]*", slug):
-            raise SystemExit("spec gate: invalid staged archive slug")
-        slugs.add(slug)
+        if slug == "retired":
+            continue
+        if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}_[a-z0-9][a-z0-9_-]*", slug):
+            slugs.add(slug)
+        elif i + 4 < len(parts):
+            raise SystemExit(f"spec gate: invalid staged archive slug {slug!r} in {path!r}")
 print("\n".join(sorted(slugs)))
 ') || exit 1
     if [ -z "$archive_slugs" ]; then

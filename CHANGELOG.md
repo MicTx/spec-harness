@@ -4,6 +4,35 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [0.22.2] - 2026-10-31
+
+### Fixed
+
+- **Claude Code 主线程守卫**：以 `--agent` 或 settings `agent` 启动的主线程不再因携带 `agent_type` 而绕过主动准入；资格刷新与受管修改拦截继续生效，真正的子代理仍按宿主身份证据识别。
+- **Claude Code main-thread guard**: a main thread launched with `--agent` or a settings `agent` no longer bypasses proactive admission merely because it carries `agent_type`; grant refresh and managed-edit enforcement still apply, while genuine subagents remain identified by host identity evidence.
+- **Settings 隐私与原子写入**：activation/slot 安装器重写用户 settings 时保留原权限位，备份从创建起不比原文件更宽，失败不放宽、不残留临时文件。
+- **Settings privacy and atomic writes**: the activation/slot installers preserve the original permissions when rewriting user settings, create backups no broader than the source, and leave neither widened modes nor temporary files on failure.
+- **doctor 与安装接线一致性**：doctor 覆盖用户级和项目级 activation 接线、按宿主过滤输出、编译检查守卫文件；修复 hooks 时失败会回放已移走项，可安装判定与安装器一致。
+- **Doctor and installer consistency**: doctor now covers user- and project-scoped activation wiring, honors host filtering, compiles the guard file, restores hooks if repair fails partway, and applies the installer's installability rules.
+- **接管与 chain 收口**：符号链接锁、owner 解析、基线截断、非 spec 分支提示、archive 直属条目和 legacy 改名来源判定更严格；已接管包的 update 检查点与回滚说明只作用于包目录，不再误导用户 revert 恢复点。
+- **Adoption and chain closure**: symlink locks, owner parsing, baseline truncation, non-spec branch guidance, direct archive entries, and legacy rename provenance are handled more strictly; update checkpoints and rollback guidance for adopted packages now act on the package directory instead of advising a recovery-point revert.
+- **公开导出与评测证据**：公开导出树不再携带依赖 bench/ 的测试；离线评测计入全部模型用量、保留失败/超时证据、按真实事件判定建包与队友成功，并以递归 sandbox 禁读、私有 settings、树指纹和种子提交比对隔离单元。
+- **Public export and benchmark evidence**: the public export no longer carries tests that depend on bench/; the offline benchmark counts every model's usage, preserves failure/timeout evidence, credits packages and teammates only from real events, and isolates units with recursive sandbox read denial, private settings, tree fingerprints, and seed-commit comparisons.
+
+## [0.22.1] - 2026-10-28
+
+### Fixed
+
+- **跨轮准入刷新**：新请求使旧 direct/create/resume 资格失效，归档或切换分支后不能再借旧结论放行受管修改；合法同包续跑经重新评估仍可继续。
+- **Admission refresh across requests**: a new request invalidates prior direct/create/resume grants, so an archived package or a branch switch cannot reuse an old verdict to authorize managed edits; legitimate work on the same package can continue after reassessment.
+- **离线评测准备恢复**：团队准备期不再预置准入资格，业务测量前恢复单元私有 hook；恢复或回调失败会阻止业务请求、回收宿主进程并拒绝把准备用量计作完整测量。
+- **Offline benchmark setup recovery**: team preparation no longer seeds an admission grant, and the unit-local hook is restored before measurement; restoration or callback failures block the business request, reap the host process, and reject setup usage as a complete measurement.
+
+### Changed
+
+- **关键判断验证**：在现有任务章节中，要求决定结论的少数不确定判断在实施前关联一手来源、推翻条件和独立判据；缺材料保留未核验，新目标先更新范围与未完成任务。执行记录和静态契约测试不等于语义正确或真实模型遵循。
+- **Verification of decisive claims**: existing task sections now tie decisive uncertain claims to primary sources, falsifiers, and independent oracles before implementation; missing material stays unverified, and new goals first update scope and unfinished tasks. Execution records and static contract tests do not establish semantic correctness or live model compliance.
+
 ## [0.22.0] - 2026-10-26
 
 ### Added

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -206,6 +207,32 @@ def test_failed_write_leaves_the_original_intact(home):
     assert path.read_bytes() == before
 
 
+@pytest.fixture()
+def umask_022():
+    # the common default; the installer subprocess inherits it
+    previous = os.umask(0o022)
+    try:
+        yield
+    finally:
+        os.umask(previous)
+
+
+@pytest.mark.parametrize("mode", [0o600, 0o640])
+def test_rewrite_keeps_the_settings_file_mode(home, umask_022, mode):
+    """settings.json often holds credentials (env tokens); a rewrite must not widen it to 0644."""
+    path = write_settings(home, FOREIGN)
+    path.chmod(mode)
+    for action in ("on", "off"):
+        assert run(home, action).returncode == 0
+        assert stat.S_IMODE(path.stat().st_mode) == mode, action
+    assert not [name for name in os.listdir(path.parent) if name.endswith(".tmp")]
+
+
+def test_a_new_settings_file_is_private(home, umask_022):
+    assert run(home, "on").returncode == 0
+    assert stat.S_IMODE(settings_path(home).stat().st_mode) == 0o600
+
+
 def test_dry_run_reports_without_writing(home):
     write_settings(home, FOREIGN)
     before = settings_path(home).read_bytes()
@@ -378,3 +405,31 @@ def test_installs_written_with_the_older_quoting_are_still_recognised_and_migrat
     assert "/old/root/" not in json.dumps(payload)
     run(home, "off")
     assert "hooks" not in json.loads(settings_path(home).read_text())
+
+
+def test_a_backup_is_never_more_readable_than_the_settings(home, umask_022, monkeypatch):
+    """copy2 creates the backup with the umask default and copies the mode only afterwards: the backup of a
+    credentials-bearing settings file was briefly (and, when copystat failed, permanently) world-readable."""
+    import importlib.util
+    import shutil
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    spec = importlib.util.spec_from_file_location("install_activation_hooks_backup", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    path = write_settings(home, FOREIGN)
+    path.chmod(0o600)
+    original = path.read_bytes()
+
+    def refuse(*args, **kwargs):
+        raise OSError("this filesystem rejects metadata copies")
+
+    monkeypatch.setattr(shutil, "copystat", refuse)
+    try:
+        module.write_settings(path, {**FOREIGN, "model": "sonnet"})
+    except OSError:
+        pass
+    backups = list(path.parent.glob("settings.json.bak-*"))
+    assert len(backups) == 1
+    assert stat.S_IMODE(backups[0].stat().st_mode) & 0o077 == 0, oct(backups[0].stat().st_mode)
+    assert backups[0].read_bytes() == original

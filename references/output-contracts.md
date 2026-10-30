@@ -65,6 +65,7 @@ Only the title always appears; omit any whole section with no effective content.
 6. With more than 20 tasks keep the first 20 plus a package pointer; with more than 5 attention items keep the first 5 plus an on-disk pointer.
 7. The output must let a user who knows nothing about the spec workflow answer directly: where things stand, what is being done, what the problems are, and what was delivered.
 8. No empty-value placeholders or filler: `无`, `n/a`, `看起来` (seems), `整体` (overall), `顺利` (smooth), `建议可以` (maybe suggest), `温馨提示` (friendly tip), `如下所示` (as shown below), `让我` (let me), `我们来` (let's).
+9. For decisive uncertain conclusions, distinguish 已核验 / 推断 / 未核验 and report the conclusion, decisive evidence, remaining doubt and next check; these are not five new output sections. Name missing material and blocking uncertainty even in a short answer; test execution or static contract checks never certify model compliance.
 
 ## Invocation compatibility layer
 

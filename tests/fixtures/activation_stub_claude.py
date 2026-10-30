@@ -69,6 +69,14 @@ def bump_spawn_counter(source: Path) -> int:
     return index
 
 
+def init_tools(data: dict) -> list:
+    """The init event's tool list: plan ``init_tools`` as a list, or a dict keyed by spawn index."""
+    tools = data.get("init_tools", [])
+    if isinstance(tools, dict):
+        tools = tools.get(str(data["spawn_index"]), [])
+    return tools if isinstance(tools, list) else []
+
+
 def emit(line: dict) -> None:
     sys.stdout.write(json.dumps(line, ensure_ascii=False) + "\n")
     sys.stdout.flush()
@@ -137,12 +145,15 @@ def run_turn(session: dict, prompt: str, replay: bool) -> None:
             )
         elif "sleep" in event:
             time.sleep(float(event["sleep"]))
+    if "exit_before_result" in session:
+        # the host dies mid-turn: the turn's result event is never written
+        sys.stdout.flush()
+        os._exit(int(session["exit_before_result"]))
     usage = session.get("usage", {})
     emit(
         {
             "type": "result",
             "subtype": session.get("result_subtype", "success"),
-            "model": os.environ.get("ACT_STUB_MODEL", "stub-model"),
             "num_turns": 1,
             "is_error": bool(session.get("result_is_error", False)),
             "usage": usage,
@@ -172,7 +183,15 @@ def main() -> int:
     )
     if stream_input:
         sys.stdout.reconfigure(line_buffering=True)
-        emit({"type": "system", "subtype": "init", "session_id": "stub-session", "tools": []})
+        emit(
+            {
+                "type": "system",
+                "subtype": "init",
+                "session_id": "stub-session",
+                "model": data.get("model", os.environ.get("ACT_STUB_MODEL", "stub-model")),
+                "tools": init_tools(data),
+            }
+        )
         for line in sys.stdin:
             line = line.strip()
             if not line:
@@ -194,7 +213,15 @@ def main() -> int:
         return int(data.get("exit_code", 0))
     if "-p" in args and args.index("-p") + 1 < len(args) and not args[args.index("-p") + 1].startswith("-"):
         prompt = args[args.index("-p") + 1]
-        emit({"type": "system", "subtype": "init", "session_id": "stub-session", "tools": []})
+        emit(
+            {
+                "type": "system",
+                "subtype": "init",
+                "session_id": "stub-session",
+                "model": data.get("model", os.environ.get("ACT_STUB_MODEL", "stub-model")),
+                "tools": init_tools(data),
+            }
+        )
         run_turn(session_for(data.get("sessions", []), prompt, data["spawn_index"]), prompt, replay)
     else:
         # -p as a flag: the prompt is the trailing positional argument. Flags that
@@ -221,7 +248,15 @@ def main() -> int:
             if not arg.startswith("-"):
                 positional.append(arg)
         prompt = positional[-1] if positional else ""
-        emit({"type": "system", "subtype": "init", "session_id": "stub-session", "tools": []})
+        emit(
+            {
+                "type": "system",
+                "subtype": "init",
+                "session_id": "stub-session",
+                "model": data.get("model", os.environ.get("ACT_STUB_MODEL", "stub-model")),
+                "tools": init_tools(data),
+            }
+        )
         run_turn(session_for(data.get("sessions", []), prompt, data["spawn_index"]), prompt, replay)
     return int(data.get("exit_code", 0))
 

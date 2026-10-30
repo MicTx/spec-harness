@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -78,6 +79,9 @@ def test_public_publish_does_not_create_on_github_lookup_failure(monkeypatch, tm
 
 _DIR_ASSIGN_RE = re.compile(r'^(\w+)\s*=\s*\w*ROOT\w*\s*/\s*"([^"/]+)"', re.MULTILINE)
 _SYS_PATH_RE = re.compile(r"sys\.path\.insert\(\s*\d+\s*,\s*str\((\w+)\)")
+# the inline form: sys.path.insert(0, str(ROOT / <quoted dir>))
+_SYS_PATH_INLINE_RE = re.compile(r'sys\.path\.insert\(\s*\d+\s*,\s*str\(\s*\w*ROOT\w*\s*/\s*"([^"/]+)"')
+_CI_IGNORE_RE = re.compile(r"--ignore=(\S+)")
 
 
 def test_public_export_tests_only_import_exported_dirs(tmp_path: Path):
@@ -91,11 +95,30 @@ def test_public_export_tests_only_import_exported_dirs(tmp_path: Path):
     for test in sorted((output / "tests").glob("test_*.py")):
         text = test.read_text(encoding="utf-8")
         dirs = dict(_DIR_ASSIGN_RE.findall(text))
-        for name in _SYS_PATH_RE.findall(text):
-            target = dirs.get(name)
+        targets = [dirs.get(name) for name in _SYS_PATH_RE.findall(text)] + _SYS_PATH_INLINE_RE.findall(text)
+        for target in targets:
             if target and not (output / target).is_dir():
                 offenders.append(f"{test.name} -> {target}/")
     assert offenders == []
+
+
+def test_public_tree_suite_collects(tmp_path: Path):
+    """The exported suite must collect under the public CI command; one import error stops the whole job."""
+    output = tmp_path / "public"
+    build_public_tree(ROOT, output)
+    workflow = (output / ".github" / "workflows" / "ci-public.yml").read_text(encoding="utf-8")
+    ignores = [f"--ignore={path}" for path in _CI_IGNORE_RE.findall(workflow)]
+    assert ignores, "ci-public.yml no longer lists its pytest ignores; update this test"
+    collect = [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider"]
+    completed = subprocess.run(
+        [*collect, "tests/", "slots/", *ignores],
+        cwd=output,
+        capture_output=True,
+        text=True,
+        timeout=300,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+    )
+    assert completed.returncode == 0, completed.stdout[-2000:] + completed.stderr[-2000:]
 
 
 def test_ci_public_ignores_only_name_exported_files(tmp_path: Path):

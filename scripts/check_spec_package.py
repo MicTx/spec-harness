@@ -576,7 +576,9 @@ def package_physical_state_errors(package_dir: Path) -> list[str]:
     if status.state == "active":
         return [
             "存在未完成 update checkpoint（历史遗留，机制已退役）：按 Git 历史确认/恢复三件套"
-            "（git reset --hard / git revert 更新前 WIP 提交）后删除 update-checkpoint.json，再重跑 check"
+            "（未提交的改写用 git restore 从更新前 WIP 提交恢复；已提交未推送时 git reset --hard 到该提交，"
+            "已推送时 git revert 其后的提交）"
+            "后删除 update-checkpoint.json，再重跑 check"
         ]
     if status.state == "corrupted":
         return [

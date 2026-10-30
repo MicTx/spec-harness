@@ -42,7 +42,7 @@ _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
-from activation_state import valid_session, write_assessment  # noqa: E402
+from activation_state import MAX_SESSION_LENGTH, valid_session, write_assessment  # noqa: E402
 from spec_package_support import (  # noqa: E402
     PROTECTED_BRANCHES,
     PROTECTED_PREFIXES,
@@ -287,7 +287,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.session is not None and not valid_session(args.session):
-            raise FactError("session must be 1-96 characters of letters, digits, '-', '_' or '.'")
+            raise FactError(f"session must be 1-{MAX_SESSION_LENGTH} printable characters")
         root = Path(args.root).resolve()
         raw = _read_input(args.facts)
         result = assess(raw, root)

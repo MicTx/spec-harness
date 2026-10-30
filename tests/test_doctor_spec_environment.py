@@ -700,6 +700,7 @@ def test_project_hooks_rendered_installer_hook_is_managed(tmp_path):
     (hooks_dir / "pre-commit").write_text(
         f'#!/bin/sh\nchecker="{checker}"\nexec "$checker" --root .\n', encoding="utf-8"
     )
+    (hooks_dir / "pre-commit").chmod(0o755)
     doctor = Doctor(skill_root=ROOT, project_root=repo)
     doctor.check_project_hooks(repo.resolve())
     check = check_by_id(doctor, "project.hooks")
@@ -1114,7 +1115,13 @@ def _write_runtime_face(skill: Path, files) -> None:
 
 
 def _core_face_files() -> list:
-    return [name for name in REQUIRED_RUNTIME_FILES if not name.startswith(EXTENSION_FILE_PREFIXES)]
+    import payload_contract
+
+    return [
+        name
+        for name in REQUIRED_RUNTIME_FILES
+        if not name.startswith(EXTENSION_FILE_PREFIXES) or name in payload_contract.CORE_KEPT_FILES
+    ]
 
 
 def test_install_profile_defaults_to_full_without_stamp(tmp_path):
@@ -1140,7 +1147,8 @@ def test_core_marker_selects_core_audit_face(tmp_path):
     assert doctor.install_profile() == "core"
     face = doctor.required_runtime_files()
     assert face == tuple(_core_face_files())
-    assert not any(name.startswith(("agents/", "server/")) for name in face)
+    # core keeps exactly the discovery metadata from agents/ (CORE_KEPT_FILES) and nothing from server/
+    assert [name for name in face if name.startswith(("agents/", "server/"))] == ["agents/openai.yaml"]
     assert doctor.user_stages() == ["new", "run", "check", "done", "push"]
 
     # A bogus stamp never narrows the audit face silently.
@@ -1281,6 +1289,7 @@ def test_project_hooks_honors_core_hooks_path_rendered_gate(tmp_path):
     repo, hooks_dir = _repo_with_hooks_path(tmp_path)
     checker = ROOT / "scripts" / "check_all_spec_packages.py"
     (hooks_dir / "pre-commit").write_text(f'#!/bin/sh\nchecker="{checker}"\n', encoding="utf-8")
+    (hooks_dir / "pre-commit").chmod(0o755)
     doctor = Doctor(skill_root=ROOT, project_root=repo)
     doctor.check_project_hooks(repo.resolve())
     check = check_by_id(doctor, "project.hooks")
@@ -1330,3 +1339,186 @@ def test_project_hooks_path_outside_repo_hint_is_not_installer_only(tmp_path):
     assert check.status == "warn"
     assert str(outside) in check.detail
     assert "仓库外" in check.fix_note
+
+
+# --- project.hooks repair safety (week review, reproduced before the fix) -----------------
+
+STALE_GATE = (
+    '#!/bin/sh\nchecker="/gone/skills/spec/scripts/check_all_spec_packages.py"\n'
+    "# fingerprint: SPEC_CHECK_ALL_SCRIPT_PLACEHOLDER template\n"
+)
+
+
+def _private_backups(monkeypatch, tmp_path):
+    import doctor_spec_environment as doctor_module
+
+    backups = tmp_path / "backups"
+    monkeypatch.setenv(doctor_module.BACKUP_ROOT_ENV, str(backups))
+    return backups
+
+
+@requires_git
+def test_project_hooks_fix_moves_nothing_when_a_hook_is_project_owned(tmp_path, monkeypatch):
+    backups = _private_backups(monkeypatch, tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    hooks_dir = repo / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    (hooks_dir / "pre-commit").write_text(STALE_GATE, encoding="utf-8")
+    (hooks_dir / "pre-push").write_text("#!/bin/sh\necho project-owned\n", encoding="utf-8")
+    doctor = Doctor(skill_root=ROOT, project_root=repo, fix=True)
+    doctor.check_project_hooks(repo.resolve())
+    assert check_by_id(doctor, "project.hooks").status == "fail"
+    assert (hooks_dir / "pre-commit").read_text(encoding="utf-8") == STALE_GATE, "the stale gate was moved away"
+    assert (hooks_dir / "pre-push").read_text(encoding="utf-8") == "#!/bin/sh\necho project-owned\n"
+    assert not list(backups.rglob("pre-commit")) if backups.exists() else True
+
+
+@requires_git
+def test_project_hooks_fix_keeps_hooks_outside_the_repo(tmp_path, monkeypatch):
+    _private_backups(monkeypatch, tmp_path)
+    outside = tmp_path / "shared-hooks"
+    outside.mkdir()
+    (outside / "pre-commit").write_text(STALE_GATE, encoding="utf-8")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "core.hooksPath", str(outside)], cwd=repo, check=True)
+    doctor = Doctor(skill_root=ROOT, project_root=repo, fix=True)
+    doctor.check_project_hooks(repo.resolve())
+    check = check_by_id(doctor, "project.hooks")
+    assert check.status == "fail"
+    assert (outside / "pre-commit").read_text(encoding="utf-8") == STALE_GATE, "a shared gate was moved away"
+    assert "仓库外" in check.fix_note
+
+
+@requires_git
+def test_project_hooks_non_executable_gate_fails(tmp_path):
+    repo, hooks_dir = _repo_with_hooks_path(tmp_path)
+    gate = hooks_dir / "pre-commit"
+    gate.write_text(f'#!/bin/sh\nchecker="{ROOT / "scripts" / "check_all_spec_packages.py"}"\n', encoding="utf-8")
+    gate.chmod(0o644)  # Git skips a hook without the exec bit
+    doctor = Doctor(skill_root=ROOT, project_root=repo)
+    doctor.check_project_hooks(repo.resolve())
+    check = check_by_id(doctor, "project.hooks")
+    assert check.status == "fail"
+    assert "执行权限" in check.detail
+
+
+@requires_git
+def test_project_hooks_non_utf8_hook_does_not_crash(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    hooks_dir = repo / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    (hooks_dir / "pre-commit").write_bytes(b"#!/bin/sh\n# caf\xe9\necho project-owned\n")
+    doctor = Doctor(skill_root=ROOT, project_root=repo)
+    doctor.check_project_hooks(repo.resolve())
+    check = check_by_id(doctor, "project.hooks")
+    assert check.status == "info" and "项目自有" in check.detail
+
+
+@requires_git
+def test_project_hooks_hint_for_a_separate_git_dir(tmp_path):
+    import shlex
+
+    repo = tmp_path / "my repo"
+    subprocess.run(
+        ["git", "init", "--separate-git-dir", str(tmp_path / "gitdir"), str(repo)], check=True, capture_output=True
+    )
+    doctor = Doctor(skill_root=ROOT, project_root=repo)
+    doctor.check_project_hooks(repo.resolve())
+    check = check_by_id(doctor, "project.hooks")
+    assert check.status == "warn"
+    assert "仓库外" not in check.fix_note, check.fix_note
+    assert f"--root {shlex.quote(str(repo.resolve()))}" in check.fix_note
+
+
+# --- doctor inventory matches what ships (week review, reproduced before the fix) ---------
+
+
+def test_core_face_requires_openai_yaml(tmp_path):
+    """core ships agents/openai.yaml on purpose (host discovery metadata); a core install without it is broken."""
+    import payload_contract
+
+    skill = tmp_path / "skill"
+    _write_runtime_face(skill, [name for name in _core_face_files() if name != "agents/openai.yaml"])
+    (skill / ".spec-skill-install").write_text(
+        "installed_by=spec/install.sh\nsource=/nonexistent\nprofile=core\n", encoding="utf-8"
+    )
+    doctor = Doctor(skill_root=skill, project_root=tmp_path)
+    assert set(payload_contract.CORE_KEPT_FILES) <= set(doctor.required_runtime_files())
+    doctor.check_skill_layout()
+    check = check_by_id(doctor, "skill.layout")
+    assert check.status == "fail", check
+    assert "agents/openai.yaml" in check.detail
+
+
+def test_doctor_catalog_names_the_real_host_count():
+    import re
+
+    import doctor_spec_environment as doctor_module
+
+    catalog = (ROOT / "references" / "stages" / "doctor.md").read_text(encoding="utf-8")
+    match = re.search(r"`hosts\.installed`: (\d+)-host directory scan", catalog)
+    assert match, "the hosts.installed entry must state the host count in digits"
+    assert int(match.group(1)) == len(doctor_module._host_specs())
+
+
+@requires_git
+def test_project_hooks_fix_restores_hooks_when_a_backup_move_fails(tmp_path, monkeypatch):
+    """A repair that stops halfway (here: the second backup move fails) must put the first gate back."""
+    _private_backups(monkeypatch, tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    hooks_dir = repo / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("pre-commit", "pre-push"):
+        (hooks_dir / name).write_text(STALE_GATE, encoding="utf-8")
+    real_move = Doctor.move_to_backup
+    calls = []
+
+    def flaky_move(self, target):
+        calls.append(target.name)
+        if len(calls) == 2:
+            raise OSError("backup volume full")
+        return real_move(self, target)
+
+    monkeypatch.setattr(Doctor, "move_to_backup", flaky_move)
+    doctor = Doctor(skill_root=ROOT, project_root=repo, fix=True)
+    try:
+        doctor.check_project_hooks(repo.resolve())
+    except OSError:
+        pass
+    for name in ("pre-commit", "pre-push"):
+        assert (hooks_dir / name).is_file(), f"{name} was left in the backup after a failed repair"
+        assert (hooks_dir / name).read_text(encoding="utf-8") == STALE_GATE
+
+
+@requires_git
+def test_project_hooks_installable_matches_the_installer_for_symlinked_paths(tmp_path):
+    """doctor must answer with install_git_hooks.py's own rule, or its hint names a command that refuses."""
+    real = tmp_path / "real"
+    real.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(real, target_is_directory=True)
+    installer = ROOT / "scripts" / "install_git_hooks.py"
+    for label, hooks_path in (("plain", None), ("through-a-symlink", alias / "repo" / ".githooks")):
+        repo = real / label / "repo"
+        repo.mkdir(parents=True)
+        subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+        if hooks_path is not None:
+            hooks_path = alias / label / "repo" / ".githooks"
+            subprocess.run(["git", "config", "core.hooksPath", str(hooks_path)], cwd=repo, check=True)
+        doctor = Doctor(skill_root=ROOT, project_root=repo)
+        claims = doctor.hooks_dir_installable(repo.resolve(), doctor.resolve_hooks_dir(repo.resolve()))
+        accepted = (
+            subprocess.run(
+                [sys.executable, str(installer), "--root", str(repo)], capture_output=True, text=True
+            ).returncode
+            == 0
+        )
+        assert claims is accepted, f"{label}: doctor says installable={claims}, the installer accepted={accepted}"

@@ -1,26 +1,26 @@
 {
   "schema_version": 1,
   "sources": {
-    "SKILL.md": "ce079b5c5907843339701b21fd290a0d6f2b1f96af0cc22076029a4e20ab8207",
+    "SKILL.md": "8846debae10b35a3381f71a707254d9e0209cbe8ba76561f0493d7276704ef74",
     "agents/planner.md": "63c33bc01d483d216ec2d57802216b13604810554268deb9d2b34e49bfb981f6",
     "references/commands.md": "110790b093256d463e53b497ef874f6467883de8423577bc057e78dea7c96a27",
-    "references/handoff.md": "c8631b333378a1c6a42b4aab4c7199959c20e24919dea68fad3ee86f86d83d83",
+    "references/handoff.md": "46be3b608de89318902aec3d3f20af7a1f7471db0a0929d2824f92257b7d0ab9",
     "references/naming-and-commits.md": "2ba4559044b7878ff3663b88cdb843303487de5462d35c48fd0cfc7ab28b2cb5",
     "references/orchestration.md": "9a81fe598a6271c95897f2f748ccce56444d0083bf60cfa3135c19b43f4817f4",
-    "references/output-contracts.md": "7fbf9d1b39e7264a5db30ed67fe388da1682b9111d0a304e511ead030a32d98f",
+    "references/output-contracts.md": "8bb2a4bafd2767618e2e3406670d84dd65177f7924f898160400a21d86f7996e",
     "references/stages/autoplan.md": "08ff0658d7768a05ea216fce8aa027587147d4ef4d11329f161524f345bd5ae8",
     "references/stages/autorun.md": "283ef3bb790c4bf00ad570c3b37efed05307272e4b01f26ff9368a65bb346035",
-    "references/stages/check.md": "0b304bc6d13729fe9642b7b55a0539efdc47091c385f00d831d9ea73ea318315",
-    "references/stages/doctor.md": "62511e7fed302e796aaebede48cde5fea9f35c57cd266195a901bc4ea8bef1e4",
+    "references/stages/check.md": "842c7c9f70efa7e55d396888a2438d6da13ae738529c1f9da01eaa8ac803b7df",
+    "references/stages/doctor.md": "ad526b3b3cab0c3f7413d06e9028b56f624e0110c458447074c81783a62a5871",
     "references/stages/done.md": "07f3cf3a18ef720e29efbf1da668f9a1c55f31d140f529969a79d6ab086a8de0",
     "references/stages/goal.md": "eb3bc24ace4eb25b65a639f13a7566bd1553084da81eb2c1a0dd1ae04a3f3a7c",
-    "references/stages/new.md": "337db4543ad67accb11a8d158df7590fc77ea9e8316b913809b3158867eb1dc3",
+    "references/stages/new.md": "52130d638cdbd5628e5f2c9a65a4b55149e7a16ca49eb6801d7a4a985fbd1118",
     "references/stages/organize.md": "40b05966237055df52bfcc514e7ca6923afbe3b8ef8aee418fdd890666136924",
     "references/stages/push.md": "38c166a4ceabac3a880f7cac1c8bc0e02377b2713241a8229767ffa29b535a60",
-    "references/stages/run.md": "0edd5e6fd852f4798d76e45867bb2ab286e38f030578e25f862de27740b87ffe",
+    "references/stages/run.md": "4103b141813550fc4acf177af9f579279caa572366856eae0e6f7a7a77213ac8",
     "references/stages/status.md": "4e6c757677932ae634886b2c0b1d1c0559145b44da3a320cfcd2e7e7733503bb",
-    "references/stages/update.md": "0f84fbf626ad170cb8b09dcc1376399cb32a87ffe9fbb915d1f2e2f299792d9b",
-    "references/templates.md": "317fbaa319d54364eabb4c46965f1db41099b970b731cf3e03add675c16cc824",
+    "references/stages/update.md": "bc8aceb95ee1e03267d60996ca2dcf4e1dd829b10eabc8d94a449492a59380e5",
+    "references/templates.md": "8b1538e2f3bf04922f018e17afbbbdc37f89735118660acd1ae684a1ad52269a",
     "slots/team-loop/README.md": "0e8a6d17a85b1af8da7c5bf3c7e7472ff470e2a26a2cc6cf648ef5a890d7cab2",
     "tests/fixtures/skill_surface/inputs/handoff-snapshot.md": "8b04243b0211414d1b0d15d328bfd6092b1d29c4154fc813f45f7e4790729f1a",
     "tests/fixtures/skill_surface/inputs/pkg-large/tasks.md": "5cd8c2f991948e35a64eb5c323494201edd7ae2860f66943ff5f4c9a01bfec4b",
@@ -99,8 +99,8 @@
           "source": "references/output-contracts.md",
           "ranges": [
             [
-              83,
-              86
+              84,
+              87
             ]
           ],
           "reason": "output skeleton + shared hard rules + current stage section",
@@ -139,8 +139,8 @@
               72
             ],
             [
-              86,
-              111
+              90,
+              115
             ]
           ],
           "reason": "spec/tasks init fences instantiated per new package",
@@ -163,7 +163,7 @@
       "context_available": [
         {
           "source": "SKILL.md",
-          "sha256": "ce079b5c5907843339701b21fd290a0d6f2b1f96af0cc22076029a4e20ab8207"
+          "sha256": "8846debae10b35a3381f71a707254d9e0209cbe8ba76561f0493d7276704ef74"
         }
       ],
       "success_condition": "next ready task executed with its verify actually run",
@@ -194,8 +194,8 @@
           "source": "references/output-contracts.md",
           "ranges": [
             [
-              87,
-              90
+              88,
+              91
             ]
           ],
           "reason": "output skeleton + shared hard rules + current stage section",
@@ -257,7 +257,7 @@
       "context_available": [
         {
           "source": "SKILL.md",
-          "sha256": "ce079b5c5907843339701b21fd290a0d6f2b1f96af0cc22076029a4e20ab8207"
+          "sha256": "8846debae10b35a3381f71a707254d9e0209cbe8ba76561f0493d7276704ef74"
         }
       ],
       "success_condition": "slot lane assignment contract satisfied; no second state machine",
@@ -289,8 +289,8 @@
           "source": "references/output-contracts.md",
           "ranges": [
             [
-              87,
-              90
+              88,
+              91
             ]
           ],
           "reason": "output skeleton + shared hard rules + current stage section",
@@ -361,7 +361,7 @@
       "context_available": [
         {
           "source": "SKILL.md",
-          "sha256": "ce079b5c5907843339701b21fd290a0d6f2b1f96af0cc22076029a4e20ab8207"
+          "sha256": "8846debae10b35a3381f71a707254d9e0209cbe8ba76561f0493d7276704ef74"
         }
       ],
       "success_condition": "failure diagnosed, written back, fixed and fully re-verified in-round",
@@ -392,8 +392,8 @@
           "source": "references/output-contracts.md",
           "ranges": [
             [
-              91,
-              100
+              92,
+              101
             ]
           ],
           "reason": "output skeleton + shared hard rules + current stage section",
@@ -455,7 +455,7 @@
       "context_available": [
         {
           "source": "SKILL.md",
-          "sha256": "ce079b5c5907843339701b21fd290a0d6f2b1f96af0cc22076029a4e20ab8207"
+          "sha256": "8846debae10b35a3381f71a707254d9e0209cbe8ba76561f0493d7276704ef74"
         }
       ],
       "success_condition": "legacy evidence completeness judged with full log, not first screen",
@@ -485,8 +485,8 @@
           "source": "references/output-contracts.md",
           "ranges": [
             [
-              91,
-              100
+              92,
+              101
             ]
           ],
           "reason": "output skeleton + shared hard rules + current stage section",
@@ -522,7 +522,7 @@
       "context_available": [
         {
           "source": "SKILL.md",
-          "sha256": "ce079b5c5907843339701b21fd290a0d6f2b1f96af0cc22076029a4e20ab8207"
+          "sha256": "8846debae10b35a3381f71a707254d9e0209cbe8ba76561f0493d7276704ef74"
         }
       ],
       "success_condition": "package archived and committed with naming/commit contract",
@@ -553,8 +553,8 @@
           "source": "references/output-contracts.md",
           "ranges": [
             [
-              101,
-              110
+              102,
+              111
             ]
           ],
           "reason": "output skeleton + shared hard rules + current stage section",
@@ -608,7 +608,7 @@
       "context_available": [
         {
           "source": "SKILL.md",
-          "sha256": "ce079b5c5907843339701b21fd290a0d6f2b1f96af0cc22076029a4e20ab8207"
+          "sha256": "8846debae10b35a3381f71a707254d9e0209cbe8ba76561f0493d7276704ef74"
         }
       ],
       "success_condition": "merge to main pushed on the recorded integration branch only",
@@ -638,8 +638,8 @@
           "source": "references/output-contracts.md",
           "ranges": [
             [
-              111,
-              120
+              112,
+              121
             ]
           ],
           "reason": "output skeleton + shared hard rules + current stage section",
@@ -736,24 +736,24 @@
               58
             ],
             [
-              83,
-              86
+              84,
+              87
             ],
             [
-              87,
-              90
+              88,
+              91
             ],
             [
-              91,
-              100
+              92,
+              101
             ],
             [
-              101,
-              110
+              102,
+              111
             ],
             [
-              135,
-              138
+              136,
+              139
             ]
           ],
           "reason": "goal page + shared rules + the stage sections actually traversed in-session",
@@ -777,7 +777,7 @@
       "context_available": [
         {
           "source": "SKILL.md",
-          "sha256": "ce079b5c5907843339701b21fd290a0d6f2b1f96af0cc22076029a4e20ab8207"
+          "sha256": "8846debae10b35a3381f71a707254d9e0209cbe8ba76561f0493d7276704ef74"
         }
       ],
       "success_condition": "assigned detail document written per planner mission, nothing else",
@@ -809,8 +809,8 @@
           "source": "references/output-contracts.md",
           "ranges": [
             [
-              170,
-              181
+              171,
+              182
             ]
           ],
           "reason": "output skeleton + shared hard rules + current stage section",
@@ -877,7 +877,7 @@
       "context_available": [
         {
           "source": "SKILL.md",
-          "sha256": "ce079b5c5907843339701b21fd290a0d6f2b1f96af0cc22076029a4e20ab8207"
+          "sha256": "8846debae10b35a3381f71a707254d9e0209cbe8ba76561f0493d7276704ef74"
         }
       ],
       "success_condition": "fail-fast honored: chain stops, failure reported per goal contract",
@@ -909,8 +909,8 @@
           "source": "references/output-contracts.md",
           "ranges": [
             [
-              159,
-              169
+              160,
+              170
             ]
           ],
           "reason": "output skeleton + shared hard rules + current stage section",
@@ -977,7 +977,7 @@
       "context_available": [
         {
           "source": "SKILL.md",
-          "sha256": "ce079b5c5907843339701b21fd290a0d6f2b1f96af0cc22076029a4e20ab8207"
+          "sha256": "8846debae10b35a3381f71a707254d9e0209cbe8ba76561f0493d7276704ef74"
         }
       ],
       "success_condition": "spec/tasks updated with affected acceptance surface still coherent",
@@ -1007,8 +1007,8 @@
           "source": "references/output-contracts.md",
           "ranges": [
             [
-              121,
-              124
+              122,
+              125
             ]
           ],
           "reason": "output skeleton + shared hard rules + current stage section",
@@ -1114,8 +1114,8 @@
           "source": "references/output-contracts.md",
           "ranges": [
             [
-              125,
-              134
+              126,
+              135
             ]
           ],
           "reason": "output skeleton + shared hard rules + current stage section",
@@ -1207,8 +1207,8 @@
           "source": "references/output-contracts.md",
           "ranges": [
             [
-              139,
-              148
+              140,
+              149
             ]
           ],
           "reason": "output skeleton + shared hard rules + current stage section",
@@ -1287,8 +1287,8 @@
           "source": "references/output-contracts.md",
           "ranges": [
             [
-              149,
-              158
+              150,
+              159
             ]
           ],
           "reason": "output skeleton + shared hard rules + current stage section",
@@ -1436,8 +1436,8 @@
           "source": "references/output-contracts.md",
           "ranges": [
             [
-              87,
-              90
+              88,
+              91
             ]
           ],
           "reason": "output skeleton + shared hard rules + current stage section",

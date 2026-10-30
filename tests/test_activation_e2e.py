@@ -251,6 +251,69 @@ def test_full_loop_from_first_request_to_verified_exit(installed):
     assert "hooks" not in json.loads((home / ".claude" / "settings.json").read_text())
 
 
+def test_installed_guard_reassesses_after_archive(installed):
+    project = make_project(installed["base"], "archive")
+    slug = "2026-10-27_add-export"
+    created = subprocess.run(
+        [
+            sys.executable,
+            str(installed["skill"] / "scripts/init_spec_package.py"),
+            "--root",
+            str(project),
+            "--slug",
+            slug,
+            "--title",
+            "Export",
+            "--main-branch",
+            "feature/work",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert created.returncode == 0, created.stderr
+    package = project / ".spec/specs" / slug
+    tasks = package / "tasks.md"
+    tasks.write_text(tasks.read_text().replace("- [ ]", "- [x]"), encoding="utf-8")
+    facts = {"version": 1, "acceptance_surfaces": 1, "implementers": 1, "package_slug": slug}
+    recorded = assess(installed, project, facts)
+    assert recorded.returncode == 0, recorded.stderr
+    assert json.loads(recorded.stdout)["decision"] == "resume"
+    assert hook(installed, pre_tool(project)).stdout.strip() == ""
+    code_before = (project / "app.py").read_bytes()
+
+    # Exercise the real installed hook against archived identity, not a stubbed policy.
+    archive = package.parent / "archive"
+    archive.mkdir()
+    package.rename(archive / slug)
+    git(project, "checkout", "-q", "feature/work")
+    prompt = hook(
+        installed,
+        {
+            "session_id": "e2e",
+            "cwd": str(project),
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "Add filtering and CSV export",
+        },
+    )
+    assert prompt.returncode == 0, prompt.stderr
+    guarded = hook(installed, pre_tool(project))
+    assert guarded.returncode == 0, guarded.stderr
+    assert guarded.stdout.strip(), "the installed hook reused an archived package's grant"
+    assert json.loads(guarded.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    mismatch = assess(installed, project, facts)
+    assert mismatch.returncode == 0, mismatch.stderr
+    assert json.loads(mismatch.stdout)["decision"] == "defer"
+    assert json.loads(hook(installed, pre_tool(project)).stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    fresh = assess(installed, project, {"version": 1, "acceptance_surfaces": 2, "implementers": 1})
+    assert fresh.returncode == 0, fresh.stderr
+    assert json.loads(fresh.stdout)["decision"] == "create"
+    assert hook(installed, pre_tool(project)).stdout.strip() == ""
+    assert (project / "app.py").read_bytes() == code_before
+    assert source_state() == installed["source_before"]
+    assert real_config_state() == installed["real_before"]
+
+
 def test_scope_growth_forces_a_fresh_decision(installed):
     project = make_project(installed["base"], "grow")
     assert (

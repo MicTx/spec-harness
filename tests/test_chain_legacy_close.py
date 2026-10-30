@@ -518,3 +518,129 @@ def test_the_residual_limit_of_the_independence_proof_is_documented():
     doc = doc[: doc.index('"""', doc.index('"""') + 3)]
     assert "CANNOT show" in doc and "wholly rewritten" in doc
     assert "operator assertion" in doc
+
+
+# --- independent successor: copy detection, template similarity, replay, staging (week review) ---
+
+
+def _template_spec(tag):
+    """Shaped like real packages: most lines come from the shared template, a few are the package's own."""
+    shared = "".join(f"## section {n}\n- shared template line {n} for every package\n" for n in range(14))
+    return f"# {tag}\n" + shared + "".join(f"- {tag} specific requirement {n} with its own wording\n" for n in range(9))
+
+
+def test_an_unmodified_source_copy_is_not_independent(tmp_path):
+    _, summary, runtime = seed_current(tmp_path)
+    own = "2026-10-01_add-own"
+    package = tmp_path / ".spec/specs" / own
+    package.mkdir(parents=True)
+    (package / "spec.md").write_text("# the chain's own package\n" + "body line\n" * 40)
+    (package / "tasks.md").write_text("# tasks\n")
+    # the package belongs to the chain: it exists at the final committed chain state
+    state = json.loads((summary / "chain.json").read_text())
+    support.write_chain_state(summary, runtime, state)
+    support.append_audit(runtime / "spawns.jsonl", state)
+    commit(tmp_path, "chain state with its own package")
+    successor = "2026-10-23_add-copied"
+    target = tmp_path / ".spec/specs" / successor
+    target.mkdir(parents=True)
+    (target / "spec.md").write_bytes((package / "spec.md").read_bytes())
+    (target / "tasks.md").write_bytes((package / "tasks.md").read_bytes())
+    commit(tmp_path, "copy it under a new slug, leaving the source untouched")
+    (tmp_path / ".spec/specs/archive").mkdir()
+    git(tmp_path, "mv", f".spec/specs/{own}", f".spec/specs/archive/{own}")
+    commit(tmp_path, "archive the original later")
+    before = snapshot(summary, runtime)
+    with pytest.raises(support.ChainSpawnError, match="rename or copy"):
+        lifecycle.close_chain(tmp_path, "autorun", independent_package=successor)
+    assert snapshot(summary, runtime) == before
+
+
+def test_a_template_similar_new_package_is_still_independent(tmp_path):
+    seed_current(tmp_path)
+    previous = "2026-10-20_add-previous"
+    old = tmp_path / ".spec/specs" / previous
+    old.mkdir(parents=True)
+    (old / "spec.md").write_text(_template_spec("previous"))
+    (old / "tasks.md").write_text("# tasks\n")
+    commit(tmp_path, "previous round")
+    # one commit archives the previous package and starts the next one from the same template
+    (tmp_path / ".spec/specs/archive").mkdir()
+    git(tmp_path, "mv", f".spec/specs/{previous}", f".spec/specs/archive/{previous}")
+    new = tmp_path / ".spec/specs" / SUCCESSOR
+    new.mkdir(parents=True)
+    (new / "spec.md").write_text(_template_spec("successor"))
+    (new / "tasks.md").write_text("# successor tasks\n")
+    commit(tmp_path, "archive the previous round and start the next one")
+    result = lifecycle.close_chain(tmp_path, "autorun", independent_package=SUCCESSOR, dry_run=True)
+    assert result["status"] == "would_close"
+
+
+@pytest.mark.parametrize("name_the_successor", [False, True])
+def test_an_interrupted_independent_close_retries_after_the_successor_is_archived(
+    tmp_path, monkeypatch, name_the_successor
+):
+    _, summary, _ = seed_current(tmp_path)
+    add_package(tmp_path)
+    before = (summary / "chain.json").read_bytes()
+    with monkeypatch.context() as patch:
+
+        def fail(*args):
+            raise OSError("disk full")
+
+        patch.setattr(lifecycle, "_append_closure", fail)
+        with pytest.raises(support.ChainSpawnError, match="disk full"):
+            lifecycle.close_chain(tmp_path, "autorun", independent_package=SUCCESSOR)
+    assert (summary / "chain.json").read_bytes() == before
+    assert list((summary / "history").glob("*.json")), "the interrupted attempt wrote its archive"
+    (tmp_path / ".spec/specs/archive").mkdir()
+    git(tmp_path, "mv", f".spec/specs/{SUCCESSOR}", f".spec/specs/archive/{SUCCESSOR}")
+    commit(tmp_path, "archive the successor before the retry")
+    kwargs = {"independent_package": SUCCESSOR} if name_the_successor else {}
+    result = lifecycle.close_chain(tmp_path, "autorun", **kwargs)
+    assert result["status"] == "closed"
+    assert json.loads((tmp_path / result["archive"]).read_text())["proof"]["independent_package"]["slug"] == SUCCESSOR
+
+
+def test_a_different_successor_cannot_reuse_an_interrupted_close(tmp_path, monkeypatch):
+    _, summary, _ = seed_current(tmp_path)
+    add_package(tmp_path)
+    with monkeypatch.context() as patch:
+        patch.setattr(lifecycle, "_append_closure", lambda *args: (_ for _ in ()).throw(OSError("disk full")))
+        with pytest.raises(support.ChainSpawnError):
+            lifecycle.close_chain(tmp_path, "autorun", independent_package=SUCCESSOR)
+    before = (summary / "chain.json").read_bytes()
+    with pytest.raises(support.ChainSpawnError):
+        lifecycle.close_chain(tmp_path, "autorun", independent_package="2026-10-24_add-another")
+    assert (summary / "chain.json").read_bytes() == before
+
+
+def test_a_staging_directory_is_not_an_active_package(tmp_path):
+    seed_current(tmp_path)
+    staging = tmp_path / ".spec/specs" / f".{SUCCESSOR}.adopt-4242"  # left behind by a killed adopter
+    staging.mkdir(parents=True)
+    (staging / "spec.md").write_text("# half-written\n")
+    assert lifecycle.close_chain(tmp_path, "autorun", dry_run=True)["status"] == "would_close"
+
+
+def test_a_package_renamed_from_a_legacy_root_is_not_independent(tmp_path):
+    """A rename from an old `.trae/specs/` layout is still earlier work: any >=90% similar source counts."""
+    _, summary, runtime = seed_current(tmp_path)
+    own = "2026-10-01_add-own"
+    legacy = tmp_path / ".trae/specs" / own
+    legacy.mkdir(parents=True)
+    (legacy / "spec.md").write_text("# the chain's own package\n" + "body line\n" * 40)
+    (legacy / "tasks.md").write_text("# tasks\n")
+    state = json.loads((summary / "chain.json").read_text())
+    support.write_chain_state(summary, runtime, state)
+    support.append_audit(runtime / "spawns.jsonl", state)
+    git(tmp_path, "add", ".trae")
+    commit(tmp_path, "chain state with its own package in the legacy layout")
+    successor = "2026-10-23_add-migrated"
+    (tmp_path / ".spec/specs").mkdir(parents=True, exist_ok=True)
+    git(tmp_path, "mv", f".trae/specs/{own}", f".spec/specs/{successor}")
+    commit(tmp_path, "move it into the current layout under a new slug")
+    before = snapshot(summary, runtime)
+    with pytest.raises(support.ChainSpawnError, match="rename or copy"):
+        lifecycle.close_chain(tmp_path, "autorun", independent_package=successor)
+    assert snapshot(summary, runtime) == before

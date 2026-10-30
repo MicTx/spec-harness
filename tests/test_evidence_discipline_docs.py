@@ -68,3 +68,47 @@ def test_commands_check_section_documents_anchor_semantics():
     assert "archived" in content
     assert "non-Git" in content
     assert "truncated" in content
+
+
+def test_decisive_claim_requires_preimplementation_falsifier():
+    for relative in ("SKILL.md", "references/stages/new.md", "references/templates.md"):
+        content = (ROOT / relative).read_text(encoding="utf-8")
+        for required in ("1–2", "before implementation", "primary", "falsifier", "verify"):
+            assert required in content, (relative, required)
+    run = (ROOT / "references/stages/run.md").read_text(encoding="utf-8")
+    assert "assumption is falsified or scope changes" in run
+    assert "§2.5" in run
+    check = STAGES_CHECK.read_text(encoding="utf-8")
+    assert "claim → primary source → falsifier → actual result" in check
+    assert "Execution/freshness does not prove semantic correctness" in check
+
+
+def test_independent_oracle_examples_reject_self_confirmation():
+    content = TEMPLATES.read_text(encoding="utf-8")
+    for required in (
+        "implementation-generated expected values",
+        "trusted raw data",
+        "independent reference method",
+        "different agent",
+        "same model",
+        "已核验 / 推断 / 未核验",
+        "Missing material",
+        "does not prove model compliance",
+    ):
+        assert required in content, required
+    for relative in ("agents/reviewer.md", "agents/confirmer.md"):
+        content = (ROOT / relative).read_text(encoding="utf-8")
+        assert "判据来源" in content, relative
+        assert "换 agent" in content, relative
+        assert "缺材料" in content, relative
+    output = (ROOT / "references/output-contracts.md").read_text(encoding="utf-8")
+    assert "已核验 / 推断 / 未核验" in output
+    assert "not five new output sections" in output
+
+
+def test_new_goal_requires_scope_update_before_implementation():
+    for relative in ("SKILL.md", "references/stages/run.md", "references/templates.md"):
+        content = (ROOT / relative).read_text(encoding="utf-8")
+        for required in ("all-green", "new goal", "resume", "scope and unfinished tasks", "before implementation"):
+            assert required in content, (relative, required)
+    assert "resume is package identity, not scope coverage" in STAGES_CHECK.read_text(encoding="utf-8")

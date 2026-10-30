@@ -22,21 +22,24 @@ Adding tasks must not invalidate existing deliverables.
 
 ### Update rollback-safety contract (Git WIP)
 
-In-place rewrites of the package documents must be wrapped in a Git WIP recovery point — never bare edits. The integration branch allows WIP commits (see `stages/push.md`), so the recovery point is ordinary Git history: it covers the whole worktree including Git state, needs no extra state machine, and is the single source of truth for update rollback safety. This replaces the retired `update-checkpoint.json` snapshot mechanism.
+Rewrites of the package documents must be wrapped in a Git WIP recovery point — never bare edits. The integration branch allows WIP commits (see `stages/push.md`), so the recovery point is ordinary Git history: no extra state machine, the single source of truth for update rollback safety, replacing the retired `update-checkpoint.json` snapshot.
 
-1. **WIP commit (before rewriting)**: on the package's integration branch, commit the current state as the recovery point:
+1. **WIP commit (before rewriting)**: on the integration branch, commit the current state as the recovery point:
 
    ```bash
    git add -A && git commit -m "Spec-WIP: YYYY-MM-DD_<slug> update checkpoint"
    ```
 
+   An adopted package (holding `adoption.json`) shares the tree with teammates: commit only its directory, `git add -- <pkg> && git commit -m "<same message>" -- <pkg>`.
+
 2. **Rewrite the package documents**: rewrite `tasks.md` per the execution order and sync `spec.md` as impacted.
-3. **Rollback (interrupted update)**: restore the whole worktree from the recovery point — `git reset --hard <WIP-commit>` while the branch is unpushed, `git revert <WIP-commit>` when already pushed. Nothing to clear afterwards: the recovery point stays in Git history.
-4. **Keep-new confirmation**: when the applied update is the wanted one, simply continue; the WIP commit folds into the branch's history like any other in-flight commit.
+3. **Rollback (interrupted update)**: uncommitted, `git restore --source=<WIP-commit> --staged --worktree -- <pkg>`; committed, `git reset --hard <WIP-commit>` (unpushed) or `git revert --no-edit <WIP-commit>..HEAD` (pushed: reverts later commits). Adopted packages use only the first form, then commit.
+4. **Keep-new confirmation**: when the update is wanted, continue; the WIP commit folds into branch history like any in-flight commit.
 
 Historical `update-checkpoint.json` (retired mechanism, read-only recognition):
 
-- **Route advises, gates agree**: a package holding a historical `update-checkpoint.json` (live or corrupted) gets a prominent advisory from `scripts/route_spec_package.py` (Git history is the recovery point) while routing normally; `scripts/check_spec_package.py` still exits non-zero with Git recovery guidance — a half-applied package never passes review; `scripts/complete_spec_package.py` refuses to archive; `scripts/check_all_spec_packages.py` reports failure. Archived packages keep the file as comparable history; archived read-only review never fails on it.- **Resolution**: compare the current documents against Git history (the recorded snapshot fields in the file help locate the pre-update state), decide keep-new or restore via `git reset --hard` / `git revert`, then delete the package's `update-checkpoint.json` and re-run the refused gate.
+- **Route advises, gates agree**: a package holding a historical `update-checkpoint.json` (live or corrupted) gets a prominent advisory from `scripts/route_spec_package.py` (Git history is the recovery point) while routing normally; `scripts/check_spec_package.py` still exits non-zero with Git recovery guidance — a half-applied package never passes review; `scripts/complete_spec_package.py` refuses to archive; `scripts/check_all_spec_packages.py` reports failure. Archived packages keep the file as comparable history; archived read-only review never fails on it.
+- **Resolution**: compare the current documents against Git history (the recorded snapshot fields in the file help locate the pre-update state), decide keep-new or restore via `git reset --hard` / `git revert`, then delete the package's `update-checkpoint.json` and re-run the refused gate.
 - **Recognition CLI** (`scripts/update_checkpoint.py`, read-only; `begin`/`rollback`/`complete` are retired and refuse with the Git WIP guidance above):
 
 ```bash

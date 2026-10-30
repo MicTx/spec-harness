@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import stat
+import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -110,3 +111,61 @@ def open_append_private(path: Path, *, mode: int = 0o600) -> int:
     """
     flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
     return os.open(path, flags, mode)
+
+
+def _fchmod_best_effort(descriptor: int, mode: int) -> None:
+    """mkstemp already created the file 0o600. A filesystem that refuses chmod (vfat, exFAT, some network
+    mounts) keeps that private default instead of failing the write; Windows before 3.13 has no fchmod."""
+    if not hasattr(os, "fchmod"):
+        return
+    try:
+        os.fchmod(descriptor, mode)
+    except OSError:
+        pass
+
+
+def _atomic_write(path: Path, data: bytes, mode: int) -> None:
+    descriptor, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temp = Path(temp_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            _fchmod_best_effort(handle.fileno(), mode)
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
+
+
+def replace_preserving_mode(path: Path, data: bytes, *, new_mode: int = 0o600) -> None:
+    """Atomically replace ``path`` with ``data`` without changing its permission bits.
+
+    A plain write-then-rename takes the umask default (usually 0o644), which
+    widens a private file such as a settings file holding credentials. The temp
+    file is created private in the target's directory, given the existing
+    file's mode (``new_mode`` for a new file) before any byte is written,
+    fsync'd, then renamed over the target. On any failure the temp file is
+    removed and the original is left as it was.
+    """
+    try:
+        mode = path.stat().st_mode & 0o777
+    except FileNotFoundError:
+        mode = new_mode
+    _atomic_write(path, data, mode)
+
+
+def copy_private(source: Path, destination: Path) -> None:
+    """Copy ``source`` to ``destination`` (a backup) without the copy ever being more readable than the source.
+
+    ``shutil.copy2`` creates the copy with the umask default and copies the mode afterwards, so a private
+    file's backup is briefly (and, when that metadata copy fails, permanently) readable by others. The copy
+    is written private first, then given the source's mode, and an existing destination is replaced atomically.
+    """
+    info = source.stat()
+    _atomic_write(destination, source.read_bytes(), info.st_mode & 0o777)
+    try:
+        os.utime(destination, ns=(info.st_atime_ns, info.st_mtime_ns))
+    except OSError:
+        pass
