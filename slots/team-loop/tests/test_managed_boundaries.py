@@ -1,20 +1,25 @@
 """Managed dispatch boundaries: no host or model is launched by these tests."""
-from concurrent.futures import ThreadPoolExecutor
+
 import json
-from pathlib import Path
 import subprocess
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
-
 from loop_control import admission, reap_stale_tasks, stale_tasks, termination_check
 from loop_state import LoopStateError, LoopStore, write_stop_sentinel
 
 
 def make_store(tmp_path, clock, **config):
-    defaults = {"maxRounds": 2, "concurrency": 2, "budgetTasks": 8,
-                "stalenessSec": 10, "retry": {"maxAttempts": 3, "baseSec": 5, "maxSec": 20, "jitter": 0}}
+    defaults = {
+        "maxRounds": 2,
+        "concurrency": 2,
+        "budgetTasks": 8,
+        "stalenessSec": 10,
+        "retry": {"maxAttempts": 3, "baseSec": 5, "maxSec": 20, "jitter": 0},
+    }
     defaults.update(config)
     store = LoopStore.init(tmp_path / "run", "g", "until-converged", config=defaults, now=clock)
     store.round_start("r1")
@@ -100,8 +105,7 @@ def test_backoff_is_atomic_and_cannot_be_shortened(tmp_path, clock):
     store.task_result(1, "t1", "ok", reservation=token2, submission="s2", confirmed_stopped=True)
 
 
-@pytest.mark.parametrize("config", [{"concurrency": 1, "budgetTasks": 5},
-                                    {"concurrency": 5, "budgetTasks": 1}])
+@pytest.mark.parametrize("config", [{"concurrency": 1, "budgetTasks": 5}, {"concurrency": 5, "budgetTasks": 1}])
 def test_competing_pre_spawn_reservations_have_one_winner(tmp_path, clock, config):
     store = make_store(tmp_path, clock, **config)
     add(store, "a")
@@ -225,15 +229,31 @@ def test_stop_sentinel_blocks_stale_snapshot_reservation(tmp_path, clock):
 
 
 def test_two_cli_processes_compete_before_fake_host_spawn(tmp_path):
-    store = LoopStore.init(tmp_path / "run", "g", "until-converged",
-                           config={"concurrency": 2, "budgetTasks": 1})
+    store = LoopStore.init(tmp_path / "run", "g", "until-converged", config={"concurrency": 2, "budgetTasks": 1})
     store.round_start("r")
     store.task_add(1, "a", "worker", "verify")
     store.task_add(1, "b", "worker", "verify")
     script = Path(__file__).resolve().parents[1] / "scripts" / "loop_state.py"
-    processes = [subprocess.Popen([sys.executable, str(script), "task", "reserve", "--run-dir", str(store.run_dir),
-                                  "--round", "1", "--id", task], stdout=subprocess.PIPE,
-                                 stderr=subprocess.PIPE, text=True) for task in ("a", "b")]
+    processes = [
+        subprocess.Popen(
+            [
+                sys.executable,
+                str(script),
+                "task",
+                "reserve",
+                "--run-dir",
+                str(store.run_dir),
+                "--round",
+                "1",
+                "--id",
+                task,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for task in ("a", "b")
+    ]
     results = [(p.communicate(timeout=20), p.returncode) for p in processes]
     winners = [json.loads(out) for ((out, err), rc) in results if rc == 0]
     assert len(winners) == 1 and winners[0]["reservation"]
@@ -259,7 +279,6 @@ def test_legacy_pending_failure_requires_recorded_backoff(tmp_path, clock):
     assert store.task_reserve(1, "t1")
 
 
-
 def test_historical_exhausted_task_does_not_mask_later_pass(tmp_path, clock):
     store = make_store(tmp_path, clock, retry={"maxAttempts": 1, "baseSec": 0, "maxSec": 0, "jitter": 0})
     add(store)
@@ -274,4 +293,3 @@ def test_historical_exhausted_task_does_not_mask_later_pass(tmp_path, clock):
     store.task_result(2, "t2", "ok", reservation=second, confirmed_stopped=True)
     store.round_end("pass")
     assert termination_check(store, clock())["verdict"] == "converged"
-

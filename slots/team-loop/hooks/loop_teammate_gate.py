@@ -128,7 +128,8 @@ def main() -> int:
         f"spec team-loop 门禁：run {run_dir.name} 的任务 r{round_index}/{tid} 仍是 in_flight。"
         "请将真实工作与验证记录写入 JSON 对象文件 worker-report.json（若文件已存在则另选文件名并调整命令），"
         "仅提交非终态交接并通知主会话，不要自行记录 task result 或取消任务：\n"
-        f"python3 {shlex.quote(str(SKILL_DIR / 'scripts' / 'loop_state.py'))} task report --run-dir {shlex.quote(str(run_dir))} "
+        f"python3 {shlex.quote(str(SKILL_DIR / 'scripts' / 'loop_state.py'))} task report "
+        f"--run-dir {shlex.quote(str(run_dir))} "
         f"--round {round_index} --id {shlex.quote(tid)} --result @worker-report.json{fence}\n"
         "交接不释放额度；主会话须向宿主核实该 worker 已结束后才记录终态。"
     )

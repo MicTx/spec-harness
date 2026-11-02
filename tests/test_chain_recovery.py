@@ -343,10 +343,13 @@ class TestDecideTableAutorun:
         assert decision.action == "cap_reached"
         assert decision.detail["recovered_state"] is True
 
-    @pytest.mark.parametrize("chain,counter,cap_key", [
-        ("autorun", "round", "max_rounds"),
-        ("autoplan", "pass", "max_passes"),
-    ])
+    @pytest.mark.parametrize(
+        "chain,counter,cap_key",
+        [
+            ("autorun", "round", "max_rounds"),
+            ("autoplan", "pass", "max_passes"),
+        ],
+    )
     def test_lagging_audit_cannot_roll_committed_counter_back(self, chain, counter, cap_key):
         state = {counter: 5, cap_key: 5}
         decision = decide(chain, state, "ok", plan_unchecked=1, audit_tail={counter: 4})

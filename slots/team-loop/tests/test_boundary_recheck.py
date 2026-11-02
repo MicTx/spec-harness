@@ -1,23 +1,26 @@
 """Isolated regressions for loop boundaries; no host workers or models are invoked."""
+
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
-
-import pytest
+from pathlib import Path
 
 import loop_state
+import pytest
 from loop_control import termination_check
 from loop_state import LoopStateError, LoopStore, default_run_dir, write_stop_sentinel
-
 
 HOOKS = Path(__file__).resolve().parents[1] / "hooks"
 
 
 def make_store(tmp_path, clock, **config):
-    settings = {"maxRounds": 2, "concurrency": 3, "budgetTasks": 4,
-                "retry": {"maxAttempts": 1, "baseSec": 0, "maxSec": 0, "jitter": 0}}
+    settings = {
+        "maxRounds": 2,
+        "concurrency": 3,
+        "budgetTasks": 4,
+        "retry": {"maxAttempts": 1, "baseSec": 0, "maxSec": 0, "jitter": 0},
+    }
     settings.update(config)
     store = LoopStore.init(tmp_path / "run", "goal", "until-converged", config=settings, now=clock)
     store.round_start("first")
@@ -93,18 +96,21 @@ def test_real_hard_stop_wins_even_with_exhausted_and_live_work(tmp_path, clock, 
 
 
 def call_hook(name, event, root):
-    return subprocess.run([sys.executable, str(HOOKS / (name + ".py"))],
-                          input=json.dumps({"hook_event_name": event, "cwd": str(root),
-                                            "teammate_name": "agent"}),
-                          text=True, capture_output=True, timeout=20)
+    return subprocess.run(
+        [sys.executable, str(HOOKS / (name + ".py"))],
+        input=json.dumps({"hook_event_name": event, "cwd": str(root), "teammate_name": "agent"}),
+        text=True,
+        capture_output=True,
+        timeout=20,
+    )
 
 
 @pytest.mark.parametrize("attached", [False, True])
 def test_stop_hook_waits_for_budgeted_work_after_exhaustion(tmp_path, attached):
     run_dir = default_run_dir(tmp_path, "run")
-    store = LoopStore.init(run_dir, "goal", "until-converged",
-                           config={"maxRounds": 2, "budgetTasks": 3,
-                                   "retry": {"maxAttempts": 1}})
+    store = LoopStore.init(
+        run_dir, "goal", "until-converged", config={"maxRounds": 2, "budgetTasks": 3, "retry": {"maxAttempts": 1}}
+    )
     store.round_start("first")
     for task in ("failed", "live"):
         store.task_add(1, task, "worker", "work")
@@ -125,8 +131,9 @@ def test_stop_hook_waits_for_budgeted_work_after_exhaustion(tmp_path, attached):
     assert "round start" in json.loads(call_hook("loop_stop_guard", "Stop", tmp_path).stdout)["reason"]
 
 
-@pytest.mark.parametrize("damage", ["state_utf8", "event_utf8", "counters", "tasksSpawned",
-                                    "taskResults", "attempts", "currentRound"])
+@pytest.mark.parametrize(
+    "damage", ["state_utf8", "event_utf8", "counters", "tasksSpawned", "taskResults", "attempts", "currentRound"]
+)
 def test_damaged_state_fails_closed_in_both_hooks(tmp_path, damage):
     run_dir = default_run_dir(tmp_path, "run")
     store = LoopStore.init(run_dir, "goal", "until-converged")
@@ -188,8 +195,12 @@ def test_stop_cli_does_not_truncate_hardlinked_external_file(tmp_path, clock):
     outside.write_bytes(b"external bytes")
     os.link(outside, store.run_dir / "STOP")
     command = HOOKS.parent / "scripts" / "loop_control.py"
-    result = subprocess.run([sys.executable, str(command), "stop", "--run-dir", str(store.run_dir)],
-                            capture_output=True, text=True, timeout=20)
+    result = subprocess.run(
+        [sys.executable, str(command), "stop", "--run-dir", str(store.run_dir)],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
     assert result.returncode == 0 and json.loads(result.stdout)["ok"] is True
     assert outside.read_bytes() == b"external bytes"
     assert json.loads((store.run_dir / "STOP").read_text(encoding="utf-8"))["source"] == "loop_control stop"

@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Historical checkpoint diagnostics must not execute terminal controls."""
+
 from __future__ import annotations
 
 import hashlib
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -41,8 +42,12 @@ def checkpoint(root: Path, slug: str = SLUG) -> Path:
 
 def run_cli(script: str, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(SCRIPTS / script), *args], capture_output=True, text=True,
-        encoding="utf-8", env={**os.environ, "PYTHONIOENCODING": "utf-8"}, check=False,
+        [sys.executable, str(SCRIPTS / script), *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        check=False,
     )
 
 

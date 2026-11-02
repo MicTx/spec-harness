@@ -162,6 +162,7 @@ def test_teammate_gate_report_command_is_fenced_and_nonterminal(tmp_path):
     completed = subprocess.run(argv, cwd=tmp_path, capture_output=True, text=True, timeout=30)
     assert completed.returncode == 0, completed.stderr
     from loop_state import LoopStore
+
     task = LoopStore(store.run_dir).load().state["rounds"][0]["tasks"]["t1"]
     assert task["status"] == "in_flight" and task["workerReport"]["evidence"] == "isolated test work"
     assert run_hook("loop_teammate_gate", payload)[0] == 0

@@ -1,4 +1,5 @@
 """Offline regression tests for cache provenance and bounded worker execution."""
+
 from __future__ import annotations
 
 import json
@@ -163,9 +164,11 @@ def test_long_multibyte_item_id_does_not_break_generated_filenames(tmp_path, stu
 def test_old_codex_final_is_not_this_attempts_output(tmp_path, monkeypatch):
     old = tmp_path / "same.out"
     old.write_text("old final message")
-    monkeypatch.setattr(wf, "_run_bounded", lambda cmd, timeout: (
-        subprocess.CompletedProcess(cmd, 0, "progress noise", ""), False, False
-    ))
+    monkeypatch.setattr(
+        wf,
+        "_run_bounded",
+        lambda cmd, timeout: (subprocess.CompletedProcess(cmd, 0, "progress noise", ""), False, False),
+    )
     record = wf.run_item("codex", {"id": "same", "prompt": "new task"}, tmp_path, 3)
     assert record["ok"] is False and "output read failed" in record["error"]
     assert old.read_text() == "old final message"
@@ -212,8 +215,14 @@ def test_cache_tracks_actual_clean_git_workspace(tmp_path, monkeypatch, stub_wor
     # All Git state is a disposable test repository with global/system config disabled.
     repo = tmp_path / "repo"
     repo.mkdir()
-    env = {"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path), "GIT_CONFIG_NOSYSTEM": "1",
-           "GIT_CONFIG_GLOBAL": os.devnull, "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"}
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": str(tmp_path),
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0",
+        "LC_ALL": "C",
+    }
 
     def git(*args):
         subprocess.run(["git", "-C", str(repo), *args], env=env, check=True, capture_output=True, text=True)

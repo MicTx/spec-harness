@@ -229,8 +229,13 @@ def test_update_recovery_does_not_authorize_git_mutations():
     assert "coordinate exclusive access" in update
     assert "postimage was never recorded" in update
     for content in (update, cli, gate):
-        for dangerous in ("git add -A", "git reset --hard", "git revert --no-edit",
-                          "git restore --source=", "git commit -m"):
+        for dangerous in (
+            "git add -A",
+            "git reset --hard",
+            "git revert --no-edit",
+            "git restore --source=",
+            "git commit -m",
+        ):
             assert dangerous not in content
 
 

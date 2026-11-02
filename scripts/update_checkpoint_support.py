@@ -245,7 +245,9 @@ def detect_update_checkpoint(package_dir: Path) -> CheckpointStatus:
     status = _load_status(package_dir)
     if status.state == "active" and status.checkpoint is not None and status.checkpoint.package != package_dir.name:
         return CheckpointStatus(
-            "corrupted", status.path, None,
+            "corrupted",
+            status.path,
+            None,
             f"update checkpoint belongs to package {status.checkpoint.package!r}, not {package_dir.name!r}",
             identity_mismatch=True,
         )

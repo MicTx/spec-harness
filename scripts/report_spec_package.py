@@ -258,7 +258,10 @@ def checkpoint_alert(status: CheckpointStatus | None) -> str:
     heading = "存在未完成 update checkpoint（历史遗留，机制已退役）："
     if status is not None and status.state == "active" and status.checkpoint is not None:
         if status.checkpoint.package == status.path.parent.name:
-            return f"{heading}更新「{checkpoint_display_text(status.checkpoint.intent)}」未确认完成；{checkpoint_recovery_guidance()}"
+            return (
+                f"{heading}更新「{checkpoint_display_text(status.checkpoint.intent)}」未确认完成；"
+                f"{checkpoint_recovery_guidance()}"
+            )
         return f"{heading}记录包身份不符，不可信任；{checkpoint_recovery_guidance()}"
     if status is not None and status.state == "corrupted":
         if status.identity_mismatch:
@@ -629,7 +632,8 @@ def render_multi_status(
     alerts = []
     if checkpoint_packages:
         alerts.append(
-            f"{checkpoint_packages} 个项目存在历史遗留 update checkpoint（机制已退役）：{checkpoint_recovery_guidance()}"
+            f"{checkpoint_packages} 个项目存在历史遗留 update checkpoint（机制已退役）："
+            f"{checkpoint_recovery_guidance()}"
         )
     if read_failure_packages:
         alerts.append(f"{read_failure_packages} 个项目状态读取失败或尚无可执行任务")

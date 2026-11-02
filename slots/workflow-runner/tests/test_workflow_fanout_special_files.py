@@ -1,8 +1,8 @@
 """Offline, watchdog-protected regressions for special-file output paths."""
+
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import socket
 import subprocess
@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 import workflow_fanout as wf
-
 
 pytestmark = pytest.mark.skipif(
     not sys.platform.startswith("linux") or not hasattr(os, "mkfifo"),
@@ -35,7 +34,7 @@ def _run_isolated(tmp_path: Path, program: str, *args: str) -> None:
 def test_fifo_cache_is_miss_and_redispatches(tmp_path, damaged):
     _run_isolated(
         tmp_path,
-        r'''
+        r"""
 import json, os, sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
@@ -66,7 +65,7 @@ assert wf.main(args) == 0
 third = json.loads(out.read_text())
 assert third["ok"] is True and third["cached"] is True
 assert calls == ["hello", "hello"]
-''',
+""",
         damaged,
     )
 
@@ -74,7 +73,7 @@ assert calls == ["hello", "hello"]
 def test_fifo_new_codex_artifact_fails_without_hanging(tmp_path):
     _run_isolated(
         tmp_path,
-        r'''
+        r"""
 import os, stat, sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
@@ -86,14 +85,14 @@ wf.build_command = lambda backend, prompt, output: [
 record = wf.run_item("codex", {"id": "a", "prompt": "hello"}, root, 4)
 assert not record["ok"] and "output read failed" in record["error"], record
 assert stat.S_ISFIFO(os.lstat(record["outputFile"]).st_mode)
-''',
+""",
     )
 
 
 def test_fifo_swap_between_stat_and_open_does_not_block(tmp_path):
     _run_isolated(
         tmp_path,
-        r'''
+        r"""
 import os, sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
@@ -119,7 +118,7 @@ except OSError as exc:
 else:
     raise AssertionError("FIFO replacement was accepted")
 assert swapped
-''',
+""",
     )
 
 
@@ -133,8 +132,13 @@ def test_regular_read_limit_and_cache_validation(tmp_path, monkeypatch):
         wf._read_artifact(tmp_path, artifact)
 
     artifact.write_bytes(b"answer")
-    record = {"id": "a", "backend": "pi", "ok": True, "outputFile": str(artifact),
-              "outputSha256": hashlib.sha256(b"answer").hexdigest()}
+    record = {
+        "id": "a",
+        "backend": "pi",
+        "ok": True,
+        "outputFile": str(artifact),
+        "outputSha256": hashlib.sha256(b"answer").hexdigest(),
+    }
     wf.write_cache(tmp_path, "key", record)
     assert wf.read_cache(tmp_path, "key") == record
     cache_file = wf.cache_path(tmp_path, "key")

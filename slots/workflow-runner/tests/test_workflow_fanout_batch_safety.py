@@ -48,11 +48,7 @@ def _process_alive(pid):
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="verified cleanup requires Linux")
 def test_worker_stdin_is_devnull_not_inherited(tmp_path):
     marker = tmp_path / "stdin_eof"
-    worker = (
-        "import sys;"
-        "data = sys.stdin.buffer.read();"
-        f"open(r'{marker}', 'w').write(str(len(data)))"
-    )
+    worker = f"import sys;data = sys.stdin.buffer.read();open(r'{marker}', 'w').write(str(len(data)))"
     completed, timed_out, limited = wf._run_bounded([sys.executable, "-c", worker], 10)
     assert not timed_out and not limited
     assert completed.returncode == 0, completed.stderr
@@ -79,25 +75,22 @@ def test_killpg_permission_failure_stops_batch_and_blocks_unstarted(tmp_path, mo
         current["value"] += 1
         max_concurrent["value"] = max(max_concurrent["value"], current["value"])
         try:
-            raise wf.BatchStopError(
-                "cannot signal worker process group: [Errno 1] Operation not permitted"
-            )
+            raise wf.BatchStopError("cannot signal worker process group: [Errno 1] Operation not permitted")
         finally:
             current["value"] -= 1
 
     monkeypatch.setattr(wf, "_run_bounded", fail_on_first)
     monkeypatch.setattr(wf, "resolve_binary", lambda backend: sys.executable)
     monkeypatch.setattr(
-        wf, "build_command",
+        wf,
+        "build_command",
         lambda backend, prompt, output: [sys.executable, "-c", "", prompt],
     )
 
-    code = wf.main(
-        ["--backend", "pi", "--plan", str(plan), "--out", str(out), "--concurrency", "2"]
-    )
+    code = wf.main(["--backend", "pi", "--plan", str(plan), "--out", str(out), "--concurrency", "2"])
 
     assert code == 2
-    records = {r["id"]: r for r in (json.loads(l) for l in out.read_text().splitlines())}
+    records = {r["id"]: r for r in (json.loads(line) for line in out.read_text().splitlines())}
     assert len(records) == 5
     not_started = {rid for rid, r in records.items() if r["error"].startswith("not started: batch stopped")}
     batch_stopped = {rid for rid, r in records.items() if r["error"].startswith("batch stopped:")}
@@ -150,9 +143,7 @@ def test_start_new_session_worker_survives_driver_sigterm(tmp_path):
             proc.kill()
             proc.wait(timeout=5)
         time.sleep(0.2)
-        assert _process_alive(worker_pid), (
-            "start_new_session worker must survive driver SIGTERM (documented boundary)"
-        )
+        assert _process_alive(worker_pid), "start_new_session worker must survive driver SIGTERM (documented boundary)"
     finally:
         if worker_pid is not None and _process_alive(worker_pid):
             try:
@@ -173,7 +164,8 @@ def test_start_new_session_worker_survives_driver_sigterm(tmp_path):
 def test_platform_capability_missing_fails_before_spawn(monkeypatch, mutate):
     """Non-Linux / missing waitid(WNOWAIT) / unreadable /proc fail before Popen."""
     monkeypatch.setattr(
-        wf.subprocess, "Popen",
+        wf.subprocess,
+        "Popen",
         lambda *args, **kwargs: pytest.fail("must not launch a worker without Linux cleanup support"),
     )
     if mutate == "non_linux":
@@ -184,10 +176,12 @@ def test_platform_capability_missing_fails_before_spawn(monkeypatch, mutate):
     elif mutate == "unreadable_proc":
         # Make the /proc self-stat probe report missing without touching the real fs.
         real_is_file = Path.is_file
+
         def unreadable_proc(self):
             if str(self) == "/proc/self/stat":
                 return False
             return real_is_file(self)
+
         monkeypatch.setattr(Path, "is_file", unreadable_proc)
     with pytest.raises(OSError, match="verified process-group cleanup"):
         wf._run_bounded(["fake"], 1)

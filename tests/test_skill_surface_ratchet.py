@@ -36,7 +36,9 @@ CEILINGS: dict[str, int] = {
     # measured 12,916 B — SKILL.md whole file (F1 11,629 / F2 11,517; +255 B F3 dispatch note;
     # +1,144 B for push-authorization, host/slot-admission, core/full capability, and the update-recovery entry)
     "skill": 13312,
-    "stages": 53248,  # measured 53,105 B — references/stages/*.md (F1 baseline 52,921 B; +184 B stage-contract clarifications)
+    # measured 53,105 B — references/stages/*.md (F1 baseline 52,921 B;
+    # +184 B stage-contract clarifications)
+    "stages": 53248,
     "templates": 4096,  # measured 3,201 B — init fence instantiation (fences byte-stable in F2)
 }
 

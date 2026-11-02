@@ -1,4 +1,5 @@
 """Offline regressions for races in Linux /proc group verification."""
+
 from __future__ import annotations
 
 import builtins
@@ -11,7 +12,6 @@ from types import SimpleNamespace
 
 import pytest
 import workflow_fanout as wf
-
 
 pytestmark = pytest.mark.skipif(
     not sys.platform.startswith("linux") or not os.path.isfile("/proc/self/stat"),
@@ -67,9 +67,7 @@ def test_reaped_proc_stat_fd_reports_esrch_and_scan_continues(monkeypatch, later
 
     real_scandir = os.scandir
     monkeypatch.setattr(wf, "open", racing_open, raising=False)
-    monkeypatch.setattr(
-        wf.os, "scandir", lambda path: OrderedProcEntries() if path == "/proc" else real_scandir(path)
-    )
+    monkeypatch.setattr(wf.os, "scandir", lambda path: OrderedProcEntries() if path == "/proc" else real_scandir(path))
     try:
         # -1 is not a real group; the second case is our own live group.
         pgid = os.getpgrp() if later_live else -1
@@ -114,8 +112,6 @@ def test_cleanup_still_fails_if_group_remains_live(monkeypatch):
     ticks = iter([0.0, 0.1, 2.1])
     monkeypatch.setattr(wf, "_kill_process_tree", lambda process: None)
     monkeypatch.setattr(wf, "_live_group_members", lambda pgid: True)
-    monkeypatch.setattr(
-        wf, "time", SimpleNamespace(monotonic=lambda: next(ticks), sleep=lambda delay: None)
-    )
+    monkeypatch.setattr(wf, "time", SimpleNamespace(monotonic=lambda: next(ticks), sleep=lambda delay: None))
     with pytest.raises(OSError, match="cannot verify worker process-group cleanup"):
         wf._cleanup_group(SimpleNamespace(pid=-1))

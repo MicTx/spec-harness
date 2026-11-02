@@ -157,7 +157,7 @@ def test_normal_exit_kills_detached_stdio_children_before_next_item(tmp_path, mo
     plan = tmp_path / "plan.json"
     result = tmp_path / "result.jsonl"
     plan.write_text(json.dumps({"items": [{"id": "a", "prompt": "first"}, {"id": "b", "prompt": "second"}]}))
-    worker = r'''
+    worker = r"""
 import os, subprocess, sys
 from pathlib import Path
 log, label = Path(sys.argv[1]), sys.argv[2]
@@ -174,9 +174,11 @@ child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
 with log.open("a") as handle:
     handle.write(f"{child.pid}:{os.getpgrp()}\n")
 print(f"previous_alive={previous_alive} child={child.pid}", flush=True)
-'''
+"""
     monkeypatch.setattr(wf, "resolve_binary", lambda backend: sys.executable)
-    monkeypatch.setattr(wf, "build_command", lambda backend, prompt, output: [sys.executable, "-c", worker, str(children), prompt])
+    monkeypatch.setattr(
+        wf, "build_command", lambda backend, prompt, output: [sys.executable, "-c", worker, str(children), prompt]
+    )
     try:
         code = wf.main(["--backend", "pi", "--plan", str(plan), "--out", str(result), "--concurrency", "1"])
         records = [json.loads(line) for line in result.read_text().splitlines()]

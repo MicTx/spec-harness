@@ -11,16 +11,13 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
-
 from loop_control import find_active_runs, termination_check
 from loop_state import (
     EVENTS_FILENAME,
     LOCK_FILENAME,
-    RUN_FILENAME,
     LoopStateError,
     LoopStore,
     default_run_dir,
@@ -88,10 +85,11 @@ def test_failed_task_cannot_be_masked_by_pass_after_cancel_attempt(tmp_path, clo
 
 
 def test_reserve_rechecks_timeout_inside_lock(tmp_path, clock, monkeypatch):
-    store = make_store(tmp_path, clock, timeoutSec=10.0, retry={"maxAttempts": 2, "baseSec": 0, "maxSec": 0, "jitter": 0})
+    store = make_store(
+        tmp_path, clock, timeoutSec=10.0, retry={"maxAttempts": 2, "baseSec": 0, "maxSec": 0, "jitter": 0}
+    )
     store.task_add(1, "t1", "worker", "d")
     # 锁外 _check_dispatch 时尚未超时；进入锁内前越过期限。
-    import loop_state
 
     real_persist = LoopStore._persist
     crossed = False
@@ -120,13 +118,13 @@ def test_reserve_rechecks_timeout_inside_lock(tmp_path, clock, monkeypatch):
 
 
 def test_run_converged_rechecks_timeout_inside_lock(tmp_path, clock, monkeypatch):
-    store = make_store(tmp_path, clock, timeoutSec=10.0, retry={"maxAttempts": 2, "baseSec": 0, "maxSec": 0, "jitter": 0})
+    store = make_store(
+        tmp_path, clock, timeoutSec=10.0, retry={"maxAttempts": 2, "baseSec": 0, "maxSec": 0, "jitter": 0}
+    )
     token = reserve_and_spawn(store)
     store.task_result(1, "t1", "ok", reservation=token, confirmed_stopped=True)
     store.round_end("pass")
     assert termination_check(store, clock())["verdict"] == "converged"
-
-    import loop_state
 
     real_persist = LoopStore._persist
     crossed = False
@@ -175,7 +173,7 @@ def test_list_run_dirs_ignores_orphan_but_find_active_runs_fails_closed(tmp_path
 
 
 def test_empty_new_dir_is_not_an_orphan(tmp_path):
-    d = _orphan_dir(tmp_path, "empty")
+    _orphan_dir(tmp_path, "empty")
     assert list_orphan_run_dirs(tmp_path) == []
     active, corrupt = find_active_runs(tmp_path)
     assert active == [] and corrupt == []
@@ -226,7 +224,7 @@ def test_readme_result_examples_require_confirmed_stopped():
     # 成功与失败两个登记示例都必须携带 --confirmed-stopped
     assert "task result ... --outcome ok --result" in text
     assert "--reservation <token> --confirmed-stopped" in text
-    ok_line = next(l for l in text.splitlines() if "--outcome ok --result" in l)
-    fail_line = next(l for l in text.splitlines() if "--outcome fail --error" in l)
+    ok_line = next(line for line in text.splitlines() if "--outcome ok --result" in line)
+    fail_line = next(line for line in text.splitlines() if "--outcome fail --error" in line)
     assert "--confirmed-stopped" in ok_line
     assert "--confirmed-stopped" in fail_line

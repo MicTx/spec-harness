@@ -83,7 +83,13 @@ def admission(store: LoopStore, now: float) -> dict[str, Any]:
             "cap": cap,
             "stale": stale,
         }
-    return {"admit": True, "reason": "仅供参考；须对指定任务先 reserve", "inFlight": in_flight, "cap": cap, "stale": stale}
+    return {
+        "admit": True,
+        "reason": "仅供参考；须对指定任务先 reserve",
+        "inFlight": in_flight,
+        "cap": cap,
+        "stale": stale,
+    }
 
 
 def _is_stale(task: dict[str, Any], cfg: dict[str, Any], now: float) -> bool:
@@ -104,7 +110,11 @@ def stale_tasks(store: LoopStore, now: float) -> list[str]:
 
 
 def reap_stale_tasks(
-    store: LoopStore, now: float, reason: str = "", *, task_key: Optional[str] = None,
+    store: LoopStore,
+    now: float,
+    reason: str = "",
+    *,
+    task_key: Optional[str] = None,
     confirmed_stopped: bool = False,
 ) -> dict[str, Any]:
     """Reap only one explicitly confirmed host-stopped worker, never on age alone."""
@@ -114,13 +124,22 @@ def reap_stale_tasks(
         for tid, task in rnd.get("tasks", {}).items():
             if f"r{rnd['index']}/{tid}" != task_key:
                 continue
-            if (task["status"] != "in_flight" or task.get("dispatchPhase") == "reserved"
-                    or not _is_stale(task, store.state["config"], now)):
+            if (
+                task["status"] != "in_flight"
+                or task.get("dispatchPhase") == "reserved"
+                or not _is_stale(task, store.state["config"], now)
+            ):
                 raise LoopStateError("指定任务不是可回收的 stale 已登记 worker")
             detail = reason or "调用者确认宿主 worker 已停止；心跳超时"
-            outcome = store.task_result(rnd["index"], tid, "fail", detail,
-                                        submission=task.get("submissionId"),
-                                        reservation=task.get("reservationToken"), confirmed_stopped=True)
+            outcome = store.task_result(
+                rnd["index"],
+                tid,
+                "fail",
+                detail,
+                submission=task.get("submissionId"),
+                reservation=task.get("reservationToken"),
+                confirmed_stopped=True,
+            )
             return {"reaped": [{"task": task_key, "outcome": outcome}]}
     raise LoopStateError(f"任务不存在: {task_key}")
 
@@ -152,8 +171,7 @@ def termination_check(store: LoopStore, now: float) -> dict[str, Any]:
     all_tasks = [(r, tid, task) for r in rounds for tid, task in r.get("tasks", {}).items()]
     live = [(r, tid, task) for r, tid, task in all_tasks if task["status"] == "in_flight"]
     pending = [(r, tid, task) for r, tid, task in all_tasks if task["status"] == "pending"]
-    failed = [f"r{r['index']}/{tid}" for r, tid, task in all_tasks
-              if task["status"] == "failed" and r is latest]
+    failed = [f"r{r['index']}/{tid}" for r, tid, task in all_tasks if task["status"] == "failed" and r is latest]
     # Exhaustion is a task/round failure, not a run-wide hard stop. A decision
     # labelled pass cannot erase a failed task in that same round either.
     latest_passed = bool(latest and latest.get("decision") == "pass" and latest.get("tasks") and not failed)
@@ -161,8 +179,7 @@ def termination_check(store: LoopStore, now: float) -> dict[str, Any]:
 
     if len(rounds) > int(cfg["maxRounds"]):
         reasons.append(f"maxRounds={cfg['maxRounds']} 超限（当前 {len(rounds)} 轮）")
-    elif (len(rounds) == int(cfg["maxRounds"]) and not open_rounds
-          and latest and not latest_passed):
+    elif len(rounds) == int(cfg["maxRounds"]) and not open_rounds and latest and not latest_passed:
         reasons.append(f"maxRounds={cfg['maxRounds']} 已用尽且最后一轮未通过")
     if now - float(st["createdAt"]) > float(cfg["timeoutSec"]):
         reasons.append(f"runTimeout={cfg['timeoutSec']}s 超时")
@@ -178,8 +195,7 @@ def termination_check(store: LoopStore, now: float) -> dict[str, Any]:
         if failed:
             reasons.append("存在重试耗尽的 failed 任务: " + ", ".join(failed))
         return {"stop": True, "verdict": "stopped", "reasons": reasons}
-    if (latest and latest["status"] == "closed" and latest_passed
-            and not open_rounds and not live and not pending):
+    if latest and latest["status"] == "closed" and latest_passed and not open_rounds and not live and not pending:
         return {"stop": True, "verdict": "converged", "reasons": ["最后一轮 pass 关闭且全部任务终态"]}
     return {"stop": False, "verdict": "continue", "reasons": []}
 
@@ -311,8 +327,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                 _emit_json(admission(store, now))
             elif args.command == "stale":
                 if args.reap:
-                    _emit_json(reap_stale_tasks(store, now, reason=args.reason, task_key=args.task,
-                                                  confirmed_stopped=args.confirmed_stopped))
+                    _emit_json(
+                        reap_stale_tasks(
+                            store, now, reason=args.reason, task_key=args.task, confirmed_stopped=args.confirmed_stopped
+                        )
+                    )
                 else:
                     _emit_json({"stale": stale_tasks(store, now)})
             elif args.command == "terminate":

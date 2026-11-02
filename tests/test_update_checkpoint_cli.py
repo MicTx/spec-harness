@@ -338,8 +338,10 @@ def test_malformed_checkpoint_cli_contract_and_byte_preservation(tmp_path: Path,
     result = _run(tmp_path, "status", "--slug", SLUG)
     assert {p.name: p.read_bytes() for p in package.iterdir()} == before
 
+
 # Execute the actual documented shell blocks in isolated Git repositories.
 # This tests the guidance rather than a separate hand-written approximation.
+
 
 def _doc_block(fragment: str) -> str:
     text = (SCRIPTS_DIR.parent / "references/update-recovery.md").read_text(encoding="utf-8")
@@ -348,15 +350,18 @@ def _doc_block(fragment: str) -> str:
     return matches[0]
 
 
-@pytest.mark.parametrize("block", [
-    "recovery_metadata_safe() {",
-    'paths=("$pkg/spec.md"',
-    "step=$(umask 077; mktemp",
-    "Postimage changed: stop and reconcile.",
-    "from update_checkpoint_support import inspect_update_checkpoint",
-    "Legacy snapshot unavailable or current file changed",
-    "Checkpoint changed or not backed up",
-])
+@pytest.mark.parametrize(
+    "block",
+    [
+        "recovery_metadata_safe() {",
+        'paths=("$pkg/spec.md"',
+        "step=$(umask 077; mktemp",
+        "Postimage changed: stop and reconcile.",
+        "from update_checkpoint_support import inspect_update_checkpoint",
+        "Legacy snapshot unavailable or current file changed",
+        "Checkpoint changed or not backed up",
+    ],
+)
 def test_documented_recovery_blocks_parse_with_host_bash(block: str) -> None:
     """Every executable example must parse before its safety checks can run."""
     result = subprocess.run(["bash", "-n"], input=_doc_block(block), text=True, capture_output=True)
@@ -365,15 +370,22 @@ def test_documented_recovery_blocks_parse_with_host_bash(block: str) -> None:
 
 def _isolated_git_env() -> dict[str, str]:
     env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_COUNT": "0"}
-    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
-                 "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"):
+    for name in (
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    ):
         env.pop(name, None)
     return env
 
 
 def _git(repo: Path, *args: str) -> str:
-    result = subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True,
-                            text=True, env=_isolated_git_env())
+    result = subprocess.run(
+        ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True, env=_isolated_git_env()
+    )
     return result.stdout.strip()
 
 
@@ -401,7 +413,9 @@ def _dirty_repo(tmp_path: Path, *, adopted: bool = False) -> tuple[Path, Path, P
     return repo, package, recovery_parent
 
 
-def _bash_doc(repo: Path, package: Path, recovery_parent: Path, script: str, *, pythonpath: str | None = None) -> subprocess.CompletedProcess[str]:
+def _bash_doc(
+    repo: Path, package: Path, recovery_parent: Path, script: str, *, pythonpath: str | None = None
+) -> subprocess.CompletedProcess[str]:
     if not hasattr(os, "listxattr"):
         pytest.skip("documented metadata recovery requires os.listxattr; Linux behavior is covered separately")
     env = {
@@ -413,8 +427,13 @@ def _bash_doc(repo: Path, package: Path, recovery_parent: Path, script: str, *, 
     }
     helpers = _doc_block("recovery_metadata_safe() {")
     # Fixtures are private, created by this process, and have no hidden metadata.
-    return subprocess.run(["bash", "-c", helpers + "\nrecovery_metadata_visibility=verified\n" + script],
-                          cwd=repo, env=env, capture_output=True, text=True)
+    return subprocess.run(
+        ["bash", "-c", helpers + "\nrecovery_metadata_visibility=verified\n" + script],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
 
 
 @pytest.mark.parametrize("adopted", [False, True], ids=["ordinary", "adopted"])
@@ -431,12 +450,22 @@ def test_documented_update_recovery_preserves_dirty_index_and_unrelated_files(
     before_index = (repo / ".git/index").read_bytes()
     before_head = _git(repo, "rev-parse", "HEAD")
     snapshot = _doc_block('paths=("$pkg/spec.md"')
-    capture = _doc_block('step=$(umask 077; mktemp')
+    capture = _doc_block("step=$(umask 077; mktemp")
     restore = _doc_block("Postimage changed: stop and reconcile.")
     write_update = "printf 'owned update\\n' >> \"$pkg/tasks.md\"\n"
     write_conflict = "printf 'concurrent edit\\n' >> \"$path\"\n" if concurrent else ""
-    result = _bash_doc(repo, package, recovery_parent, snapshot + '\n[ -n "$backup" ] || exit 10\n' +
-                       write_update + capture + '\n[ -n "$step" ] || exit 11\n' + write_conflict + restore)
+    result = _bash_doc(
+        repo,
+        package,
+        recovery_parent,
+        snapshot
+        + '\n[ -n "$backup" ] || exit 10\n'
+        + write_update
+        + capture
+        + '\n[ -n "$step" ] || exit 11\n'
+        + write_conflict
+        + restore,
+    )
     assert (result.returncode != 0) == concurrent, result.stderr
     if concurrent:
         assert "Postimage changed: stop" in result.stderr
@@ -447,7 +476,9 @@ def test_documented_update_recovery_preserves_dirty_index_and_unrelated_files(
         recovered_stat = (package / "tasks.md").stat()
         assert recovered_stat.st_mode & 0o7777 == 0o640
         assert (recovered_stat.st_uid, recovered_stat.st_gid, recovered_stat.st_mtime_ns) == (
-            before_stat.st_uid, before_stat.st_gid, before_stat.st_mtime_ns
+            before_stat.st_uid,
+            before_stat.st_gid,
+            before_stat.st_mtime_ns,
         )
     assert (repo / "unrelated.txt").read_bytes() == before_other
     assert (repo / "untracked.txt").read_bytes() == before_untracked
@@ -460,7 +491,7 @@ def test_documented_update_recovery_preserves_dirty_index_and_unrelated_files(
 def test_documented_recovery_preserves_absence_and_restores_deleted_file(tmp_path: Path, case: str) -> None:
     repo, package, recovery_parent = _dirty_repo(tmp_path)
     snapshot = _doc_block('paths=("$pkg/spec.md"')
-    capture = _doc_block('step=$(umask 077; mktemp')
+    capture = _doc_block("step=$(umask 077; mktemp")
     restore = _doc_block("Postimage changed: stop and reconcile.")
     if case in ("added", "unchanged-absent"):
         target = package / "checklist.md"
@@ -473,15 +504,27 @@ def test_documented_recovery_preserves_absence_and_restores_deleted_file(tmp_pat
         before_stat = target.stat()
         write_update = 'rm -- "$pkg/tasks.md"\n'
     before_index = (repo / ".git/index").read_bytes()
-    result = _bash_doc(repo, package, recovery_parent, snapshot + '\n[ -n "$backup" ] || exit 10\n' +
-                       write_update + capture + '\n[ -n "$step" ] || exit 11\n' + restore)
+    result = _bash_doc(
+        repo,
+        package,
+        recovery_parent,
+        snapshot
+        + '\n[ -n "$backup" ] || exit 10\n'
+        + write_update
+        + capture
+        + '\n[ -n "$step" ] || exit 11\n'
+        + restore,
+    )
     assert result.returncode == 0, result.stderr
     assert result.stderr == ""
     assert target.read_bytes() == previous if previous is not None else not target.exists()
     if previous is not None:
         after_stat = target.stat()
         assert (after_stat.st_mode, after_stat.st_uid, after_stat.st_gid, after_stat.st_mtime_ns) == (
-            before_stat.st_mode, before_stat.st_uid, before_stat.st_gid, before_stat.st_mtime_ns
+            before_stat.st_mode,
+            before_stat.st_uid,
+            before_stat.st_gid,
+            before_stat.st_mtime_ns,
         )
     assert (repo / ".git/index").read_bytes() == before_index
 
@@ -515,7 +558,7 @@ def test_documented_postimage_refuses_unsafe_paths(tmp_path: Path, unsafe: str) 
     outside.mkdir()
     (outside / "tasks.md").write_text("outside content must not be captured\n", encoding="utf-8")
     snapshot = _doc_block('paths=("$pkg/spec.md"')
-    capture = _doc_block('step=$(umask 077; mktemp')
+    capture = _doc_block("step=$(umask 077; mktemp")
     if unsafe == "hardlink":
         mutate = 'ln -- "$pkg/tasks.md" "$pkg/alias"'
     elif unsafe == "fifo":
@@ -523,7 +566,7 @@ def test_documented_postimage_refuses_unsafe_paths(tmp_path: Path, unsafe: str) 
     else:
         target = outside if unsafe == "parent-symlink" else tmp_path / "missing-parent"
         mutate = 'mv -- "$pkg" "$pkg-moved"; ln -s -- ' + shlex.quote(str(target)) + ' "$pkg"'
-    script = snapshot + '\n[ -n "$backup" ] || exit 10\n' + mutate + '\n' + capture
+    script = snapshot + '\n[ -n "$backup" ] || exit 10\n' + mutate + "\n" + capture
     result = _bash_doc(repo, package, recovery_parent, script)
     assert result.returncode != 0
     assert "Postimage capture failed: stop." in result.stderr
@@ -545,7 +588,9 @@ def test_documented_recovery_ignores_untrusted_project_modules(tmp_path: Path, p
         'paths+=("$pkg/update-checkpoint.json")',
     )
     extract = _doc_block("from update_checkpoint_support import inspect_update_checkpoint")
-    result = _bash_doc(repo, package, recovery_parent, snapshot + '\n[ -n "$backup" ] || exit 10\n' + extract, pythonpath=pythonpath)
+    result = _bash_doc(
+        repo, package, recovery_parent, snapshot + '\n[ -n "$backup" ] || exit 10\n' + extract, pythonpath=pythonpath
+    )
     assert result.returncode == 0, result.stderr
     assert "Validated snapshot copies:" in result.stdout
     assert not marker.exists()
@@ -572,12 +617,18 @@ def test_documented_historical_snapshot_extracts_only_validated_text(tmp_path: P
         'paths+=("$pkg/update-checkpoint.json")',
     )
     extract = _doc_block("from update_checkpoint_support import inspect_update_checkpoint")
-    result = _bash_doc(repo, package, recovery_parent,
-                       snapshot + '\n[ -n "$backup" ] || exit 10\nprintf "BACKUP=%s\\n" "$backup"\n' + extract)
+    result = _bash_doc(
+        repo,
+        package,
+        recovery_parent,
+        snapshot + '\n[ -n "$backup" ] || exit 10\nprintf "BACKUP=%s\\n" "$backup"\n' + extract,
+    )
     assert (result.returncode == 0) == (damage == "none"), result.stderr
     backup_line = next(line for line in result.stdout.splitlines() if line.startswith("BACKUP="))
     backup = Path(backup_line.removeprefix("BACKUP="))
-    assert (backup / "before" / package.relative_to(repo) / "update-checkpoint.json").read_bytes() == before[checkpoint.name]
+    assert (backup / "before" / package.relative_to(repo) / "update-checkpoint.json").read_bytes() == before[
+        checkpoint.name
+    ]
     if damage == "none":
         assert (backup / "legacy-snapshot/tasks.md").read_text(encoding="utf-8") == "# snapshot 任务\n"
         assert (backup / "legacy-snapshot/spec.md").read_text(encoding="utf-8") == "# snapshot - 项目范围\n"
@@ -599,8 +650,9 @@ def test_documented_checkpoint_resolution_only_removes_unchanged_path(tmp_path: 
     )
     removal = _doc_block("Checkpoint changed or not backed up")
     concurrent_edit = 'printf "changed\\n" >> "$pkg/update-checkpoint.json"\n' if concurrent else ""
-    result = _bash_doc(repo, package, recovery_parent,
-                       snapshot + '\n[ -n "$backup" ] || exit 10\n' + concurrent_edit + removal)
+    result = _bash_doc(
+        repo, package, recovery_parent, snapshot + '\n[ -n "$backup" ] || exit 10\n' + concurrent_edit + removal
+    )
     assert (result.returncode != 0) == concurrent, result.stderr
     if concurrent:
         assert "Checkpoint changed or not backed up" in result.stderr
@@ -609,7 +661,6 @@ def test_documented_checkpoint_resolution_only_removes_unchanged_path(tmp_path: 
         assert result.stderr == ""
         assert not checkpoint_path(package).exists()
     assert (repo / ".git/index").read_bytes() == before_index
-
 
 
 @pytest.mark.parametrize("concurrent", [False, True])
@@ -627,12 +678,22 @@ def test_documented_legacy_restore_uses_snapshot_without_touching_index(tmp_path
         'paths+=("$pkg/update-checkpoint.json")',
     )
     extract = _doc_block("from update_checkpoint_support import inspect_update_checkpoint")
-    capture = _doc_block('step=$(umask 077; mktemp')
+    capture = _doc_block("step=$(umask 077; mktemp")
     restore = _doc_block("Legacy snapshot unavailable or current file changed")
     conflict = 'printf "concurrent\\n" >> "$path"\n' if concurrent else ""
-    result = _bash_doc(repo, package, recovery_parent,
-                       snapshot + '\n[ -n "$backup" ] || exit 10\n' + extract + '\n' + capture +
-                       '\n[ -n "$step" ] || exit 11\n' + conflict + restore)
+    result = _bash_doc(
+        repo,
+        package,
+        recovery_parent,
+        snapshot
+        + '\n[ -n "$backup" ] || exit 10\n'
+        + extract
+        + "\n"
+        + capture
+        + '\n[ -n "$step" ] || exit 11\n'
+        + conflict
+        + restore,
+    )
     assert (result.returncode != 0) == concurrent, result.stderr
     if concurrent:
         assert "current file changed: stop" in result.stderr
@@ -644,7 +705,6 @@ def test_documented_legacy_restore_uses_snapshot_without_touching_index(tmp_path
     assert checkpoint_path(package).read_bytes() == before_checkpoint
     assert (repo / "unrelated.txt").read_bytes() == before_other
     assert (repo / ".git/index").read_bytes() == before_index
-
 
 
 def _metadata_change(tmp_path: Path, kind: str, shell_path: str) -> str:
@@ -688,24 +748,23 @@ def _failing_python_wrapper(tmp_path: Path, code: str) -> Path:
     bindir.mkdir()
     python = bindir / "python3"
     # The documented calls are python3 -I - <args>; preserve their argv and stdin.
-    python.write_text(f'#!/bin/sh\nshift 2\nexec {shlex.quote(sys.executable)} -I -c {shlex.quote(code)} "$@"\n',
-                      encoding="utf-8")
+    python.write_text(
+        f'#!/bin/sh\nshift 2\nexec {shlex.quote(sys.executable)} -I -c {shlex.quote(code)} "$@"\n', encoding="utf-8"
+    )
     python.chmod(0o755)
     return bindir
 
 
 @pytest.mark.parametrize("kind", ["xattr", "acl", "setuid", "setgid", "sticky"])
 @pytest.mark.parametrize("phase", ["preimage", "postimage", "restore", "remove-created"])
-def test_documented_recovery_rejects_unsafe_metadata_without_overwriting(
-    tmp_path: Path, kind: str, phase: str
-) -> None:
+def test_documented_recovery_rejects_unsafe_metadata_without_overwriting(tmp_path: Path, kind: str, phase: str) -> None:
     repo, package, recovery_parent = _dirty_repo(tmp_path)
     target = package / ("checklist.md" if phase == "remove-created" else "tasks.md")
     original = target.read_bytes() if target.exists() else b""
     before_index = (repo / ".git/index").read_bytes()
     before_other = (repo / "unrelated.txt").read_bytes()
     snapshot = _doc_block('paths=("$pkg/spec.md"')
-    capture = _doc_block('step=$(umask 077; mktemp')
+    capture = _doc_block("step=$(umask 077; mktemp")
     restore = _doc_block("Postimage changed: stop and reconcile.")
     if phase == "remove-created":
         capture = capture.replace('path="$pkg/tasks.md"', 'path="$pkg/checklist.md"')
@@ -716,8 +775,11 @@ def test_documented_recovery_rejects_unsafe_metadata_without_overwriting(
         message = "Recovery copy failed: do not rewrite."
     else:
         written = b"created update\n" if phase == "remove-created" else b"owned update\n"
-        action = ('printf "created update\\n" > "$pkg/checklist.md"\n' if phase == "remove-created"
-                  else 'printf "owned update\\n" >> "$pkg/tasks.md"\n')
+        action = (
+            'printf "created update\\n" > "$pkg/checklist.md"\n'
+            if phase == "remove-created"
+            else 'printf "owned update\\n" >> "$pkg/tasks.md"\n'
+        )
         script = snapshot + '\n[ -n "$backup" ] || exit 10\n' + action
         if phase == "postimage":
             script += 'path="$pkg/tasks.md"\n' + change + capture
@@ -743,19 +805,25 @@ def test_documented_recovery_rejects_unsafe_metadata_without_overwriting(
 
 @pytest.mark.parametrize("kind", ["xattr", "setuid"])
 @pytest.mark.parametrize("deleted", [False, True])
-def test_documented_recovery_rejects_unsafe_backup_metadata(
-    tmp_path: Path, kind: str, deleted: bool
-) -> None:
+def test_documented_recovery_rejects_unsafe_backup_metadata(tmp_path: Path, kind: str, deleted: bool) -> None:
     repo, package, recovery_parent = _dirty_repo(tmp_path)
     target = package / "tasks.md"
     before = target.read_bytes()
     before_index = (repo / ".git/index").read_bytes()
     snapshot = _doc_block('paths=("$pkg/spec.md"')
-    capture = _doc_block('step=$(umask 077; mktemp')
+    capture = _doc_block("step=$(umask 077; mktemp")
     restore = _doc_block("Postimage changed: stop and reconcile.")
     action = 'rm -- "$pkg/tasks.md"\n' if deleted else 'printf "update\\n" >> "$pkg/tasks.md"\n'
     change = _metadata_change(tmp_path, kind, "$backup/before/$path")
-    script = snapshot + '\n[ -n "$backup" ] || exit 10\n' + action + capture + '\n[ -n "$step" ] || exit 11\n' + change + restore
+    script = (
+        snapshot
+        + '\n[ -n "$backup" ] || exit 10\n'
+        + action
+        + capture
+        + '\n[ -n "$step" ] || exit 11\n'
+        + change
+        + restore
+    )
     result = _bash_doc(repo, package, recovery_parent, script)
     assert result.returncode != 0
     assert "Preimage metadata is unsafe: stop." in result.stderr
@@ -767,9 +835,7 @@ def test_documented_recovery_rejects_unsafe_backup_metadata(
 
 @pytest.mark.parametrize("kind", ["xattr", "acl", "setuid"])
 @pytest.mark.parametrize("operation", ["legacy", "checkpoint"])
-def test_documented_historical_paths_reject_metadata_only_changes(
-    tmp_path: Path, kind: str, operation: str
-) -> None:
+def test_documented_historical_paths_reject_metadata_only_changes(tmp_path: Path, kind: str, operation: str) -> None:
     repo, package, recovery_parent = _dirty_repo(tmp_path)
     _write_historical_checkpoint(package)
     target = package / ("tasks.md" if operation == "legacy" else "update-checkpoint.json")
@@ -781,8 +847,8 @@ def test_documented_historical_paths_reject_metadata_only_changes(
     )
     script = snapshot + '\n[ -n "$backup" ] || exit 10\n'
     if operation == "legacy":
-        script += _doc_block("from update_checkpoint_support import inspect_update_checkpoint") + '\n'
-        script += _doc_block('step=$(umask 077; mktemp') + '\n[ -n "$step" ] || exit 11\n'
+        script += _doc_block("from update_checkpoint_support import inspect_update_checkpoint") + "\n"
+        script += _doc_block("step=$(umask 077; mktemp") + '\n[ -n "$step" ] || exit 11\n'
         script += _metadata_change(tmp_path, kind, "$path")
         script += _doc_block("Legacy snapshot unavailable or current file changed")
         message = "Legacy snapshot unavailable or current file changed"
@@ -805,16 +871,19 @@ def test_documented_recovery_requires_explicit_visibility_attestation(tmp_path: 
     before = target.read_bytes()
     before_index = (repo / ".git/index").read_bytes()
     snapshot = _doc_block('paths=("$pkg/spec.md"')
-    capture = _doc_block('step=$(umask 077; mktemp')
+    capture = _doc_block("step=$(umask 077; mktemp")
     restore = _doc_block("Postimage changed: stop and reconcile.")
-    unverified = 'unset recovery_metadata_visibility\n'
+    unverified = "unset recovery_metadata_visibility\n"
     if phase == "preimage":
         script = unverified + snapshot
         expected = before
     else:
         script = snapshot + '\n[ -n "$backup" ] || exit 10\nprintf "update\\n" >> "$pkg/tasks.md"\n'
-        script += (unverified + capture if phase == "postimage" else
-                   capture + '\n[ -n "$step" ] || exit 11\n' + unverified + restore)
+        script += (
+            unverified + capture
+            if phase == "postimage"
+            else capture + '\n[ -n "$step" ] || exit 11\n' + unverified + restore
+        )
         expected = before + b"update\n"
     result = _bash_doc(repo, package, recovery_parent, script)
     assert result.returncode != 0
@@ -829,20 +898,24 @@ def test_documented_recovery_stops_if_xattrs_cannot_be_queried(tmp_path: Path, p
     target = package / "tasks.md"
     before = target.read_bytes()
     before_index = (repo / ".git/index").read_bytes()
-    code = ('import os,sys\n'
-            'def deny(*args, **kwargs): raise OSError(95, "simulated xattr unsupported")\n'
-            'os.listxattr = deny\nexec(compile(sys.stdin.read(), "<document>", "exec"))')
+    code = (
+        "import os,sys\n"
+        'def deny(*args, **kwargs): raise OSError(95, "simulated xattr unsupported")\n'
+        'os.listxattr = deny\nexec(compile(sys.stdin.read(), "<document>", "exec"))'
+    )
     bindir = _failing_python_wrapper(tmp_path, code)
-    inject = f'PATH={shlex.quote(str(bindir))}:$PATH\n'
+    inject = f"PATH={shlex.quote(str(bindir))}:$PATH\n"
     snapshot = _doc_block('paths=("$pkg/spec.md"')
-    capture = _doc_block('step=$(umask 077; mktemp')
+    capture = _doc_block("step=$(umask 077; mktemp")
     restore = _doc_block("Postimage changed: stop and reconcile.")
     if phase == "preimage":
         script = inject + snapshot
         expected = before
     else:
         script = snapshot + '\n[ -n "$backup" ] || exit 10\nprintf "update\\n" >> "$pkg/tasks.md"\n'
-        script += (inject + capture if phase == "postimage" else capture + '\n[ -n "$step" ] || exit 11\n' + inject + restore)
+        script += (
+            inject + capture if phase == "postimage" else capture + '\n[ -n "$step" ] || exit 11\n' + inject + restore
+        )
         expected = before + b"update\n"
     result = _bash_doc(repo, package, recovery_parent, script)
     assert result.returncode != 0
@@ -861,10 +934,15 @@ def test_documented_recovery_does_not_replace_target_if_staging_copy_fails(tmp_p
     broken_cp = bindir / "cp"
     broken_cp.write_text('#!/bin/sh\nfor arg do last=$arg; done\nprintf partial > "$last"\nexit 1\n', encoding="utf-8")
     broken_cp.chmod(0o755)
-    script = (_doc_block('paths=("$pkg/spec.md"') + '\n[ -n "$backup" ] || exit 10\n'
-              + 'printf "update\\n" >> "$pkg/tasks.md"\n' + _doc_block('step=$(umask 077; mktemp')
-              + '\n[ -n "$step" ] || exit 11\n' + f'PATH={shlex.quote(str(bindir))}:$PATH\n'
-              + _doc_block("Postimage changed: stop and reconcile."))
+    script = (
+        _doc_block('paths=("$pkg/spec.md"')
+        + '\n[ -n "$backup" ] || exit 10\n'
+        + 'printf "update\\n" >> "$pkg/tasks.md"\n'
+        + _doc_block("step=$(umask 077; mktemp")
+        + '\n[ -n "$step" ] || exit 11\n'
+        + f"PATH={shlex.quote(str(bindir))}:$PATH\n"
+        + _doc_block("Postimage changed: stop and reconcile.")
+    )
     result = _bash_doc(repo, package, recovery_parent, script)
     assert result.returncode != 0
     assert "Could not safely restore preimage: stop." in result.stderr
@@ -880,9 +958,15 @@ def test_documented_recovery_refuses_reappeared_or_missing_postimage(tmp_path: P
     before_index = (repo / ".git/index").read_bytes()
     update = 'rm -- "$pkg/tasks.md"\n' if case == "reappeared" else 'printf "update\\n" >> "$pkg/tasks.md"\n'
     conflict = 'printf "new external state\\n" > "$path"\n' if case == "reappeared" else 'rm -- "$path"\n'
-    script = (_doc_block('paths=("$pkg/spec.md"') + '\n[ -n "$backup" ] || exit 10\n' + update
-              + _doc_block('step=$(umask 077; mktemp') + '\n[ -n "$step" ] || exit 11\n'
-              + conflict + _doc_block("Postimage changed: stop and reconcile."))
+    script = (
+        _doc_block('paths=("$pkg/spec.md"')
+        + '\n[ -n "$backup" ] || exit 10\n'
+        + update
+        + _doc_block("step=$(umask 077; mktemp")
+        + '\n[ -n "$step" ] || exit 11\n'
+        + conflict
+        + _doc_block("Postimage changed: stop and reconcile.")
+    )
     result = _bash_doc(repo, package, recovery_parent, script)
     assert result.returncode != 0
     assert "Postimage changed: stop and reconcile." in result.stderr
@@ -896,23 +980,25 @@ def test_incomplete_legacy_extraction_is_not_accepted_if_shell_continues(tmp_pat
     target = package / "tasks.md"
     before = target.read_bytes()
     before_index = (repo / ".git/index").read_bytes()
-    code = ('import io,sys\nold_open=io.open\n'
-            'def fail_checklist(path, mode="r", *args, **kwargs):\n'
-            '    if str(path).endswith("/checklist.md") and "x" in mode:\n'
-            '        raise OSError("simulated partial extraction")\n'
-            '    return old_open(path, mode, *args, **kwargs)\n'
-            'io.open=fail_checklist\nexec(compile(sys.stdin.read(), "<document>", "exec"))')
+    code = (
+        "import io,sys\nold_open=io.open\n"
+        'def fail_checklist(path, mode="r", *args, **kwargs):\n'
+        '    if str(path).endswith("/checklist.md") and "x" in mode:\n'
+        '        raise OSError("simulated partial extraction")\n'
+        "    return old_open(path, mode, *args, **kwargs)\n"
+        'io.open=fail_checklist\nexec(compile(sys.stdin.read(), "<document>", "exec"))'
+    )
     bindir = _failing_python_wrapper(tmp_path, code)
     snapshot = _doc_block('paths=("$pkg/spec.md"').replace(
         '# Example: paths+=("references/actual-source-of-truth.md")',
         'paths+=("$pkg/update-checkpoint.json")',
     )
     script = snapshot + '\n[ -n "$backup" ] || exit 10\nsaved_path=$PATH\n'
-    script += f'PATH={shlex.quote(str(bindir))}:$PATH\n'
+    script += f"PATH={shlex.quote(str(bindir))}:$PATH\n"
     script += _doc_block("from update_checkpoint_support import inspect_update_checkpoint")
     # Deliberately violate the instruction to stop on extraction failure.
     script += '\nextract_status=$?\nPATH=$saved_path\nprintf "EXTRACT_STATUS=%s\\n" "$extract_status"\n'
-    script += _doc_block('step=$(umask 077; mktemp') + '\n[ -n "$step" ] || exit 11\n'
+    script += _doc_block("step=$(umask 077; mktemp") + '\n[ -n "$step" ] || exit 11\n'
     script += _doc_block("Legacy snapshot unavailable or current file changed")
     result = _bash_doc(repo, package, recovery_parent, script)
     assert result.returncode != 0
@@ -941,15 +1027,27 @@ def test_same_basename_checkpoint_does_not_prove_project_provenance(tmp_path: Pa
 def test_recovery_guide_is_exported_and_linked_in_each_profile(tmp_path: Path, profile: str) -> None:
     output = tmp_path / profile
     result = subprocess.run(
-        [sys.executable, str(SCRIPTS_DIR / "export_skill_package.py"), "--root", str(SCRIPTS_DIR.parent),
-         "--output", str(output), "--skip-signing", "--profile", profile],
-        capture_output=True, text=True, encoding="utf-8",
+        [
+            sys.executable,
+            str(SCRIPTS_DIR / "export_skill_package.py"),
+            "--root",
+            str(SCRIPTS_DIR.parent),
+            "--output",
+            str(output),
+            "--skip-signing",
+            "--profile",
+            profile,
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
     )
     assert result.returncode == 0, result.stderr
     stage = output / "references/stages/update.md"
     guide = output / "references/update-recovery.md"
     assert "../update-recovery.md" in stage.read_text(encoding="utf-8")
     assert guide.read_bytes() == (SCRIPTS_DIR.parent / "references/update-recovery.md").read_bytes()
+
 
 def test_recovery_binds_step_to_current_backup(tmp_path: Path) -> None:
     """A postimage step captured under one backup must not be restored against
@@ -959,16 +1057,20 @@ def test_recovery_binds_step_to_current_backup(tmp_path: Path) -> None:
     before = target.read_bytes()
     before_index = (repo / ".git/index").read_bytes()
     snapshot = _doc_block('paths=("$pkg/spec.md"')
-    capture = _doc_block('step=$(umask 077; mktemp')
+    capture = _doc_block("step=$(umask 077; mktemp")
     restore = _doc_block("Postimage changed: stop and reconcile.")
     script = (
-        snapshot + '\n[ -n "$backup" ] || exit 10\n'
+        snapshot
+        + '\n[ -n "$backup" ] || exit 10\n'
         + "printf 'update A\\n' >> \"$pkg/tasks.md\"\n"
-        + capture + '\n[ -n "$step" ] || exit 11\n'
+        + capture
+        + '\n[ -n "$step" ] || exit 11\n'
         + "backup1=$backup\n"
-        + snapshot + '\n[ -n "$backup" ] || exit 10\n'
+        + snapshot
+        + '\n[ -n "$backup" ] || exit 10\n'
         + "printf 'update B\\n' >> \"$pkg/tasks.md\"\n"
-        + capture + '\n[ -n "$step" ] || exit 11\n'
+        + capture
+        + '\n[ -n "$step" ] || exit 11\n'
         + "backup=$backup1\n"
         + restore
     )
@@ -982,14 +1084,19 @@ def test_recovery_binds_step_to_current_backup(tmp_path: Path) -> None:
 def test_recovery_binds_backup_to_project_root(tmp_path: Path) -> None:
     """A backup captured in one checkout must not restore into another checkout
     with the same relative paths and identical bytes."""
-    (tmp_path / "a").mkdir(); (tmp_path / "b").mkdir()
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
     repo_a, package_a, recovery_a = _dirty_repo(tmp_path / "a")
     repo_b, package_b, recovery_b = _dirty_repo(tmp_path / "b")
     snapshot = _doc_block('paths=("$pkg/spec.md"')
-    capture = _doc_block('step=$(umask 077; mktemp')
+    capture = _doc_block("step=$(umask 077; mktemp")
     restore = _doc_block("Postimage changed: stop and reconcile.")
-    result_a = _bash_doc(repo_a, package_a, recovery_a,
-                         snapshot + '\n[ -n "$backup" ] || exit 10\n' + capture + '\n[ -n "$step" ] || exit 11\n')
+    result_a = _bash_doc(
+        repo_a,
+        package_a,
+        recovery_a,
+        snapshot + '\n[ -n "$backup" ] || exit 10\n' + capture + '\n[ -n "$step" ] || exit 11\n',
+    )
     assert result_a.returncode == 0, result_a.stderr
     backup_a = next(recovery_a.glob("spec-update.*"))
     step_a = next(backup_a.glob("step.*"))
@@ -997,8 +1104,12 @@ def test_recovery_binds_backup_to_project_root(tmp_path: Path) -> None:
     before_index_b = (repo_b / ".git/index").read_bytes()
     script_b = (
         'path="$pkg/tasks.md"\n'
-        + "backup=" + shlex.quote(str(backup_a)) + "\n"
-        + "step=" + shlex.quote(str(step_a)) + "\n"
+        + "backup="
+        + shlex.quote(str(backup_a))
+        + "\n"
+        + "step="
+        + shlex.quote(str(step_a))
+        + "\n"
         + restore
     )
     result_b = _bash_doc(repo_b, package_b, recovery_b, script_b)
@@ -1018,13 +1129,17 @@ def test_recovery_interruption_leaves_no_world_readable_preimage(tmp_path: Path)
     broken_mv.write_text("#!/bin/sh\nkill -9 $PPID\n", encoding="utf-8")
     broken_mv.chmod(0o755)
     snapshot = _doc_block('paths=("$pkg/spec.md"')
-    capture = _doc_block('step=$(umask 077; mktemp')
+    capture = _doc_block("step=$(umask 077; mktemp")
     restore = _doc_block("Postimage changed: stop and reconcile.")
     script = (
-        snapshot + '\n[ -n "$backup" ] || exit 10\n'
+        snapshot
+        + '\n[ -n "$backup" ] || exit 10\n'
         + "printf 'owned update\\n' >> \"$pkg/tasks.md\"\n"
-        + capture + '\n[ -n "$step" ] || exit 11\n'
-        + "PATH=" + shlex.quote(str(bindir)) + ":$PATH\n"
+        + capture
+        + '\n[ -n "$step" ] || exit 11\n'
+        + "PATH="
+        + shlex.quote(str(bindir))
+        + ":$PATH\n"
         + restore
     )
     _bash_doc(repo, package, recovery_parent, script)
@@ -1036,19 +1151,30 @@ def test_recovery_interruption_leaves_no_world_readable_preimage(tmp_path: Path)
     for leftover in package.glob("*.recovery.*"):
         shutil.rmtree(leftover)
     # A clean (non-interrupted) path removes the staging directory entirely.
-    result2 = _bash_doc(repo, package, recovery_parent,
-                        snapshot + '\n[ -n "$backup" ] || exit 10\n'
-                        + "printf 'owned update\\n' >> \"$pkg/tasks.md\"\n"
-                        + capture + '\n[ -n "$step" ] || exit 11\n' + restore)
+    result2 = _bash_doc(
+        repo,
+        package,
+        recovery_parent,
+        snapshot
+        + '\n[ -n "$backup" ] || exit 10\n'
+        + "printf 'owned update\\n' >> \"$pkg/tasks.md\"\n"
+        + capture
+        + '\n[ -n "$step" ] || exit 11\n'
+        + restore,
+    )
     assert result2.returncode == 0, result2.stderr
     assert not list(package.glob("*.recovery.*"))
 
 
-@pytest.mark.parametrize("backup_expr,message", [
-    ("", "Missing recovery directory"),
-    ("relative/path", "must be absolute"),
-    ("$repo", "must be outside the repository"),
-], ids=["empty", "relative", "inside-repo"])
+@pytest.mark.parametrize(
+    "backup_expr,message",
+    [
+        ("", "Missing recovery directory"),
+        ("relative/path", "must be absolute"),
+        ("$repo", "must be outside the repository"),
+    ],
+    ids=["empty", "relative", "inside-repo"],
+)
 def test_extraction_refuses_invalid_backup_location(tmp_path: Path, backup_expr: str, message: str) -> None:
     """The historical-snapshot extraction must fail closed for a missing, relative,
     or in-repo backup directory instead of writing legacy-snapshot into the tree."""
@@ -1069,9 +1195,7 @@ def test_recovery_docs_disable_git_pathspec_magic() -> None:
     recovery = (SCRIPTS_DIR.parent / "references/update-recovery.md").read_text(encoding="utf-8")
     stage = (SCRIPTS_DIR.parent / "references/stages/update.md").read_text(encoding="utf-8")
     for name, text in (("update-recovery.md", recovery), ("update.md", stage)):
-        lines = [line for line in text.splitlines()
-                 if re.search(r"git (diff|log).*-- <path>", line)]
+        lines = [line for line in text.splitlines() if re.search(r"git (diff|log).*-- <path>", line)]
         assert lines, name
         for line in lines:
             assert "--literal-pathspecs" in line, (name, line)
-

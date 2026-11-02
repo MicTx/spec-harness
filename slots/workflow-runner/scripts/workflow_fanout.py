@@ -413,12 +413,20 @@ def _tracked_fingerprint(root: Path, tracked: str) -> Optional[str]:
                         digest.update(chunk)
                     after = os.fstat(handle.fileno())
                     before_id = (
-                        before.st_dev, before.st_ino, before.st_mode, before.st_size,
-                        before.st_mtime_ns, before.st_ctime_ns,
+                        before.st_dev,
+                        before.st_ino,
+                        before.st_mode,
+                        before.st_size,
+                        before.st_mtime_ns,
+                        before.st_ctime_ns,
                     )
                     after_id = (
-                        after.st_dev, after.st_ino, after.st_mode, after.st_size,
-                        after.st_mtime_ns, after.st_ctime_ns,
+                        after.st_dev,
+                        after.st_ino,
+                        after.st_mode,
+                        after.st_size,
+                        after.st_mtime_ns,
+                        after.st_ctime_ns,
                     )
                     if count != before.st_size or before_id != after_id:
                         return None
@@ -494,16 +502,22 @@ def _workspace_context(attestation: Optional[str], binary: Optional[str]) -> Opt
     if git("status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=none") != "":
         return None
     source = json.dumps(
-        [str(root_path), str(cwd), head.strip(), actual_files, str(executable), worker_sha.hexdigest(),
-         driver_sha, attestation],
+        [
+            str(root_path),
+            str(cwd),
+            head.strip(),
+            actual_files,
+            str(executable),
+            worker_sha.hexdigest(),
+            driver_sha,
+            attestation,
+        ],
         ensure_ascii=False,
     )
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
-def _cache_key(
-    backend: str, item_id: str, prompt: str, context: str = "", requires_write: bool = False
-) -> str:
+def _cache_key(backend: str, item_id: str, prompt: str, context: str = "", requires_write: bool = False) -> str:
     """Key by attested context and the complete execution-relevant item."""
     source = json.dumps(["v2", backend, item_id, prompt, context, requires_write], ensure_ascii=False)
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
@@ -744,7 +758,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--concurrency", type=int, default=3, help="并发上限（默认 3）")
     parser.add_argument("--timeout", type=float, default=300.0, help="单 item 硬超时秒（默认 300）")
     parser.add_argument(
-        "--cache-context", default=None,
+        "--cache-context",
+        default=None,
         help="非敏感外部上下文标识；仅在 Git 工作区可证明干净时启用缓存",
     )
     parser.add_argument(

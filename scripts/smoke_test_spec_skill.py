@@ -702,7 +702,7 @@ def main() -> int:
             "--slug",
             "2026-06-12_smoke-test",
         )
-        assert_contains(active_route, "初始化最小项目骨架：进行")
+        assert_contains(active_route, "初始化最小项目骨架：待办")
         assert "/spec:" not in active_route
         active_route_state = run(
             str(SCRIPTS_DIR / "route_spec_package.py"),

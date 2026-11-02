@@ -4,6 +4,17 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [0.22.3] - 2026-11-02
+
+### Fixed
+
+- **主动采用评测账本完整性**：执行器返回错误单位身份时不再把结果写成可结算记录，而是保留不可结算的隔离证据并保持未结算状态；后续恢复也拒绝异常历史行，避免污染完成集合或预算。
+- **Benchmark ledger integrity**: a mismatched unit identity is now quarantined as unsettled evidence instead of being recorded as another unit's result; resume also rejects such historical rows so completion and budget accounting cannot be polluted.
+- **基线检出身份复核**：复用已有 baseline worktree 时同时核对记录标记和真实 Git HEAD，避免漂移的检出被当作固定基线。
+- **Baseline checkout verification**: reuse now checks the real Git HEAD as well as the marker, so a drifted checkout cannot be treated as the pinned baseline.
+- **恢复文档兼容性**：更新恢复示例改为 Bash 3.2 可解析的路径边界判断，并保留失败关闭、元数据检查和索引不变约束。
+- **Recovery guide compatibility**: the update recovery example now uses a Bash 3.2-compatible repository-boundary check while preserving fail-closed, metadata, and index-safety guarantees.
+
 ## [0.22.2] - 2026-10-31
 
 ### Fixed

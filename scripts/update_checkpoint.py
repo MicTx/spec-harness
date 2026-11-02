@@ -159,7 +159,10 @@ def _status_line(slug: str, status: CheckpointStatus) -> str:
             "先备份并审阅有效 snapshot，确认保留或路径级恢复后删除该文件；见 references/stages/update.md"
         )
     if status.state == "corrupted":
-        return f"{slug}：存在未完成 update checkpoint，且记录已损坏，须保留并人工核对可信备份或 Git 历史（{checkpoint_display_text(status.error)}）"
+        return (
+            f"{slug}：存在未完成 update checkpoint，且记录已损坏，须保留并人工核对"
+            f"可信备份或 Git 历史（{checkpoint_display_text(status.error)}）"
+        )
     return f"{slug}：无未完成 update checkpoint"
 
 

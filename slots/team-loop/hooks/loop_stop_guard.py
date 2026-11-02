@@ -114,7 +114,8 @@ def main() -> int:
         else:
             emit_block(
                 f"spec team-loop：run 命中管理停止条件（{reasons}）。"
-                f"核对并停止宿主 worker 后执行 python3 {state_script} finish failed --run-dir {run_arg} --confirmed-stopped "
+                f"核对并停止宿主 worker 后执行 python3 {state_script} "
+                f"finish failed --run-dir {run_arg} --confirmed-stopped "
                 "（或用 cancelled）写明原因落终态；不得静默熄火。"
             )
         return 0
@@ -133,7 +134,8 @@ def main() -> int:
         if task["status"] == "in_flight"
     ]
     reserved = [
-        f"r{r['index']}/{tid}" for r in store.state["rounds"]
+        f"r{r['index']}/{tid}"
+        for r in store.state["rounds"]
         for tid, task in r.get("tasks", {}).items()
         if task["status"] == "in_flight" and task.get("dispatchPhase") == "reserved"
     ]

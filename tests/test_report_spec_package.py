@@ -9,7 +9,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 import report_spec_package as report
 from check_spec_package import has_blocked_tasks, package_physical_state_errors
-from report_spec_package import Task, package_status_summary, parse_tasks, render_multi_status, render_status, render_tasks
+from report_spec_package import (
+    Task,
+    package_status_summary,
+    parse_tasks,
+    render_multi_status,
+    render_status,
+    render_tasks,
+)
 from update_checkpoint_support import detect_update_checkpoint
 
 # -- Task dataclass --
@@ -381,12 +388,19 @@ def test_tasks_view_preserves_explicit_parallel_markers_and_blocked_precedence()
 """
     sections, tasks = parse_tasks(content)
     text = render_tasks("project", sections, tasks)
-    rows = ["- [ ] 待做的前项", "- [>] 并行甲", "- [!] 等待系统", "- [>] 并行乙",
-            "- [!] 阻塞：接口不可用", "- [x] 阻塞修复完成"]
+    rows = [
+        "- [ ] 待做的前项",
+        "- [>] 并行甲",
+        "- [!] 等待系统",
+        "- [>] 并行乙",
+        "- [!] 阻塞：接口不可用",
+        "- [x] 阻塞修复完成",
+    ]
     assert all(row in text for row in rows)
     assert [text.index(row) for row in rows] == sorted(text.index(row) for row in rows)
-    summary = package_status_summary("2026-06-12_dash-run", content, VALID_STATUS_SPEC,
-                                     PASSED_CHECKLIST, sections, tasks)
+    summary = package_status_summary(
+        "2026-06-12_dash-run", content, VALID_STATUS_SPEC, PASSED_CHECKLIST, sections, tasks
+    )
     assert summary["primary"] == "并行甲、并行乙"
     assert summary["blocked"] == "等待系统"
 
@@ -398,8 +412,9 @@ def test_tasks_view_and_summary_do_not_promote_a_pending_task():
     assert "- [ ] 待做甲" in output
     assert "- [ ] 待做乙" in output
     assert "[>]" not in output
-    summary = package_status_summary("2026-06-12_dash-run", content, VALID_STATUS_SPEC,
-                                     PASSED_CHECKLIST, sections, tasks)
+    summary = package_status_summary(
+        "2026-06-12_dash-run", content, VALID_STATUS_SPEC, PASSED_CHECKLIST, sections, tasks
+    )
     assert summary["primary"] == "无"
 
 
@@ -482,10 +497,10 @@ def test_single_status_guides_historical_checkpoint_recovery_without_writing(
 ):
     slug = "2026-09-21_checkpoint-report"
     package = _make_checkpoint_package(tmp_path, slug, kind, readable=readable)
-    checkpoint = package / "update-checkpoint.json"
     before = {path.name: path.read_bytes() for path in package.iterdir()}
-    monkeypatch.setattr(sys, "argv", ["report_spec_package.py", "--root", str(tmp_path),
-                                     "--view", "status", "--slug", slug])
+    monkeypatch.setattr(
+        sys, "argv", ["report_spec_package.py", "--root", str(tmp_path), "--view", "status", "--slug", slug]
+    )
     assert report.main() == 0
     output = capsys.readouterr().out
     _assert_safe_checkpoint_guidance(output)
@@ -506,19 +521,21 @@ def test_single_status_guides_historical_checkpoint_recovery_without_writing(
 
 
 def test_checkpoint_next_step_and_unknown_status_require_safe_resolution():
-    next_step = report.status_next_step(None, [], [], True, PASSED_CHECKLIST, [],
-                                        checkpoint_pending=True, spec_content=VALID_STATUS_SPEC)
+    next_step = report.status_next_step(
+        None, [], [], True, PASSED_CHECKLIST, [], checkpoint_pending=True, spec_content=VALID_STATUS_SPEC
+    )
     _assert_safe_checkpoint_guidance(next_step)
     _assert_safe_checkpoint_guidance(report.checkpoint_alert(None))
 
 
 @pytest.mark.parametrize("compact", [False, True])
 def test_multi_status_uses_safe_checkpoint_guidance_for_each_kind(tmp_path, compact):
-    kinds = [("2026-09-21_active", "active", True),
-             ("2026-09-21_corrupted", "corrupted", True),
-             ("2026-09-21_mismatch", "mismatch", False)]
-    packages = [_make_checkpoint_package(tmp_path, slug, kind, readable=readable)
-                for slug, kind, readable in kinds]
+    kinds = [
+        ("2026-09-21_active", "active", True),
+        ("2026-09-21_corrupted", "corrupted", True),
+        ("2026-09-21_mismatch", "mismatch", False),
+    ]
+    packages = [_make_checkpoint_package(tmp_path, slug, kind, readable=readable) for slug, kind, readable in kinds]
     before = [{path.name: path.read_bytes() for path in package.iterdir()} for package in packages]
     output = render_multi_status(tmp_path, tmp_path / ".spec", [slug for slug, _, _ in kinds], compact=compact)
     assert "3 个项目存在历史遗留 update checkpoint" in output

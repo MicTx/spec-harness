@@ -279,15 +279,19 @@ def _current_area(text, compact):
     [
         (
             MIXED_TASKS,
-            [("先排队", GLYPH_PENDING), ("并行甲", GLYPH_ACTIVE), ("等待服务", GLYPH_BLOCKED),
-             ("并行乙", GLYPH_ACTIVE), ("阻塞修复已完成", GLYPH_DONE), ("阻塞：外部接口", GLYPH_BLOCKED)],
+            [
+                ("先排队", GLYPH_PENDING),
+                ("并行甲", GLYPH_ACTIVE),
+                ("等待服务", GLYPH_BLOCKED),
+                ("并行乙", GLYPH_ACTIVE),
+                ("阻塞修复已完成", GLYPH_DONE),
+                ("阻塞：外部接口", GLYPH_BLOCKED),
+            ],
             ["并行甲", "并行乙"],
         ),
-        (NO_ACTIVE_TASKS, [("先完成", GLYPH_DONE), ("等待服务", GLYPH_BLOCKED),
-                           ("之后排队", GLYPH_PENDING)], []),
+        (NO_ACTIVE_TASKS, [("先完成", GLYPH_DONE), ("等待服务", GLYPH_BLOCKED), ("之后排队", GLYPH_PENDING)], []),
         (TASKS, [("Task A", GLYPH_PENDING), ("Task B", GLYPH_PENDING)], []),
-        ("## 实现\n- [x] 全部完成\n  - boundary: x\n  - verify: x\n",
-         [("全部完成", GLYPH_DONE)], []),
+        ("## 实现\n- [x] 全部完成\n  - boundary: x\n  - verify: x\n", [("全部完成", GLYPH_DONE)], []),
     ],
 )
 def test_route_status_check_project_the_same_explicit_task_states(
@@ -298,15 +302,15 @@ def test_route_status_check_project_the_same_explicit_task_states(
     sections, tasks = parse_tasks(content)
     outputs = [
         route_for_package(tmp_path, slug, ascii_mode=ascii_mode, compact=compact),
-        render_status(slug, "Test", content, COMPLETE_SPEC, CHECKLIST, sections, tasks,
-                      ascii_mode=ascii_mode, compact=compact),
-        render_check(slug, "Test", COMPLETE_SPEC, content, CHECKLIST,
-                     ascii_mode=ascii_mode, compact=compact),
+        render_status(
+            slug, "Test", content, COMPLETE_SPEC, CHECKLIST, sections, tasks, ascii_mode=ascii_mode, compact=compact
+        ),
+        render_check(slug, "Test", COMPLETE_SPEC, content, CHECKLIST, ascii_mode=ascii_mode, compact=compact),
     ]
+    labels = {"done": "完成", "active": "进行", "blocked": "阻塞", "pending": "待办"}
     for text in outputs:
         task_area = _task_area(text, compact)
-        rows = [f"{name}：{ASCII_GLYPHS[kind] if ascii_mode else {'done': '完成', 'active': '进行', 'blocked': '阻塞', 'pending': '待办'}[kind]}"
-                for name, kind in expected_rows]
+        rows = [f"{name}：{ASCII_GLYPHS[kind] if ascii_mode else labels[kind]}" for name, kind in expected_rows]
         assert all(row in task_area for row in rows), text
         assert [task_area.index(row) for row in rows] == sorted(task_area.index(row) for row in rows)
         assert _current_area(text, compact) == expected_current, text
@@ -327,12 +331,19 @@ def test_dashboard_current_fallback_and_strip_precedence():
     text = Dashboard(slug="s", stage="run", current="实际工作", next_step="实际工作").render()
     assert "## 正在处理\n\n- 实际工作" in text
     assert "## 接下来" not in text
-    text = Dashboard(slug="s", stage="check", strip=[GLYPH_PENDING, GLYPH_BLOCKED],
-                     strip_labels=["排队", "受阻"], current="排队", next_step="排队").render()
+    text = Dashboard(
+        slug="s",
+        stage="check",
+        strip=[GLYPH_PENDING, GLYPH_BLOCKED],
+        strip_labels=["排队", "受阻"],
+        current="排队",
+        next_step="排队",
+    ).render()
     assert "## 正在处理" not in text
     assert "## 接下来\n\n- 排队" in text
-    text = Dashboard(slug="s", stage="run", strip=[GLYPH_ACTIVE, GLYPH_ACTIVE],
-                     strip_labels=["甲", "乙"], next_step="乙").render()
+    text = Dashboard(
+        slug="s", stage="run", strip=[GLYPH_ACTIVE, GLYPH_ACTIVE], strip_labels=["甲", "乙"], next_step="乙"
+    ).render()
     assert _current_area(text, False) == ["甲", "乙"]
     assert "## 接下来" not in text
 
@@ -345,7 +356,9 @@ def test_dashboard_preserves_active_tasks_beyond_the_task_list_limit():
 
 
 def test_goal_output_stops_locally_and_does_not_default_to_a_push_command():
-    contract = (Path(__file__).resolve().parent.parent / "references" / "output-contracts.md").read_text(encoding="utf-8")
+    contract = (Path(__file__).resolve().parent.parent / "references" / "output-contracts.md").read_text(
+        encoding="utf-8"
+    )
     goal = contract.split("## `/spec:goal`", 1)[1].split("\n## ", 1)[0]
     assert "stops at the local commit by default" in goal
     assert "local commit outcome" in goal

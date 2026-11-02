@@ -264,8 +264,12 @@ def _validate_config(config: dict[str, Any]) -> None:
     if not isinstance(retry, dict):
         raise LoopStateError("配置项 retry 必须是对象")
     # These budgets and limits count indivisible units; never truncate floats.
-    discrete = {"maxRounds": config.get("maxRounds"), "concurrency": config.get("concurrency"),
-                "budgetTasks": config.get("budgetTasks"), "retry.maxAttempts": retry.get("maxAttempts")}
+    discrete = {
+        "maxRounds": config.get("maxRounds"),
+        "concurrency": config.get("concurrency"),
+        "budgetTasks": config.get("budgetTasks"),
+        "retry.maxAttempts": retry.get("maxAttempts"),
+    }
     for name, value in discrete.items():
         if not isinstance(value, int) or isinstance(value, bool):
             raise LoopStateError(f"配置项 {name} 必须是正整数: {value!r}")
@@ -361,11 +365,17 @@ class LoopStore:
             raise LoopStateError("run 状态 goal/mode 类型错误")
         if payload["status"] not in ACTIVE_STATUSES + TERMINAL_STATUSES:
             raise LoopStateError(f"未知 run status: {payload['status']!r}")
-        if (not isinstance(payload["createdAt"], (int, float)) or isinstance(payload["createdAt"], bool)
-                or not math.isfinite(payload["createdAt"])):
+        if (
+            not isinstance(payload["createdAt"], (int, float))
+            or isinstance(payload["createdAt"], bool)
+            or not math.isfinite(payload["createdAt"])
+        ):
             raise LoopStateError("run 状态 createdAt 类型错误")
-        if (not isinstance(payload["updatedAt"], (int, float)) or isinstance(payload["updatedAt"], bool)
-                or not math.isfinite(payload["updatedAt"])):
+        if (
+            not isinstance(payload["updatedAt"], (int, float))
+            or isinstance(payload["updatedAt"], bool)
+            or not math.isfinite(payload["updatedAt"])
+        ):
             raise LoopStateError("run 状态 updatedAt 类型错误")
         revision = payload.get("_revision", 0)
         if not isinstance(revision, int) or isinstance(revision, bool) or revision < 0:
@@ -407,8 +417,9 @@ class LoopStore:
                     raise LoopStateError("task attempts 类型错误")
                 for field in ("backoffUntil", "lastHeartbeat", "reservedAt"):
                     value = task.get(field)
-                    if value is not None and (not isinstance(value, (int, float)) or isinstance(value, bool)
-                                              or not math.isfinite(value)):
+                    if value is not None and (
+                        not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value)
+                    ):
                         raise LoopStateError(f"task {field} 类型错误")
                 phase = task.get("dispatchPhase")
                 if phase is not None and phase not in ("reserved", "attached"):
@@ -419,8 +430,11 @@ class LoopStore:
                 if phase == "reserved" and not token:
                     raise LoopStateError("task 预约缺少 token")
                 used = task.get("usedSubmissionIds", [])
-                if (not isinstance(used, list) or any(not isinstance(item, str) or not item for item in used)
-                        or len(set(used)) != len(used)):
+                if (
+                    not isinstance(used, list)
+                    or any(not isinstance(item, str) or not item for item in used)
+                    or len(set(used)) != len(used)
+                ):
                     raise LoopStateError("task usedSubmissionIds 类型错误")
 
     # -- 初始化 -----------------------------------------------------------
@@ -492,9 +506,12 @@ class LoopStore:
                     source_fd = os.open(self.events_path, flags)
                     info = os.fstat(source_fd)
                     path_info = self.events_path.lstat()
-                    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
-                            or stat.S_ISLNK(path_info.st_mode)
-                            or (info.st_dev, info.st_ino) != (path_info.st_dev, path_info.st_ino)):
+                    if (
+                        not stat.S_ISREG(info.st_mode)
+                        or info.st_nlink != 1
+                        or stat.S_ISLNK(path_info.st_mode)
+                        or (info.st_dev, info.st_ino) != (path_info.st_dev, path_info.st_ino)
+                    ):
                         raise LoopStateError(f"事件日志必须是独立的普通文件: {self.events_path}")
                 fd, tmp_name = tempfile.mkstemp(dir=str(self.run_dir), prefix=".tmp-", suffix=".events")
                 with os.fdopen(fd, "wb") as handle:
@@ -689,7 +706,9 @@ class LoopStore:
             _assert_regular_nosymlink(stop)
             raise LoopStateError("STOP 哨兵存在，拒绝 spawn")
         in_flight = sum(
-            1 for rnd in self.state["rounds"] for candidate in rnd.get("tasks", {}).values()
+            1
+            for rnd in self.state["rounds"]
+            for candidate in rnd.get("tasks", {}).values()
             if candidate.get("status") == "in_flight"
         )
         cap = int(cfg["concurrency"])
@@ -730,7 +749,11 @@ class LoopStore:
         return token
 
     def task_spawn(
-        self, round_index: int, task_id: str, agent_id: str, submission_id: str,
+        self,
+        round_index: int,
+        task_id: str,
+        agent_id: str,
+        submission_id: str,
         reservation: Optional[str] = None,
     ) -> None:
         """Attach a host worker to a reservation; legacy direct registration is unsafe."""
@@ -739,9 +762,14 @@ class LoopStore:
             raise LoopStateError("task spawn 需要非空 agent 与 submission")
         task = self._task(round_index, task_id)
         reserved = task.get("status") == "in_flight" and task.get("dispatchPhase") == "reserved"
-        if (reservation and task.get("status") == "in_flight" and task.get("dispatchPhase") == "attached"
-                and reservation == task.get("reservationToken") and agent_id == task.get("agentId")
-                and submission_id == task.get("submissionId")):
+        if (
+            reservation
+            and task.get("status") == "in_flight"
+            and task.get("dispatchPhase") == "attached"
+            and reservation == task.get("reservationToken")
+            and agent_id == task.get("agentId")
+            and submission_id == task.get("submissionId")
+        ):
             return  # Idempotent recovery after an ambiguous attach response.
         if reserved:
             if not reservation or reservation != task.get("reservationToken"):
@@ -766,8 +794,15 @@ class LoopStore:
         # Grace-period origin, not evidence of ongoing worker health.
         task["lastHeartbeat"] = self._now()
         self._persist(reject_stop=not reserved)
-        self._emit("task_spawn", round=round_index, task=task_id, agent=agent_id,
-                   submission=submission_id, attempt=task["attempts"], reserved=reserved)
+        self._emit(
+            "task_spawn",
+            round=round_index,
+            task=task_id,
+            agent=agent_id,
+            submission=submission_id,
+            attempt=task["attempts"],
+            reserved=reserved,
+        )
 
     def _check_attempt(self, task: dict[str, Any], submission: Optional[str], reservation: Optional[str]) -> None:
         token = task.get("reservationToken")
@@ -780,8 +815,13 @@ class LoopStore:
             raise LoopStateError("重试结果需要当前 --submission")
 
     def task_heartbeat(
-        self, round_index: int, task_id: str, *, source: Optional[str] = None,
-        submission: Optional[str] = None, reservation: Optional[str] = None,
+        self,
+        round_index: int,
+        task_id: str,
+        *,
+        source: Optional[str] = None,
+        submission: Optional[str] = None,
+        reservation: Optional[str] = None,
     ) -> None:
         self._require_active()
         task = self._task(round_index, task_id)
@@ -804,19 +844,24 @@ class LoopStore:
         if task["attempts"] >= retry_cfg["maxAttempts"]:
             task["status"] = "failed"
             self._persist()
-            self._emit("task_result", round=round_index, task=task_id,
-                       outcome="exhausted", error=task["lastError"])
+            self._emit("task_result", round=round_index, task=task_id, outcome="exhausted", error=task["lastError"])
             return "exhausted"
         task["status"] = "pending"
         task["backoffUntil"] = self._now() + backoff_delay(task["attempts"], retry_cfg, random.Random())
         self._persist()
-        self._emit("task_retry_scheduled", round=round_index, task=task_id,
-                   attempt=task["attempts"], error=task["lastError"])
+        self._emit(
+            "task_retry_scheduled", round=round_index, task=task_id, attempt=task["attempts"], error=task["lastError"]
+        )
         return "retry"
 
     def task_report(
-        self, round_index: int, task_id: str, report: Any, *,
-        submission: Optional[str] = None, reservation: Optional[str] = None,
+        self,
+        round_index: int,
+        task_id: str,
+        report: Any,
+        *,
+        submission: Optional[str] = None,
+        reservation: Optional[str] = None,
     ) -> None:
         """Persist a nonterminal worker handoff without asserting worker exit."""
         self._require_active()
@@ -831,8 +876,16 @@ class LoopStore:
         self._emit("task_report", round=round_index, task=task_id, attempt=task["attempts"])
 
     def task_result(
-        self, round_index: int, task_id: str, outcome: str, error: str = "", result: Any = None,
-        *, submission: Optional[str] = None, reservation: Optional[str] = None, confirmed_stopped: bool = False,
+        self,
+        round_index: int,
+        task_id: str,
+        outcome: str,
+        error: str = "",
+        result: Any = None,
+        *,
+        submission: Optional[str] = None,
+        reservation: Optional[str] = None,
+        confirmed_stopped: bool = False,
     ) -> str:
         """Record a result only for the current attached attempt."""
         self._require_active()
@@ -905,7 +958,8 @@ class LoopStore:
 
     def run_converged(self, summary: str = "") -> None:
         self._require_active()
-        from loop_control import LoopStateError as ControlError, termination_check
+        from loop_control import LoopStateError as ControlError
+        from loop_control import termination_check
 
         try:
             verdict = termination_check(self, self._now())
@@ -916,8 +970,9 @@ class LoopStore:
         self._finish("converged", summary=summary)
 
     def _require_workers_stopped(self, confirmed_stopped: bool) -> None:
-        live = any(task.get("status") == "in_flight" for rnd in self.state["rounds"]
-                   for task in rnd.get("tasks", {}).values())
+        live = any(
+            task.get("status") == "in_flight" for rnd in self.state["rounds"] for task in rnd.get("tasks", {}).values()
+        )
         if live and not confirmed_stopped:
             raise LoopStateError("结束有在途/预约的 run 前须核实宿主 worker 已停止 --confirmed-stopped")
 
@@ -1163,14 +1218,21 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                 if not args.agent or not args.submission:
                     raise LoopStateError("task spawn 需要 --agent 与 --submission")
                 store.task_spawn(args.round, args.id, args.agent, args.submission, reservation=args.reservation)
-                _emit_json({"ok": True, "warning": None if args.reservation else
-                            "旧式事后登记无法约束宿主启动竞态；请先 reserve"})
+                _emit_json(
+                    {
+                        "ok": True,
+                        "warning": None if args.reservation else "旧式事后登记无法约束宿主启动竞态；请先 reserve",
+                    }
+                )
             elif args.action == "abandon":
-                outcome = store.task_abandon(args.round, args.id, args.reservation or "", confirmed_stopped=args.confirmed_stopped)
+                outcome = store.task_abandon(
+                    args.round, args.id, args.reservation or "", confirmed_stopped=args.confirmed_stopped
+                )
                 _emit_json({"outcome": outcome})
             elif args.action == "heartbeat":
-                store.task_heartbeat(args.round, args.id, source=args.source,
-                                     submission=args.submission, reservation=args.reservation)
+                store.task_heartbeat(
+                    args.round, args.id, source=args.source, submission=args.submission, reservation=args.reservation
+                )
                 _emit_json({"ok": True, "workerLivenessUpdated": bool(args.source)})
             elif args.action in ("report", "result"):
                 if args.action == "result" and not args.outcome:
@@ -1189,12 +1251,21 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
                         raise LoopStateError(f"无效 --result: {exc}") from exc
                 if args.action == "report":
-                    store.task_report(args.round, args.id, result, submission=args.submission, reservation=args.reservation)
+                    store.task_report(
+                        args.round, args.id, result, submission=args.submission, reservation=args.reservation
+                    )
                     _emit_json({"ok": True, "status": "in_flight"})
                 else:
-                    outcome_state = store.task_result(args.round, args.id, args.outcome, args.error, result,
-                                                      submission=args.submission, reservation=args.reservation,
-                                                      confirmed_stopped=args.confirmed_stopped)
+                    outcome_state = store.task_result(
+                        args.round,
+                        args.id,
+                        args.outcome,
+                        args.error,
+                        result,
+                        submission=args.submission,
+                        reservation=args.reservation,
+                        confirmed_stopped=args.confirmed_stopped,
+                    )
                     _emit_json({"outcome": outcome_state})
             elif args.action == "backoff":
                 if args.until is None:
@@ -1202,8 +1273,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                 store.task_backoff_until(args.round, args.id, args.until)
                 _emit_json({"ok": True})
             else:
-                store.task_cancel(args.round, args.id, args.reason or "unspecified",
-                                  confirmed_stopped=args.confirmed_stopped)
+                store.task_cancel(
+                    args.round, args.id, args.reason or "unspecified", confirmed_stopped=args.confirmed_stopped
+                )
                 _emit_json({"ok": True})
         elif args.command == "finish":
             store = _store_from(args)

@@ -230,12 +230,15 @@ def checkpoint_alert(status: CheckpointStatus) -> str:
     """
     if status.state == "active" and status.checkpoint is not None:
         return (
-            f"存在未完成 update checkpoint（历史遗留，机制已退役）：更新「{checkpoint_display_text(status.checkpoint.intent)}」"
-            "未确认完成；先备份并核验有效快照、可信备份或 Git，确认解决后才删除 update-checkpoint.json；详见 references/stages/update.md"
+            "存在未完成 update checkpoint（历史遗留，机制已退役）：更新「"
+            f"{checkpoint_display_text(status.checkpoint.intent)}」未确认完成；"
+            "先备份并核验有效快照、可信备份或 Git，确认解决后才删除 update-checkpoint.json；"
+            "详见 references/stages/update.md"
         )
     return (
         "存在未完成 update checkpoint（历史遗留，机制已退役）：记录已损坏；"
-        "先备份并核验可信备份或 Git；未解决保持门禁，确认解决后才删除 update-checkpoint.json；详见 references/stages/update.md"
+        "先备份并核验可信备份或 Git；未解决保持门禁，确认解决后才删除 update-checkpoint.json；"
+        "详见 references/stages/update.md"
     )
 
 
