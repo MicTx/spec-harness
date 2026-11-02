@@ -44,7 +44,7 @@ from spec_package_support import (
     validate_branch_bound_package,
     validate_slug,
 )
-from update_checkpoint_support import CheckpointStatus, detect_update_checkpoint
+from update_checkpoint_support import CheckpointStatus, checkpoint_display_text, detect_update_checkpoint
 
 
 def parse_args() -> argparse.Namespace:
@@ -60,7 +60,7 @@ def parse_args() -> argparse.Namespace:
     add_specs_dir_arg(parser)
     parser.add_argument("--ascii", action="store_true", help="Render dashboard glyphs as ASCII fallback")
     parser.add_argument("--compact", action="store_true", help="Render metrics as a single line")
-    parser.add_argument("--format", choices=("markdown", "json"), default="markdown")
+    parser.add_argument("--format", choices=("markdown", "json"), default=None)
     parser.add_argument(
         "--brief",
         action="store_true",
@@ -224,18 +224,18 @@ def _brief_envelope(
 def checkpoint_alert(status: CheckpointStatus) -> str:
     """Prominent advisory line for a historical unresolved checkpoint.
 
-    The checkpoint mechanism is retired: Git WIP history is the recovery
-    point, so this is an advisory to resolve via Git and delete the file,
-    not a hard block on routing.
+    The retired checkpoint can contain a pre-update snapshot. Advise safe
+    recovery without asserting that Git history is the only source or that
+    an unresolved corrupted checkpoint can be deleted.
     """
     if status.state == "active" and status.checkpoint is not None:
         return (
-            f"存在未完成 update checkpoint（历史遗留，机制已退役）：更新「{status.checkpoint.intent}」"
-            "未确认完成；按 Git 历史确认/恢复三件套后删除 update-checkpoint.json，再继续 check/done"
+            f"存在未完成 update checkpoint（历史遗留，机制已退役）：更新「{checkpoint_display_text(status.checkpoint.intent)}」"
+            "未确认完成；先备份并核验有效快照、可信备份或 Git，确认解决后才删除 update-checkpoint.json；详见 references/stages/update.md"
         )
     return (
         "存在未完成 update checkpoint（历史遗留，机制已退役）：记录已损坏；"
-        "按 Git 历史恢复三件套后删除 update-checkpoint.json，再重跑 check"
+        "先备份并核验可信备份或 Git；未解决保持门禁，确认解决后才删除 update-checkpoint.json；详见 references/stages/update.md"
     )
 
 
@@ -243,11 +243,11 @@ def _route_unreadable_checkpoint(slug: str, status: CheckpointStatus, output_for
     """Render recovery without inventing progress from an unreadable triad."""
     alert = checkpoint_alert(status)
     next_step = (
-        "处理未完成 update checkpoint（历史遗留）：按 Git 历史确认/恢复三件套后"
-        "删除 update-checkpoint.json，再重跑 status"
+        "处理未完成 update checkpoint（历史遗留）：先备份并核验有效快照、可信备份或 Git；"
+        "确认解决后才删除 update-checkpoint.json，再重跑 status；详见 references/stages/update.md"
         if status.state == "active"
-        else "处理未完成 update checkpoint（历史遗留）：记录已损坏；"
-        "按 Git 历史恢复三件套后删除 update-checkpoint.json，再重跑 status"
+        else "处理未完成 update checkpoint（历史遗留）：记录已损坏；先备份并核验可信备份或 Git；"
+        "未解决保持门禁，确认解决后才删除 update-checkpoint.json；详见 references/stages/update.md"
     )
     if output_format == "json":
         return json.dumps(
@@ -533,6 +533,9 @@ def main() -> int:
     invalid = _validate_envelope_flags(args)
     if invalid:
         return _print_envelope_error("invalid_query", invalid)
+    # Preserve an explicit Markdown conflict while letting --brief imply JSON.
+    if args.format is None:
+        args.format = "json" if args.brief else "markdown"
     try:
         specs_root = resolve_specs_root(root, args.specs_dir)
     except ValueError as exc:

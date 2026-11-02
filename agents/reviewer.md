@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Independent review subagent for spec packages. Re-reads the task package trio and the code it cites with fresh eyes, asks what would break it and what is missing, and returns a findings list (where/what/evidence). Read-only; never edits files, never adjudicates.
+description: Independent review subagent for spec packages. Re-reads the task package documents and the code they cite with fresh eyes, asks what would break them and what is missing, and returns a findings list (where/what/evidence). Read-only; never edits files, never adjudicates.
 tools: ["Read", "Grep", "Glob"]
 ---
 

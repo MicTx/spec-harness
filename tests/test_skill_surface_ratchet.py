@@ -33,9 +33,10 @@ ROOT = Path(__file__).resolve().parent.parent
 #: Post-implementation measured bytes, rounded up to the KB ceiling (F2, 2026-10-19).
 CEILINGS: dict[str, int] = {
     "metadata": 1024,  # measured 291 B — SKILL.md frontmatter
-    # measured 11,772 B — SKILL.md whole file (F1 11,629 / F2 11,517; +255 B F3 dispatch note inside F2 headroom)
-    "skill": 12288,
-    "stages": 52224,  # measured 51,716 B — references/stages/*.md (F1 baseline 52,921 B)
+    # measured 12,916 B — SKILL.md whole file (F1 11,629 / F2 11,517; +255 B F3 dispatch note;
+    # +1,144 B for push-authorization, host/slot-admission, core/full capability, and the update-recovery entry)
+    "skill": 13312,
+    "stages": 53248,  # measured 53,105 B — references/stages/*.md (F1 baseline 52,921 B; +184 B stage-contract clarifications)
     "templates": 4096,  # measured 3,201 B — init fence instantiation (fences byte-stable in F2)
 }
 
@@ -47,8 +48,8 @@ def test_f3_dispatch_sentence_does_not_raise_f2_ceilings():
     ratchet exists to catch."""
     assert CEILINGS == {
         "metadata": 1024,
-        "skill": 12288,
-        "stages": 52224,
+        "skill": 13312,
+        "stages": 53248,
         "templates": 4096,
     }
 
@@ -79,6 +80,7 @@ REFERENCES_BASELINE: frozenset[str] = frozenset(
         "references/stages/update.md",
         "references/storage-and-archive.md",
         "references/templates.md",
+        "references/update-recovery.md",
     }
 )
 
@@ -95,6 +97,7 @@ SKILL_REFERENCE_BASELINE: frozenset[str] = frozenset(
         "references/naming-and-commits.md",
         "references/changelog-guide.md",
         "references/engineering-philosophy.md",
+        "references/update-recovery.md",
     }
 )
 

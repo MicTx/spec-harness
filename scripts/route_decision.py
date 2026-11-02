@@ -202,9 +202,9 @@ def _score_map(text: str) -> dict[str, int]:
 def infer_channel_profile(text: str) -> dict[str, Any]:
     """推断 advisory 通道画像；只携带共享池事实，绝不携带数量限制。
 
-    单池通道上准入失败（queue_full/429/circuit_open）可重试；效率优先，
-    fan-out 保持并行，失败由 lane 死亡协议（salvage→至多 1 次
-    re-dispatch→主线程吸收）兜底。此字段是协议触发器，不是配额：
+    单池通道上准入失败（queue_full/429/circuit_open）触发恢复协议；
+    已规划工作保持完整，实际并发遵循宿主额度与 slot 准入，
+    可用 lane 死亡协议恢复。此字段是协议触发器，不是配额：
     check_spec_package.py 不消费它。
     """
     cleaned = text or ""
@@ -214,14 +214,14 @@ def infer_channel_profile(text: str) -> dict[str, Any]:
     )
     if hit is not None:
         note = (
-            f"single-channel signal: /{hit}/; keep parallel dispatch, "
+            f"single-channel signal: /{hit}/; preserve planned work and respect host/slot admission, "
             "apply lane-death protocol + slice minimization "
             "(see orchestration.md Constrained-channel dispatch)"
         )
         return {"shared_pool": True, "note": note}
     return {
         "shared_pool": False,
-        "note": "no single-channel signal; default parallel dispatch",
+        "note": "no single-channel signal; schedule within host/slot admission",
     }
 
 

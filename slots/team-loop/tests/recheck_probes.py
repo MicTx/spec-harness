@@ -172,7 +172,7 @@ def main() -> int:
         check("stop guard: 非 Stop 事件静默", rc == 0 and out == "", out)
 
         # --- D. 并发准入：真实 CLI 链路 ---------------------------------------
-        cfg = json.dumps({"concurrency": 1, "retry": {"maxAttempts": 2}})
+        cfg = json.dumps({"concurrency": 1, "retry": {"maxAttempts": 2, "baseSec": 0, "maxSec": 0}})
         info4 = json.loads(cli(STATE, "init", "--goal", "并发复核", "--root", str(root), "--config", cfg)[1])
         rd4 = Path(info4["runDir"])
         cli(STATE, "round", "start", "--goal", "r", "--run-dir", str(rd4))
@@ -220,6 +220,7 @@ def main() -> int:
             "a",
             "--outcome",
             "fail",
+            "--confirmed-stopped",
             "--error",
             "x",
             "--run-dir",

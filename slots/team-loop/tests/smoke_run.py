@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-"""端到端 smoke：用真实 CLI 子进程走通 init -> fail -> backoff -> retry -> converge。
-
-验证对象：loop_state.py / loop_control.py 的 CLI 面（README 协议里 agent 实际敲的命令）。
-"""
-
+"""Exercise the CLI protocol with simulated worker ids, never actual model calls."""
 from __future__ import annotations
 
 import json
@@ -19,15 +15,9 @@ STATE = SKILL_DIR / "scripts" / "loop_state.py"
 CONTROL = SKILL_DIR / "scripts" / "loop_control.py"
 
 
-def run(script: Path, *args: str, stdin: str | None = None) -> dict:
-    completed = subprocess.run(
-        [sys.executable, str(script), *args],
-        input=stdin,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    if completed.returncode != 0:
+def run(script: Path, *args: str) -> dict:
+    completed = subprocess.run([sys.executable, str(script), *args], capture_output=True, text=True, timeout=60)
+    if completed.returncode:
         raise SystemExit(f"FAIL {' '.join(args)} -> exit {completed.returncode}: {completed.stderr.strip()}")
     return json.loads(completed.stdout) if completed.stdout.strip() else {}
 
@@ -35,225 +25,49 @@ def run(script: Path, *args: str, stdin: str | None = None) -> dict:
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="loop-smoke-") as td:
         root = Path(td)
-        # 项目根放 .agents 标记，模拟真实项目
         (root / ".agents").mkdir()
+        config = json.dumps({"maxRounds": 1, "budgetTasks": 2,
+                             "retry": {"maxAttempts": 2, "baseSec": 0.01, "maxSec": 0.01, "jitter": 0}})
+        info = run(STATE, "init", "--goal", "循环直至通过", "--root", str(root), "--config", config)
+        rd = info["runDir"]
+        run(STATE, "round", "start", "--goal", "验证", "--run-dir", rd)
+        base = ("--run-dir", rd, "--round", "1", "--id", "t1")
+        run(STATE, "task", "add", *base, "--agent-type", "worker", "--description", "验证")
+        token1 = run(STATE, "task", "reserve", *base)["reservation"]
+        run(STATE, "task", "spawn", *base, "--agent", "mock-a", "--submission", "mock-s1", "--reservation", token1)
+        assert run(CONTROL, "terminate", "--run-dir", rd)["verdict"] == "continue"
+        run(STATE, "task", "heartbeat", *base, "--source", "worker", "--submission", "mock-s1", "--reservation", token1)
+        assert run(STATE, "task", "result", *base, "--outcome", "fail", "--error", "模拟失败",
+                   "--reservation", token1, "--confirmed-stopped")["outcome"] == "retry"
+        time.sleep(0.03)  # wait for the deterministic 10ms configured backoff
+        token2 = run(STATE, "task", "reserve", *base)["reservation"]
+        run(STATE, "task", "spawn", *base, "--agent", "mock-b", "--submission", "mock-s2", "--reservation", token2)
+        assert run(CONTROL, "terminate", "--run-dir", rd)["verdict"] == "continue"
+        run(STATE, "task", "result", *base, "--outcome", "ok", "--reservation", token2, "--confirmed-stopped",
+            "--result", '{"evidence":"simulated-tests-pass"}')
+        run(STATE, "round", "end", "--decision", "pass", "--run-dir", rd)
+        assert run(CONTROL, "terminate", "--run-dir", rd)["verdict"] == "converged"
+        run(STATE, "finish", "converged", "--summary", "完成", "--run-dir", rd)
+        assert run(STATE, "status", "--run-dir", rd)["converged"] is True
+        events = [event["type"] for event in run(STATE, "events", "--run-dir", rd)]
+        assert events == ["run_init", "round_start", "task_add", "task_reserved", "task_spawn",
+                          "task_retry_scheduled", "task_reserved", "task_spawn", "task_result",
+                          "round_end", "run_converged"]
 
-        # 1. init
-        info = run(STATE, "init", "--goal", "循环抽取直至校验通过", "--mode", "until-converged", "--root", str(root))
-        run_dir = Path(info["runDir"])
-        assert info["status"] == "active", info
-
-        # 2. round + task
-        assert run(STATE, "round", "start", "--goal", "第一轮", "--run-dir", str(run_dir))["round"] == 1
-        run(
-            STATE,
-            "task",
-            "add",
-            "--round",
-            "1",
-            "--id",
-            "t1",
-            "--agent-type",
-            "worker",
-            "--description",
-            "解析并输出验证证据",
-            "--run-dir",
-            str(run_dir),
-        )
-        run(
-            STATE,
-            "task",
-            "add",
-            "--round",
-            "1",
-            "--id",
-            "t2",
-            "--agent-type",
-            "worker",
-            "--description",
-            "解析其余部分",
-            "--run-dir",
-            str(run_dir),
-        )
-
-        # 3. 并发准入 + spawn
-        admit = run(CONTROL, "admit", "--run-dir", str(run_dir))
-        assert admit["admit"] is True
-        run(
-            STATE,
-            "task",
-            "spawn",
-            "--round",
-            "1",
-            "--id",
-            "t1",
-            "--agent",
-            "agent-1",
-            "--submission",
-            "sub-1",
-            "--run-dir",
-            str(run_dir),
-        )
-        run(STATE, "task", "heartbeat", "--round", "1", "--id", "t1", "--run-dir", str(run_dir))
-
-        # 4. 失败 -> 重试路径 + 退避
-        outcome = run(
-            STATE,
-            "task",
-            "result",
-            "--round",
-            "1",
-            "--id",
-            "t1",
-            "--outcome",
-            "fail",
-            "--error",
-            "模拟超时",
-            "--run-dir",
-            str(run_dir),
-        )
-        assert outcome["outcome"] == "retry", outcome
-        delay = run(CONTROL, "backoff", "--attempt", "1", "--seed", "1")["delaySec"]
-        assert 0.0 <= delay <= 5.0
-        run(
-            STATE,
-            "task",
-            "backoff",
-            "--round",
-            "1",
-            "--id",
-            "t1",
-            "--until",
-            str(time.time() + delay),
-            "--run-dir",
-            str(run_dir),
-        )
-
-        # 5. 退避到期重试 -> 成功
-        time.sleep(delay + 0.05)
-        admit = run(CONTROL, "admit", "--run-dir", str(run_dir))
-        assert admit["admit"] is True
-        run(
-            STATE,
-            "task",
-            "spawn",
-            "--round",
-            "1",
-            "--id",
-            "t1",
-            "--agent",
-            "agent-1b",
-            "--submission",
-            "sub-1b",
-            "--run-dir",
-            str(run_dir),
-        )
-        outcome = run(
-            STATE,
-            "task",
-            "result",
-            "--round",
-            "1",
-            "--id",
-            "t1",
-            "--outcome",
-            "ok",
-            "--result",
-            '{"evidence": "tests-pass"}',
-            "--run-dir",
-            str(run_dir),
-        )
-        assert outcome["outcome"] == "done"
-
-        # t2 完成后全绿
-        run(
-            STATE,
-            "task",
-            "spawn",
-            "--round",
-            "1",
-            "--id",
-            "t2",
-            "--agent",
-            "agent-2",
-            "--submission",
-            "sub-2",
-            "--run-dir",
-            str(run_dir),
-        )
-        run(STATE, "task", "result", "--round", "1", "--id", "t2", "--outcome", "ok", "--run-dir", str(run_dir))
-
-        # 6. 终止判定（round 还 open -> continue）
-        verdict = run(CONTROL, "terminate", "--run-dir", str(run_dir))
-        assert verdict["verdict"] == "continue", verdict
-        run(STATE, "round", "end", "--decision", "pass", "--run-dir", str(run_dir))
-        verdict = run(CONTROL, "terminate", "--run-dir", str(run_dir))
-        assert verdict["verdict"] == "converged", verdict
-
-        # 7. finish + 状态断言
-        run(STATE, "finish", "converged", "--summary", "全部完成", "--run-dir", str(run_dir))
-        final = run(STATE, "status", "--run-dir", str(run_dir))
-        assert final["status"] == "converged" and final["converged"] is True
-
-        # 8. 事件日志完整序列
-        events = [e["type"] for e in run(STATE, "events", "--run-dir", str(run_dir))]
-        expected = [
-            "run_init",
-            "round_start",
-            "task_add",
-            "task_add",
-            "task_spawn",
-            "task_retry_scheduled",
-            "task_spawn",
-            "task_result",
-            "task_spawn",
-            "task_result",
-            "round_end",
-            "run_converged",
-        ]
-        assert events == expected, (events, expected)
-
-        # 9. 中断/恢复路径（第二个 run）
-        info2 = run(STATE, "init", "--goal", "第二轮任务", "--mode", "until-converged", "--root", str(root))
-        run_dir2 = Path(info2["runDir"])
-        run(STATE, "round", "start", "--goal", "r", "--run-dir", str(run_dir2))
-        run(
-            STATE,
-            "task",
-            "add",
-            "--round",
-            "1",
-            "--id",
-            "a1",
-            "--agent-type",
-            "worker",
-            "--description",
-            "x",
-            "--run-dir",
-            str(run_dir2),
-        )
-        run(
-            STATE,
-            "task",
-            "spawn",
-            "--round",
-            "1",
-            "--id",
-            "a1",
-            "--agent",
-            "ag",
-            "--submission",
-            "sb",
-            "--run-dir",
-            str(run_dir2),
-        )
-        interrupted = run(CONTROL, "interrupt", "--reason", "smoke", "--run-dir", str(run_dir2))
-        assert interrupted["inFlight"] == ["r1/a1"]
-        resumed = run(STATE, "resume", "--run-dir", str(run_dir2))
-        assert resumed["status"] == "active" and "r1/a1" in resumed["pending"]
-        run(STATE, "finish", "cancelled", "--reason", "smoke 收尾", "--run-dir", str(run_dir2))
-
-    print("smoke: OK（init->retry->converge + interrupt->resume 全链路通过）")
+        info2 = run(STATE, "init", "--goal", "中断", "--root", str(root))
+        rd2 = info2["runDir"]
+        run(STATE, "round", "start", "--goal", "r", "--run-dir", rd2)
+        base2 = ("--run-dir", rd2, "--round", "1", "--id", "t1")
+        run(STATE, "task", "add", *base2, "--agent-type", "worker", "--description", "模拟")
+        token = run(STATE, "task", "reserve", *base2)["reservation"]
+        run(STATE, "task", "spawn", *base2, "--agent", "mock", "--submission", "mock-s", "--reservation", token)
+        assert run(CONTROL, "interrupt", "--run-dir", rd2)["inFlight"] == ["r1/t1"]
+        resumed = run(STATE, "resume", "--run-dir", rd2)
+        assert resumed["inFlight"] == ["r1/t1"] and not resumed["pending"]
+        run(STATE, "task", "result", *base2, "--outcome", "ok", "--reservation", token, "--confirmed-stopped")
+        run(STATE, "round", "end", "--decision", "pass", "--run-dir", rd2)
+        run(STATE, "finish", "converged", "--run-dir", rd2)
+    print("smoke: OK（模拟预约->失败->退避->收敛 + 中断->恢复）")
     return 0
 
 

@@ -20,7 +20,7 @@ At minimum include:
 
 - Current package name
 - Completed / total tasks
-- Current stage
+- Actual current task when known (stage details belong to machine output or an explicit user request)
 - Blockers
 - Suggested next step
 

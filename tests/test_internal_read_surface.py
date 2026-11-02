@@ -109,6 +109,32 @@ def snapshot_tree(root: Path, skip: tuple[str, ...] = (".git",)) -> dict[str, tu
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.parametrize("selection", ["empty", "explicit-slug", "active-branch"])
+def test_brief_implies_json_without_an_explicit_format(tmp_path, selection):
+    root = init_repo(tmp_path / "project")
+    args = []
+    if selection != "empty":
+        install_fixture_package(root)
+        if selection == "explicit-slug":
+            args = ["--slug", FIXTURE_SLUG]
+
+    implicit = route_cli(root, *args, "--brief")
+    explicit = route_cli(root, *args, "--brief", "--format", "json")
+    assert implicit.returncode == explicit.returncode == 0, implicit.stderr
+    actual, expected = json.loads(implicit.stdout), json.loads(explicit.stdout)
+    for key in ("capability", "slug", "stage", "query", "tasks"):
+        assert actual[key] == expected[key]
+    assert actual["capability"] == "brief"
+
+    default = route_cli(root, *args)
+    assert default.returncode == 0, default.stderr
+    assert default.stdout.startswith("# ")  # plain invocation remains Markdown
+
+    conflict = route_cli(root, "--format", "markdown", *args, "--brief")
+    assert conflict.returncode == 1
+    assert "error: invalid_query:" in conflict.stderr
+
+
 def test_brief_envelope_shape_and_source_digests(tmp_path):
     root = init_repo(tmp_path / "project")
     package = install_fixture_package(root)

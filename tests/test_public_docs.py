@@ -11,7 +11,8 @@ SCRIPTS = ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from export_public_repo import PUBLIC_ROOT_FILES, private_remote_patterns  # noqa: E402
+from check_all_spec_packages import ACTIVE_REQUIRED_FILES, ARCHIVE_REQUIRED_FILES, LEGACY_ARCHIVE_BUNDLE  # noqa: E402
+from export_public_repo import PRIVATE_PATH_PARTS, PUBLIC_ROOT_FILES, private_remote_patterns  # noqa: E402
 
 PUBLIC_DOCS = (
     "CHANGELOG.md",
@@ -33,6 +34,33 @@ PUBLIC_LINK_DOCS = ("README.md", "README-en.md", *PUBLIC_DOCS)
 ENTRY_DOCS = ("server/README.md", "agent-plugin/README.md")
 
 RELATIVE_LINK = re.compile(r"\[[^]]+\]\(([^)#]+)(?:#[^)]+)?\)")
+
+
+def test_package_documentation_matches_current_and_legacy_members():
+    assert ACTIVE_REQUIRED_FILES == ("spec.md", "tasks.md")
+    assert ARCHIVE_REQUIRED_FILES == ("spec.md", "tasks.md", "completion-summary.md")
+    assert "checklist.md" in LEGACY_ARCHIVE_BUNDLE
+
+    storage = (ROOT / "references" / "storage-and-archive.md").read_text(encoding="utf-8")
+    assert "`spec.md` and `tasks.md`" in storage
+    assert "legacy v1" in storage
+    assert "├── plans/" in storage
+
+    for relative in (
+        "agents/planner.md",
+        "agents/reviewer.md",
+        "references/handoff.md",
+        "references/output-contracts.md",
+        "references/slots.md",
+        "references/storage-and-archive.md",
+        "server/README.md",
+    ):
+        text = (ROOT / relative).read_text(encoding="utf-8")
+        assert not re.search(r"\b(?:active|task[- ]package|package) trio\b|\btrio paths\b", text, re.IGNORECASE), (
+            relative
+        )
+    server = (ROOT / "server" / "README.md").read_text(encoding="utf-8")
+    assert "validates the quartet" not in server and "legacy checklist" in server
 
 
 def test_public_docs_use_public_repository_links_and_current_identity():
@@ -103,6 +131,12 @@ def test_root_readmes_form_a_bilingual_public_pair():
 
     assert "README.md" in PUBLIC_ROOT_FILES
     assert "README-en.md" in PUBLIC_ROOT_FILES
+
+    zh_release = next(line for line in chinese.splitlines() if line.startswith("├── release/"))
+    en_release = next(line for line in english.splitlines() if line.startswith("├── release/"))
+    assert "release" in PRIVATE_PATH_PARTS
+    assert "公开快照" in zh_release and "不包含" in zh_release
+    assert "excluded from public snapshots" in en_release
 
 
 def test_readmes_carry_execution_surface_matrix_and_new_hosts():

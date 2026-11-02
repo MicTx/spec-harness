@@ -190,6 +190,11 @@ def test_lightweight_path_for_small_work_is_preserved():
     when = _when_to_use()
     assert "Spec: none" in when
     assert "the user decides" in when
+    assert "Follow the repository’s Git rules" in when
+    assert "Push only after explicit user authorization" in when
+    commands = (ROOT / "references/commands.md").read_text(encoding="utf-8")
+    assert "push only when explicitly authorized" in commands
+    assert "push only with explicit user authorization" in commands
 
 
 def test_the_guard_is_documented_as_a_reminder_gate_not_a_security_boundary():
@@ -213,32 +218,29 @@ def _adoption_section() -> str:
     return text[start:] if end == -1 else text[start:end]
 
 
-def test_adopted_update_checkpoint_stages_only_the_package():
-    """An adopted package shares the tree with teammates: `git add -A` would commit their work and a
-    whole-tree reset would discard it, so its recovery point and rollback stay inside the package."""
-    update = (ROOT / "references/stages/update.md").read_text(encoding="utf-8")
-    assert "adoption.json" in update
-    assert "git add -- <pkg> && git commit" in update
-    assert "git restore --source=<WIP-commit> --staged --worktree -- <pkg>" in update
-    assert "stages/update.md" in _adoption_section()
-
-
-def test_rollback_guidance_reverts_the_update_not_the_recovery_point():
-    """The WIP commit holds the pre-update work: reverting it undoes that work and keeps the update."""
+def test_update_recovery_does_not_authorize_git_mutations():
+    """Both normal and adopted updates preserve the preexisting dirty index."""
     update = (ROOT / "references/stages/update.md").read_text(encoding="utf-8")
     cli = (ROOT / "scripts/update_checkpoint.py").read_text(encoding="utf-8")
     gate = (ROOT / "scripts/check_spec_package.py").read_text(encoding="utf-8")
-    assert re.search(r"git revert <WIP-commit>(?!\.\.)", update) is None
-    assert "git revert --no-edit <WIP-commit>..HEAD" in update
-    assert re.search(r"git revert <WIP 提交 sha>(?!\.\.)", cli) is None
-    assert "git revert --no-edit <WIP 提交 sha>..HEAD" in cli
-    assert "git revert 更新前 WIP 提交" not in gate and "git revert 其后的提交" in gate
-    assert ".- **Resolution**" not in update, "two bullets of the retired-checkpoint list run together"
-    # An interrupted update is usually not committed yet: WIP..HEAD is then empty and `git revert` fails.
-    rollback = next(line for line in update.splitlines() if line.startswith("3. **Rollback"))
-    assert "uncommitted" in rollback, rollback
-    assert "改写尚未提交" in cli
-    assert "未提交的改写" in gate
+    assert "adoption.json" in update and "neither it nor an ordinary update authorizes staging or committing" in update
+    assert "stages/update.md" in _adoption_section()
+    assert "index is not touched, even for a partially staged target" in update
+    assert "coordinate exclusive access" in update
+    assert "postimage was never recorded" in update
+    for content in (update, cli, gate):
+        for dangerous in ("git add -A", "git reset --hard", "git revert --no-edit",
+                          "git restore --source=", "git commit -m"):
+            assert dangerous not in content
+
+
+def test_historical_checkpoint_guidance_uses_validated_snapshot_and_fails_closed():
+    update = (ROOT / "references/stages/update.md").read_text(encoding="utf-8")
+    assert "inspect_update_checkpoint" in update
+    assert "work that may never have been committed" in update
+    assert "corrupt or identity-mismatched" in update
+    assert "if those cannot establish a safe state, leave the gate blocked" in update
+    assert "a staged checkpoint could reappear" in update
 
 
 def test_adoption_doc_names_the_spec_branch_rename():

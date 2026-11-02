@@ -4,15 +4,17 @@
 
 Wired (when the user opts in) to two events:
 
-- ``UserPromptSubmit``: injects a short reminder that the work's shape must be
-  assessed with ``scripts/assess_spec_activation.py`` before the first
-  substantive edit or implementation hand-off. Never blocks.
+- ``UserPromptSubmit``: attempts to invalidate the prior session assessment, then injects
+  a reminder for authorized implementation work. Never blocks. Invalidation
+  may delete the old machine-local state file, even for a read-only request.
+  The event supplies no trusted request identity or read-only signal with
+  which to retain per-request revocation without that filesystem mutation.
 - ``PreToolUse`` on write / dispatch tools: denies the call until an assessment
   for this session and request exists. A matching active package still needs a
   fresh resume assessment after each main-session prompt.
 
 What this is: a reminder gate for a cooperating agent, NOT a security boundary. Shape facts are
-reported by the agent itself. Every new main-session prompt voids the previous decision;
+reported by the agent itself. Every new main-session prompt attempts to void the previous decision;
 `direct` also has a TTL. Resume confirms package identity, not coverage of a new goal.
 Verdict-shaped facts (opt-out, reversible-small, read-only) are not accepted by the assessor,
 so the agent cannot self-certify an exemption. It stops an agent from forgetting to assess,
@@ -42,6 +44,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import sys
 from pathlib import Path
 from typing import Any
@@ -55,6 +58,7 @@ from activation_state import (  # noqa: E402
     DIRECT_TTL_SECONDS,
     assessment_age_seconds,
     invalidate_assessment,
+    valid_session,
     write_assessment,  # noqa: F401 - re-exported for callers of this module
 )
 from activation_state import read_assessment as _read_assessment  # noqa: E402
@@ -83,40 +87,33 @@ def _emit(event: str, **fields: str) -> None:
 
 
 def recorder_hint(session: Any) -> str:
-    """Spell out that the PreToolUse gate records nothing on its own.
-
-    The reminder above asks for an assessment, but a refused write looks like a
-    bare denial unless the agent knows that ``--session`` is what persists the
-    decision. Sweep 1 spent several turns per unit re-deriving that and hunting
-    for the id, which the hook already has in hand.
-    """
-    if not isinstance(session, str) or not session:
-        return (
-            "Admission state is keyed by session id. Re-run the assessor with `--session <id>` "
-            "so the decision is recorded; without it the next gated write is refused again."
-        )
-    # The hook already knows the id; naming it here is the difference between one
-    # assessor call and several turns spent hunting for it (observed in sweep 1).
+    """Keep the read-only exit ahead of the conditional recording instructions."""
+    session_arg = shlex.quote(session) if valid_session(session) else "<this session id>"
     return (
-        f"Record it with `--session {session}`: that exact value, and it is not optional "
-        "bookkeeping: it is the only thing that persists the decision the PreToolUse gate reads. "
-        "An assessment run without `--session` leaves the gate closed."
+        "If the user or host forbids filesystem writes, including machine-local state, do not record an "
+        "assessment or retry a denied call by writing one. Continue with local read-only tools or stop and "
+        "report the limitation. A denied Agent/Task/SendMessage call is not proven read-only by its prompt, "
+        "tool arguments, or the agent's claim. If the host supports explicit authorization of that specific "
+        "call within the permitted scope, seek it there; otherwise stop. Never bypass the write gate. "
+        "Only if the user and host permit both the implementation or implementation hand-off and writing "
+        "assessment state: "
+        f"run `python3 <spec install root>/{ASSESSOR} --root <project> --session {session_arg}` "
+        "with established shape facts. The --session flag creates or replaces machine-local state; "
+        "without it the gate remains closed. Assessment does not grant host permission."
     )
 
 
 def _prompt_reminder() -> str:
     return (
-        "Before the first substantive edit or implementation hand-off, assess this work's shape: "
-        f"run `python3 <spec install root>/{ASSESSOR} --root <project>` with the shape facts you established after "
-        "reading the request and the code (independent acceptance surfaces, actual implementers, resume match, "
-        "scope growth after reading). Count each independently testable behavior separately, even under one "
-        "umbrella feature; multiple files for the same behavior still count as one. "
-        "Act on the result: direct (just do it), create (record scope first), "
-        "resume (continue the matching package), defer (resolve the safety or evidence gap first). Re-assess if "
-        "reading code grows the scope or the task changes. Read-only work needs no assessment. "
-        "Never self-report `opt_out`, `reversible_small` or `read_only`: verdict facts are rejected, and a "
-        "user's explicit opt-out is honored at the host level (the user allows the denied call or disables "
-        "activation). Never create packages from a worker session."
+        "Read-only work needs no assessment. The UserPromptSubmit hook attempts to invalidate the previous session "
+        "assessment before this reminder and may already have deleted its machine-local state file, even "
+        "for a read-only request. If the prohibition includes host-hook state, disclose this limitation. "
+        "Before the first substantive edit or implementation hand-off, and only when the user and host "
+        "permit assessment-state writes, assess the work's shape after reading the request and code. "
+        "Count each independently testable behavior separately, even under one umbrella feature; multiple "
+        "files for the same behavior still count as one. Act on the result: direct, create, resume, or defer; "
+        "re-assess if the scope grows or the task changes. Never self-report `opt_out`, `reversible_small` "
+        "or `read_only`; the host level handles an explicit opt-out. Never create packages from a worker session."
     )
 
 
@@ -126,11 +123,21 @@ def handle_prompt(payload: dict[str, Any]) -> int:
     cwd_value = payload.get("cwd")
     root = Path(cwd_value) if isinstance(cwd_value, str) and cwd_value else Path.cwd()
     session = payload.get("session_id")
-    if isinstance(session, str):
-        invalidate_assessment(root, session)  # a new request may be different work
+    invalidated = invalidate_assessment(root, session) if isinstance(session, str) else True
+    warning = ""
+    if not invalidated:
+        # Later hook processes have no shared request generation to consult.
+        # Do not claim the previous decision was revoked when unlink failed.
+        warning = (
+            "The previous assessment could not be invalidated and may still authorize later tool calls. "
+            "Stop and report this limitation; do not use gated write or dispatch tools until the host "
+            "resolves it. Under strict read-only restrictions, do not repair or write the state. "
+            "This hook cannot enforce revocation across processes in this failure. "
+        )
+        print(f"spec activation guard: {warning}", file=sys.stderr)
     # One event, one context object: the host merges a single additionalContext,
     # and two JSON lines on stdout would not both be read.
-    _emit("UserPromptSubmit", additionalContext=f"{_prompt_reminder()} {recorder_hint(session)}")
+    _emit("UserPromptSubmit", additionalContext=f"{warning}{_prompt_reminder()} {recorder_hint(session)}")
     return 0
 
 
@@ -151,32 +158,25 @@ def handle_tool(payload: dict[str, Any]) -> int:
         reason = "no admission assessment recorded for this session, or a new request voided it (new request)"
         bound = _bound_package(root)
         if bound:
-            reason += f"; the active package `{bound}` matches this branch - record a resume assessment before editing"
+            reason += f"; active package `{bound}` matches this branch but is not an assessment"
     elif record["decision"] == "defer":
-        reason = "the last assessment deferred: resolve the safety or evidence gap, then re-assess"
+        reason = "the last assessment deferred because the safety or evidence gap is unresolved"
     elif record["decision"] == "direct":
         age = assessment_age_seconds(root, session_key)
         if age is not None and age > DIRECT_TTL_SECONDS:
-            reason = "the direct assessment expired; assess again if the work is still ongoing"
+            reason = "the direct assessment expired"
     if reason is None:
         return 0
-    # The denial reason is the only channel that provably reaches the model in a
-    # non-interactive session: UserPromptSubmit's additionalContext is not
-    # injected in headless runs (probed 2026-10-24). So the exact recording
-    # command - including `--session`, without which the assessor records
-    # nothing and this gate stays shut - belongs here.
-    record_hint = f"--session {session_key}" if session_key else "--session <this session id>"
+    # The denial reason reaches the model even when the prompt reminder is not
+    # injected. It must include the read-only exit before conditional recording.
     _emit(
         "PreToolUse",
         permissionDecision="deny",
         permissionDecisionReason=(
-            f"Spec admission: {reason}. Run `python3 <spec install root>/{ASSESSOR} --root <project> "
-            f"{record_hint}` with the work's shape facts, then retry. Count each independently testable behavior "
-            "separately, not umbrella features; multiple files for the same behavior still count as one. "
-            "`--session` is what persists the "
-            "decision; without it the next write is refused again. A user's explicit opt-out is honored "
-            "only by the user allowing this call or disabling activation - the agent cannot self-certify "
-            "it. direct/create/resume proceed; defer asks you to resolve the gap first."
+            f"Spec admission: {reason}. {recorder_hint(session)} "
+            "When assessment is authorized, count each independently testable behavior separately, "
+            "not umbrella features; multiple files for the same behavior still count as one. "
+            "A user opt-out is handled at the host level, never by an agent's self-certification."
         ),
     )
     return 0

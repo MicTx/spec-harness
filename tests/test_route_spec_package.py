@@ -400,7 +400,7 @@ def test_route_markdown_uses_project_language_not_process_commands():
         output = route_for_package(root, "test-pkg")
         assert output.startswith("# Test\n")
         assert "已完成：0/1" in output
-        assert "实现支付回调：进行" in output
+        assert "实现支付回调：待办" in output
         assert "## 接下来" in output
         assert "/spec:" not in output
         assert "## 流水线" not in output
@@ -465,7 +465,8 @@ def test_route_advises_on_historical_update_checkpoint(tmp_path, write_historica
 
     assert "存在未完成 update checkpoint（历史遗留，机制已退役）" in output
     assert "更新「追加数据导出任务」未确认完成" in output
-    assert "按 Git 历史确认/恢复三件套后删除 update-checkpoint.json" in output
+    assert "先备份并核验有效快照" in output
+    assert "确认解决后才删除 update-checkpoint.json" in output
     assert "## 需要关注" in output
     state = _route_state(tmp_path, slug)
     assert state["stage"] == "run"
@@ -496,8 +497,7 @@ def test_route_checkpoint_advisory_detects_without_modifying_files(tmp_path, wri
 
 
 def test_route_checkpoint_advisory_lifts_after_file_removal(tmp_path, write_historical_checkpoint):
-    """Resolution under the retired mechanism is file removal after Git
-    recovery; with the file gone the advisory disappears entirely."""
+    """After safe resolution and removal the advisory disappears entirely."""
     slug = "2026-09-13_update-pkg"
     pkg = _create_package(
         tmp_path / ".spec" / "specs",
@@ -613,7 +613,8 @@ def test_route_cli_recovers_with_unreadable_triad(
     assert result.returncode == 0, result.stderr
     assert result.stderr == ""
     assert "存在未完成 update checkpoint" in result.stdout
-    assert "Git 历史确认/恢复" in result.stdout or "按 Git 历史恢复" in result.stdout
+    assert "先备份并核验" in result.stdout
+    assert "确认解决后才删除" in result.stdout
     assert "删除 update-checkpoint.json" in result.stdout
     if state == "corrupted":
         assert "记录已损坏" in result.stdout
@@ -797,7 +798,8 @@ def test_route_malformed_checkpoint_keeps_corrupted_recovery(
 
     output = route_for_package(tmp_path, slug)
     assert "记录已损坏" in output
-    assert "按 Git 历史恢复三件套后删除 update-checkpoint.json" in output
+    assert "先备份并核验可信备份或 Git" in output
+    assert "未解决保持门禁" in output
     state = _route_state(tmp_path, slug)
     assert state["updateCheckpoint"] == "corrupted"
     if readable_triad:
@@ -817,7 +819,8 @@ def test_route_malformed_checkpoint_keeps_corrupted_recovery(
             assert json.loads(result.stdout) == state
         else:
             assert "记录已损坏" in result.stdout
-            assert "按 Git 历史恢复三件套后删除 update-checkpoint.json" in result.stdout
+            assert "先备份并核验可信备份或 Git" in result.stdout
+            assert "未解决保持门禁" in result.stdout
     assert {p.name: p.read_bytes() for p in pkg.iterdir()} == before
 
 

@@ -9,11 +9,21 @@
 
 from __future__ import annotations
 
+import json
 import os
+import signal
+import sys
 import time
 from pathlib import Path
 
+import pytest
 import workflow_fanout as wf
+
+# This file drives the real driver, not the subprocess.run compatibility shim.
+pytestmark = pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="real driver execution requires Linux /proc and waitid(WNOWAIT)",
+)
 
 
 def _emitter(tmp_path: Path, name: str, body: str) -> Path:
@@ -138,3 +148,65 @@ def test_run_item_pi_dash_prompt_end_to_end(tmp_path, monkeypatch):
     assert record["ok"] is True, record
     argv = __import__("json").loads(received.read_text())
     assert "--dangerous" in argv
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="verified group cleanup requires Linux /proc")
+def test_normal_exit_kills_detached_stdio_children_before_next_item(tmp_path, monkeypatch):
+    """A successful parent may leave same-group workers with DEVNULL stdio."""
+    children = tmp_path / "child-pids.txt"
+    plan = tmp_path / "plan.json"
+    result = tmp_path / "result.jsonl"
+    plan.write_text(json.dumps({"items": [{"id": "a", "prompt": "first"}, {"id": "b", "prompt": "second"}]}))
+    worker = r'''
+import os, subprocess, sys
+from pathlib import Path
+log, label = Path(sys.argv[1]), sys.argv[2]
+previous_alive = False
+if log.exists():
+    previous_pid = int(log.read_text().splitlines()[-1].split(":")[0])
+    try:
+        tail = Path(f"/proc/{previous_pid}/stat").read_bytes().rsplit(b")", 1)[-1].split()
+        previous_alive = bool(tail) and tail[0] != b"Z"
+    except FileNotFoundError:
+        pass
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+with log.open("a") as handle:
+    handle.write(f"{child.pid}:{os.getpgrp()}\n")
+print(f"previous_alive={previous_alive} child={child.pid}", flush=True)
+'''
+    monkeypatch.setattr(wf, "resolve_binary", lambda backend: sys.executable)
+    monkeypatch.setattr(wf, "build_command", lambda backend, prompt, output: [sys.executable, "-c", worker, str(children), prompt])
+    try:
+        code = wf.main(["--backend", "pi", "--plan", str(plan), "--out", str(result), "--concurrency", "1"])
+        records = [json.loads(line) for line in result.read_text().splitlines()]
+        assert code == 0 and len(records) == 2 and all(record["ok"] for record in records)
+        assert all("previous_alive=False" in record["stdoutSummary"] for record in records)
+        pairs = [tuple(map(int, line.split(":"))) for line in children.read_text().splitlines()]
+        assert len(pairs) == 2
+        assert all(not _process_alive(pid) for pid, _ in pairs)
+    finally:
+        # The test owns only these exact recorded children and verifies the
+        # original process-group identity before any emergency cleanup.
+        if children.exists():
+            for line in children.read_text().splitlines():
+                pid, group = map(int, line.split(":"))
+                try:
+                    if _process_alive(pid) and os.getpgid(pid) == group:
+                        os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="verified group cleanup requires Linux /proc")
+def test_parent_exit_kills_child_holding_output_pipe():
+    worker = (
+        "import subprocess,sys; "
+        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+        "print('done',flush=True)"
+    )
+    started = time.monotonic()
+    completed, timed_out, limited = wf._run_bounded([sys.executable, "-c", worker], 6)
+    assert time.monotonic() - started < 4
+    assert completed.returncode == 0 and not timed_out and not limited
+    assert "done" in completed.stdout

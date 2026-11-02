@@ -20,7 +20,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import py_compile
 import re
 import shlex
 import shutil
@@ -513,8 +512,10 @@ class Doctor:
         script_paths.extend(sorted((self.skill_root / "slots").rglob("*.py")))
         for script in script_paths:
             try:
-                py_compile.compile(str(script), doraise=True)
-            except py_compile.PyCompileError as exc:
+                # Compile source bytes in memory: honor encoding cookies without
+                # creating or replacing __pycache__ in a read-only install.
+                compile(script.read_bytes(), str(script), "exec", dont_inherit=True)
+            except (OSError, SyntaxError, ValueError) as exc:
                 failures.append(f"{script.name}: {str(exc).splitlines()[-1] if str(exc) else 'compile error'}")
         if failures:
             self.record(

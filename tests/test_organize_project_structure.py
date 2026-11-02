@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -1108,3 +1110,243 @@ def test_scenario_prepackages_are_fixture_content_not_repo_wiring(tmp_path):
     assert is_retired_candidate_excluded("bench/activation/scenarios/P1/seed/app/users.py", set(), set())
     # ordinary docs keep being audited
     assert not is_retired_candidate_excluded("docs/tutorial.md", set(), set())
+
+
+def make_contract_repo(tmp_path):
+    contract = {
+        "version": 1,
+        "layers": ["high", "low"],
+        "modules": [
+            {"name": "high", "paths": ["high.py"], "layer": "high"},
+            {"name": "low", "paths": ["low.py"], "layer": "low"},
+        ],
+        "forbid": [{"from": "low", "to": "high", "reason": "low must not import high"}],
+    }
+    root = make_tree(
+        tmp_path,
+        {
+            "high.py": "VALUE = 1\n",
+            "low.py": "import high\n",
+            ".spec/architecture/contracts.json": json.dumps(contract),
+        },
+    )
+    return root
+
+
+def contract_tree_snapshot(root):
+    result = {}
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            result[str(path.relative_to(root))] = ("symlink", os.readlink(path))
+        elif path.is_file():
+            result[str(path.relative_to(root))] = ("file", hashlib.sha256(path.read_bytes()).hexdigest())
+    return result
+
+
+def test_contract_cli_baseline_lifecycle_and_read_only(tmp_path):
+    root = make_contract_repo(tmp_path)
+    before = contract_tree_snapshot(root)
+    result = run_audit(root, "--check", "--format", "json")
+    assert result.returncode == 2, result.stderr
+    payload = json.loads(result.stdout)["contracts"]
+    assert payload["status"] == "loaded"
+    assert payload["baseline_status"] == "missing"
+    assert payload["baseline_hits"] == 0
+    assert [(v["rule"], v["importer"], v["target"]) for v in payload["new_violations"]] == [
+        ("forbidden-import", "low.py", "high.py")
+    ]
+    assert contract_tree_snapshot(root) == before
+    assert "forbidden-import" in run_audit(root).stdout
+
+    update = run_audit(root, "--update-baseline")
+    assert update.returncode == 0, update.stderr
+    assert "FROZEN forbidden-import" in update.stdout
+    after = contract_tree_snapshot(root)
+    assert {key for key in after if after.get(key) != before.get(key)} == {".spec/architecture/contract-baseline.json"}
+    assert run_audit(root, "--check").returncode == 0
+    assert contract_tree_snapshot(root) == after
+    assert run_audit(root, "--check", "--update-baseline").returncode != 0
+    assert contract_tree_snapshot(root) == after
+
+    (root / "low.py").write_text("VALUE = 1\n", encoding="utf-8")
+    fixed = run_audit(root, "--check", "--format", "json")
+    assert fixed.returncode == 2
+    assert len(json.loads(fixed.stdout)["contracts"]["stale_baseline"]) == 1
+    refreshed = run_audit(root, "--update-baseline")
+    assert refreshed.returncode == 0
+    assert "PRUNED forbidden-import" in refreshed.stdout
+    assert run_audit(root, "--check").returncode == 0
+    (root / "low.py").write_text("import high\n", encoding="utf-8")
+    reintroduced = run_audit(root, "--check", "--format", "json")
+    assert reintroduced.returncode == 2
+    assert len(json.loads(reintroduced.stdout)["contracts"]["new_violations"]) == 1
+
+
+def test_contract_cli_incomplete_scan_cannot_pass_or_freeze(tmp_path):
+    root = make_contract_repo(tmp_path)
+    (root / "low.py").write_text("#" * (2 * 1024 * 1024 + 1), encoding="utf-8")
+    result = run_audit(root, "--check", "--format", "json")
+    assert result.returncode == 2
+    assert "low.py" in str(json.loads(result.stdout)["contracts"]["incomplete"])
+    assert run_audit(root, "--update-baseline").returncode != 0
+    assert not (root / ".spec/architecture/contract-baseline.json").exists()
+    (root / "low.py").unlink()
+    missing = run_audit(root, "--check", "--format", "json")
+    assert missing.returncode == 2
+    assert "low.py" in str(json.loads(missing.stdout)["contracts"]["incomplete"])
+
+
+def test_contract_cli_rejects_invalid_and_symlinked_state(tmp_path):
+    root = make_contract_repo(tmp_path)
+    arch = root / ".spec/architecture"
+    baseline = arch / "contract-baseline.json"
+    baseline.write_text('{"version":', encoding="utf-8")
+    corrupt = run_audit(root, "--check")
+    assert corrupt.returncode != 0
+    assert "contract-baseline.json" in corrupt.stderr
+    baseline.unlink()
+    outside = tmp_path / "sentinel.txt"
+    outside.write_text("sentinel", encoding="utf-8")
+    baseline.symlink_to(outside)
+    assert run_audit(root, "--update-baseline").returncode != 0
+    assert outside.read_text(encoding="utf-8") == "sentinel"
+    assert baseline.is_symlink()
+
+
+def test_contract_cli_rejects_symlinked_architecture_directory(tmp_path):
+    root = make_contract_repo(tmp_path)
+    arch = root / ".spec/architecture"
+    outside = tmp_path / "outside-arch"
+    arch.rename(outside)
+    arch.symlink_to(outside, target_is_directory=True)
+    result = run_audit(root, "--update-baseline")
+    assert result.returncode != 0
+    assert "symlink" in result.stderr
+    assert not (outside / "contract-baseline.json").exists()
+
+
+def test_contract_cli_rejects_missing_tracked_or_orphaned_contract(tmp_path):
+    root = make_contract_repo(tmp_path)
+    config = root / ".spec/architecture/contracts.json"
+    config.unlink()
+    missing = run_audit(root, "--check")
+    assert missing.returncode != 0
+    assert "contracts.json" in missing.stderr
+    git(root, "rm", "--cached", "-q", ".spec/architecture/contracts.json")
+    (root / ".spec/architecture/contract-baseline.json").write_text("{}", encoding="utf-8")
+    orphan = run_audit(root, "--check")
+    assert orphan.returncode != 0
+    assert "contracts.json" in orphan.stderr
+
+
+def test_contract_collect_facts_accepts_relative_project_root(tmp_path, monkeypatch):
+    root = make_contract_repo(tmp_path)
+    monkeypatch.chdir(root)
+    report = collect_facts(Path("."), ".spec", 90, 512 * 1024)
+    assert report.contracts is not None
+    assert report.contracts_path == ".spec/architecture/contracts.json"
+
+
+def test_contract_cli_respects_nested_specs_dir(tmp_path):
+    root = make_contract_repo(tmp_path)
+    custom = root / ".policy" / "records"
+    custom.parent.mkdir()
+    shutil.move(root / ".spec", custom)
+    git(root, "add", "-A")
+    result = run_audit(root, "--specs-dir", ".policy/records", "--check", "--format", "json")
+    assert result.returncode == 2, result.stderr
+    assert json.loads(result.stdout)["contracts"]["path"] == ".policy/records/architecture/contracts.json"
+    assert run_audit(root, "--specs-dir", ".policy/records", "--update-baseline").returncode == 0
+    assert (custom / "architecture" / "contract-baseline.json").is_file()
+    assert run_audit(root, "--specs-dir", ".policy/records", "--check").returncode == 0
+
+
+def test_contract_cli_rejects_symlinked_source_parent(tmp_path):
+    contract = {
+        "version": 1,
+        "layers": ["high", "low"],
+        "modules": [
+            {"name": "high", "paths": ["high.py"], "layer": "high"},
+            {"name": "low", "paths": ["src/low.py"], "layer": "low"},
+        ],
+        "forbid": [{"from": "low", "to": "high", "reason": "no reverse dependency"}],
+    }
+    root = make_tree(
+        tmp_path,
+        {
+            "high.py": "VALUE = 1\n",
+            "src/low.py": "VALUE = 2\n",
+            ".spec/architecture/contracts.json": json.dumps(contract),
+        },
+    )
+    (root / "src").rename(tmp_path / "original-src")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "low.py").write_text("import high\n", encoding="utf-8")
+    (root / "src").symlink_to(outside, target_is_directory=True)
+    result = run_audit(root, "--check", "--format", "json")
+    assert result.returncode == 2, result.stderr
+    assert "src/low.py" in str(json.loads(result.stdout)["contracts"]["incomplete"])
+    assert run_audit(root, "--update-baseline").returncode != 0
+
+
+@pytest.mark.parametrize("source", ["if True: import high\n", "import os; import high\n", "\ufeffimport high\n"])
+def test_contract_python_ast_catches_inline_and_bom_imports(tmp_path, source):
+    root = make_contract_repo(tmp_path)
+    (root / "low.py").write_text(source, encoding="utf-8")
+    result = run_audit(root, "--check", "--format", "json")
+    assert result.returncode == 2, result.stderr
+    violations = json.loads(result.stdout)["contracts"]["new_violations"]
+    assert [(v["rule"], v["importer"], v["target"]) for v in violations] == [("forbidden-import", "low.py", "high.py")]
+
+
+@pytest.mark.parametrize("content", [b"def invalid(:\n", b"\xffimport high\n"])
+def test_contract_invalid_python_source_is_incomplete(tmp_path, content):
+    root = make_contract_repo(tmp_path)
+    (root / "low.py").write_bytes(content)
+    result = run_audit(root, "--check", "--format", "json")
+    assert result.returncode == 2, result.stderr
+    assert "low.py" in str(json.loads(result.stdout)["contracts"]["incomplete"])
+    assert run_audit(root, "--update-baseline").returncode != 0
+
+
+def test_contract_cli_read_only_does_not_create_bytecode(tmp_path):
+    root = make_contract_repo(tmp_path)
+    runtime = tmp_path / "runtime"
+    shutil.copytree(SCRIPTS_DIR, runtime, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    env = dict(os.environ)
+    env.pop("PYTHONDONTWRITEBYTECODE", None)
+    env.pop("PYTHONPYCACHEPREFIX", None)
+    before_root = contract_tree_snapshot(root)
+    before_runtime = contract_tree_snapshot(runtime)
+    result = subprocess.run(
+        [sys.executable, str(runtime / "organize_project_structure.py"), "--root", str(root), "--check"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 2, result.stderr
+    assert contract_tree_snapshot(root) == before_root
+    assert contract_tree_snapshot(runtime) == before_runtime
+
+
+def test_contract_self_hosted_rule_rejects_new_reverse_dependency(tmp_path):
+    arch = ROOT / ".spec" / "architecture"
+    contract_text = (arch / "contracts.json").read_text(encoding="utf-8")
+    contract = json.loads(contract_text)
+    files = {rel: (ROOT / rel).read_text(encoding="utf-8") for module in contract["modules"] for rel in module["paths"]}
+    files[".spec/architecture/contracts.json"] = contract_text
+    files[".spec/architecture/contract-baseline.json"] = (arch / "contract-baseline.json").read_text(encoding="utf-8")
+    root = make_tree(tmp_path, files)
+    clean = run_audit(root, "--check", "--format", "json")
+    assert clean.returncode == 0, clean.stderr
+    assert json.loads(clean.stdout)["contracts"]["baseline_hits"] == 1
+
+    support = root / "scripts" / "safe_open_support.py"
+    support.write_text(support.read_text(encoding="utf-8") + "\nimport route_spec_package\n", encoding="utf-8")
+    result = run_audit(root, "--check", "--format", "json")
+    assert result.returncode == 2, result.stderr
+    new_violations = json.loads(result.stdout)["contracts"]["new_violations"]
+    assert [(v["rule"], v["importer"], v["target"]) for v in new_violations] == [
+        ("forbidden-import", "scripts/safe_open_support.py", "scripts/route_spec_package.py")
+    ]

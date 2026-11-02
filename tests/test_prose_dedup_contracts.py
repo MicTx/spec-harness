@@ -62,7 +62,8 @@ def _d5_shared_glue(orchestration: str) -> None:
 
 def _d6_no_quantity_limit(orchestration: str) -> None:
     section = orchestration.split("## Constrained-channel dispatch")[1].split("\n## ")[0]
-    assert "no `max_parallel`" in section, "the deliberate quantity-limit ban must stay named"
+    assert "user/host limits and managed slot admission" in section
+    assert "just one in-flight lane" in section
 
 
 def _d7_one_package_one_branch(new_stage: str) -> None:
@@ -137,7 +138,7 @@ MUTATIONS: dict[str, tuple[str, str]] = {
     "output_contracts": ("`SKILL.md`", "`references/commands.md`"),
     "orchestration_gate": ("route decision", "gut feeling"),
     "orchestration_glue": ("Shared glue files stay in the main session", "Glue files float freely"),
-    "orchestration_quantity": ("no `max_parallel`", "a tuned `max_parallel`"),
+    "orchestration_quantity": ("user/host limits and managed slot admission", "unlimited concurrency"),
     "new_stage": ("one package one branch", "packages share branches freely"),
     "templates_spec_rules": ("must not be empty", "may be empty"),
     "templates_one_language": ("Keep exactly one language per gated section", "Mix languages freely"),

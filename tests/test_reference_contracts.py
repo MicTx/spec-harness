@@ -80,6 +80,25 @@ def _tasks_fence(templates: str) -> str:
 # -- engineering-philosophy.md: Gate design --
 
 
+def test_runtime_prompts_respect_capacity_profiles_and_user_requests():
+    skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+    orchestration = _read("orchestration.md")
+    run = _read("stages/run.md")
+    commands = _read("commands.md")
+    status = _read("stages/status.md")
+    push = _read("stages/push.md")
+    goal = _read("stages/goal.md")
+    assert "respect user/host limits" in skill
+    assert "just one in-flight lane" in orchestration
+    assert "core omits slots and agent role documents" in run
+    assert "never silently claim managed execution" in skill.lower()
+    assert "Read-only routing and preflight" in commands
+    assert "stage details belong to machine output or an explicit user request" in status
+    assert "when the user asks or they explain a failure" in push
+    assert "may be provided when the user explicitly requests it" in goal
+    assert "print the command below as the next-step suggestion" not in goal
+
+
 def test_gate_design_section_exists():
     content = _read("engineering-philosophy.md")
     assert "## Gate design" in content

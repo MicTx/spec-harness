@@ -126,6 +126,22 @@ def test_module_exposes_no_write_path_symbols() -> None:
         assert not hasattr(checkpoint_module, symbol), f"retired write symbol survived: {symbol}"
 
 
+def test_moved_checkpoint_is_untrusted_in_single_and_scan_probes(package_dir: Path) -> None:
+    doc = _checkpoint_document("2026-06-13_other-package", "change", _sample_triad("snapshot"))
+    path = checkpoint_path(package_dir)
+    _write_text(path, json.dumps(doc, ensure_ascii=False) + "\n")
+    before = path.read_bytes()
+    single = detect_update_checkpoint(package_dir)
+    scanned = detect_unresolved_checkpoints(package_dir.parent)[package_dir.name]
+    assert single.state == scanned.state == "corrupted"
+    assert "belongs to package" in single.error
+    assert single.checkpoint is None
+    assert single.identity_mismatch and scanned.identity_mismatch
+    with pytest.raises(CheckpointConsistencyError):
+        inspect_update_checkpoint(package_dir)
+    assert path.read_bytes() == before
+
+
 def test_historical_checkpoint_is_detected_as_active(package_dir: Path) -> None:
     _write_historical_checkpoint(package_dir, "调整范围")
 

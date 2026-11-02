@@ -157,6 +157,19 @@ def test_export_core_excludes_extension_components(tmp_path):
     assert "profile: core" in result.stdout
 
 
+@pytest.mark.parametrize("profile", ["core", "full"])
+def test_exported_instructions_admit_missing_optional_capabilities(tmp_path, profile):
+    output = tmp_path / profile
+    result = run_export(output, "--profile", profile)
+    assert result.returncode == 0, result.stderr
+    skill = (output / "SKILL.md").read_text(encoding="utf-8")
+    run = (output / "references/stages/run.md").read_text(encoding="utf-8")
+    assert "Before slot routing, check that the relevant slot is installed" in skill
+    assert "Never silently claim managed execution" in skill
+    assert "core omits slots and agent role documents" in run
+    assert (output / "slots/team-loop/README.md").exists() is (profile == "full")
+
+
 def test_export_full_profile_is_byte_identical_to_default(tmp_path):
     """full must equal the flagless default — release pipelines unchanged."""
     default_output = tmp_path / "default-export"

@@ -22,10 +22,57 @@ identity and tool inventory do not change the orchestration contract:
 
 | Owner | Execution surface | How | Notes |
 |---|---|---|---|
-| **spec-harness** | `subprocess-fanout` | `python3 slots/workflow-runner/scripts/workflow_fanout.py --backend <pi|codex> --plan plan.json --out results.jsonl` — bounded concurrency, per-item hard timeout, JSONL convergence | The main session authors `plan.json`; successful items cache under `<out-dir>/cache/`; failed or timed-out items rerun; `--no-cache` forces full dispatch |
+| **spec-harness** | `subprocess-fanout` | `python3 slots/workflow-runner/scripts/workflow_fanout.py --backend <pi|codex> --plan plan.json --out results.jsonl` — bounded concurrency, per-item worker deadline, JSONL convergence | The main session authors `plan.json`; caching is **off by default** unless a verifiable workspace and explicit external-context attestation are supplied (below); failures rerun |
 
 If the selected worker CLI is unavailable, use ordinary sidecar orchestration or `team-loop` under
-`references/orchestration.md`. Never fabricate a backend result or a host capability.
+`references/orchestration.md`. Never fabricate a backend result or a host capability. Codex always
+runs in its `read-only` sandbox: mark an item needing writes with `"requiresWrite": true` and the
+driver rejects it for Codex rather than silently escalating. Route such work to a separately
+authorized, suitably capable sidecar or do it on the main thread. An omitted declaration is not
+proof that a task is read-only; the coordinator must classify assignments. Pi permissions remain
+the host’s responsibility, not a permission grant by this slot.
+
+### Cache and output provenance
+
+Every actual dispatch writes a fresh, unique per-attempt output artifact. A successful record
+contains its SHA-256; a missing, modified, oversized, symlinked or non-regular cached artifact is
+a cache miss. Cache entries and artifacts are read with a byte limit and must be regular, non-symlink
+files; a FIFO or other special file is rejected rather than opened as a blocking stream. If a new
+Codex final-message artifact is not a bounded regular file, the item fails. Codex must produce the
+current attempt’s final-message file: progress stdout and prior output are not substituted.
+
+On Linux the driver cleans up and verifies the worker’s **same process group** before collecting its
+result. A descendant that changes its process group or starts another session is outside that cleanup:
+it may survive, and its termination is neither guaranteed nor verified. Do not treat this mechanism
+as a sandbox for untrusted workers; use an appropriate host-level isolation and supervision boundary.
+The nonblocking special-file defense does not impose a wall-clock bound on arbitrary regular-file or
+filesystem I/O.
+
+Worker cleanup is **not** guaranteed on every driver exit path. Each worker is spawned with
+`start_new_session`, so it sits in its own session outside the driver’s process group: if the driver
+itself is killed (SIGTERM/SIGKILL, a host OOM, or a hard crash) before it reaches a worker’s cleanup,
+that worker and its descendants keep running and consuming budget and workspace. This driver never
+claims to reap workers after its own abnormal death, and it cannot. Run the driver under a
+host-level supervisor (systemd, supervisord, a container/pod that reaps the whole cgroup), and/or
+arrange for workers to die with the driver via Linux `prctl(PR_SET_PDEATHSIG)`/`PDEATHSIG` or a
+parent-death signal in the worker wrapper. After any suspected abnormal exit, manually verify no
+orphaned worker process group remains before trusting the budget or the workspace.
+
+The driver does not read or write caches by default. `--cache-context <non-secret-id>` explicitly
+attests the **unchanged** worker/model/configuration and all external files, services and other
+non-Git inputs affecting the task; never put credentials or their values in this identifier. The
+driver additionally binds the cache to the current driver and worker executable digests and requires
+an accessible Git workspace with a clean HEAD and no untracked or ignored paths, tracked symlinks,
+submodules, sparse entries or assume-unchanged entries. An unavailable or unreadable worker disables
+the cache. It checks these identities and the workspace before and after the batch. If this cannot be established, it dispatches instead of
+using a cache; cached items already selected are failed if the workspace changes during execution.
+`--no-cache` always bypasses both cache reads and writes. An output directory inside the worktree
+usually makes it dirty; use an authorized external output location if caching is appropriate.
+
+This is not an immutable filesystem snapshot or an authentication mechanism: an attestation is
+only as complete as the caller’s knowledge, and concurrent change-and-revert or external changes
+cannot be detected automatically. If any input or worker identity is unknown, omit the flag and
+rerun. Successful worker output remains evidence to verify independently, not task completion.
 
 ## Hard preconditions (checked in this order, every time)
 
@@ -34,9 +81,14 @@ If the selected worker CLI is unavailable, use ordinary sidecar orchestration or
    review-fix loop. Bare generic weak signals alone (bare 「批量」, bare convergence markers)
    do not activate the slot.
 2. The package contains a valid `plan.json` with a self-contained assignment contract for every item.
-3. The selected worker CLI resolves on PATH; the driver records per-item spawn failures instead of
+3. **Linux-only execution surface.** The fan-out driver’s verified process-group cleanup requires
+   Linux `waitid(..., WNOWAIT)` and a readable `/proc`; on non-Linux (e.g. macOS/Windows), on a kernel
+   or libc without `waitid(WNOWAIT)`/`killpg`, or where `/proc/self/stat` is unreadable, the driver
+   fails **before spawning any worker**. There is no silent fallback: the main session must degrade
+   to ordinary sidecar orchestration or `team-loop` (below). Do not assume the driver runs on macOS.
+4. The selected worker CLI resolves on PATH; the driver records per-item spawn failures instead of
    fabricating a result.
-4. The main session records the output JSONL and runs the task's independent verification.
+5. The main session records the output JSONL and runs the task's independent verification.
 
 If any precondition fails: **degrade gracefully** to ordinary sidecar orchestration or `team-loop`
 under `references/orchestration.md`. The spec main chain is unaffected.
@@ -116,5 +168,10 @@ README's protocol.
 negative routing (single serial local tasks, plain Q&A), repository-owned surface generation,
 and the fan-out driver's command construction / concurrency / output bounding / process-group
 cleanup / timeout fail-per-item / JSONL convergence (via binary stubs, including real-path
-cases that exercise the production selector loop without monkeypatching). Real worker CLI
-execution remains external evidence; no host-native Workflow runtime is part of this contract.
+cases that exercise the production selector loop without monkeypatching). Isolated regressions
+also pin the four continuation-workflow-fix guarantees: worker stdin is `DEVNULL` (no caller-stdin
+inheritance), a group-signal/verify failure becomes a batch-level safe stop that blocks unstarted
+items instead of a per-item spawn failure, a `start_new_session` worker survives an abnormal driver
+exit (the documented host-supervision boundary), and non-Linux / missing `waitid(WNOWAIT)` /
+unreadable `/proc` fail before any worker spawn. Real worker CLI execution remains external
+evidence; no host-native Workflow runtime is part of this contract.

@@ -87,6 +87,7 @@ PRIVATE_TEST_FILES = {
     # Import bench/, which is development tooling outside PUBLIC_DIRS.
     "tests/test_activation_benchmark.py",
     "tests/test_activation_executor.py",
+    "tests/test_benchmark_budget_regressions.py",
     "tests/test_benchmark_harness.py",
     "tests/test_host_evidence_notes.py",
     "tests/test_module_dag.py",

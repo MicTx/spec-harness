@@ -1,0 +1,12 @@
+{
+  "app/__init__.py": "",
+  "app/api.py": "from app import core\nfrom . import helper\nprint(core.answer, helper.value)\n",
+  "app/core.py": "answer = 42\n",
+  "app/helper.py": "value = 3\n",
+  "app/unused.py": "unused = True\n",
+  "client/tsconfig.json": "{\"compilerOptions\": {\"baseUrl\": \".\", \"paths\": {\"@lib/*\": [\"src/lib/*\"]}}}\n",
+  "client/src/main.ts": "import { twice } from '@lib/math';\n// import './missing.ts';\nconsole.log(twice(2));\n",
+  "client/src/lib/math.ts": "export const twice = (n: number) => n * 2;\n",
+  "client/src/unused.ts": "export const unused = true;\n",
+  "docs/guide.md": "Use `app/core.py`.\nRead `docs/missing.md`.\nFor example, see `examples/sample.py`.\n"
+}

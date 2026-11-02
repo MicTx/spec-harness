@@ -35,4 +35,4 @@ Return a plan with:
 - Use exact file paths or subsystem boundaries when known
 - Keep shared glue files on the main thread when ownership is fuzzy
 - Do not invent infrastructure, agents, or commands that are not already available
-- The main session owns the task package trio; propose task text, never edit the package
+- The main session owns the task package documents; propose task text, never edit the package

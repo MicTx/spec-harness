@@ -1,6 +1,6 @@
 # Storage And Archive
 
-This page explains where a fact belongs after a task starts. The rule is simple: the active trio describes the current work, the archive preserves the completed record, `.spec/docs/` stores reusable project knowledge, and `.spec/architecture/` describes the current system. Keeping those roles separate makes a paused task recoverable without turning the repository into one undifferentiated diary.
+This page explains where a fact belongs after a task starts. The active package describes the current work, the archive preserves the completed record, `.spec/docs/` stores reusable project knowledge, and `.spec/architecture/` describes the current system. Keeping those roles separate makes a paused task recoverable without turning the repository into one undifferentiated diary.
 
 ## Standard layout
 
@@ -22,6 +22,10 @@ This page explains where a fact belongs after a task starts. The rule is simple:
 │           └── completion-summary.md
 ├── docs/
 │   └── YYYY-MM-DD_slug_topic.md
+├── plans/                        # optional project planning documents
+│   └── archive/                  # completed or retired planning units
+├── archive/
+│   └── retired/                  # structure-audit retirement, dated + manifest
 ├── autoplan/
 │   └── chain.json               # tracked pass-chain summary (pass, kind, target doc; volatile-free)
 ├── autorun/
@@ -36,10 +40,10 @@ This page explains where a fact belongs after a task starts. The rule is simple:
 Per-machine chain runtime state lives outside the tracked tree, under `.git/spec-chain/<chain>/` for each chain (`autorun`, `autoplan`): `volatile.json` (the spawn-moment facts — `prev_tty`, `window_recycle`), `chain.lock`, `spawns.jsonl`, `events.jsonl`. It is untracked by construction, machine-local, and never archived or plan-synced; a fresh clone starts with an empty runtime tree and the first status/spawn migrates any legacy files found beside the summary.
 
 - Active packages live only at the `.spec/specs/` root; completed packages move wholesale into `archive/`.
-- A task package has at least the trio; an archive must additionally have `completion-summary.md`.
+- A new task package has `spec.md` and `tasks.md`; an archive additionally has `completion-summary.md`. A legacy v1 package also keeps its `checklist.md`.
 - The optional `handoff.md` member is the session-boundary handoff document (`references/handoff.md`): generated snapshot head plus append-only entry log, validated by the check gate when present, closed with a terminal entry at `done`, archived wholesale with the package.
 - An active package may additionally carry `orchestration/` (workflow script + run ledger, written by the main session); it archives wholesale with the package.
-- A package may carry a historical `update-checkpoint.json` from the retired checkpoint mechanism: read-only recognized by `scripts/update_checkpoint.py status`, resolved by Git-history recovery plus file deletion (`references/stages/update.md`); new updates never produce one (rollback safety is the Git WIP commit), and the file archives as history.
+- A package may carry a historical `update-checkpoint.json` from the retired checkpoint mechanism: read-only recognized by `scripts/update_checkpoint.py status`, resolved using its recorded snapshot or Git history plus file deletion (`references/stages/update.md`); new updates never produce one, and the file archives as history.
 - `.spec/autoplan/` and `.spec/autorun/` hold the tracked chain summaries (`chain.json` only, volatile-free, never archived) for their spawn scripts; the per-machine runtime (volatile state, `spawns.jsonl` audit, `events.jsonl`, `chain.lock`) lives under `.git/spec-chain/<chain>/` and never archives with a package. Each autorun-planned package carries a final plan-sync task whose boundary covers the planning documents and this summary, so checkmarks and the chain summary land on `main` with the round's push and the tree is clean when the next round's `/spec:new` runs — the round's tty/window/pid details stay machine-local and out of every commit.
 - The planning-document tree (`.spec/plans/` root: index `README.md`, single-round `<YYYY-MM-DD>_<verb>-<object>.md` plans, multi-round `<slug>/` clusters holding `master.md` plus `NN-<slug>.md` phase details; delivered or retired units move to `.spec/plans/archive/` under the same name) is project content produced or reconciled by `/spec:autoplan` (`scripts/autoplan_gate.py`, pass chain via `scripts/autoplan_spawn.py`): it feeds the autorun chain's feature checkboxes and detail designs, is committed like normal project files, and is never task-package state — `autoplan` writes no `.spec/specs/` package and no `.spec/autorun/` chain state.
 - `.spec/architecture/` is the current module graph and belongs to no single package.

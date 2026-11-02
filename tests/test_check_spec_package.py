@@ -197,11 +197,12 @@ def test_render_incomplete():
     output = render("2026-06-12_fix-test", "Test", _make_spec(), _make_tasks(done=False), _make_checklist())
     assert output.startswith("# Test\n")
     assert "- 已完成：0/2" in output
-    assert "Task A：进行" in output
+    assert "Task A：待办" in output
+    assert "Task B：待办" in output
     assert "项目尚未完成验收" in output
     assert "任务完成 0/2" in output
-    assert "## 正在处理" in output
-    assert "## 接下来" not in output
+    assert "## 正在处理" not in output
+    assert "## 接下来" in output
 
 
 def test_render_uses_precomputed_gate_results(monkeypatch):
@@ -646,8 +647,10 @@ def test_check_cli_fails_on_active_update_checkpoint(tmp_path, write_historical_
     assert result.returncode == 1
     assert result.stdout == ""
     assert "存在未完成 update checkpoint" in result.stderr
-    assert "按 Git 历史确认/恢复三件套" in result.stderr
-    assert "git reset --hard" in result.stderr
+    assert "先备份并审阅有效 snapshot" in result.stderr
+    assert "当前文件和索引" in result.stderr
+    assert "git reset --hard" not in result.stderr
+    assert "git revert" not in result.stderr
     assert "删除 update-checkpoint.json" in result.stderr
 
 
@@ -671,7 +674,7 @@ def test_check_cli_fails_on_corrupted_update_checkpoint(tmp_path):
 
     assert result.returncode == 1
     assert "记录已损坏" in result.stderr
-    assert "删除 update-checkpoint.json" in result.stderr
+    assert "只有明确确认保留或安全恢复后才删除 update-checkpoint.json" in result.stderr
 
 
 def test_archived_package_with_checkpoint_file_still_passes(tmp_path):
@@ -699,17 +702,17 @@ def test_archived_package_with_checkpoint_file_still_passes(tmp_path):
 def test_commands_md_update_section_matches_checkpoint_enforcement():
     """AUD-08 lineage: the doc's enforcement paragraph must match the code —
     route advises (historical artifact), check/complete/check_all refuse
-    until Git-history recovery deletes the file, Git WIP is the rollback
-    mechanism."""
+    until a reviewed recovery or keep-new decision resolves the file."""
     update_stage = Path(__file__).resolve().parent.parent / "references" / "stages" / "update.md"
     text = update_stage.read_text(encoding="utf-8")
     assert "do not probe the checkpoint" not in text
     # Retired write lifecycle and CLI subcommands must not survive in the doc.
     assert "begin → rewrite the three documents → complete" not in text
     assert "rollback --slug" not in text and "complete --slug" not in text
-    # The surviving contract: Git WIP rollback + advisory/refusal split.
+    # The surviving contract: safe path-scoped recovery + advisory/refusal split.
     assert "Route advises, gates agree" in text
-    assert "git reset --hard" in text
+    assert "private, durable, out-of-tree copy" in text
+    assert "git reset --hard" not in text
     assert "status [--slug" in text
 
 

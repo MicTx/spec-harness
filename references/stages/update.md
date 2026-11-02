@@ -6,45 +6,32 @@ Compatible invocation: Claude Code `/spec:update`; other skill-aware CLIs trigge
 
 Execution order:
 
-1. Read the current `spec.md` and `tasks.md`.
-2. Determine whether the user wants to add, remove, or reorder tasks; executable gaps found during execution also go through this stage's write-back — no separate user homework lists.
-3. State explicitly: new assumptions, overturned assumptions, scope changes, and whether the minimal path changed.
-4. When a change touches principles or script contracts, update the source-of-truth file; other carriers get pointers, not copied gate lists.
-5. Commit a Git WIP recovery point before the first rewrite of the package documents, then update `tasks.md`.
-6. When the change affects scope, acceptance, or technical decisions, sync `spec.md`; when it affects acceptance criteria, sync the acceptance surface; after the last rewrite, review the diff against the WIP commit and continue this round's flow — the recovery point rides in Git history, nothing to clear.
+1. Read the current `spec.md` and `tasks.md`; identify additions, removals, reordering, or executable gaps requiring write-back.
+2. State new or overturned assumptions, scope changes, and whether the minimal path changed. When principles or script contracts change, update the source of truth; other carriers get pointers.
+3. Before any rewrite, create the path-scoped recovery copy below. Update `tasks.md`; synchronize `spec.md` and the acceptance surface when affected. Review the changes against the copy.
 
 ### Delivered-task stability
 
-Adding tasks must not invalidate existing deliverables.
+Adding tasks must not invalidate existing deliverables. Append a new heading after the original task text, trailing separators, progress footer and other tail content; never delete or reorder old task blocks, and use unique explicit IDs. Re-parse after the rewrite: every delivered task must remain present and checked, with unchanged `boundary`/`verify` text. If not, recover only the affected paths safely and re-verify.
 
-1. **Append a new heading section after the original text**: keep the old task blocks, their trailing `---`, the progress footer, and other tail text verbatim; after all old content open the appended section with a new heading (e.g. `## Appended tasks (this round)`) and write the new tasks there — never delete or reorder old tasks so positional IDs drift; new tasks use unique explicit IDs.
-2. **Caller acceptance after the rewrite**: re-parse the package documents and confirm every previously delivered task still exists, stays checked, and has unchanged `boundary`/`verify` text. Deleting or unchecking a delivered task breaks the contract — restore first (`git diff` / `git restore` against the WIP commit), then re-verify.
+### Update rollback-safety contract
 
-### Update rollback-safety contract (Git WIP)
+The same rules apply to ordinary and adopted packages (`adoption.json`): neither it nor an ordinary update authorizes staging or committing. Do not change the Git index, make commits, reset a branch, or revert a commit range as part of routine update. Follow the user's Git authorization separately; Git history does not contain uncommitted or untracked pre-update content.
 
-Rewrites of the package documents must be wrapped in a Git WIP recovery point — never bare edits. The integration branch allows WIP commits (see `stages/push.md`), so the recovery point is ordinary Git history: no extra state machine, the single source of truth for update rollback safety, replacing the retired `update-checkpoint.json` snapshot.
+Before rewriting, coordinate exclusive access to each exact file touched, including any source-of-truth outside the package; if impossible, stop. Inspect `GIT_OPTIONAL_LOCKS=0 git status --short`, `GIT_OPTIONAL_LOCKS=0 git diff --literal-pathspecs -- <path>`, and `GIT_OPTIONAL_LOCKS=0 git diff --cached --literal-pathspecs -- <path>`. A target itself may be partially staged. Do not stage or unstage it. Make a private, durable, out-of-tree copy of each planned path's working-tree bytes, mode and existence, including absent paths; keep it until acceptance or recovery. Stop for manual backup if a target or parent is a symlink, or the target is non-regular or multiply linked.
 
-1. **WIP commit (before rewriting)**: on the integration branch, commit the current state as the recovery point:
+Capture the expected postimage for each changed path while access is exclusive. If a postimage was never recorded, the file differs, a path becomes a link, or ownership is uncertain, stop and preserve both versions for manual reconciliation. Otherwise inspect staged and unstaged diffs, then recover only verified owned paths/hunks; the index is not touched, even for a partially staged target. Never blindly restore the whole package. Already-committed updates require exact-path/hunk and intervening-history review; a corrective commit is a separate, authorized Git action. The comparisons are not atomic concurrency locks. Step-by-step commands, including absence, concurrent changes and interrupted updates: [safe recovery examples](../update-recovery.md).
 
-   ```bash
-   git add -A && git commit -m "Spec-WIP: YYYY-MM-DD_<slug> update checkpoint"
-   ```
+### Historical `update-checkpoint.json`
 
-   An adopted package (holding `adoption.json`) shares the tree with teammates: commit only its directory, `git add -- <pkg> && git commit -m "<same message>" -- <pkg>`.
+- **Route advises, gates agree**: valid or corrupted historical checkpoints get a route advisory, while check/done/check_all refuse; archived read-only review preserves the file as history and does not fail on it.
+- A validated historical `snapshot` contains actual pre-update text, including work that may never have been committed. Back up the current files and checkpoint first; `inspect_update_checkpoint` checks schema, checksum and the recorded package basename only — neither the basename nor the unkeyed checksum proves which project the checkpoint came from; independently establish its provenance before trusting the payload. Its text snapshot does not restore file modes or index state, and missing optional files do not authorize deletion. Review keep-new versus a path-scoped recovery while writers are stopped. For corrupt or identity-mismatched records do not trust the payload; use verified backups or individually inspected Git history and, if those cannot establish a safe state, leave the gate blocked.
+- Only after explicit review or safe recovery, verify the checkpoint is unchanged and remove that one working-tree file; re-run the refused gate; a staged checkpoint could reappear, so check it separately and change the index only with separate, path-scoped authorization. The concrete extraction, comparison, restoration, and guarded removal are in [safe recovery examples](../update-recovery.md).
+- Read-only recognition (`begin`/`rollback`/`complete` are retired and refuse):
 
-2. **Rewrite the package documents**: rewrite `tasks.md` per the execution order and sync `spec.md` as impacted.
-3. **Rollback (interrupted update)**: uncommitted, `git restore --source=<WIP-commit> --staged --worktree -- <pkg>`; committed, `git reset --hard <WIP-commit>` (unpushed) or `git revert --no-edit <WIP-commit>..HEAD` (pushed: reverts later commits). Adopted packages use only the first form, then commit.
-4. **Keep-new confirmation**: when the update is wanted, continue; the WIP commit folds into branch history like any in-flight commit.
-
-Historical `update-checkpoint.json` (retired mechanism, read-only recognition):
-
-- **Route advises, gates agree**: a package holding a historical `update-checkpoint.json` (live or corrupted) gets a prominent advisory from `scripts/route_spec_package.py` (Git history is the recovery point) while routing normally; `scripts/check_spec_package.py` still exits non-zero with Git recovery guidance — a half-applied package never passes review; `scripts/complete_spec_package.py` refuses to archive; `scripts/check_all_spec_packages.py` reports failure. Archived packages keep the file as comparable history; archived read-only review never fails on it.
-- **Resolution**: compare the current documents against Git history (the recorded snapshot fields in the file help locate the pre-update state), decide keep-new or restore via `git reset --hard` / `git revert`, then delete the package's `update-checkpoint.json` and re-run the refused gate.
-- **Recognition CLI** (`scripts/update_checkpoint.py`, read-only; `begin`/`rollback`/`complete` are retired and refuse with the Git WIP guidance above):
-
-```bash
+~~~bash
 python3 scripts/update_checkpoint.py --root <project> status [--slug YYYY-MM-DD_<slug>]   # 0=none 3=active 4=corrupted
-```
+~~~
 
 Constraints:
 

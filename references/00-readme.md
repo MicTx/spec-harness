@@ -19,6 +19,7 @@ Open these only when the task shape calls for them:
 - [`engineering-philosophy.md`](engineering-philosophy.md) — on principle conflicts
 - [`changelog-guide.md`](changelog-guide.md) — before generating release notes from Git history
 - [`stages/goal.md`](stages/goal.md) and the script working-directory conventions at the end of [`commands.md`](commands.md)
+- [`update-recovery.md`](update-recovery.md) — safe update recovery examples (loaded on demand by the update stage)
 
 ## Sources of truth
 

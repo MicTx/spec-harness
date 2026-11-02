@@ -4,8 +4,8 @@
 """Recognition CLI for historical update-stage checkpoints.
 
 The self-managed checkpoint mechanism (triad snapshot + begin/rollback/
-complete lifecycle) is retired: update rollback safety is now carried by Git
-WIP commits on the integration branch. This CLI is read-only —
+complete lifecycle) is retired: update rollback safety uses a private,
+path-scoped pre-update copy without staging or committing. This CLI is read-only —
 ``status`` probes one package (``--slug``) or every active package for an
 unresolved historical ``update-checkpoint.json`` left behind by the retired
 mechanism. The retired write subcommands (``begin`` / ``rollback`` /
@@ -18,9 +18,9 @@ Exit codes are part of the contract so callers can probe without parsing:
   - ``0`` success; for ``status`` additionally "no unresolved checkpoint";
   - ``1`` operational refusal or failure (unreadable package, invalid slug);
   - ``2`` usage error (argparse); retired write subcommands also exit ``2``
-    after printing the Git replacement guidance;
+    after printing the path-scoped recovery guidance;
   - ``3`` ``status`` found an active checkpoint (interrupted update pending
-    recovery via Git history, then file deletion);
+    reviewed recovery or keep-new, then checkpoint removal);
   - ``4`` ``status`` found a corrupted checkpoint (manual recovery required;
          reported as the most severe state when several packages match).
 
@@ -34,7 +34,12 @@ import sys
 from pathlib import Path
 
 from spec_package_support import add_specs_dir_arg, resolve_specs_child, resolve_specs_root, validate_slug
-from update_checkpoint_support import CheckpointStatus, detect_unresolved_checkpoints, detect_update_checkpoint
+from update_checkpoint_support import (
+    CheckpointStatus,
+    checkpoint_display_text,
+    detect_unresolved_checkpoints,
+    detect_update_checkpoint,
+)
 
 EXIT_OK = 0
 EXIT_FAILURE = 1
@@ -47,34 +52,30 @@ STATUS_EXIT_CODES = {"none": EXIT_OK, "active": EXIT_STATUS_ACTIVE, "corrupted":
 
 RETIRED_SUBCOMMANDS = ("begin", "rollback", "complete")
 
-GIT_REPLACEMENT_GUIDANCE = """\
-替代流程（Git WIP 承担回滚保障）：
-  1) 更新前，在集成分支提交恢复点：
-       git add -A && git commit -m "Spec-WIP: <slug> update checkpoint"
-     已接管的包（含 adoption.json）只提交包目录：
-       git add -- <包目录> && git commit -m "Spec-WIP: <slug> update checkpoint" -- <包目录>
-  2) 更新中断需要回滚时：
-       git restore --source=<WIP 提交 sha> --staged --worktree -- <包目录>   （改写尚未提交时）
-       git reset --hard <WIP 提交 sha>                  （集成分支未推送时）
-       git revert --no-edit <WIP 提交 sha>..HEAD        （已推送时：撤销恢复点之后的更新提交）
-       git restore --source=<WIP 提交 sha> -- <包目录>   （已接管的包：只恢复包目录）
-  3) 历史遗留的 update-checkpoint.json：按上述流程用 Git 历史确认/恢复
-     三件套后，直接删除该文件，再用 status 复核。
+RECOVERY_GUIDANCE = """\
+安全替代流程（普通和已接管的包相同）：
+  1) 先协调受影响的精确路径，备份其更新前工作区内容、权限和存在状态到
+     私有的仓库外位置；不要擅自暂存、提交或更改索引。
+  2) 中断时核对更新后文件、已暂存和未暂存差异；只恢复确定属于本次更新
+     且没有并发改动的路径或片段，不能确认时保留内容并人工协调。
+  3) 历史 checkpoint 的有效 snapshot 是更新前实际文本，可能未入 Git；
+     损坏记录不可直接信任。先备份、审阅并确认保留或恢复，再移除该文件；
+     索引另行检查，不要擅自改动。完整操作见 references/stages/update.md。
 """
 
-RETIRED_NOTICE = "此子命令已退役：update 回滚保障改由 Git WIP 提交承担，CLI 不再写任何状态。\n\n"
+RETIRED_NOTICE = "此子命令已退役：CLI 不再写任何状态；请使用路径范围内的安全恢复流程。\n\n"
 
 EPILOG = f"""\
 exit codes:
   0  success; status: no unresolved update checkpoint
   1  operational failure or refusal (details on stderr)
   2  usage error; retired subcommands ({", ".join(RETIRED_SUBCOMMANDS)}) also
-     exit 2 after printing the Git WIP replacement guidance
+     exit 2 after printing the path-scoped recovery guidance
   3  status: active checkpoint found (interrupted update)
   4  status: corrupted checkpoint found (manual recovery required)
 """
 
-RETIRED_EPILOG = RETIRED_NOTICE + GIT_REPLACEMENT_GUIDANCE + "\n" + EPILOG
+RETIRED_EPILOG = RETIRED_NOTICE + RECOVERY_GUIDANCE + "\n" + EPILOG
 
 
 def _add_shared_positional_args(parser: argparse.ArgumentParser) -> None:
@@ -92,7 +93,7 @@ def _add_retired_parser(subcommands, name: str, old_help: str) -> None:
     """Register a retired write subcommand that only refuses with guidance."""
     parser = subcommands.add_parser(
         name,
-        help=f"(retired) {old_help}; exits 2 with the Git WIP replacement guidance",
+        help=f"(retired) {old_help}; exits 2 with path-scoped recovery guidance",
         epilog=RETIRED_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -107,7 +108,7 @@ def _add_retired_parser(subcommands, name: str, old_help: str) -> None:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Recognize historical update-stage checkpoints (read-only; rollback safety is Git WIP).",
+        description="Recognize historical update-stage checkpoints (read-only; path-scoped recovery).",
         epilog=EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -141,22 +142,24 @@ def _fail(message: str) -> int:
 
 def _fail_retired(command: str) -> int:
     print(
-        f"error: `{command}` 已退役：update 的回滚保障改由 Git WIP 提交承担，不再写 update-checkpoint.json。",
+        f"error: `{command}` 已退役：不再写 update-checkpoint.json，请使用路径范围内的安全恢复流程。",
         file=sys.stderr,
     )
-    print(GIT_REPLACEMENT_GUIDANCE, file=sys.stderr, end="")
+    print(RECOVERY_GUIDANCE, file=sys.stderr, end="")
     return 2
 
 
 def _status_line(slug: str, status: CheckpointStatus) -> str:
+    slug = checkpoint_display_text(slug)
     if status.state == "active" and status.checkpoint is not None:
         return (
             f"{slug}：存在未完成 update checkpoint（历史遗留，机制已退役）"
-            f"（意图：{status.checkpoint.intent}；开始于：{status.checkpoint.created_at}）；"
-            "恢复方式：按 Git 历史确认/恢复三件套后删除该文件"
+            f"（意图：{checkpoint_display_text(status.checkpoint.intent)}；"
+            f"开始于：{checkpoint_display_text(status.checkpoint.created_at)}）；"
+            "先备份并审阅有效 snapshot，确认保留或路径级恢复后删除该文件；见 references/stages/update.md"
         )
     if status.state == "corrupted":
-        return f"{slug}：存在未完成 update checkpoint，且记录已损坏，需按 Git 历史人工恢复（{status.error}）"
+        return f"{slug}：存在未完成 update checkpoint，且记录已损坏，须保留并人工核对可信备份或 Git 历史（{checkpoint_display_text(status.error)}）"
     return f"{slug}：无未完成 update checkpoint"
 
 

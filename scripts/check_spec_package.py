@@ -570,20 +570,20 @@ def package_physical_state_errors(package_dir: Path) -> list[str]:
     The checkpoint mechanism is retired, but the gate property is not: a
     package holding a historical (live or corrupted) ``update-checkpoint.json``
     is in a half-applied state and must not pass check/done. The failure text
-    carries the Git recovery path.
+    points to the path-scoped recovery procedure.
     """
     status = detect_update_checkpoint(package_dir)
     if status.state == "active":
         return [
-            "存在未完成 update checkpoint（历史遗留，机制已退役）：按 Git 历史确认/恢复三件套"
-            "（未提交的改写用 git restore 从更新前 WIP 提交恢复；已提交未推送时 git reset --hard 到该提交，"
-            "已推送时 git revert 其后的提交）"
-            "后删除 update-checkpoint.json，再重跑 check"
+            "存在未完成 update checkpoint（历史遗留，机制已退役）：先备份并审阅有效 snapshot、"
+            "当前文件和索引；确认保留或仅恢复无并发改动的路径后，删除 update-checkpoint.json，"
+            "再重跑 check；不要擅自更改索引，详见 references/stages/update.md"
         ]
     if status.state == "corrupted":
         return [
             "存在未完成 update checkpoint（历史遗留，机制已退役）：记录已损坏；"
-            "按 Git 历史恢复三件套后删除 update-checkpoint.json，再重跑 check"
+            "保留记录，核对可信备份或 Git 历史；只有明确确认保留或安全恢复后才删除 "
+            "update-checkpoint.json，再重跑 check，详见 references/stages/update.md"
         ]
     return []
 
@@ -956,7 +956,7 @@ def main() -> int:
         # AUD-08 (EXP-03): a live or corrupted checkpoint must fail check
         # exactly like it already fails complete/check_all — "check passes,
         # done refuses" contradicted the gate contract. The mechanism is
-        # retired (Git WIP is the recovery point) but this gate property is
+        # retired (see the path-scoped recovery procedure) but this gate property is
         # not: a half-applied package never passes review. Archived packages
         # keep their checkpoint file as historical comparable state and stay
         # exempt from this read-only review.

@@ -5,8 +5,8 @@
 协议（官方 hooks 文档，Stop 事件）：
 - stdin JSON 含 stop_hook_active / last_assistant_message / background_tasks 等字段。
 - stdout JSON {"decision": "block", "reason": ...} 阻止熄火；exit 0 无输出放行。
-- Claude Code 在 8 次连续 block 后强制放行；stop_hook_active=true 时本 hook 静默，
-  避免每轮双重执法。
+- stop_hook_active=true 时本 hook 静默放行以避免递归阻塞；宿主也可能施加自己的限制。
+  因此该 hook 不保证未收敛 run 一定继续执行。
 
 行为（抄 spec 的 claude_stop_guard.py 骨架，判据换成 loop 收敛）：
 - 从 cwd 向上找项目根，列出活跃 run。
@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import sys
 from pathlib import Path
 
@@ -80,12 +81,15 @@ def main() -> int:
         return 0
 
     run_dir = active[0]
+    run_arg = shlex.quote(str(run_dir))
+    state_script = shlex.quote(str(SKILL_DIR / "scripts" / "loop_state.py"))
+    control_script = shlex.quote(str(SKILL_DIR / "scripts" / "loop_control.py"))
     try:
         store = LoopStore(run_dir).load()
     except (OSError, LoopStateError) as exc:
         emit_block(
             f"spec team-loop：活跃 run 状态损坏（{run_dir}：{exc}）。"
-            f"请修复或运行 python3 {SKILL_DIR}/scripts/loop_state.py resume --run-dir {run_dir} 排查后再结束。"
+            f"请修复或运行 python3 {state_script} resume --run-dir {run_arg} 排查后再结束。"
         )
         return 0
 
@@ -96,8 +100,7 @@ def main() -> int:
         # 未捕获崩溃会让守卫以非 0 非 2 退出码静默放行未收敛 run。
         emit_block(
             f"spec team-loop：终止判定无法安全评估（{run_dir}：{exc}）。"
-            f"请修复状态（如移除异常的 STOP 哨兵：python3 -c \"import os; os.unlink('{run_dir}/STOP')\"）"
-            "后再结束会话。"
+            "请先核实 STOP 的路径、文件类型与所有权，再人工处理；本守卫不提供删除命令。"
         )
         return 0
     if verdict["stop"]:
@@ -105,14 +108,14 @@ def main() -> int:
         if verdict["verdict"] == "converged":
             emit_block(
                 f"spec team-loop：run 已满足收敛条件（{reasons}）。"
-                f"执行 python3 {SKILL_DIR}/scripts/loop_state.py finish converged --run-dir {run_dir} "
+                f"执行 python3 {state_script} finish converged --run-dir {run_arg} "
                 '--summary "<成果摘要>" 落终态后再结束。'
             )
         else:
             emit_block(
                 f"spec team-loop：run 命中管理停止条件（{reasons}）。"
-                f"请执行 python3 {SKILL_DIR}/scripts/loop_state.py finish failed|cancelled --run-dir {run_dir} "
-                "写明原因落终态，或调整配置后续跑；不得静默熄火。"
+                f"核对并停止宿主 worker 后执行 python3 {state_script} finish failed --run-dir {run_arg} --confirmed-stopped "
+                "（或用 cancelled）写明原因落终态；不得静默熄火。"
             )
         return 0
 
@@ -129,28 +132,38 @@ def main() -> int:
         for tid, task in r.get("tasks", {}).items()
         if task["status"] == "in_flight"
     ]
+    reserved = [
+        f"r{r['index']}/{tid}" for r in store.state["rounds"]
+        for tid, task in r.get("tasks", {}).items()
+        if task["status"] == "in_flight" and task.get("dispatchPhase") == "reserved"
+    ]
+    in_flight = [key for key in in_flight if key not in reserved]
     parts = []
+    if reserved:
+        parts.append(f"核对未登记的预约 {', '.join(reserved)}；登记 worker 或确认宿主已停止后 abandon")
     if not open_rounds:
         parts.append('round start：python3 …/loop_state.py round start --goal "<本轮目标>"')
     if in_flight:
-        parts.append(f"wait 在途任务 {', '.join(in_flight)} 并记录 task result")
+        parts.append(f"wait 在途任务 {', '.join(in_flight)}；宿主确认停止后由主会话记录 task result")
         try:
             stale = stale_tasks(store, utc_now())
         except (OSError, LoopStateError):
             stale = []
         if stale:
             parts.append(
-                f"心跳超时的在途任务 {', '.join(stale)}：worker 已死时执行 "
-                f"python3 {SKILL_DIR}/scripts/loop_control.py stale --reap --run-dir {run_dir} 回收"
+                f"心跳超时的在途任务 {', '.join(stale)} 只是嫌疑；逐个向宿主确认已停止后执行 "
+                f"python3 {control_script} stale --reap --task rN/id --confirmed-stopped --run-dir {run_arg}"
             )
     if pending:
-        parts.append(f"重派 pending 任务 {', '.join(pending)}（先过 admit 并发判定）")
+        parts.append(f"派发 pending 任务 {', '.join(pending)}（先对每个任务 reserve）")
+    if open_rounds and not (pending or in_flight or reserved):
+        parts.append("任务均已终态：按真实评审结束本轮；若有 failed，记录 round end --decision fail")
     if not parts:
         parts.append("按终止判定推进下一轮或 finish converged")
     emit_block(
         f"spec team-loop：run {store.state['runId']} 未收敛"
         f"（goal：{store.state['goal'][:80]}）。下一步：{'；'.join(parts)}。"
-        f"状态详情：python3 {SKILL_DIR}/scripts/loop_state.py status --run-dir {run_dir}"
+        f"状态详情：python3 {state_script} status --run-dir {run_arg}"
     )
     return 0
 

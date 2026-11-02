@@ -86,7 +86,7 @@ class TestRoundEndLiveTasks:
         store.round_start("r1")
         store.task_add(1, "t1", "worker", "d")
         store.task_spawn(1, "t1", "a", "s")
-        store.task_cancel(1, "t1", "放弃")
+        store.task_cancel(1, "t1", "放弃", confirmed_stopped=True)
         store.round_end("pass")
         verdict = termination_check(store, utc_now())
         assert verdict["stop"] is True and verdict["verdict"] == "converged"
@@ -98,7 +98,7 @@ class TestRoundEndLiveTasks:
         store.task_add(1, "t1", "worker", "d")
         store.task_add(1, "t2", "worker", "d2")
         store.task_spawn(1, "t2", "a", "s")
-        store.task_result(1, "t2", "ok")
+        store.task_result(1, "t2", "ok", confirmed_stopped=True)
         store.task_cancel(1, "t1", "放弃")
         store.round_end("pass")
         # 注入修复前的遗留状态：closed round 内挂着 pending 任务
@@ -109,7 +109,7 @@ class TestRoundEndLiveTasks:
             legacy.task_spawn(1, "t2", "a3", "s3")
         legacy.state["rounds"][0]["tasks"]["t2"]["status"] = "in_flight"
         legacy._persist()
-        legacy.task_result(1, "t2", "fail", "遗留状态恢复")  # result 在 closed round 仍可用
+        legacy.task_result(1, "t2", "fail", "遗留状态恢复", confirmed_stopped=True)  # result 在 closed round 仍可用
         assert legacy.state["rounds"][0]["tasks"]["t2"]["status"] in ("pending", "failed")
 
 
@@ -119,18 +119,18 @@ class TestSpawnFromFailed:
         store.round_start("r1")
         store.task_add(1, "t1", "worker", "d")
         store.task_spawn(1, "t1", "a", "s")
-        assert store.task_result(1, "t1", "fail", "boom") == "exhausted"
+        assert store.task_result(1, "t1", "fail", "boom", confirmed_stopped=True) == "exhausted"
         with pytest.raises(LoopStateError, match="不可 spawn"):
             store.task_spawn(1, "t1", "a2", "s2")
         task = store.state["rounds"][0]["tasks"]["t1"]
         assert task["status"] == "failed" and task["attempts"] == 1
 
     def test_retry_pending_respawn_still_works(self, tmp_path):
-        store = make_store(tmp_path)
+        store = make_store(tmp_path, config={"retry": {"baseSec": 0, "maxSec": 0}})
         store.round_start("r1")
         store.task_add(1, "t1", "worker", "d")
         store.task_spawn(1, "t1", "a", "s")
-        assert store.task_result(1, "t1", "fail", "boom") == "retry"
+        assert store.task_result(1, "t1", "fail", "boom", confirmed_stopped=True) == "retry"
         store.task_spawn(1, "t1", "a2", "s2")  # pending -> in_flight 正常
         assert store.state["rounds"][0]["tasks"]["t1"]["status"] == "in_flight"
 
@@ -142,7 +142,7 @@ class TestTerminationFailRounds:
         store.round_start("r1")
         store.task_add(1, "t1", "worker", "d")
         store.task_spawn(1, "t1", "a", "s")
-        store.task_result(1, "t1", "ok")
+        store.task_result(1, "t1", "ok", confirmed_stopped=True)
         store.round_end("fail")
         verdict = termination_check(store, utc_now())
         assert verdict["verdict"] != "converged"
@@ -153,7 +153,7 @@ class TestTerminationFailRounds:
         store.round_start("r1")
         store.task_add(1, "t1", "worker", "d")
         store.task_spawn(1, "t1", "a", "s")
-        store.task_result(1, "t1", "ok")
+        store.task_result(1, "t1", "ok", confirmed_stopped=True)
         store.round_end("fail")
         verdict = termination_check(store, utc_now())
         assert verdict["stop"] is True and verdict["verdict"] == "stopped"
@@ -164,7 +164,7 @@ class TestTerminationFailRounds:
         store.round_start("r1")
         store.task_add(1, "t1", "worker", "d")
         store.task_spawn(1, "t1", "a", "s")
-        store.task_result(1, "t1", "ok")
+        store.task_result(1, "t1", "ok", confirmed_stopped=True)
         store.round_end("pass")
         verdict = termination_check(store, utc_now())
         assert verdict["stop"] is True and verdict["verdict"] == "converged"
@@ -181,7 +181,7 @@ class TestStaleReap:
         store.task_spawn(1, "t1", "a", "s")
         now = utc_now() + 10  # 心跳已超过 stalenessSec=1.0
         assert stale_tasks(store, now) == ["r1/t1"]
-        result = reap_stale_tasks(store, now)
+        result = reap_stale_tasks(store, now, task_key="r1/t1", confirmed_stopped=True)
         assert result["reaped"] == [{"task": "r1/t1", "outcome": "retry"}]
         task = store.state["rounds"][0]["tasks"]["t1"]
         assert task["status"] == "pending"
@@ -197,11 +197,13 @@ class TestStaleReap:
         store.task_add(1, "t1", "worker", "d")
         store.task_spawn(1, "t1", "a", "s")
         now = utc_now() + 10
-        result = reap_stale_tasks(store, now)
+        result = reap_stale_tasks(store, now, task_key="r1/t1", confirmed_stopped=True)
         assert result["reaped"][0]["outcome"] == "exhausted"
         assert store.state["rounds"][0]["tasks"]["t1"]["status"] == "failed"
         verdict = termination_check(store, now)
-        assert any("failed" in r for r in verdict["reasons"])
+        assert verdict["verdict"] == "continue"  # first close the failed round
+        store.round_end("fail")
+        assert termination_check(store, now)["verdict"] == "continue"  # budget permits repair
 
     def test_resume_lists_in_flight_with_reap_hint(self, tmp_path):
         store = make_store(tmp_path)

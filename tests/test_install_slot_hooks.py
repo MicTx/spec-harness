@@ -151,7 +151,10 @@ def test_unknown_slot_rejected(tmp_path):
         pass
 
 
-def test_write_settings_creates_backup(tmp_path):
+def test_write_settings_creates_backup(tmp_path, monkeypatch):
+    # Two writes are expected to share one backup slot. Keep them in the same
+    # wall-clock second so this assertion does not depend on test scheduling.
+    monkeypatch.setattr(install_slot_hooks.time, "time", lambda: 1234567890)
     settings = tmp_path / "settings.json"
     settings.write_text("{}", encoding="utf-8")
     payload, _ = install_slot_hooks.apply_install({}, "team-loop", SLOT_DIR, SLOT_EVENTS)

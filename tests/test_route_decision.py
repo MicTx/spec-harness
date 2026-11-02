@@ -184,7 +184,7 @@ def test_channel_profile_flags_shared_pool(mod):
     ):
         profile = mod.infer_channel_profile(text)
         assert profile["shared_pool"] is True, text
-        assert profile["note"], text
+        assert "respect host/slot admission" in profile["note"], text
 
 
 def test_channel_profile_default_is_not_shared(mod):
@@ -206,7 +206,8 @@ def test_cli_emits_channel_profile_and_no_quantity_limit():
     assert proc.returncode == 0, proc.stderr
     payload = json.loads(proc.stdout)
     assert payload["channel_profile"]["shared_pool"] is True
-    assert "max_parallel" not in proc.stdout, "efficiency-first: no quantity clamp may ship"
+    assert "max_parallel" not in proc.stdout  # advisory profile must not invent capacity
+    assert "respect host/slot admission" in payload["channel_profile"]["note"]
     assert "lane_budget" not in proc.stdout
 
 

@@ -10,7 +10,7 @@ The command inventory lives once in `SKILL.md`. Claude Code exposes `/spec:<comm
 
 Install profile boundary: `new / run / check / done / push` are the kernel stage commands every install ships. The extended stages (`goal`, `autoplan`, `autorun`, `update`, `status`, `doctor`, `organize`) belong to `INSTALL_PROFILE=full`; a core install (the default) answers an extended-stage invocation with the reinstall hint — `INSTALL_PROFILE=full bash install.sh` — instead of executing it.
 
-Before executing any command, run the four-question Quick self-check in [`engineering-philosophy.md`](engineering-philosophy.md); a missing answer means fix the documents first.
+Before the first substantive implementation edit or implementation hand-off, run the four-question Quick self-check in [`engineering-philosophy.md`](engineering-philosophy.md). Read-only routing and preflight, and the initial package creation needed to record the answers, may precede it; resolve missing answers in the documents before implementation.
 
 ## `/spec`
 
@@ -21,13 +21,13 @@ Execution order:
 1. Run `python3 scripts/route_spec_package.py --root <project>` first; when the package carries a `handoff.md`, the route output includes a 交接 line, and a resuming session reads it with `python3 scripts/spec_handoff.py show --slug <slug>` before continuing (contract: [handoff.md](handoff.md)).
 2. No active package → `new`; if the user also asks for `push` and the work tree / unpushed commits carry discrete changes, enter the push retro-pack path (atomic packing by theme, or one whole new spec package) — never skip packing and push directly.
 3. Active package that can continue → `run`; review request → `check`; archive/close-out request → `done`.
-4. Full goal with the one-shot chain → `goal` (still new/run/check/done/commit/push order); merge-push-and-delete after done → the standalone `push` stage internally, reporting only the publication result or external blocker.
+4. Full goal with the one-shot chain → `goal` (new/run/check/done/commit); push only when explicitly authorized. Merge-push-and-delete after done → the standalone `push` stage internally, reporting only the publication result or external blocker.
 5. Scope or task adjustment → `update`; progress overview only → `status`.
 
 Constraints:
 
 - Route is never presented as a user-facing stage.
-- Obvious small tasks take the lightweight path from `SKILL.md` (direct fix + test, push with a `Spec: none` footer) instead of `/spec:new` ceremony; the user decides, and `new` runs as usual when they want the record.
+- Obvious small tasks take the lightweight path from `SKILL.md` (direct fix + test) instead of `/spec:new` ceremony; the user decides, and `new` runs as usual when they want the record. Follow repository Git rules; push only with explicit user authorization.
 - User-visible output covers actual project progress, current work, concrete problems, and delivered results; internal routing commands are not offered as the user's next step ([output-contracts.md](output-contracts.md)).
 - If routing depends on a key assumption, state the assumption first or ask the minimal clarifying question.
 
@@ -65,7 +65,7 @@ Merge into main, push, delete the confirmed-merged branch — full contract: [`s
 
 ## `/spec:update`
 
-Add, remove, or adjust tasks and scope mid-flight, wrapped in a Git WIP recovery point — full contract: [`stages/update.md`](stages/update.md).
+Add, remove, or adjust tasks and scope mid-flight with a recoverable pre-update snapshot — full contract: [`stages/update.md`](stages/update.md).
 
 ## `/spec:status`
 
@@ -77,7 +77,7 @@ Environment self-check and repair (`--fix` repairs the safe items) — full cont
 
 ## `/spec:organize`
 
-Structure audit, audit-only by default; `--apply` creates the package and fixes confirmed classes; never delete — full contract: [`stages/organize.md`](stages/organize.md).
+Structure audit and optional import contracts; read-only by default, `--update-baseline` explicitly freezes debt; `--apply` creates the package for fixes; never delete — full contract: [`stages/organize.md`](stages/organize.md).
 
 ## Session backends
 

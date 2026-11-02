@@ -138,19 +138,32 @@ def read_assessment(root: Path, session: str) -> dict[str, str] | None:
     return {key: str(record.get(key, "")) for key in ("decision", "task", "scope")}
 
 
-def invalidate_assessment(root: Path, session: str) -> None:
-    """A new user request voids every prior decision, including create/resume.
+def invalidate_assessment(root: Path, session: str) -> bool:
+    """Try to revoke a prior decision; return whether the attempt succeeded.
 
-    PreToolUse carries no task or scope field; an active package is not proof that
-    it covers this request. Best effort, preserving the hook's I/O fail-open boundary.
+    A new user request may change scope. PreToolUse carries no trustworthy
+    request identity, so keeping the old grant would authorize the new request.
+    Invalidation deletes a machine-local file when one exists; it is not a
+    strictly read-only operation. On an I/O failure return False so the caller
+    can warn: a later hook process may still accept the stale record.
     """
     path = state_path(root, session)
     try:
         _refuse_links(path)
-        if _trusted_dir(path.parent):
+        try:
+            path.parent.lstat()
+        except FileNotFoundError:
+            return True
+        if not _trusted_dir(path.parent):
+            # Do not assert revocation if the directory cannot be trusted.
+            return False
+        try:
             path.unlink()
+        except FileNotFoundError:
+            pass
     except OSError:
-        pass
+        return False
+    return True
 
 
 def assessment_age_seconds(root: Path, session: str) -> float | None:

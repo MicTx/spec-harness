@@ -19,7 +19,7 @@ from loop_state import (
 def make_store(tmp_path, clock, goal="批量抽取元数据直至校验通过", mode="until-converged"):
     run_id = new_run_id(goal, clock())
     run_dir = default_run_dir(tmp_path, run_id)
-    return LoopStore.init(run_dir, goal, mode, now=clock)
+    return LoopStore.init(run_dir, goal, mode, config={"retry": {"baseSec": 0, "maxSec": 0}}, now=clock)
 
 
 def test_init_creates_atomic_state(tmp_path, clock):
@@ -63,7 +63,7 @@ def test_round_lifecycle(tmp_path, clock):
         store.round_start("重复开轮")
     store.task_add(1, "t1", "worker", "解析章节 1-6")
     store.task_spawn(1, "t1", "agent-a", "sub-1")
-    store.task_result(1, "t1", "ok", result={"chapters": 6})
+    store.task_result(1, "t1", "ok", result={"chapters": 6}, confirmed_stopped=True)
     store.round_end("pass")
     with pytest.raises(LoopStateError):
         store.round_end("pass")  # 没有 open round
@@ -74,13 +74,13 @@ def test_task_retry_flow_and_exhaustion(tmp_path, clock):
     store.round_start("r")
     store.task_add(1, "t1", "worker", "任务")
     store.task_spawn(1, "t1", "a", "s")
-    assert store.task_result(1, "t1", "fail", error="超时") == "retry"
+    assert store.task_result(1, "t1", "fail", error="超时", confirmed_stopped=True) == "retry"
     assert store.state["rounds"][0]["tasks"]["t1"]["status"] == "pending"
     assert store.state["rounds"][0]["tasks"]["t1"]["attempts"] == 1
     store.task_spawn(1, "t1", "a2", "s2")  # attempts=2
-    assert store.task_result(1, "t1", "fail", error="又超时") == "retry"
+    assert store.task_result(1, "t1", "fail", error="又超时", submission="s2", confirmed_stopped=True) == "retry"
     store.task_spawn(1, "t1", "a3", "s3")  # attempts=3 = maxAttempts
-    assert store.task_result(1, "t1", "fail", error="第三次") == "exhausted"
+    assert store.task_result(1, "t1", "fail", error="第三次", submission="s3", confirmed_stopped=True) == "exhausted"
     task = store.state["rounds"][0]["tasks"]["t1"]
     assert task["status"] == "failed"
     assert task["lastError"] == "第三次"
@@ -91,7 +91,7 @@ def test_task_result_requires_in_flight(tmp_path, clock):
     store.round_start("r")
     store.task_add(1, "t1", "worker", "任务")
     with pytest.raises(LoopStateError):
-        store.task_result(1, "t1", "ok")
+        store.task_result(1, "t1", "ok", confirmed_stopped=True)
 
 
 def test_heartbeat_updates(tmp_path, clock):
@@ -101,12 +101,19 @@ def test_heartbeat_updates(tmp_path, clock):
     store.task_spawn(1, "t1", "a", "s")
     hb0 = store.state["rounds"][0]["tasks"]["t1"]["lastHeartbeat"]
     clock.advance(60)
-    store.task_heartbeat(1, "t1")
+    store.task_heartbeat(1, "t1", source="worker", submission="s")
     assert store.state["rounds"][0]["tasks"]["t1"]["lastHeartbeat"] > hb0
 
 
 def test_finish_states_and_guards(tmp_path, clock):
     store = make_store(tmp_path, clock)
+    with pytest.raises(LoopStateError, match="尚未满足"):
+        store.run_converged("空 run 不能收敛")
+    store.round_start("r")
+    store.task_add(1, "t1", "worker", "任务")
+    store.task_spawn(1, "t1", "a", "s")
+    store.task_result(1, "t1", "ok", confirmed_stopped=True)
+    store.round_end("pass")
     store.run_converged("完成")
     with pytest.raises(LoopStateError):
         store.round_start("再开")  # 终态拒绝变更
@@ -117,7 +124,9 @@ def test_terminal_run_rejects_all_task_mutations(tmp_path, clock):
     store.round_start("r")
     store.task_add(1, "t1", "worker", "任务")
     store.task_spawn(1, "t1", "a", "s")
-    store.run_converged("完成")
+    with pytest.raises(LoopStateError, match="尚未满足"):
+        store.run_converged("在途不能收敛")
+    store.run_failed("abort", confirmed_stopped=True)
     for operation in (
         lambda: store.task_heartbeat(1, "t1"),
         lambda: store.task_backoff_until(1, "t1", clock()),
@@ -127,14 +136,14 @@ def test_terminal_run_rejects_all_task_mutations(tmp_path, clock):
             operation()
 
 
-def test_interrupted_resume_reverts_in_flight(tmp_path, clock):
+def test_interrupted_resume_retains_in_flight(tmp_path, clock):
     store = make_store(tmp_path, clock)
     store.round_start("r")
     store.task_add(1, "t1", "worker", "任务一")
     store.task_add(1, "t2", "worker", "任务二")
     store.task_spawn(1, "t1", "a", "s")
     store.task_spawn(1, "t2", "a2", "s2")
-    store.task_result(1, "t1", "ok")
+    store.task_result(1, "t1", "ok", confirmed_stopped=True)
     affected = store.run_interrupted("用户暂停")
     assert affected == ["r1/t2"]
     assert store.state["status"] == "interrupted"
@@ -142,8 +151,8 @@ def test_interrupted_resume_reverts_in_flight(tmp_path, clock):
     assert store.state["status"] == "active"
     tasks = store.state["rounds"][0]["tasks"]
     assert tasks["t1"]["status"] == "done"
-    assert tasks["t2"]["status"] == "pending"
-    assert "r1/t2" in info["pending"]
+    assert tasks["t2"]["status"] == "in_flight"
+    assert "r1/t2" in info["inFlight"]
     assert info["nextActions"]  # 有可执行下一步
 
 
@@ -186,9 +195,9 @@ def test_events_log_sequence(tmp_path, clock):
     store.round_start("r")
     store.task_add(1, "t1", "worker", "任务")
     store.task_spawn(1, "t1", "a", "s")
-    store.task_result(1, "t1", "fail", error="x")
+    store.task_result(1, "t1", "fail", error="x", confirmed_stopped=True)
     store.task_spawn(1, "t1", "a2", "s2")
-    store.task_result(1, "t1", "ok")
+    store.task_result(1, "t1", "ok", submission="s2", confirmed_stopped=True)
     store.round_end("pass")
     store.run_converged("完成")
     types = [e["type"] for e in store.events()]

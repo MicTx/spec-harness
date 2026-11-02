@@ -55,7 +55,7 @@ Pick your entry point by what you want to do: to understand the idea first, read
 ├── server/                   # optional self-hosted server-mode adapter
 ├── slots/                    # pluggable slots: team-loop and workflow-runner (contracts in references/slots.md)
 ├── tests/                    # source-only pytest suite
-├── release/                  # source-only tracked release artifacts (spec-harness-{version}, four files)
+├── release/                  # development tree only: four artifacts, excluded from public snapshots and runtime exports
 └── .github/                  # CI and issue/pull-request templates
 ```
 
@@ -248,6 +248,7 @@ spec/
 │   ├── slots.md
 │   ├── storage-and-archive.md
 │   ├── templates.md
+│   ├── update-recovery.md
 │   ├── orchestration.md
 │   └── stages/
 │       ├── autoplan.md
@@ -298,6 +299,7 @@ spec/
 │   ├── spec_handoff.py
 │   ├── spec_package_support.py
 │   ├── spec_verify.py
+│   ├── structure_contracts.py
 │   ├── sweep_chain_windows.py
 │   ├── update_checkpoint.py
 │   └── update_checkpoint_support.py
@@ -321,10 +323,13 @@ spec/
     │       ├── recheck_probes.py
     │       ├── smoke_run.py
     │       ├── test_audit_regressions.py
+    │       ├── test_boundary_recheck.py
+    │       ├── test_continuation_loop_fix.py
     │       ├── test_hooks.py
     │       ├── test_loop_control.py
     │       ├── test_loop_route.py
-    │       └── test_loop_state.py
+    │       ├── test_loop_state.py
+    │       └── test_managed_boundaries.py
     └── workflow-runner/
         ├── manifest.json
         ├── README.md
@@ -333,8 +338,12 @@ spec/
         │   └── workflow_route.py
         └── tests/
             ├── conftest.py
+            ├── test_fanout_context_safety.py
             ├── test_workflow_fanout.py
+            ├── test_workflow_fanout_batch_safety.py
+            ├── test_workflow_fanout_proc_race.py
             ├── test_workflow_fanout_realpath.py
+            ├── test_workflow_fanout_special_files.py
             └── test_workflow_route.py
 ```
 

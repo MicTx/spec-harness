@@ -53,6 +53,7 @@ def test_collect_includes_core_scripts():
     assert "smoke_test_spec_skill.py" in files
     assert "issue_closure_support.py" in files
     assert "route_decision.py" in files
+    assert "structure_contracts.py" in files
     # The recruitment machinery must not ship in the exported skill.
     for removed in (
         "supervisor_keepalive_support.py",
@@ -63,6 +64,63 @@ def test_collect_includes_core_scripts():
         "pi_intercom_live_smoke_test.py",
     ):
         assert removed not in files, removed
+
+
+@pytest.mark.parametrize("profile", ["core", "full"])
+def test_exported_contract_auditor_detects_real_violation(tmp_path, profile):
+    skill_root = Path(__file__).resolve().parent.parent
+    output = tmp_path / "exported"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(skill_root / "scripts" / "export_skill_package.py"),
+            "--root",
+            str(skill_root),
+            "--output",
+            str(output),
+            "--skip-signing",
+            "--profile",
+            profile,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (output / "scripts" / "structure_contracts.py").is_file()
+    project = tmp_path / "project"
+    arch = project / ".spec" / "architecture"
+    arch.mkdir(parents=True)
+    (project / "upper.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (project / "lower.py").write_text("import upper\n", encoding="utf-8")
+    (arch / "contracts.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "layers": ["high", "low"],
+                "modules": [
+                    {"name": "high", "layer": "high", "paths": ["upper.py"]},
+                    {"name": "low", "layer": "low", "paths": ["lower.py"]},
+                ],
+                "forbid": [{"from": "low", "to": "high", "reason": "forbidden reverse dependency"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    audit = subprocess.run(
+        [
+            sys.executable,
+            str(output / "scripts" / "organize_project_structure.py"),
+            "--root",
+            str(project),
+            "--check",
+            "--format",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert audit.returncode == 2, audit.stderr
+    assert json.loads(audit.stdout)["contracts"]["new_violations"][0]["rule"] == "forbidden-import"
 
 
 def test_export_end_to_end():

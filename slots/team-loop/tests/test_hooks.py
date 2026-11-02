@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -81,8 +82,9 @@ class TestStopGuard:
         from loop_state import LoopStore
 
         store = LoopStore(tmp_path / ".agents" / "runtime" / "loop" / "run-1").load()
-        if store.state["rounds"][0]["tasks"]["t1"]["status"] == "in_flight":
-            store.task_result(1, "t1", "ok")
+        store.task_spawn(1, "t1", "agent-x", "sub-1")
+        store.task_result(1, "t1", "ok", confirmed_stopped=True)
+        store.round_end("pass")
         store.run_converged("done")
         code, out, _ = run_hook("loop_stop_guard", {"hook_event_name": "Stop", "cwd": str(tmp_path)})
         assert code == 0 and out == ""
@@ -142,3 +144,24 @@ class TestTeammateGate:
             {"hook_event_name": "TeammateIdle", "teammate_name": "someone-else", "cwd": str(tmp_path)},
         )
         assert code == 0 and out == ""
+
+
+def test_teammate_gate_report_command_is_fenced_and_nonterminal(tmp_path):
+    store = make_run(tmp_path, with_inflight=False)
+    token = store.task_reserve(1, "t1")
+    store.task_spawn(1, "t1", "agent-x", "sub-1", reservation=token)
+    payload = {"hook_event_name": "TeammateIdle", "teammate_name": "agent-x", "cwd": str(tmp_path)}
+    code, _, err = run_hook("loop_teammate_gate", payload)
+    assert code == 2
+    command = "python3 " + err.split("python3 ", 1)[1].splitlines()[0].strip()
+    argv = shlex.split(command)
+    assert argv[argv.index("task") + 1] == "report"
+    assert argv[argv.index("--result") + 1] == "@worker-report.json"
+    assert argv[argv.index("--reservation") + 1] == token
+    (tmp_path / "worker-report.json").write_text(json.dumps({"evidence": "isolated test work"}), encoding="utf-8")
+    completed = subprocess.run(argv, cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    assert completed.returncode == 0, completed.stderr
+    from loop_state import LoopStore
+    task = LoopStore(store.run_dir).load().state["rounds"][0]["tasks"]["t1"]
+    assert task["status"] == "in_flight" and task["workerReport"]["evidence"] == "isolated test work"
+    assert run_hook("loop_teammate_gate", payload)[0] == 0

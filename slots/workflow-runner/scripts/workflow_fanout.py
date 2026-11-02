@@ -18,17 +18,18 @@
   python3 workflow_fanout.py --backend pi --plan plan.json --out results.jsonl --no-cache
 
 结果缓存（断点续传）：
-  成功（ok=true）的 item 完整记录原子写入 <out-dir>/cache/<key>.json，
-  key = sha256(backend + NUL + id + NUL + prompt)。重跑同键命中直接回填
-  （cached: true）不派发；失败项永不入缓存；全命中时不要求后端二进制在场；
-  --no-cache 跳过读与写，强制全量派发。
+  默认未知执行上下文，不读写缓存。显式提供非敏感 --cache-context 后，只有
+  Git 工作区可验证完整干净时才按上下文/任务缓存成功项；每次运行前后再次
+  校验工作区，每次命中校验产物 SHA-256。外部环境由调用方负责确认；不可确认
+  时不得提供该标识。--no-cache 始终跳过读写，强制全量派发。
 
 plan.json 结构：
   {
     "items": [
-      {"id": "rev-1", "prompt": "<该 item 的完整任务指令>"}
+      {"id": "rev-1", "prompt": "<完整任务指令>", "requiresWrite": false}
     ]
   }
+  requiresWrite 是可选布尔值。显式 true 时 codex 的只读沙箱拒绝该项，绝不提权。
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ import os
 import selectors
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -59,6 +61,25 @@ MAX_CONCURRENCY = 64
 MAX_TIMEOUT_SECONDS = 24 * 60 * 60
 
 
+class BatchStopError(OSError):
+    """批次级安全停止：同组清理 signal/验证失败，不是 per-item spawn 失败。
+
+    继承 OSError 以兼容既有 ``except OSError`` 与 ``pytest.raises(OSError)``，
+    但作为独立类型可被 run_item / main 在逐项容错之上优先识别，从而阻止未开始
+    项继续派发、协调已并行项收束，不再突破物理并发上限。
+    """
+
+
+def _platform_support_error() -> Optional[str]:
+    """执行面能力检查；返回原因字符串，正常环境返回 None。"""
+    required = ("waitid", "P_PID", "WEXITED", "WNOHANG", "WNOWAIT", "killpg")
+    if not sys.platform.startswith("linux") or not all(hasattr(os, name) for name in required):
+        return "verified process-group cleanup requires Linux /proc and waitid(WNOWAIT)"
+    if not Path("/proc/self/stat").is_file():
+        return "verified process-group cleanup requires readable Linux /proc"
+    return None
+
+
 def _validate_item(item: Any, seen: set[str] | None = None) -> dict[str, Any]:
     if not isinstance(item, dict):
         raise ValueError("each plan item must be an object")
@@ -74,6 +95,8 @@ def _validate_item(item: Any, seen: set[str] | None = None) -> dict[str, Any]:
         raise ValueError(f"item {item_id!r} has an empty prompt")
     if len(prompt) > MAX_PROMPT_LENGTH:
         raise ValueError(f"item {item_id!r} prompt is too long")
+    if "requiresWrite" in item and not isinstance(item["requiresWrite"], bool):
+        raise ValueError(f"item {item_id!r} requiresWrite must be a boolean")
     if seen is not None:
         if item_id in seen:
             raise ValueError(f"duplicate item id: {item_id}")
@@ -108,31 +131,82 @@ def _has_symlink_component(path: Path) -> bool:
 
 
 def _kill_process_tree(process: subprocess.Popen) -> None:
-    """Kill the worker and any children it spawned.
-
-    Workers run in their own session (``start_new_session=True``), so the
-    process group covers grandchildren; a bare ``process.kill()`` would leave
-    them running and still holding the pipe write ends.
-    """
+    """Signal the known process group while its leader PID is still reserved."""
     try:
-        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        # start_new_session=True makes the leader PID the process-group ID.
+        # Never discover the group after wait()/poll() has reaped the leader:
+        # its PID could have been reused by an unrelated process group.
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
         return
-    except (ProcessLookupError, PermissionError, OSError):
-        pass
+    except OSError as exc:
+        try:
+            process.kill()
+        except OSError:
+            pass
+        raise BatchStopError(f"cannot signal worker process group: {exc}") from exc
+
+
+def _live_group_members(pgid: int) -> Optional[bool]:
+    """Check Linux /proc for non-zombie members; None means not verifiable."""
     try:
-        process.kill()
+        with os.scandir("/proc") as entries:
+            for entry in entries:
+                if not entry.name.isdigit():
+                    continue
+                try:
+                    with open(f"/proc/{entry.name}/stat", "rb") as handle:
+                        tail = handle.read().rsplit(b")", 1)[-1].split()
+                except (FileNotFoundError, ProcessLookupError):
+                    # A proc entry can disappear before open (ENOENT), or its
+                    # already-open stat fd can report ESRCH after reaping.
+                    # Both mean that particular process no longer exists.
+                    continue
+                except OSError:
+                    return None
+                if len(tail) < 3:
+                    return None
+                try:
+                    group = int(tail[2])
+                except ValueError:
+                    return None
+                if group == pgid and tail[0] not in (b"Z", b"X"):
+                    return True
     except OSError:
-        pass
+        return None
+    return False
+
+
+def _cleanup_group(process: subprocess.Popen) -> None:
+    """Kill and verify same-group workers before reaping the leader."""
+    _kill_process_tree(process)
+    deadline = time.monotonic() + 2.0
+    while True:
+        live = _live_group_members(process.pid)
+        if live is False:
+            return
+        if live is None or time.monotonic() >= deadline:
+            raise BatchStopError("cannot verify worker process-group cleanup; manual inspection required")
+        time.sleep(0.02)
 
 
 def _run_bounded(cmd: list[str], timeout: float) -> tuple[subprocess.CompletedProcess[str], bool, bool]:
-    """Run one worker while bounding captured stdout/stderr in memory."""
-    # Keep monkeypatched ``subprocess.run`` compatibility for the unit tests;
-    # production always uses the bounded selector loop below.
+    """Run one worker with bounded output and verified same-group cleanup."""
+    # Keep monkeypatched subprocess.run compatibility for isolated unit tests.
     if getattr(subprocess.run, "__module__", "subprocess") != "subprocess":
         completed = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         return completed, False, False
-    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=False, start_new_session=True)
+    support_error = _platform_support_error()
+    if support_error is not None:
+        raise OSError(support_error)
+    process = subprocess.Popen(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=False,
+        start_new_session=True,
+    )
     assert process.stdout is not None and process.stderr is not None
     selector = selectors.DefaultSelector()
     stdout = bytearray()
@@ -142,39 +216,68 @@ def _run_bounded(cmd: list[str], timeout: float) -> tuple[subprocess.CompletedPr
     deadline = time.monotonic() + timeout
     timed_out = False
     output_limited = False
+    leader_exited = False
+    leader_lost = False
+    cleaned = False
     try:
-        while selector.get_map():
+        while True:
+            if not leader_exited:
+                try:
+                    # WNOWAIT observes exit without reaping: the PID remains
+                    # reserved until after its process group has been cleaned.
+                    event = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                except ChildProcessError as exc:
+                    leader_lost = True
+                    raise OSError("worker leader was reaped externally; group identity is unknown") from exc
+                if event is not None:
+                    leader_exited = True
+                    _cleanup_group(process)
+                    cleaned = True
+            if leader_exited and not selector.get_map():
+                break
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 timed_out = True
-                _kill_process_tree(process)
+                if not cleaned:
+                    _cleanup_group(process)
+                    cleaned = True
                 break
-            for key, _ in selector.select(min(remaining, 0.2)):
+            for key, _ in selector.select(min(remaining, 0.1)):
                 chunk = os.read(key.fileobj.fileno(), 65536)
                 if not chunk:
                     selector.unregister(key.fileobj)
                     continue
                 target = key.data
-                # 截断判定必须对 extend 前的剩余空间做：用扩展后长度会把
-                # 「整块装入」误判成「丢过字节」，杀伤合法大输出。
                 room = MAX_OUTPUT_BYTES - len(target)
                 if len(chunk) > room:
                     target.extend(chunk[: max(room, 0)])
                     output_limited = True
-                    _kill_process_tree(process)
+                    if not cleaned:
+                        _cleanup_group(process)
+                        cleaned = True
                     break
                 target.extend(chunk)
             if output_limited:
                 break
         try:
             process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            _kill_process_tree(process)
-            process.wait()
+        except subprocess.TimeoutExpired as exc:
+            raise OSError("worker leader did not exit after group cleanup") from exc
     finally:
+        if not cleaned and not leader_lost:
+            try:
+                _kill_process_tree(process)
+            except OSError:
+                pass
+        if not leader_lost and process.returncode is None:
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
         for key in list(selector.get_map().values()):
             selector.unregister(key.fileobj)
-            key.fileobj.close()
+        process.stdout.close()
+        process.stderr.close()
         selector.close()
     return (
         subprocess.CompletedProcess(
@@ -188,15 +291,53 @@ def _run_bounded(cmd: list[str], timeout: float) -> tuple[subprocess.CompletedPr
     )
 
 
+def _open_directory_nofollow(path: Path) -> int:
+    """Pin each directory component without following a symlink."""
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW") or os.open not in os.supports_dir_fd:
+        raise OSError("safe directory-relative file access is unavailable")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    directory = os.open(path.anchor if path.is_absolute() else ".", flags)
+    try:
+        parts = path.parts[1:] if path.is_absolute() else path.parts
+        for part in parts:
+            child = os.open(part, flags, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        return directory
+    except BaseException:
+        os.close(directory)
+        raise
+
+
 def _write_results(path: Path, records: list[dict[str, Any]]) -> None:
-    """Write JSONL without following a pre-existing symlink."""
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    descriptor = os.open(path, flags, 0o600)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        for record in records:
-            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    """Atomically replace one directory entry without truncating hardlinks."""
+    directory = _open_directory_nofollow(path.parent)
+    temporary = f".fanout-{uuid.uuid4().hex}.tmp"
+    created = False
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        descriptor = os.open(temporary, flags, 0o600, dir_fd=directory)
+        created = True
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            for record in records:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        try:
+            existing = os.stat(path.name, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            existing = None
+        if existing is not None and not stat.S_ISREG(existing.st_mode):
+            raise OSError("result output must be a regular non-symlink file")
+        # Replacing the name is atomic and never truncates another hardlink to
+        # the old inode; concurrent writers each publish a complete JSONL.
+        os.replace(temporary, path.name, src_dir_fd=directory, dst_dir_fd=directory)
+        created = False
+    finally:
+        if created:
+            try:
+                os.unlink(temporary, dir_fd=directory)
+            except FileNotFoundError:
+                pass
+        os.close(directory)
 
 
 def build_command(backend: str, prompt: str, output_file: Optional[Path]) -> list[str]:
@@ -221,16 +362,191 @@ def resolve_binary(backend: str) -> Optional[str]:
     return shutil.which(backend)
 
 
-def _cache_key(backend: str, item_id: str, prompt: str) -> str:
-    """缓存键 = sha256(backend + NUL + id + NUL + prompt) 十六进制。
+def _tracked_fingerprint(root: Path, tracked: str) -> Optional[str]:
+    """Hash actual tracked bytes and permissions, without following links.
 
-    prompt 全文入键：改任务必改 prompt 即必 miss（内容指纹语义）。
-    timeout/concurrency 是执行参数，不入键。
+    Git status/index stat heuristics can miss same-size edits or permission
+    changes. Bound the scan; unreadable or unstable inputs disable caching.
     """
-    digest = hashlib.sha256(
-        backend.encode("utf-8") + b"\x00" + item_id.encode("utf-8") + b"\x00" + prompt.encode("utf-8")
-    )
+    digest = hashlib.sha256()
+    total = 0
+    try:
+        root_fd = _open_directory_nofollow(root)
+    except OSError:
+        return None
+    try:
+        for entry in tracked.split("\0"):
+            if not entry:
+                continue
+            fields = entry.split(" ", 3)
+            if len(fields) != 4 or fields[0] != "H" or fields[1] not in ("100644", "100755"):
+                return None
+            stage_and_path = fields[3].split("\t", 1)
+            if len(stage_and_path) != 2 or stage_and_path[0] != "0":
+                return None
+            relative = stage_and_path[1]
+            parts = relative.split("/")
+            if not relative or relative.startswith("/") or any(part in ("", ".", "..") for part in parts):
+                return None
+            directory = os.dup(root_fd)
+            try:
+                for part in parts[:-1]:
+                    child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+                    os.close(directory)
+                    directory = child
+                flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
+                descriptor = os.open(parts[-1], flags, dir_fd=directory)
+                with os.fdopen(descriptor, "rb") as handle:
+                    before = os.fstat(handle.fileno())
+                    if not stat.S_ISREG(before.st_mode) or before.st_size > 128 * 1024 * 1024:
+                        return None
+                    total += before.st_size
+                    if total > 512 * 1024 * 1024:
+                        return None
+                    header = json.dumps([relative, stat.S_IMODE(before.st_mode), before.st_size], ensure_ascii=True)
+                    digest.update(header.encode("ascii") + b"\0")
+                    count = 0
+                    while chunk := handle.read(1024 * 1024):
+                        count += len(chunk)
+                        if count > before.st_size:
+                            return None
+                        digest.update(chunk)
+                    after = os.fstat(handle.fileno())
+                    before_id = (
+                        before.st_dev, before.st_ino, before.st_mode, before.st_size,
+                        before.st_mtime_ns, before.st_ctime_ns,
+                    )
+                    after_id = (
+                        after.st_dev, after.st_ino, after.st_mode, after.st_size,
+                        after.st_mtime_ns, after.st_ctime_ns,
+                    )
+                    if count != before.st_size or before_id != after_id:
+                        return None
+            finally:
+                os.close(directory)
+    except (OSError, UnicodeError, ValueError):
+        return None
+    finally:
+        os.close(root_fd)
     return digest.hexdigest()
+
+
+def _workspace_context(attestation: Optional[str], binary: Optional[str]) -> Optional[str]:
+    """Identify a clean Git workspace only with an explicit external-context attestation.
+
+    A caller must account for the worker/model/configuration, external files and
+    services; we never inspect credentials or user Git configuration. Unknown,
+    dirty, ignored/untracked, sparse, symlinked or submodule state is a miss.
+    """
+    if not isinstance(attestation, str) or not attestation.strip() or len(attestation) > 512 or not binary:
+        return None
+    try:
+        cwd = Path.cwd().resolve()
+        executable = Path(binary).resolve(strict=True)
+        if not executable.is_file() or executable.stat().st_size > 128 * 1024 * 1024:
+            return None
+        with executable.open("rb") as handle:
+            worker_sha = hashlib.sha256()
+            while chunk := handle.read(1024 * 1024):
+                worker_sha.update(chunk)
+        driver_sha = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    except OSError:
+        return None
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": os.devnull,
+        "XDG_CONFIG_HOME": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_TERMINAL_PROMPT": "0",
+        "LC_ALL": "C",
+    }
+    prefix = ["git", "--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false"]
+
+    def git(*args: str) -> Optional[str]:
+        try:
+            result = subprocess.run(prefix + list(args), cwd=cwd, env=env, capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError, UnicodeError):
+            return None
+        if result.returncode != 0:
+            return None
+        return result.stdout
+
+    root = git("rev-parse", "--show-toplevel")
+    head = git("rev-parse", "--verify", "HEAD")
+    status = git("status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=none")
+    tracked = git("ls-files", "-v", "--stage", "-z")
+    if not root or not head or status is None or status or tracked is None:
+        return None
+    try:
+        root_path = Path(root.strip()).resolve(strict=True)
+        if not cwd.is_relative_to(root_path):
+            return None
+    except OSError:
+        return None
+    actual_files = _tracked_fingerprint(root_path, tracked)
+    if actual_files is None:
+        return None
+    # Reject index/HEAD or untracked-state changes during the scan as well.
+    if git("rev-parse", "--verify", "HEAD") != head or git("ls-files", "-v", "--stage", "-z") != tracked:
+        return None
+    if git("status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=none") != "":
+        return None
+    source = json.dumps(
+        [str(root_path), str(cwd), head.strip(), actual_files, str(executable), worker_sha.hexdigest(),
+         driver_sha, attestation],
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+
+def _cache_key(
+    backend: str, item_id: str, prompt: str, context: str = "", requires_write: bool = False
+) -> str:
+    """Key by attested context and the complete execution-relevant item."""
+    source = json.dumps(["v2", backend, item_id, prompt, context, requires_write], ensure_ascii=False)
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+
+def _read_bounded_regular(path: Path) -> bytes:
+    """Read at most the limit from a pinned, non-symlink regular file.
+
+    Reject special entries before opening them, and open nonblocking so a
+    regular-file-to-FIFO replacement between stat and open cannot hang us.
+    The descriptor is checked again because the directory entry can change.
+    """
+    if not hasattr(os, "O_NONBLOCK"):
+        raise OSError("nonblocking file access is unavailable")
+    directory = _open_directory_nofollow(path.parent)
+    try:
+        info = os.stat(path.name, dir_fd=directory, follow_symlinks=False)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_OUTPUT_BYTES:
+            raise OSError("file is not a bounded regular file")
+        flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
+        fd = os.open(path.name, flags, dir_fd=directory)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_OUTPUT_BYTES:
+                raise OSError("file is not a bounded regular file")
+            with os.fdopen(fd, "rb") as handle:
+                fd = -1  # owned by handle from here
+                data = handle.read(MAX_OUTPUT_BYTES + 1)
+        finally:
+            if fd != -1:
+                os.close(fd)
+    finally:
+        os.close(directory)
+    if len(data) > MAX_OUTPUT_BYTES:
+        raise OSError("file exceeds the size limit")
+    return data
+
+
+def _read_artifact(out_dir: Path, path: Path) -> bytes:
+    """Read one bounded, regular, non-symlink output directly under out_dir."""
+    if path.parent.resolve() != out_dir.resolve():
+        raise OSError("output artifact is outside the output directory")
+    return _read_bounded_regular(path)
 
 
 def cache_path(out_dir: Path, key: str) -> Path:
@@ -240,28 +556,34 @@ def cache_path(out_dir: Path, key: str) -> Path:
 def read_cache(out_dir: Path, key: str) -> Optional[dict[str, Any]]:
     """读缓存：文件不存在/损坏均视为 miss（返回 None），绝不抛错。
 
-    只认 ok=true 的记录（「只缓存成功结果」的读侧不变量）：
-    ok=false 的落盘内容（手改/损坏）不回填，重新派发。
+    只认 ok=true 且关联产物可读取、摘要匹配的记录；不完整或旧格式
+    缓存一律视为 miss 并重新派发。
     """
     path = cache_path(out_dir, key)
-    if path.is_symlink():
-        return None
     try:
-        if path.stat().st_size > MAX_OUTPUT_BYTES:
+        data = json.loads(_read_bounded_regular(path).decode("utf-8"))
+        if not isinstance(data, dict) or data.get("ok") is not True:
             return None
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        if not isinstance(data.get("id"), str) or not isinstance(data.get("backend"), str):
+            return None
+        output = data.get("outputFile")
+        digest = data.get("outputSha256")
+        if not isinstance(output, str) or not isinstance(digest, str):
+            return None
+        artifact = _read_artifact(out_dir, Path(output))
+        if hashlib.sha256(artifact).hexdigest() != digest:
+            return None
+    except (OSError, ValueError, UnicodeError):
         return None
-    return data if (isinstance(data, dict) and data.get("ok") is True) else None
+    return data
 
 
 def write_cache(out_dir: Path, key: str, record: dict[str, Any]) -> None:
     """原子写缓存：先写独立 tmp 再 rename，读者永远看不到半截文件。
 
-    tmp 名含 uuid4：病态 plan（完全重复的 id+prompt）会同 key 并发写，
-    固定 tmp 名会被先完成的线程 rename 移走，后完成线程再 rename 即
-    FileNotFoundError 崩溃——独立 tmp 名让同 key 并发写退化为「后写者
-    胜出」，两份内容本就是同一 item 的等价收敛，谁赢都不丢语义。
+    tmp 名含 uuid4：并发运行写同一 key 时各自提交临时文件，避免固定
+    tmp 被另一写者移走。最终是后写者胜出；每条记录仍引用自己的产物，
+    不假设不同执行的 worker 输出相同。
     """
     cache_dir = out_dir / "cache"
     if cache_dir.is_symlink():
@@ -280,16 +602,8 @@ def run_item(
     item: dict[str, Any],
     out_dir: Path,
     timeout: float,
-    use_cache: bool = True,
 ) -> dict[str, Any]:
-    """派发单个 item 并收敛结果。永不抛错：所有失败记入 result 的 ok=false。
-
-    use_cache=False（--no-cache）时跳过写缓存；缓存读取在 main 派发前完成。
-    只有走到最后 ok=True 的记录才落缓存：empty prompt / timeout / spawn
-    failed / nonzero exit / empty output 全部提前 return，天然不入缓存。
-    缓存写失败（OSError）不抛出：item 结果仍 ok=True，记 cacheWriteError
-    提示下次重跑无缓存可用——缓存故障不应改变本次派发的收敛结果。
-    """
+    """派发单个 item；缓存由 main 在整批结束且上下文未变化时写入。"""
     item_id = item.get("id") if isinstance(item, dict) else "item"
     item_id = item_id if isinstance(item_id, str) else "item"
     prompt = item.get("prompt") if isinstance(item, dict) else ""
@@ -307,9 +621,14 @@ def run_item(
         }
     try:
         _validate_item(item)
-        full_output = _safe_child(out_dir, f"{item_id}.out")
-        dump_output = _safe_child(out_dir, f"{item_id}.stdout")
-    except (TypeError, ValueError) as exc:
+        if backend == "codex" and item.get("requiresWrite") is True:
+            raise ValueError("codex backend is read-only; item requires workspace writes")
+        # Names do not include user ids: Unicode ids can exceed filesystem byte
+        # limits even when they satisfy the character-count validation.
+        invocation = uuid.uuid4().hex
+        full_output = _safe_child(out_dir, f"item-{invocation}.out")
+        dump_output = _safe_child(out_dir, f"item-{invocation}.stdout")
+    except (OSError, TypeError, ValueError) as exc:
         return {
             "id": item_id,
             "backend": backend,
@@ -339,6 +658,10 @@ def run_item(
         record["error"] = f"timeout after {timeout}s"
         record["durationSec"] = round(time.time() - started, 2)
         return record
+    except BatchStopError:
+        # 同组清理 signal/验证失败是批次级事件，必须上抛给 main 做安全停止，
+        # 不能降级成 per-item spawn 失败让线程池继续派发已排队项。
+        raise
     except (OSError, UnicodeError) as exc:
         record["error"] = f"spawn failed: {exc}"
         record["durationSec"] = round(time.time() - started, 2)
@@ -359,7 +682,10 @@ def run_item(
         record["stdoutSummary"] = stdout[:STDOUT_SUMMARY_CAP]
         return record
     try:
-        dump_output.write_text(combined, encoding="utf-8")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(dump_output, flags, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(combined)
     except (OSError, UnicodeError) as exc:
         record["error"] = f"output write failed: {exc}"
         return record
@@ -375,12 +701,10 @@ def run_item(
         return record
 
     try:
-        if backend == "pi":
-            text_target = stdout
-        elif full_output.exists():
-            text_target = full_output.read_text(encoding="utf-8")
-        else:
-            text_target = stdout
+        # Codex must create this invocation's final-message file; noisy stdout
+        # is not a final answer and a prior invocation's file is never reused.
+        artifact = _read_artifact(out_dir, Path(record["outputFile"]))
+        text_target = stdout if backend == "pi" else artifact.decode("utf-8")
     except (OSError, UnicodeError) as exc:
         record["error"] = f"output read failed: {exc}"
         return record
@@ -388,14 +712,8 @@ def run_item(
         record["error"] = "empty output"
         return record
 
+    record["outputSha256"] = hashlib.sha256(artifact).hexdigest()
     record["ok"] = True
-    if use_cache:
-        try:
-            write_cache(out_dir, _cache_key(backend, item_id, prompt), record)
-        except OSError:
-            # 缓存是加速器不是真源：落盘失败只影响下次重跑的速度，绝不
-            # 让缓存故障把已成功的 item 记成崩溃（fail-per-item 不变量）。
-            record["cacheWriteError"] = "cache write failed"
     return record
 
 
@@ -425,6 +743,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--out-dir", default=None, help="完整输出目录（默认 <out>.d/）")
     parser.add_argument("--concurrency", type=int, default=3, help="并发上限（默认 3）")
     parser.add_argument("--timeout", type=float, default=300.0, help="单 item 硬超时秒（默认 300）")
+    parser.add_argument(
+        "--cache-context", default=None,
+        help="非敏感外部上下文标识；仅在 Git 工作区可证明干净时启用缓存",
+    )
     parser.add_argument(
         "--no-cache",
         action="store_true",
@@ -459,31 +781,33 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"[fanout] invalid input: {exc}", file=sys.stderr)
         return 2
 
-    # 派发前查缓存：命中的 item 直接回填该 record（cached: true），不进线程池。
-    # key 的 id/prompt 归一化必须与 run_item 完全一致，否则会假 miss。
+    # Unknown external context, worker identity or workspace is never cacheable.
+    binary = resolve_binary(args.backend)
+    context = None if args.no_cache else _workspace_context(args.cache_context, binary)
+    if args.cache_context and not args.no_cache and context is None:
+        print("[fanout] cache disabled: workspace/context cannot be verified", file=sys.stderr)
     records: list[dict[str, Any]] = []
     pending: list[dict[str, Any]] = []
     for item in items:
-        if args.no_cache:
-            pending.append(item)
-            continue
         item_id = item["id"]
         prompt = item["prompt"].strip()
-        cached = read_cache(out_dir, _cache_key(args.backend, item_id, prompt))
-        if cached is not None:
+        requires_write = item.get("requiresWrite", False)
+        cached = None
+        if context is not None and not (args.backend == "codex" and requires_write):
+            cached = read_cache(out_dir, _cache_key(args.backend, item_id, prompt, context, requires_write))
+        if cached is not None and cached.get("id") == item_id and cached.get("backend") == args.backend:
             record = dict(cached)
             record["cached"] = True
             records.append(record)
         else:
             pending.append(item)
 
-    binary = resolve_binary(args.backend)
-    if binary is None and pending:
-        # 整批 fail-fast：二进制缺失时每个未命中项都会同样失败，逐条跑只是浪费。
-        # 全命中（pending 为空）时跳过本分支——真断点续传不要求二进制在场。
+    backend_missing = binary is None and bool(pending)
+    batch_error: Optional[BatchStopError] = None
+    if backend_missing:
         records.extend(
             {
-                "id": str(it.get("id") or "item"),
+                "id": it["id"],
                 "backend": args.backend,
                 "ok": False,
                 "error": f"backend binary not found: {args.backend}",
@@ -493,31 +817,72 @@ def main(argv: Optional[list[str]] = None) -> int:
             }
             for it in pending
         )
-        # 收敛顺序稳定：按 plan 顺序回填，便于对照
-        order = {str(it.get("id") or "item"): i for i, it in enumerate(items)}
-        records.sort(key=lambda r: order.get(r["id"], len(order)))
-        try:
-            _write_results(out_path, records)
-        except (OSError, UnicodeError) as exc:
-            print(f"[fanout] result write failed: {exc}", file=sys.stderr)
-            return 2
-        cached_count = sum(1 for r in records if r.get("cached"))
         print(f"[fanout] backend missing: {args.backend}; {len(pending)} items recorded as failed")
-        print(
-            f"[fanout] backend={args.backend} items={len(records)} "
-            f"ok={len(records) - len(pending)} fail={len(pending)} cached={cached_count}"
-        )
-        print(f"[fanout] results: {out_path}")
-        return 1
-
-    if pending:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.concurrency)) as pool:
-            futures = {
-                pool.submit(run_item, args.backend, item, out_dir, args.timeout, not args.no_cache): item
-                for item in pending
-            }
+    elif pending:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as pool:
+            futures = {pool.submit(run_item, args.backend, item, out_dir, args.timeout): item for item in pending}
+            cancelled: set[concurrent.futures.Future[dict[str, Any]]] = set()
             for future in concurrent.futures.as_completed(futures):
-                records.append(future.result())
+                if future in cancelled:
+                    continue  # 已作为未开始项记录，不再重复收敛
+                item = futures[future]
+                try:
+                    result = future.result()
+                except BatchStopError as exc:
+                    # 批次级安全停止：第一个批次级失败触发后，阻止尚未开始的项
+                    # 继续派发（不再突破物理并发上限），已并行项由 with 块收束等待。
+                    result = {
+                        "id": item["id"],
+                        "backend": args.backend,
+                        "ok": False,
+                        "error": f"batch stopped: {exc}",
+                        "durationSec": 0.0,
+                        "outputFile": "",
+                        "stdoutSummary": "",
+                    }
+                    if batch_error is None:
+                        batch_error = exc
+                        for other, other_item in futures.items():
+                            if other is not future and other.cancel():
+                                cancelled.add(other)
+                                records.append(
+                                    {
+                                        "id": other_item["id"],
+                                        "backend": args.backend,
+                                        "ok": False,
+                                        "error": f"not started: batch stopped ({exc})",
+                                        "durationSec": 0.0,
+                                        "outputFile": "",
+                                        "stdoutSummary": "",
+                                    }
+                                )
+                records.append(result)
+    if batch_error is not None:
+        print(f"[fanout] batch stopped: {batch_error}", file=sys.stderr)
+
+    # Work can change while a batch is running. Never return an old cached
+    # success or save a new cache entry when the original snapshot is gone.
+    if context is not None:
+        stable = _workspace_context(args.cache_context, resolve_binary(args.backend)) == context
+        if not stable:
+            for record in records:
+                if record.get("cached"):
+                    record["ok"] = False
+                    record["error"] = "workspace context changed during execution; rerun"
+            print("[fanout] workspace context changed; cached results are invalid", file=sys.stderr)
+        elif not backend_missing:
+            by_id = {item["id"]: item for item in items}
+            for record in records:
+                if not record["ok"] or record.get("cached"):
+                    continue
+                item = by_id[record["id"]]
+                key = _cache_key(
+                    args.backend, item["id"], item["prompt"].strip(), context, item.get("requiresWrite", False)
+                )
+                try:
+                    write_cache(out_dir, key, record)
+                except OSError:
+                    record["cacheWriteError"] = "cache write failed"
 
     # 收敛顺序稳定：按 plan 顺序回填，便于对照
     order = {str(it.get("id") or "item"): i for i, it in enumerate(items)}
@@ -536,7 +901,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         f"ok={ok_count} fail={len(records) - ok_count} cached={cached_count}"
     )
     print(f"[fanout] results: {out_path}")
-    return 0 if ok_count == len(records) else 2
+    return 1 if backend_missing else (0 if ok_count == len(records) else 2)
 
 
 if __name__ == "__main__":

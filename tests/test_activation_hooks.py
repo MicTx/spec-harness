@@ -159,6 +159,111 @@ def test_implementation_dispatch_is_checked_before_it_starts(project, tool):
     assert out["permissionDecision"] == "deny"
 
 
+@pytest.mark.parametrize("tool", ["Agent", "Task", "SendMessage"])
+@pytest.mark.parametrize(
+    "tool_input",
+    [
+        {"prompt": "Read only; do not change files", "subagent_type": "Explore"},
+        {"prompt": "Read only", "read_only": True, "permissionMode": "plan"},
+        {"message": "I am only sending a read-only report", "read_only": True},
+    ],
+)
+def test_untrusted_read_only_claims_do_not_unlock_dispatch(project, tool, tool_input):
+    out = decision_of(run_hook(tool_event(project, tool=tool, tool_input=tool_input), cwd=project))
+    assert out["permissionDecision"] == "deny"
+    reason = out["permissionDecisionReason"]
+    assert "do not record an assessment" in reason
+    assert "Continue with local read-only tools or stop" in reason
+    assert "not proven read-only" in reason
+    assert "specific call" in reason and "otherwise stop" in reason
+    assert reason.index("do not record an assessment") < reason.index("Only if the user and host permit")
+    assert not state_dir_of(project).exists()
+
+
+def test_read_only_prompt_without_prior_record_does_not_create_state(project):
+    context = decision_of(run_hook(prompt_event(project, prompt="严格只读，不写任何文件"), cwd=project))[
+        "additionalContext"
+    ]
+    assert "Read-only work needs no assessment" in context
+    assert "may already have deleted" in context
+    assert "do not record an assessment" in context
+    assert not state_dir_of(project).exists()
+
+
+def test_read_only_prompt_still_revokes_prior_record_and_discloses_limit(project):
+    # No trusted request id spans both hook events. Keeping this grant after a
+    # new prompt would silently authorize a later write, even for a claimed
+    # read-only request. The deletion is a documented host-hook limitation.
+    record_assessment(project, decision="direct")
+    assert state_file(project).is_file()
+    context = decision_of(run_hook(prompt_event(project, prompt="严格只读，不写任何文件"), cwd=project))[
+        "additionalContext"
+    ]
+    assert not state_file(project).exists()
+    assert "may already have deleted" in context
+    assert "disclose this limitation" in context
+    denied = decision_of(run_hook(tool_event(project, tool="Agent", tool_input={"prompt": "read-only"}), cwd=project))
+    assert denied["permissionDecision"] == "deny"
+    assert "do not record an assessment" in denied["permissionDecisionReason"]
+    assert not state_file(project).exists()
+
+
+def test_failed_invalidation_warns_that_stale_state_may_remain(project, monkeypatch, capsys):
+    from importlib import util
+
+    record_assessment(project, decision="direct")
+    state_path = state_file(project)
+    original_unlink = Path.unlink
+
+    def fail_target_unlink(path, *args, **kwargs):
+        if path == state_path:
+            raise PermissionError("simulated read-only state directory")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_target_unlink)
+    spec = util.spec_from_file_location("activation_guard_failed_invalidation", HOOK)
+    module = util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.handle_prompt(prompt_event(project, prompt="严格只读")) == 0
+    captured = capsys.readouterr()
+    context = json.loads(captured.out)["hookSpecificOutput"]["additionalContext"]
+    assert "could not be invalidated" in context and "may still authorize" in context
+    assert "do not use gated write or dispatch tools" in context
+    assert "Under strict read-only restrictions, do not repair or write the state" in context
+    assert "cannot enforce revocation across processes" in context
+    assert "could not be invalidated" in captured.err
+    assert state_path.is_file(), "failed unlink must not be described as a successful revocation"
+    assert module._read_assessment(project, "s1")["decision"] == "direct"
+
+
+def test_untrusted_state_directory_is_not_claimed_as_successful_revocation(project):
+    import os
+
+    record_assessment(project, decision="direct")
+    path = state_file(project)
+    before = path.read_bytes()
+    os.chmod(state_dir_of(project), 0o777)
+    prompt = run_hook(prompt_event(project), cwd=project)
+    context = decision_of(prompt)["additionalContext"]
+    assert "could not be invalidated" in context
+    assert path.read_bytes() == before
+    denied = decision_of(run_hook(tool_event(project), cwd=project))
+    assert denied["permissionDecision"] == "deny"
+
+
+@pytest.mark.parametrize("session", ["plain-id", "session id; echo INJECTED", "bad\nline"])
+def test_denial_hint_quotes_or_omits_untrusted_session(project, session):
+    import shlex
+
+    denied = decision_of(run_hook(tool_event(project, session_id=session), cwd=project))
+    reason = denied["permissionDecisionReason"]
+    if "\n" in session:
+        assert session not in reason
+        assert "--session <this session id>" in reason
+    else:
+        assert f"--session {shlex.quote(session)}" in reason
+
+
 @pytest.mark.parametrize("tool", ["Read", "Grep", "Glob", "WebFetch", "TodoWrite"])
 def test_read_only_tools_are_never_gated(project, tool):
     assert run_hook(tool_event(project, tool=tool), cwd=project).stdout.strip() == ""
@@ -700,8 +805,10 @@ def test_the_prompt_hint_names_the_flag_that_actually_records_the_decision(proje
     omits it leaves the agent re-guessing the id (and a write refused again).
     """
     context = decision_of(run_hook(prompt_event(project), cwd=project))["additionalContext"]
-    assert "--session" in context and "not optional" in context
-    # the exact id, not a placeholder: the agent should not have to hunt for it
+    assert "Only if the user and host permit" in context
+    assert "--session" in context and "creates or replaces machine-local state" in context
+    assert "do not record an assessment" in context
+    # The exact id is still available when recording is authorized.
     assert "--session s1" in context
 
 
@@ -726,5 +833,7 @@ def test_the_denial_reason_carries_the_session_flag_that_records_the_decision(pr
     """
     reason = decision_of(run_hook(tool_event(project), cwd=project))["permissionDecisionReason"]
     assert "--session s1" in reason
-    assert "--session` is what persists" in reason
+    assert "Only if the user and host permit" in reason
+    assert "--session flag creates or replaces machine-local state" in reason
+    assert "do not record an assessment" in reason
     assert "independently testable behavior" in reason and "multiple files" in reason

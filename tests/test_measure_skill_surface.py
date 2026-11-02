@@ -296,9 +296,8 @@ def test_manifest_digests_match_current_worktree():
     for rel, digest in manifest["sources"].items():
         actual = hashlib.sha256((REPO / rel).read_bytes()).hexdigest()
         assert actual == digest, (
-            f"{rel} drifted since the manifest was calibrated; rerun "
-            f".spec/specs/2026-10-19_add-read-chain-baseline/tools/build_read_chains_manifest.py "
-            f"only if the change is intentional"
+            f"{rel} drifted since the manifest was calibrated; if intentional, "
+            "reconcile the manifest without discarding its current scenarios and ranges"
         )
 
 
@@ -397,6 +396,9 @@ def test_read_chain_mode_repo_fixture_success_envelope():
     assert chains["manifest_sha256"] == hashlib.sha256(MANIFEST.read_bytes()).hexdigest()
     assert len(chains["scenarios"]) == 16
     assert chains["summary"]["complete_scenarios"] == 16
+    cold = next(entry for entry in chains["scenarios"] if entry["id"] == "new-cold-v2")
+    assert cold["planned_deterministic_tool_calls"] == 4
+    assert cold["planned_host_injection_groups"] == 2
     # old four-dim surface unchanged in the same report
     assert [s["name"] for s in report["surfaces"]] == ["metadata", "skill", "stages", "templates"]
 
@@ -426,6 +428,70 @@ def test_read_chain_mode_attribution_math(tmp_path):
     assert result_and_assert["planned_deterministic_tool_calls"] == 2  # c1, c2 — script not counted
     assert result_and_assert["modelled"] is True
     assert result_and_assert["coverage"] == "complete"
+
+
+def test_read_chain_mode_host_injections_are_not_tool_calls(tmp_path):
+    root = synth_tree(tmp_path)
+    sc = scenario(
+        "host-vs-tools",
+        [
+            event("list", "SKILL.md", [[1, 3]], call_id="host-skill-list", load_class="always_loaded", repeat=2),
+            event("list-again", "SKILL.md", [[1, 3]], call_id="host-skill-list", load_class="always_loaded"),
+            event("load", "SKILL.md", "whole", call_id="host-skill-load", load_class="trigger_loaded"),
+            event("read", "references/stages/new.md", "whole", call_id="read:stage", repeat=2),
+            event("read-again", "references/stages/new.md", "whole", call_id="read:stage"),
+            event("trigger-read", "SKILL.md", [[4, 4]], call_id="read:trigger", load_class="trigger_loaded"),
+            event("script", "references/stages/new.md", "whole", consumer="script", call_id="host-skill-list"),
+        ],
+        expected=[],
+    )
+    manifest = make_manifest(tmp_path, [sc])
+    result = read_chain_report(root, manifest)
+    assert result.returncode == 0, result.stderr
+    chains = json.loads(result.stdout)["read_chains"]
+    out = chains["scenarios"][0]
+    skill_lines = SKILL_TEXT.splitlines(keepends=True)
+    front_bytes = len("".join(skill_lines[:3]).encode("utf-8"))
+    model_bytes = (
+        front_bytes * 3
+        + len(SKILL_TEXT.encode("utf-8"))
+        + len(STAGE_NEW.encode("utf-8")) * 3
+        + len(skill_lines[3].encode("utf-8"))
+    )
+    # Repeat expands injected bytes/events, but a call_id denotes one planned group.
+    assert out["read_events"] == 9 and out["model_events"] == 8 and out["script_events"] == 1
+    assert out["planned_deterministic_tool_calls"] == 2  # read:stage, read:trigger
+    assert out["planned_host_injection_groups"] == 2  # host-skill-list, host-skill-load
+    assert out["model_event_bytes"] == out["planned_response_bytes"] == model_bytes
+    assert out["model_unique_bytes"] == len(SKILL_TEXT.encode("utf-8")) + len(STAGE_NEW.encode("utf-8"))
+    assert out["script_read_bytes"] == len(STAGE_NEW.encode("utf-8"))
+    assert out["modelled"] is True and out["coverage"] == "complete"
+    assert chains["summary"]["read_events"] == out["read_events"]
+    assert chains["summary"]["model_event_bytes"] == out["model_event_bytes"]
+    assert chains["summary"]["model_unique_bytes"] == out["model_unique_bytes"]
+    assert chains["summary"]["script_read_bytes"] == out["script_read_bytes"]
+    table = run_cli(root, "--read-chain-manifest", str(manifest))
+    assert table.returncode == 0, table.stderr
+    assert "tool IDs" in table.stdout and "host IDs" in table.stdout
+
+
+def test_read_chain_mode_host_only_has_no_tool_calls(tmp_path):
+    root = synth_tree(tmp_path)
+    sc = scenario(
+        "host-only",
+        [
+            event("list", "SKILL.md", [[1, 3]], call_id="host-skill-list", repeat=3),
+            event("load", "SKILL.md", "whole", call_id="host-skill-load"),
+        ],
+        expected=[],
+    )
+    manifest = make_manifest(tmp_path, [sc])
+    result = read_chain_report(root, manifest)
+    assert result.returncode == 0, result.stderr
+    out = json.loads(result.stdout)["read_chains"]["scenarios"][0]
+    assert out["model_events"] == 4
+    assert out["planned_deterministic_tool_calls"] == 0
+    assert out["planned_host_injection_groups"] == 2
 
 
 def test_read_chain_mode_identical_content_not_deduped_across_files(tmp_path):
@@ -649,6 +715,7 @@ def test_read_chain_mode_planned_values_labeled_modelled(tmp_path):
     assert out["modelled"] is True
     assert "deterministic_tool_calls" not in out and "response_bytes" not in out
     assert out["planned_deterministic_tool_calls"] == 1
+    assert out["planned_host_injection_groups"] == 0
     assert out["planned_response_bytes"] == len(SKILL_TEXT.encode("utf-8"))
 
 

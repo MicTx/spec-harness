@@ -55,7 +55,7 @@ Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 
 ├── server/                   # 可选 self-hosted server-mode 适配器
 ├── slots/                    # 可插拔插槽：team-loop 与 workflow-runner（契约见 references/slots.md）
 ├── tests/                    # 源码库独有：pytest 测试套件
-├── release/                  # 源码库独有：跟踪的发布产物（spec-harness-{version} 四件）
+├── release/                  # 开发仓库独有：四件发布产物；公开快照与运行时导出均不包含
 └── .github/                  # CI 与 Issue/PR 模板
 ```
 
@@ -248,6 +248,7 @@ spec/
 │   ├── slots.md
 │   ├── storage-and-archive.md
 │   ├── templates.md
+│   ├── update-recovery.md
 │   ├── orchestration.md
 │   └── stages/
 │       ├── autoplan.md
@@ -298,6 +299,7 @@ spec/
 │   ├── spec_handoff.py
 │   ├── spec_package_support.py
 │   ├── spec_verify.py
+│   ├── structure_contracts.py
 │   ├── sweep_chain_windows.py
 │   ├── update_checkpoint.py
 │   └── update_checkpoint_support.py
@@ -321,10 +323,13 @@ spec/
     │       ├── recheck_probes.py
     │       ├── smoke_run.py
     │       ├── test_audit_regressions.py
+    │       ├── test_boundary_recheck.py
+    │       ├── test_continuation_loop_fix.py
     │       ├── test_hooks.py
     │       ├── test_loop_control.py
     │       ├── test_loop_route.py
-    │       └── test_loop_state.py
+    │       ├── test_loop_state.py
+    │       └── test_managed_boundaries.py
     └── workflow-runner/
         ├── manifest.json
         ├── README.md
@@ -333,8 +338,12 @@ spec/
         │   └── workflow_route.py
         └── tests/
             ├── conftest.py
+            ├── test_fanout_context_safety.py
             ├── test_workflow_fanout.py
+            ├── test_workflow_fanout_batch_safety.py
+            ├── test_workflow_fanout_proc_race.py
             ├── test_workflow_fanout_realpath.py
+            ├── test_workflow_fanout_special_files.py
             └── test_workflow_route.py
 ```
 

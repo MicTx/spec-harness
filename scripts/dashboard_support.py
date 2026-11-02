@@ -108,7 +108,6 @@ def task_strip_from_records(tasks) -> tuple[list[str], list[str]]:
     """Build dashboard task rows from tasks.md records, not pipeline stages."""
     kinds: list[str] = []
     labels: list[str] = []
-    current_assigned = False
     for task in tasks:
         label = str(getattr(task, "text", "") or "").strip()
         if not label:
@@ -121,12 +120,8 @@ def task_strip_from_records(tasks) -> tuple[list[str], list[str]]:
             kinds.append(GLYPH_DONE)
         elif blocked:
             kinds.append(GLYPH_BLOCKED)
-        elif in_progress and not current_assigned:
+        elif in_progress:
             kinds.append(GLYPH_ACTIVE)
-            current_assigned = True
-        elif not current_assigned:
-            kinds.append(GLYPH_ACTIVE)
-            current_assigned = True
         else:
             kinds.append(GLYPH_PENDING)
     return kinds, labels
@@ -157,6 +152,7 @@ class Dashboard:
     detail_title: str = "交付信息"
     ascii_mode: bool = False
     compact: bool = False
+    current_items: list[str] = field(default_factory=list)
 
     def _mark(self, kind: str) -> str:
         return glyph(kind, self.ascii_mode)
@@ -210,17 +206,8 @@ class Dashboard:
 
     @property
     def normalized_strip(self) -> list[str]:
-        """Display-level strip: only the first active item is kept."""
-        seen_active = False
-        kinds: list[str] = []
-        for kind in self.strip:
-            if kind == GLYPH_ACTIVE:
-                if seen_active:
-                    kinds.append(GLYPH_PENDING)
-                    continue
-                seen_active = True
-            kinds.append(kind)
-        return kinds
+        """Preserve the source task states, including parallel active tasks."""
+        return list(self.strip)
 
     def _metrics_lines(self) -> list[str]:
         if self.alerts:
@@ -270,8 +257,21 @@ class Dashboard:
             return [item for item in (self._item(title, value) for value in values) if item]
         return [item for item in (self._item(value) for value in values) if item]
 
+    def _current_items(self) -> list[str]:
+        if self.strip:
+            # A task strip is the authoritative state: never promote a pending
+            # or blocked task supplied by an older caller as "current".
+            return [
+                label.strip()
+                for kind, label in zip(self.normalized_strip, self.strip_labels)
+                if kind == GLYPH_ACTIVE and label.strip()
+            ]
+        if self.current_items:
+            return [item.strip() for item in self.current_items if item.strip()]
+        return [self.current.strip()] if self.current and self.current.strip() else []
+
     def _current_lines(self) -> list[str]:
-        return self._section("正在处理", self._labeled_items("正在处理", [self.current] if self.current else []))
+        return self._section("正在处理", self._labeled_items("正在处理", self._current_items()))
 
     def _alert_lines(self) -> list[str]:
         alerts = [line for line in self.alerts if line and line not in {"—", "无"}]
@@ -292,7 +292,7 @@ class Dashboard:
 
     def _next_lines(self) -> list[str]:
         next_step = self.next_step.strip()
-        if not next_step or (self.current and next_step == self.current.strip()):
+        if not next_step or next_step in self._current_items():
             return []
         return self._section("接下来", self._labeled_items("接下来", [next_step]))
 

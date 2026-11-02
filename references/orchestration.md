@@ -4,6 +4,8 @@ Parallel work is useful only when each item can be understood and checked on its
 
 This file is the source of truth for the five-route vocabulary, assignment contracts, waiting/merge rules, and the optional `### 5.4 编排策略` section. Stage contracts live in `references/stages/<stage>.md` (`commands.md` is their index); slot-specific loop protocol lives in `slots/team-loop/README.md`.
 
+Core installs omit `slots/` and agent role documents. Check installed capability before referencing either; when absent, report the limitation and use an authorized ordinary route only if it satisfies the requested semantics. If a required managed slot or independent review cannot be performed, stop that segment without claiming it passed; installing the full profile requires the user’s authorization.
+
 ## When to use
 
 Use when the task spans multiple subsystems, the codebase shape is unclear and needs parallel exploration, independent ownership slices exist so workers would not collide, or the work touches risky areas (auth, payments, migrations, secrets, destructive operations) and needs an explicit review lane. Do not use when the task is small and local, the next blocking answer is faster on the main thread, or multiple workers would collide on the same small set of files.
@@ -40,7 +42,7 @@ Every lane must define, in writing, before spawn:
 
 Preferred reusable agents (reuse before inventing roles): `orchestrator`, `planner`, `reviewer`, `confirmer`, `code-reviewer`, `security-reviewer`, `e2e-runner`, plus language-specific reviewers when the task is language-bound. Spec ships `agents/orchestrator.md`, `agents/planner.md`, `agents/reviewer.md`, and `agents/confirmer.md` as the routing/planning/review/confirmation contracts.
 
-Host registration: hosts do not discover named subagents from a skill's own `agents/` directory. The Claude Code installer therefore publishes installer-owned copies of `orchestrator.md` / `planner.md` into `~/.claude/agents/` (marker-backed; user-owned files are refused without `FORCE=1`), and `spec:doctor` checks that publication (`claude.agents`). On hosts where a name is not in the native inventory, do not fail the lane: read the contract from the skill's `agents/` directory, pass it as the prompt to an available general-purpose agent, and note the substitution in the handoff.
+Host registration: hosts do not discover named subagents from a skill's own `agents/` directory. The Claude Code installer therefore publishes installer-owned copies of `orchestrator.md` / `planner.md` into `~/.claude/agents/` (marker-backed; user-owned files are refused without `FORCE=1`), and `spec:doctor` checks that publication (`claude.agents`). On hosts where a name is not in the native inventory, use the installed contract from the skill's `agents/` directory with an available general-purpose agent and note the substitution. If core omitted the contract, use the written assignment contract above and explicitly state the missing role; do not claim a required specialized review when it cannot be performed.
 
 ## Task-shape decision table（任务形状→执行面判定表）
 
@@ -80,14 +82,14 @@ Independent review is triggered by risk, never stacked unconditionally. Reuse th
 
 ## Constrained-channel dispatch (shared-pool protocol)
 
-Inference capacity is not always parallel-friendly: a single gateway with a single model pool enforces admission control — `gateway_queue_full`, `429 rate_limit`, `circuit_open`, instant `500`s with ~0 latency. That is a failure-recovery problem, not a reason to serialize. Throughput comes first: fan-out stays parallel; the channel profile only switches on the recovery protocol. Never serialize a shared pool "to be safe" — that trades throughput for nothing the protocol doesn't already handle.
+Inference capacity is not always parallel-friendly: a single gateway or shared model pool can enforce admission control (`gateway_queue_full`, `429 rate_limit`, `circuit_open`). Preserve the full planned work, but schedule only within the user/host limits and managed slot admission; those limits may permit just one in-flight lane. A shared-pool signal alone does not determine throughput or prove a universal concurrency optimum.
 
-- `route_decision.py` emits an advisory `channel_profile` (`{"shared_pool": bool, "note": ...}`) on single-channel signals (单网关 / 单模型 / 共享池 / 通道受限 / 单池 / limited gateway). It is advisory, carries no numbers, and `check_spec_package.py` never gates on it. There is deliberately no `max_parallel` or any quantity limit — efficiency first.
-- On `shared_pool=true`, keep dispatching lanes in parallel and apply: slice minimization + the lane-death protocol + burst backoff.
+- `route_decision.py` emits an advisory `channel_profile` (`{"shared_pool": bool, "note": ...}`) on single-channel signals. It carries no capacity number; it neither grants concurrency nor overrides host admission.
+- On `shared_pool=true`, keep independent work queued, dispatch only when admitted, and apply slice minimization, the lane-death protocol and burst backoff. Honor an explicit host or user limit even when it permits one lane.
 - Slice minimization: shrink each lane's input — target files and line ranges in the contract instead of whole directories, trimmed context instead of full transcripts; the lane's point (isolated attention, fresh context window) survives.
 - Lane-death protocol (any channel, mandatory on shared pools): (1) salvage — read the dead lane's partial transcript/handoff and absorb usable findings; (2) re-dispatch at most once with a minimized slice; (3) if the second attempt also dies, absorb the slice into the main thread and note the absorption in the handoff. Never re-dispatch a third time; three failures on one slice is a channel signal, not a worker problem.
 - Burst backoff: after a cluster of transport-level failures (502/504 mid-stream, gateway 500s), pause dispatch briefly, then resume — the pause is recovery, not a throughput policy.
-- The profile informs protocol, never quantity: assignment-contract, ownership, and verification rules apply unchanged, and lane count is decided by the work's shape, not the channel.
+- The profile informs recovery, not a numeric capacity. Assignment, ownership and verification rules still apply; planned coverage comes from the work, while simultaneous dispatch obeys actual admission and limits.
 
 ## Handoff format
 
@@ -152,7 +154,7 @@ A room that already exists is reused, never rebuilt. One main coordinator owns t
 - Using `external` for work that fits in-process; inventing a control plane mid-task
 - Concatenating route tokens or annotating the `route:` field
 - Silent downgrade when a managed slot's tool surface is missing
-- Serializing a shared-pool channel out of caution; shipping any `max_parallel` / lane-count clamp in routing output
+- Dropping planned work to fit a channel limit, or treating an advisory routing hint as permission to exceed host/slot admission
 - Re-dispatching a dead lane a third time instead of absorbing it into the main thread
 - Asking a reviewer "is this OK?" instead of what would break it, what is missing, and a restatement; stacking another independent read on a finding that is already confirmed
 - A lane faking completion to pass a check instead of reporting that it is blocked

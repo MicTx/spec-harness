@@ -5,9 +5,9 @@ First-principles structure audit for a project repository.
 
 Produces the machine-verifiable facts behind the `/spec:organize` command:
 a top-level inventory, the external reference graph, deprecated-structure
-candidates, and declared-architecture consistency. The script is strictly
-read-only; the semantic first-principles judgment stays with the agent,
-and any structural change lands through the normal task-package gates.
+candidates, declared-architecture consistency, and optional direct-import
+contracts. Audit and check are read-only; --update-baseline alone explicitly
+updates one persistent baseline file. Structural changes still go through gates.
 
 Sections (all advisory except architecture consistency):
 
@@ -41,15 +41,18 @@ Sections (all advisory except architecture consistency):
   `<specs-dir>/archive/retired/YYYY-MM-DD/`; it never writes or deletes.
 
 Exit codes: 0 = report produced (and `--check` passed when given),
-2 = `--check` found declared-architecture inconsistencies,
+2 = `--check` found architecture or contract problems,
 1 = usage or scan error.
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
 import json
+import os
 import re
+import stat
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -58,7 +61,26 @@ from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import Callable, Optional
 
+if __name__ == "__main__":
+    # Audit is read-only even when the caller did not pass python -B.
+    sys.dont_write_bytecode = True
+
 from spec_package_support import resolve_specs_root
+from structure_contracts import (
+    Baseline,
+    BaselineComparison,
+    ContractError,
+    Contracts,
+    ImportGraph,
+    Violation,
+    build_baseline,
+    compare_baseline,
+    evaluate_violations,
+    load_baseline,
+    load_contracts,
+    python_module_paths,
+    write_baseline,
+)
 
 DEFAULT_SPECS_DIR = ".spec"
 DEFAULT_STALE_DAYS = 90
@@ -193,7 +215,7 @@ DAG_NODE = re.compile(r"\b([A-Za-z0-9_]+)\[([^\]]+)\]")
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Audit project structure facts for /spec:organize (read-only).")
+    parser = argparse.ArgumentParser(description="Audit project structure facts for /spec:organize.")
     parser.add_argument("--root", default=".", help="Project root to audit (default: current directory)")
     parser.add_argument("--specs-dir", default=DEFAULT_SPECS_DIR, help="Trusted relative specs directory under root")
     parser.add_argument(
@@ -208,7 +230,9 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         default=DEFAULT_LARGE_BYTES,
         help="Tracked binary files above this size count as large-binary candidates",
     )
-    parser.add_argument("--check", action="store_true", help="Exit 2 when declared-architecture consistency fails")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--check", action="store_true", help="Exit 2 when architecture or contracts fail")
+    mode.add_argument("--update-baseline", action="store_true", help="Explicitly update the contract baseline")
     parser.add_argument("--format", choices=("markdown", "json"), default="markdown")
     return parser.parse_args(argv)
 
@@ -322,6 +346,15 @@ class AuditReport:
     dag_node_diff: list[str] = field(default_factory=list)
     dag_edge_diff: list[str] = field(default_factory=list)
     index_module_diff: list[str] = field(default_factory=list)
+    import_graph: ImportGraph = field(default_factory=ImportGraph)
+    contracts_path: str = ""
+    contracts: Optional[Contracts] = None
+    contract_baseline: Baseline = field(default_factory=lambda: Baseline(False))
+    contract_comparison: BaselineComparison = field(default_factory=lambda: BaselineComparison((), (), ()))
+    contract_violations: list[Violation] = field(default_factory=list)
+    contract_incomplete: dict[str, str] = field(default_factory=dict)
+    baseline_updated: bool = False
+    baseline_before_update: Optional[BaselineComparison] = None
 
     @property
     def architecture_findings(self) -> int:
@@ -331,6 +364,10 @@ class AuditReport:
             + len(self.dag_edge_diff)
             + len(self.index_module_diff)
         )
+
+    @property
+    def contract_findings(self) -> int:
+        return len(self.contract_comparison.new) + len(self.contract_comparison.stale) + len(self.contract_incomplete)
 
     def to_json(self) -> dict:
         return {
@@ -369,7 +406,42 @@ class AuditReport:
                 "dag_edge_diff": self.dag_edge_diff,
                 "index_module_diff": self.index_module_diff,
             },
+            "contracts": {
+                "status": "loaded" if self.contracts is not None else "absent",
+                "path": self.contracts_path,
+                "baseline_status": (
+                    "not-applicable"
+                    if self.contracts is None
+                    else "loaded"
+                    if self.contract_baseline.exists
+                    else "missing"
+                ),
+                "baseline_updated": self.baseline_updated,
+                "violations": [_violation_json(item) for item in self.contract_violations],
+                "new_violations": [_violation_json(item) for item in self.contract_comparison.new],
+                "baseline_hits": len(self.contract_comparison.matched),
+                "stale_baseline": [_violation_json(item) for item in self.contract_comparison.stale],
+                "baseline_added": [
+                    _violation_json(item)
+                    for item in (self.baseline_before_update.new if self.baseline_before_update else ())
+                ],
+                "baseline_pruned": [
+                    _violation_json(item)
+                    for item in (self.baseline_before_update.stale if self.baseline_before_update else ())
+                ],
+                "incomplete": [
+                    {"path": name, "reason": reason} for name, reason in sorted(self.contract_incomplete.items())
+                ],
+                "coverage": {
+                    "files": "git-tracked" if self.is_git else "filesystem",
+                    "imports": "resolved direct Python and JavaScript/TypeScript imports only",
+                },
+            },
         }
+
+
+def _violation_json(item: Violation) -> dict:
+    return {"rule": item.rule, "importer": item.importer, "target": item.target, "reason": item.reason}
 
 
 def build_inventory(root: Path, tracked: list[str], is_git: bool) -> list[InventoryEntry]:
@@ -594,6 +666,22 @@ def collect_imported_modules(content: str, importer: str, reroot: Optional[Calla
             token = part.strip().split()[0] if part.strip() else ""
             if token and token != "import":
                 modules.add(absolute(token))
+    return modules
+
+
+def collect_python_graph_imports(content: str, importer: str, reroot: Callable[[str], str]) -> set[str]:
+    """Parse static Python imports anywhere in the syntax tree for contract edges."""
+    tree = ast.parse(content[1:] if content.startswith("\ufeff") else content, filename=importer)
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.update(reroot(alias.name) for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            module = "." * node.level + (node.module or "")
+            if node.level == 0:
+                module = reroot(module)
+            names = ", ".join(alias.name for alias in node.names)
+            modules.update(resolve_from_import(importer, module, names))
     return modules
 
 
@@ -991,14 +1079,20 @@ def find_retired_candidates(
     tracked: list[str],
     specs_dir_name: str,
     declared: set[str],
-) -> tuple[list[str], list[str], dict[str, list[str]]]:
+    graph: Optional[ImportGraph] = None,
+    checked_sources: Optional[dict[str, str]] = None,
+    incomplete_sources: Optional[dict[str, str]] = None,
+) -> tuple[list[str], list[str], dict[str, list[str]], dict[str, list[str]]]:
+    graph = graph if graph is not None else ImportGraph()
     whitelist = export_script_whitelist(root)
     tracked_set = set(tracked)
-    python_index = PythonImportIndex([rel for rel in tracked if not is_historical_path(rel, specs_dir_name)])
+    live_tracked = [rel for rel in tracked if not is_historical_path(rel, specs_dir_name)]
+    python_index = PythonImportIndex(live_tracked)
+    module_paths = python_module_paths(live_tracked)
     js_config_by_dir: dict[str, Optional[str]] = {}
     js_configs: dict[str, JsAliasConfig] = {}
-    referenced: set[str] = set()
-    imported: set[str] = set()
+    referenced = graph.referenced_paths
+    imported = graph.imported_modules
     dangling: dict[str, list[str]] = {}
     example: dict[str, list[str]] = {}
     for rel in tracked:
@@ -1008,7 +1102,11 @@ def find_retired_candidates(
         suffix = path.suffix.lower()
         if suffix and suffix not in TEXT_SUFFIXES:
             continue
-        content = read_text_bounded(path)
+        if incomplete_sources is not None and rel in incomplete_sources:
+            continue
+        content = (
+            checked_sources[rel] if checked_sources is not None and rel in checked_sources else read_text_bounded(path)
+        )
         if not content:
             continue
         mention_text = content
@@ -1016,11 +1114,22 @@ def find_retired_candidates(
             own = module_name_for(rel)
             reroot = partial(python_index.reroot, python_index.import_root(rel))
             # A module's own name (e.g. in its usage docstring) never keeps it alive.
-            imported.update(
+            names = {
                 name
                 for name in collect_imported_modules(content, rel, reroot)
                 if name != own and not name.startswith(own + ".")
-            )
+            }
+            imported.update(names)
+            try:
+                graph_names = collect_python_graph_imports(content, rel, reroot)
+            except (SyntaxError, ValueError, RecursionError) as error:
+                graph_names = set()
+                if checked_sources is not None and rel in checked_sources and incomplete_sources is not None:
+                    incomplete_sources[rel] = f"Python source cannot be parsed: {error}"
+            for name in graph_names:
+                target = module_paths.get(name)
+                if target and target != rel:
+                    graph.edges.add((rel, target))
         elif suffix in JS_SUFFIXES:
             config = nearest_js_config(root, rel, tracked_set, js_config_by_dir, js_configs)
             specifiers, import_comments = js_specifier_literals(content)
@@ -1033,6 +1142,7 @@ def find_retired_candidates(
                     blank.append((start, end))
                     if target != rel:
                         referenced.add(target)
+                        graph.edges.add((rel, target))
             # A commented-out import is not a reference, even with an explicit extension.
             mention_text = blank_spans(content, blank)
         referenced.update(mentioned_paths(rel, mention_text, root))
@@ -1349,6 +1459,60 @@ def check_architecture(
             report.index_module_diff.append(f"module-dag.mmd only: {name}")
 
 
+def _safe_contract_directory(root: Path, specs_root: Path) -> None:
+    """Do not follow a symlink in the contract directory or any specs parent."""
+    current = root
+    for part in (*specs_root.relative_to(root).parts, "architecture"):
+        current = current / part
+        if current.is_symlink():
+            raise ContractError(f"{current}: symlink in contract directory")
+
+
+def _read_contract_sources(
+    root: Path, specs_dir_name: str, contracts: Contracts
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Capture bounded regular source files once for the contractual scan."""
+    contents: dict[str, str] = {}
+    incomplete: dict[str, str] = {}
+    members = {name for module in contracts.modules for name in module.members}
+    for rel in sorted(members):
+        if Path(rel).suffix.lower() not in {".py", *JS_SUFFIXES}:
+            continue
+        if is_historical_path(rel, specs_dir_name):
+            incomplete[rel] = "historical paths are excluded from import scanning"
+            continue
+        directory = None
+        try:
+            nofollow = getattr(os, "O_NOFOLLOW", None)
+            dirflag = getattr(os, "O_DIRECTORY", None)
+            if nofollow is None or dirflag is None:
+                raise OSError("safe no-follow source reads are unsupported on this platform")
+            directory = os.open(root, os.O_RDONLY | dirflag | nofollow)
+            parts = PurePosixPath(rel).parts
+            for part in parts[:-1]:
+                child = os.open(part, os.O_RDONLY | dirflag | nofollow, dir_fd=directory)
+                os.close(directory)
+                directory = child
+            descriptor = os.open(parts[-1], os.O_RDONLY | nofollow | getattr(os, "O_NONBLOCK", 0), dir_fd=directory)
+            with os.fdopen(descriptor, "rb") as handle:
+                metadata = os.fstat(handle.fileno())
+                if not stat.S_ISREG(metadata.st_mode):
+                    raise OSError("source is not a regular file")
+                if metadata.st_size > MAX_CONTENT_BYTES:
+                    raise OSError(f"file exceeds {MAX_CONTENT_BYTES} bytes")
+                data = handle.read(MAX_CONTENT_BYTES + 1)
+            if len(data) > MAX_CONTENT_BYTES:
+                incomplete[rel] = f"file exceeds {MAX_CONTENT_BYTES} bytes"
+            else:
+                contents[rel] = data.decode("utf-8")
+        except (OSError, UnicodeError) as error:
+            incomplete[rel] = str(error)
+        finally:
+            if directory is not None:
+                os.close(directory)
+    return contents, incomplete
+
+
 def collect_facts(root: Path, specs_dir_name: str, stale_days: int, large_bytes: int) -> AuditReport:
     is_git = git_repo(root)
     tracked, _ = list_tracked(root, is_git)
@@ -1376,13 +1540,35 @@ def collect_facts(root: Path, specs_dir_name: str, stale_days: int, large_bytes:
         print(f"error: {error}", file=sys.stderr)
         raise SystemExit(1)
     check_architecture(root, specs_root, report)
+    contract_path = specs_root / "architecture" / "contracts.json"
+    report.contracts_path = contract_path.relative_to(root.resolve()).as_posix()
+    baseline_path = specs_root / "architecture" / "contract-baseline.json"
+    if not os.path.lexists(contract_path) and (report.contracts_path in tracked or os.path.lexists(baseline_path)):
+        raise ContractError(f"{contract_path}: tracked contract is missing or baseline is orphaned")
+    if os.path.lexists(contract_path) or (specs_root / "architecture").is_symlink():
+        _safe_contract_directory(root.resolve(), specs_root)
+    report.contracts = load_contracts(contract_path, tracked)
+    checked_sources: dict[str, str] = {}
+    if report.contracts is not None:
+        _safe_contract_directory(root.resolve(), specs_root)
+        report.contract_baseline = load_baseline(baseline_path)
+        checked_sources, report.contract_incomplete = _read_contract_sources(root, specs_dir_name, report.contracts)
     files, code, groups, example_groups = find_retired_candidates(
-        root, tracked, specs_dir_name, set(report.declared_paths)
+        root,
+        tracked,
+        specs_dir_name,
+        set(report.declared_paths),
+        report.import_graph,
+        checked_sources,
+        report.contract_incomplete,
     )
     report.unreferenced_files = files
     report.unreferenced_code = code
     report.dangling_doc_groups = groups
     report.example_doc_groups = example_groups
+    if report.contracts is not None:
+        report.contract_violations = evaluate_violations(report.import_graph, report.contracts)
+        report.contract_comparison = compare_baseline(report.contract_violations, report.contract_baseline)
     return report
 
 
@@ -1391,7 +1577,7 @@ def render_markdown(report: AuditReport, check: bool) -> str:
     lines.append(f"# Structure Audit: {report.root}")
     lines.append("")
     mode = "git" if report.is_git else "filesystem (not a git repository)"
-    lines.append(f"Fact source: {mode}. Advisory report for first-principles judgment; the script changes nothing.")
+    lines.append(f"Fact source: {mode}. Audit is read-only; baseline updates are explicit.")
     lines.append("")
     lines.append("## Inventory")
     lines.append("")
@@ -1482,6 +1668,34 @@ def render_markdown(report: AuditReport, check: bool) -> str:
     if report.architecture_findings == 0 and not report.dag_md_missing and not report.dag_mmd_missing:
         lines.append("- all declared primary files exist; md/mmd graphs and index modules are consistent")
     lines.append("")
+    lines.append("## Architecture contracts")
+    lines.append("")
+    if report.contracts is None:
+        lines.append(f"- No contract file: `{report.contracts_path}`")
+    else:
+        lines.append(f"- Contract loaded: `{report.contracts_path}`")
+        lines.append(
+            f"- Current violations: {len(report.contract_violations)}; "
+            f"new: {len(report.contract_comparison.new)}; "
+            f"baseline hits: {len(report.contract_comparison.matched)}; "
+            f"stale baseline entries: {len(report.contract_comparison.stale)}"
+        )
+        for item in report.contract_comparison.new:
+            lines.append(f"- NEW {item.rule}: `{item.importer}` -> `{item.target}` ({item.reason})")
+        for item in report.contract_comparison.stale:
+            lines.append(f"- STALE {item.rule}: `{item.importer}` -> `{item.target}`; update baseline")
+        for name, reason in sorted(report.contract_incomplete.items()):
+            lines.append(f"- INCOMPLETE `{name}`: {reason}")
+        lines.append(
+            "- Coverage: resolved direct Python and JavaScript/TypeScript imports; Git-tracked files only in Git mode."
+        )
+        if report.baseline_updated:
+            lines.append("- Baseline updated explicitly.")
+            for item in report.baseline_before_update.new:
+                lines.append(f"- FROZEN {item.rule}: `{item.importer}` -> `{item.target}` ({item.reason})")
+            for item in report.baseline_before_update.stale:
+                lines.append(f"- PRUNED {item.rule}: `{item.importer}` -> `{item.target}`")
+    lines.append("")
     lines.append("## Summary")
     lines.append("")
     lines.append(
@@ -1490,9 +1704,11 @@ def render_markdown(report: AuditReport, check: bool) -> str:
         f"stale: {len(report.stale_dirs)}; large binaries: {len(report.large_binaries)}; "
         f"zip duplications: {len(report.zip_duplications)}; "
         f"untracked-not-ignored: {len(report.untracked_not_ignored)}; "
-        f"architecture findings: {report.architecture_findings}"
+        f"architecture findings: {report.architecture_findings}; contract findings: {report.contract_findings}"
     )
-    verdict = "FAIL" if check and report.architecture_findings else "PASS" if check else "N/A"
+    verdict = "N/A"
+    if check:
+        verdict = "FAIL" if report.architecture_findings or report.contract_findings else "PASS"
     lines.append(f"- --check verdict: {verdict}")
     return "\n".join(lines)
 
@@ -1503,12 +1719,33 @@ def main(argv: Optional[list[str]] = None) -> int:
     if not root.is_dir():
         print(f"error: root is not a directory: {root}", file=sys.stderr)
         return 1
-    report = collect_facts(root, args.specs_dir, args.stale_days, args.large_bytes)
+    try:
+        report = collect_facts(root, args.specs_dir, args.stale_days, args.large_bytes)
+        if args.update_baseline:
+            if report.contracts is None:
+                raise ContractError(f"{report.contracts_path}: no contract to freeze")
+            head = run_git(root, "rev-parse", "HEAD") if report.is_git else None
+            baseline = build_baseline(
+                report.contract_violations,
+                report.contract_baseline,
+                head=head.strip() if head else None,
+                incomplete=tuple(report.contract_incomplete),
+            )
+            specs_root = resolve_specs_root(root, args.specs_dir)
+            _safe_contract_directory(root, specs_root)
+            write_baseline(specs_root / "architecture" / "contract-baseline.json", baseline)
+            report.baseline_before_update = report.contract_comparison
+            report.contract_baseline = baseline
+            report.contract_comparison = compare_baseline(report.contract_violations, baseline)
+            report.baseline_updated = True
+    except ContractError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
     if args.format == "json":
         print(json.dumps(report.to_json(), ensure_ascii=False, indent=2, sort_keys=True))
     else:
         print(render_markdown(report, args.check))
-    if args.check and report.architecture_findings:
+    if args.check and (report.architecture_findings or report.contract_findings):
         return 2
     return 0
 

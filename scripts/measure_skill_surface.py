@@ -21,9 +21,14 @@ Optional read-chain attribution (``--read-chain-manifest``): a fixture
 contract describing per-stage information tasks as read events over bounded
 line ranges. The manifest is a *measurement input*, never a runtime decision
 table; this mode adds one ``read_chains`` block and changes none of the four
-surfaces above. Comparisons use the stable projection (drop ``generated_at``
-and the absolute ``root``); raw digests pin input versions so drift fails
-loudly instead of silently re-baselining.
+surfaces above. Fixture-v1 call IDs ``host-skill-list`` and ``host-skill-load``
+represent host injections, not model tool calls; other model call IDs remain
+planned tool groups regardless of load class. Call IDs are deduplicated, while
+repeated events still contribute bytes and event counts. The legacy planned
+response bytes include host injections and are not a host measurement.
+Comparisons use the stable projection (drop ``generated_at`` and the absolute
+``root``); raw digests pin input versions so drift fails loudly instead of
+silently re-baselining.
 """
 
 from __future__ import annotations
@@ -60,6 +65,8 @@ INPUT_MAX_BYTES = 8 * 1024 * 1024
 MAX_EVENTS = 4096
 EVENT_CONSUMERS = frozenset({"model", "script"})
 EVENT_LOAD_CLASSES = frozenset({"always_loaded", "trigger_loaded", "conditional"})
+# Fixture-v1 host injection identities, independent of load timing.
+HOST_INJECTION_CALL_IDS = frozenset({"host-skill-list", "host-skill-load"})
 
 
 class MeasurementError(Exception):
@@ -299,9 +306,10 @@ def measure_read_chains(root: Path, manifest: dict, manifest_sha256: str) -> dic
     Snapshots every declared source once (raw sha256 pins the version), then
     derives: model event bytes (repeat expanded — every injection bills), the
     unique byte union per source (controllable corpus face), script read bytes,
-    and planned/modelled tool-call and response proxies. Coverage is judged
-    from each event's declared ``expected_keys``; a partial scenario is a
-    reported state (``complete: false``), never an error and never hidden.
+    and planned/modelled tool-call and response proxies. Distinct host
+    injection call IDs are counted separately from tool-call IDs. Coverage is
+    judged from each event's declared ``expected_keys``; a partial scenario is
+    a reported state (``complete: false``), never an error and never hidden.
     """
     sources: dict[str, str] = manifest["sources"]
     inputs: list[dict[str, object]] = []
@@ -339,6 +347,7 @@ def measure_read_chains(root: Path, manifest: dict, manifest_sha256: str) -> dic
         script_read_bytes = 0
         read_events = 0
         model_calls: set[str] = set()
+        host_injections: set[str] = set()
         union_per_source: dict[str, list[list[int]]] = {}
         covered_keys: set[str] = set()
         for event in scenario["events"]:
@@ -375,7 +384,10 @@ def measure_read_chains(root: Path, manifest: dict, manifest_sha256: str) -> dic
             event_bytes = _range_bytes(line_sizes, validated)
             if event["consumer"] == "model":
                 model_event_bytes += event_bytes * repeat
-                model_calls.add(event["call_id"])
+                if event["call_id"] in HOST_INJECTION_CALL_IDS:
+                    host_injections.add(event["call_id"])
+                else:
+                    model_calls.add(event["call_id"])
                 union_per_source.setdefault(event["source"], []).extend(validated)
             else:
                 script_read_bytes += event_bytes * repeat
@@ -410,6 +422,7 @@ def measure_read_chains(root: Path, manifest: dict, manifest_sha256: str) -> dic
                 "model_unique_bytes": model_unique_bytes,
                 "script_read_bytes": script_read_bytes,
                 "planned_deterministic_tool_calls": len(model_calls),
+                "planned_host_injection_groups": len(host_injections),
                 "planned_response_bytes": model_event_bytes,
                 "modelled": True,
                 "coverage": "complete" if not missing else "partial",
@@ -479,13 +492,15 @@ def render_table(report: dict[str, object]) -> str:
         lines.append("")
         lines.append(f"read chains (manifest {chains['manifest_sha256'][:12]}\u2026, complete={chains['complete']}):")
         lines.append(
-            f"  {'scenario':<24}{'events':>7}{'model B':>10}{'unique B':>10}{'script B':>10}{'calls':>7}  coverage"
+            f"  {'scenario':<24}{'events':>7}{'model B':>10}{'unique B':>10}{'script B':>10}"
+            f"{'tool IDs':>9}{'host IDs':>9}  coverage"
         )
         for entry in chains["scenarios"]:
             lines.append(
                 f"  {entry['id']:<24}{entry['read_events']:>7}{entry['model_event_bytes']:>10}"
                 f"{entry['model_unique_bytes']:>10}{entry['script_read_bytes']:>10}"
-                f"{entry['planned_deterministic_tool_calls']:>7}  {entry['coverage']}"
+                f"{entry['planned_deterministic_tool_calls']:>9}{entry['planned_host_injection_groups']:>9}"
+                f"  {entry['coverage']}"
             )
         lines.append(
             f"  {'total':<24}{chains['summary']['read_events']:>7}"

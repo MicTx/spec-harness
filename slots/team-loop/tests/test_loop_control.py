@@ -94,7 +94,7 @@ class TestAdmission:
         seeded_round(store, n_tasks=2)
         store.task_spawn(1, "t1", "a1", "s1")
         assert admission(store, clock())["admit"] is False
-        store.task_result(1, "t1", "ok")
+        store.task_result(1, "t1", "ok", confirmed_stopped=True)
         assert admission(store, clock())["admit"] is True
 
     def test_spawn_enforces_cap_even_without_separate_admission(self, tmp_path, clock):
@@ -114,7 +114,7 @@ class TestStaleness:
         assert stale_tasks(store, clock()) == []
         clock.advance(101)
         assert stale_tasks(store, clock()) == ["r1/t1"]
-        store.task_heartbeat(1, "t1")
+        store.task_heartbeat(1, "t1", source="host", submission="s")
         assert stale_tasks(store, clock()) == []
 
 
@@ -130,7 +130,7 @@ class TestTermination:
         store = make_store(tmp_path, clock)
         seeded_round(store)
         store.task_spawn(1, "t1", "a", "s")
-        store.task_result(1, "t1", "ok")
+        store.task_result(1, "t1", "ok", confirmed_stopped=True)
         store.round_end("pass")
         v = termination_check(store, clock())
         assert v["stop"] is True and v["verdict"] == "converged"
@@ -139,34 +139,34 @@ class TestTermination:
         store = make_store(tmp_path, clock)
         seeded_round(store)
         store.task_spawn(1, "t1", "a", "s")
-        store.task_result(1, "t1", "ok")
+        store.task_result(1, "t1", "ok", confirmed_stopped=True)
         # round 仍 open -> 不算收敛
         v = termination_check(store, clock())
         assert v["verdict"] == "continue"
 
-    def test_failed_task_triggers_stop(self, tmp_path, clock):
+    def test_exhausted_task_allows_close_and_budgeted_repair_round(self, tmp_path, clock):
         store = make_store(tmp_path, clock, max_attempts=1)
         seeded_round(store)
         store.task_spawn(1, "t1", "a", "s")
-        store.task_result(1, "t1", "fail", error="挂了")
-        v = termination_check(store, clock())
-        assert v["stop"] is True and v["verdict"] == "stopped"
-        assert any("failed" in r for r in v["reasons"])
+        store.task_result(1, "t1", "fail", error="挂了", confirmed_stopped=True)
+        assert termination_check(store, clock())["verdict"] == "continue"
+        store.round_end("fail")
+        assert termination_check(store, clock())["verdict"] == "continue"
 
     def test_max_rounds(self, tmp_path, clock):
         store = make_store(tmp_path, clock)
         store.state["config"]["maxRounds"] = 1
         seeded_round(store)
         store.task_spawn(1, "t1", "a", "s")
-        store.task_result(1, "t1", "ok")
+        store.task_result(1, "t1", "ok", confirmed_stopped=True)
         store.round_end("pass")
         # 已用 1 轮且无 open round -> converged 优先
         v = termination_check(store, clock())
         assert v["verdict"] == "converged"
-        # 有 open round 且轮数用尽 -> stopped
+        # 最后一轮仍 open 时必须允许其关轮，不因已用轮数而终止。
         store.state["rounds"][0]["status"] = "open"
         v = termination_check(store, clock())
-        assert v["verdict"] == "stopped" and any("maxRounds" in r for r in v["reasons"])
+        assert v["verdict"] == "continue"
 
     def test_timeout(self, tmp_path, clock):
         store = make_store(tmp_path, clock)
@@ -181,6 +181,9 @@ class TestTermination:
         store.state["config"]["budgetTasks"] = 1
         seeded_round(store, n_tasks=2)
         store.task_spawn(1, "t1", "a", "s")  # spawned=1 == budget，t2 仍 pending
+        v = termination_check(store, clock())
+        assert v["verdict"] == "continue"  # 先等最后预算内的在途任务完成
+        store.task_result(1, "t1", "ok", confirmed_stopped=True)
         v = termination_check(store, clock())
         assert v["stop"] is True and any("budgetTasks" in r for r in v["reasons"])
 

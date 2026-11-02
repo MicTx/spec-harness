@@ -1,0 +1,28 @@
+{
+  "dangling-doc-path": [
+    {
+      "docs": [
+        "docs/guide.md"
+      ],
+      "missing": "docs/missing.md"
+    }
+  ],
+  "example-doc-path": [
+    {
+      "docs": [
+        "docs/guide.md"
+      ],
+      "missing": "examples/sample.py"
+    }
+  ],
+  "unreferenced-code": [
+    "app/api.py",
+    "app/unused.py",
+    "client/src/main.ts",
+    "client/src/unused.ts"
+  ],
+  "unreferenced-file": [
+    "client/tsconfig.json",
+    "docs/guide.md"
+  ]
+}

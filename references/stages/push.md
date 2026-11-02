@@ -34,4 +34,4 @@ Execution requirements:
 
 Output contract:
 
-- Render the `/spec:push` dashboard per [`../output-contracts.md`](../output-contracts.md); state the execute mode, branches, remote, and commands.
+- Follow [`../output-contracts.md`](../output-contracts.md): report actual publication and cleanup. Include mode, branch, remote or command details when the user asks or they explain a failure.

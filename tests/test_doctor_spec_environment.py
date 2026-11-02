@@ -62,6 +62,8 @@ def isolated_home(monkeypatch, tmp_path):
         "CLAUDE_SETTINGS_FILE",
         "PI_PROMPTS_DIR",
         "AGENTS_SKILLS_DIR",
+        "DSH_HOME",
+        "DSH_SKILLS_DIR",
     ):
         monkeypatch.delenv(var, raising=False)
     return home
@@ -189,6 +191,27 @@ def test_scripts_check_detects_broken_compile(tmp_path):
     check = check_by_id(doctor, "skill.scripts")
     assert check.status == "fail"
     assert "bad.py" in check.detail
+
+
+def test_scripts_check_does_not_create_or_modify_bytecode(tmp_path):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "valid.py").write_bytes(b"# coding: latin-1\nname = '\xe9'\n")
+    cache = scripts / "__pycache__"
+    cache.mkdir()
+    sentinel = cache / "valid.cpython-312.pyc"
+    sentinel.write_bytes(b"existing bytecode must not change")
+    slot_scripts = tmp_path / "slots" / "sample" / "scripts"
+    slot_scripts.mkdir(parents=True)
+    (slot_scripts / "valid.py").write_text("value = 1\n", encoding="utf-8")
+    before = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+
+    doctor = Doctor(skill_root=tmp_path, project_root=tmp_path)
+    doctor.check_skill_scripts()
+
+    assert check_by_id(doctor, "skill.scripts").status == "ok"
+    assert {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+    assert not (slot_scripts / "__pycache__").exists()
 
 
 def test_scripts_check_compiles_nested_slot_scripts(tmp_path):

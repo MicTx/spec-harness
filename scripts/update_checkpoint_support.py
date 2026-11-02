@@ -4,11 +4,10 @@
 """Read-only recognition of historical update-stage checkpoints.
 
 The self-managed checkpoint mechanism (triad snapshot into
-``update-checkpoint.json``, begin/rollback/complete lifecycle) was retired in
-favor of Git WIP commits: an update session commits a WIP recovery point on
-the integration branch before rewriting the triad, and rollback is
-``git reset --hard`` / ``git revert`` against that history. This module no
-longer snapshots, restores, or writes anything — it only recognizes and
+``update-checkpoint.json``, begin/rollback/complete lifecycle) was retired.
+Updates now use a private path-scoped recovery copy without automatically
+staging or committing. This module no longer snapshots, restores, or writes
+anything — it only recognizes and
 validates checkpoint files left behind by packages updated under the retired
 mechanism, so historical half-applied states stay visible instead of becoming
 silent dead corners.
@@ -80,7 +79,7 @@ class CheckpointStatus:
     ``state`` is one of:
       - ``"none"``: no checkpoint file; no historical update in flight.
       - ``"active"``: valid checkpoint; an update began and was never resolved
-        under the retired mechanism. Git history is the recovery point.
+        under the retired mechanism. It contains a pre-update text snapshot.
       - ``"corrupted"``: checkpoint present but unparseable or failing
         integrity validation; explicit manual recovery is required.
     """
@@ -89,6 +88,7 @@ class CheckpointStatus:
     path: Path
     checkpoint: UpdateCheckpoint | None = None
     error: str = ""
+    identity_mismatch: bool = False
 
     @property
     def exists(self) -> bool:
@@ -112,6 +112,18 @@ def _preview(value: object, limit: int = 80) -> str:
     """Short repr for diagnostics; corrupted payloads must not flood errors."""
     text = repr(value)
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def checkpoint_display_text(value: str, limit: int = 512) -> str:
+    """Bound and escape untrusted checkpoint text for human-facing diagnostics.
+
+    Keep printable Unicode, but render terminal controls, line breaks, and
+    invisible formatting characters visibly. The validated record and snapshot
+    retain their original bytes; this is only a display projection.
+    """
+    text = value[:limit]
+    rendered = "".join(char if char.isprintable() else ascii(char)[1:-1] for char in text)
+    return rendered + ("…" if len(value) > limit else "")
 
 
 def _read_checkpoint_payload(path: Path) -> dict:
@@ -228,8 +240,16 @@ def inspect_update_checkpoint(package_dir: Path) -> UpdateCheckpoint:
 
 
 def detect_update_checkpoint(package_dir: Path) -> CheckpointStatus:
-    """Non-raising tri-state probe for interrupted updates in one package."""
-    return _load_status(Path(package_dir))
+    """Non-raising tri-state probe; a moved snapshot is not valid for this package."""
+    package_dir = Path(package_dir)
+    status = _load_status(package_dir)
+    if status.state == "active" and status.checkpoint is not None and status.checkpoint.package != package_dir.name:
+        return CheckpointStatus(
+            "corrupted", status.path, None,
+            f"update checkpoint belongs to package {status.checkpoint.package!r}, not {package_dir.name!r}",
+            identity_mismatch=True,
+        )
+    return status
 
 
 def detect_unresolved_checkpoints(specs_dir: Path) -> dict[str, CheckpointStatus]:
@@ -245,7 +265,7 @@ def detect_unresolved_checkpoints(specs_dir: Path) -> dict[str, CheckpointStatus
     for child in sorted(specs_dir.iterdir()):
         if child.is_symlink() or not child.is_dir():
             continue
-        status = _load_status(child)
+        status = detect_update_checkpoint(child)
         if status.state != "none":
             found[child.name] = status
     return found

@@ -781,7 +781,7 @@ EOF_BODY
       cat <<EOF_BODY
 # /$command_name
 
-Run the spec structure organize audit from \`scripts/organize_project_structure.py\`: top-level inventory, the external reference graph (live vs historical), deprecated-structure candidates, and declared-architecture consistency. Default: audit-only — output the report, touch nothing on disk, and state the next step at the end of the report. Applying is an explicit opt-in (--apply or an explicit user instruction): only then create a new task package in the target project before any move or doc fix, and never append findings to an unrelated active package. never delete; archive confirmed orphans under archive/retired, and disposition every member of a confirmed class. Report facts and actual archive moves; do not restate the audit report by hand.
+Run \`scripts/organize_project_structure.py\` for inventory, references, candidates, architecture and optional import contracts. Default is audit-only; --check is also read-only. Only explicit --update-baseline freezes current violations and prunes fixed entries. Report coverage, new and stale entries and incomplete scans. Applying is an explicit opt-in (--apply or a user instruction): create a new package before moves or doc fixes, never append to an unrelated package. never delete; archive confirmed orphans under archive/retired and disposition every member of a confirmed class. Report facts and actual moves.
 EOF_BODY
       ;;
     new)

@@ -16,8 +16,8 @@ surfaces, both consumed by the two chain scripts' ``status`` render:
 ``decide(...)``
     The 13-row decision table from ``plans/01`` F4, judged in order: the four
     common rows strictly (corrupt → cap → complete → fresh), the audit-mismatch
-    adoption between the corrupt row and the cap row (audit wins, the decision
-    is re-judged from the cap row with a ``recovered_state`` note), then the
+    comparison between the corrupt row and the cap row (the higher committed or
+    audited counter prevents rollback; a lagging audit is noted), then the
     per-chain rows (autorun: continue/await/disambiguate; autoplan:
     state_diverged as the target-integrity precondition, then
     resume/resume_review/advance_detail/advance_review). ``decide`` is a pure
@@ -186,16 +186,17 @@ def decide(
     detail: Dict[str, object] = {}
     recovered_state = read_status == READ_RECOVERED
 
-    # Audit adoption (the table's final row, judged before the cap row): the
-    # audit tail is the truth source, so a half-written state counter adopts
-    # the audited value and judgment continues from the cap row.
+    # State commits before the audit append, which may fail. Never move a
+    # committed counter backwards to a lagging audit and thereby evade a cap.
     if state is not None and isinstance(audit_tail, dict):
         state_counter = _as_int(state.get(counter_key))
         audit_counter = _as_int(audit_tail.get(counter_key))
-        if audit_counter is not None and audit_counter != state_counter:
+        if audit_counter is not None and (state_counter is None or audit_counter > state_counter):
             state = dict(state)
             state[counter_key] = audit_counter
             recovered_state = True
+        elif audit_counter is not None and state_counter is not None and audit_counter < state_counter:
+            detail["audit_lagging"] = {"state": state_counter, "audit": audit_counter}
 
     effective_cap = cap
     if effective_cap is None and state is not None:

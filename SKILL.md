@@ -14,7 +14,7 @@ The contract is intentionally small. Every task says what it may change (`bounda
 
 ## When to use
 
-Decide from the work's shape before the first substantive edit or implementation hand-off; the user never needs to say "spec". Create a record for independent acceptance surfaces (separately verifiable features or contracts), several implementers who need ownership boundaries, or a handoff/resume need; resume the active package that matches this task and branch. File count, long text, and a populated room with idle members never decide alone: a mechanical rename with one acceptance, read-only investigation, and one real implementer stay direct. Re-decide when reading code grows the scope. Also use it when the user requests spec commands or packages, or at a project start / phase boundary needing a planning pass. An explicit opt out is a user host-level action, never self-reported; unsafe state (foreign active package, dirty tree with running teammates, protected branch) defers to a safe takeover, never an improvised one. For a small reversible task (one-line fix with its test, typo, copy tweak) advise against a package and take the lightweight path: fix + test directly, then push with a `Spec: none (<非空理由>)` footer; the user decides whether they want the record anyway.
+Decide from the work's shape before the first substantive edit or implementation hand-off; the user never needs to say "spec". Create a record for independent acceptance surfaces (separately verifiable features or contracts), several implementers who need ownership boundaries, or a handoff/resume need; resume the active package that matches this task and branch. File count, long text, and a populated room with idle members never decide alone: a mechanical rename with one acceptance, read-only investigation, and one real implementer stay direct. Re-decide when reading code grows the scope. Also use it when the user requests spec commands or packages, or at a project start / phase boundary needing a planning pass. An explicit opt out is a user host-level action, never self-reported; unsafe state (foreign active package, dirty tree with running teammates, protected branch) defers to a safe takeover, never an improvised one. For a small reversible task (one-line fix with its test, typo, copy tweak), advise against a package and take the lightweight path: fix + test directly; the user decides whether they want the record anyway. Follow the repository’s Git rules; if they permit the lightweight footer, use `Spec: none (<非空理由>)` when committing. Push only after explicit user authorization.
 
 ## Commands
 
@@ -41,18 +41,18 @@ Read only the current stage's file under `references/stages/` ([`references/comm
 | `/spec:autoplan` | interactive planning, then framework/detail/review passes in the current host or a verified fresh CLI session, gated to readiness |
 | `/spec:autorun` | finish the active package and plan the next round; continue in the current host or a verified fresh CLI session until complete |
 | `/spec:doctor` | environment self-check and repair |
-| `/spec:organize` | structure audit; audit-only by default, `--apply` creates the package; never delete, archive under `archive/retired` |
+| `/spec:organize` | audit structure/contracts; `--apply` opts in to fixes; never delete |
 
 Install profile: `new / run / check / done / push` ship in every install; extended stages need `INSTALL_PROFILE=full` — core answers them with the reinstall hint ([`references/commands.md`](references/commands.md)).
 
 ## Core capability: single-orchestrator execution
 
-The main session is the orchestrator and owns routing, acceptance, and the `done`/`push` gates; it does planning, integration, independent verification, and all shared glue files itself. Bounded sidecar work may go to in-process subagents only after a machine route decision (`python3 scripts/route_decision.py --root <project> --slug <slug>`) and a written assignment contract (goal / scope / excluded areas / output / verification); delegation never moves routing, acceptance, or gate authorization out of the main session, and one session owns one package on one integration branch. With `channel_profile.shared_pool`, keep fanning out under the constrained-channel protocol; never clamp lane count. The full delegation contract (five routes, lane ownership, `### 5.4 编排策略`) lives in [`references/orchestration.md`](references/orchestration.md) and is never restated here.
+The main session is the orchestrator and owns routing, acceptance, and the `done`/`push` gates; it does planning, integration, independent verification, and all shared glue files itself. Bounded sidecar work may go to in-process subagents only after a machine route decision (`python3 scripts/route_decision.py --root <project> --slug <slug>`) and a written assignment contract (goal / scope / excluded areas / output / verification); delegation never moves routing, acceptance, or gate authorization out of the main session, and one session owns one package on one integration branch. With `channel_profile.shared_pool`, preserve the planned work under the constrained-channel protocol, but respect user/host limits, available capacity and slot admission when scheduling simultaneous lanes. The full delegation contract (five routes, lane ownership, `### 5.4 编排策略`) lives in [`references/orchestration.md`](references/orchestration.md) and is never restated here.
 
 ### Managed paths
 
 - `local` (default): the main session executes on its own.
-- Sidecar lanes: `explore` / `build` / `review` with clean ownership slices → bounded in-process subagents under the assignment contract; the main session merges and verifies. Contracts: `agents/orchestrator.md`, `agents/planner.md`.
+- Sidecar lanes: `explore` / `build` / `review` with clean ownership slices → bounded in-process subagents under the assignment contract; the main session merges and verifies. Agent contracts in `agents/` are available only when installed; core keeps the assignment contract here and in `references/orchestration.md`.
 - Slot-trigger shapes hand the execution segment to the slot's README protocol ([Extension slots](#extension-slots)); `boundary`/`verify`, honest checkboxes, check gates, and `done`/`push` authorization never move.
 
 ## Execution loop
@@ -91,7 +91,7 @@ Resume `/spec:run` from `tasks.md`: next ready task → verify → check off. An
 
 ## Extension slots
 
-Slots are self-contained `slots/<name>/` directories (manifest declaration + README protocol) validated by `python3 scripts/slot_registry.py list|validate` and shipped by `install.sh`; the full contract lives in [`references/slots.md`](references/slots.md). Activation rule: when a task's shape matches a slot's triggers, hand the execution segment to that slot's README protocol (`team-loop` → `slots/team-loop/scripts/loop_route.py`; `workflow-runner` → `slots/workflow-runner/scripts/workflow_route.py`); slot activation is independent of orchestration routing (`scripts/route_decision.py`), and routing, acceptance, and the `done`/`push` gates never leave the main session.
+Slots are self-contained `slots/<name>/` directories (manifest declaration + README protocol), shipped only in the full install and validated by `python3 scripts/slot_registry.py list|validate`; see [`references/slots.md`](references/slots.md). Before slot routing, check that the relevant slot is installed. When available and its trigger matches, follow its README (`team-loop` → `slots/team-loop/scripts/loop_route.py`; `workflow-runner` → `slots/workflow-runner/scripts/workflow_route.py`). When unavailable, explicitly report the missing capability; use an authorized ordinary route only when it satisfies the request, otherwise leave that segment blocked. Never silently claim managed execution or install extensions without authorization. Slot activation is independent of orchestration routing; routing, acceptance, and the `done`/`push` gates remain with the main session.
 
 ## Reference documentation
 
@@ -107,5 +107,6 @@ Slots are self-contained `slots/<name>/` directories (manifest declaration + REA
 - [`references/naming-and-commits.md`](references/naming-and-commits.md) — slug naming and commit conventions
 - [`references/changelog-guide.md`](references/changelog-guide.md) — changelog generation and integration
 - [`references/engineering-philosophy.md`](references/engineering-philosophy.md) — four core principles
+- [`references/update-recovery.md`](references/update-recovery.md) — safe update recovery examples (loaded on demand by the update stage)
 
 Protocol migrations do not modify historical archives.

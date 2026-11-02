@@ -42,14 +42,14 @@ Entries with a script use that script's output directly; entries without one use
 - 完成总结：<path>
 ```
 
-Only the title always appears; omit any whole section with no effective content. Single-project section order is fixed: 项目进展 (progress) / 任务 (tasks) / 正在处理 (working on) / 需要关注 (needs attention) / 本轮完成 (completed this round) / 接下来 (next) / 交付信息 (delivery). Multi-project status uses `项目概览` (project overview) in place of `交付信息`. When `正在处理` and `接下来` would be identical, keep only `正在处理`.
+Only the title always appears; omit any whole section with no effective content. Single-project section order is fixed: 项目进展 (progress) / 任务 (tasks) / 正在处理 (working on) / 需要关注 (needs attention) / 本轮完成 (completed this round) / 接下来 (next) / 交付信息 (delivery). Multi-project status uses `项目概览` (project overview) in place of `交付信息`. When `接下来` duplicates a `正在处理` item, keep only the latter.
 
 ### Content sources
 
 - Title: the readable project name from `spec.md`; never a slug, stage, or command name.
 - 项目进展: the real completed-task count from `tasks.md`; never process stages, gate counts, agent counts, or Git action counts.
-- 任务: only the concrete project tasks from `tasks.md`, order unchanged. Status vocabulary is closed: `完成` (done), `进行` (in progress, at most 1), `阻塞` (blocked), `待办` (pending).
-- 正在处理: the current real project task; no `boundary`, internal stage, or execution role.
+- 任务: only the concrete project tasks from `tasks.md`, order unchanged. Status vocabulary is closed: `完成` (done), `进行` (in progress), `阻塞` (blocked), `待办` (pending). Preserve every explicit `[>]` as `进行`, including parallel tasks; completed and blocked states take precedence. A `[ ]` task remains `待办`, even if it is the next ready candidate.
+- 正在处理: all real active project tasks, consistent with the `进行` task rows and in the same order; no `boundary`, internal stage, or execution role. When the task record provides no explicit active evidence, omit this section; a ready/pending task may instead appear under 接下来. Outside a task-record projection, state actual work only, never a planned action as already in progress.
 - 需要关注: only concrete facts affecting requirements, delivery, quality, or external dependencies; normal states, zero values, out-of-scope notes, and purely internal fixes are not listed.
 - 本轮完成: only implemented, verified, or delivered project outcomes; never process actions like "entered check" or "gates completed".
 - 接下来: the project action the agent will actually execute next — never `/spec:*`, script commands, or "waiting for the user to start the next stage"; actions the agent can execute are executed this round, not listed as user homework.
@@ -83,11 +83,11 @@ Route picks the follow-up action in the background. Show only the current projec
 
 ## `/spec:new`
 
-The agent fills the project update itself: title = the project the user wants done; tasks = the decomposed real development tasks; 项目进展 = `0/N`; 正在处理 = the first executable task. A pending-decision item shows only when scope would reshape the project and cannot be reasonably assumed; slugs, branches, and trio paths stay off the main view.
+The agent fills the project update itself: title = the project the user wants done; tasks = the decomposed real development tasks; 项目进展 = `0/N`; 正在处理 names a task only after work actually starts; otherwise the first executable task is 接下来. A pending-decision item shows only when scope would reshape the project and cannot be reasonably assumed; slugs, branches, and package paths stay off the main view.
 
 ## `/spec:run`
 
-项目进展 and 任务 come from `tasks.md`; 正在处理 = the current project task; 本轮完成 = completed and verified results; 接下来 = the next real project action. On a blocker, state the concrete impact, the completed work, and the external dependency — never boundary or internal stages. The main session executes tasks in dependency order in this session, verifying item by item; self-reported results are not acceptance — run the task's `verify`-described verification before checking off, and on verification failure report the real cause and recovery conditions, never user homework the agent can fix.
+项目进展 and 任务 come from `tasks.md`; 正在处理 = the explicitly active project tasks, or omitted when there are none; 本轮完成 = completed and verified results; 接下来 = the next real project action. On a blocker, state the concrete impact, the completed work, and the external dependency — never boundary or internal stages. The main session executes tasks in dependency order in this session, verifying item by item; self-reported results are not acceptance — run the task's `verify`-described verification before checking off, and on verification failure report the real cause and recovery conditions, never user homework the agent can fix.
 
 ## `/spec:check`
 
@@ -135,7 +135,7 @@ Single packages follow the unified project-update output. With multiple packages
 
 ## `/spec:goal`
 
-Plan, execute, accept, and archive automatically from one goal sentence; the chain stops at the local commit by default. Intermediate updates always follow actual task progress, never the sub-stage chain. The final reply centers on delivered functionality, verification results, and the suggested push command (publication status only when push was explicitly authorized); stop only for real external blockers.
+Plan, execute, accept, and archive automatically from one goal sentence; the chain stops at the local commit by default. Intermediate updates always follow actual task progress, never the sub-stage chain. The final reply centers on delivered functionality, actual verification, and the local commit outcome. Never push without explicit user authorization; report publication only after an authorized push has actually completed. Give a push command only when the user explicitly requests one, not by default; stop only for real external blockers.
 
 ## `/spec:doctor`
 
@@ -152,10 +152,10 @@ The output is an environment health report, not the project-update schema: group
 Run directly:
 
 ```bash
-python3 scripts/organize_project_structure.py --root <project> [--check] [--format json]
+python3 scripts/organize_project_structure.py --root <project> [--check | --update-baseline] [--format json]
 ```
 
-The output is a structure-audit report, not the project-update schema: group by "repository inventory / reference graph (live vs historical) / deprecated candidates / finding classes / architecture consistency / summary", listing facts and candidates only, no preset conclusions. The default is audit-only: output the report, touch nothing, close with the next step. Applying (`--apply` or an explicit user instruction) creates a new task package in the target project before any move or doc fix; never append findings to an unrelated active package. Verdicts are keep / archive / merge / migrate. Never delete; archive confirmed orphans under `archive/retired`. A confirmed class is unfinished until every member is dispositioned. When `--check` fails, list the drift items truthfully and fix them this round; structure is declared trustworthy only after the architecture-consistency repair completes.
+The output is a structure-audit report, not the project-update schema: list inventory, references, candidates, finding classes, architecture consistency, contracts and summary without preset conclusions. Report contract scope, new violations, baseline hits, stale entries and incomplete scans; do not claim unsupported imports were checked. Default audit and `--check` are read-only. Only an explicit `--update-baseline` freezes all current violations and prunes fixed entries; review its diff. Applying (`--apply` or an explicit instruction) creates a new package before moves or doc fixes, never appends to another package. Verdicts are keep / archive / merge / migrate; never delete, archive confirmed orphans under `archive/retired`. Disposition every member of a confirmed class and report failed checks truthfully.
 
 ## `/spec:autorun`
 
@@ -166,7 +166,7 @@ python3 scripts/autorun_spawn.py plan --root <project> [--plan <path[,path...]>]
 python3 scripts/autorun_spawn.py status --root <project>
 ```
 
-Round replies follow the project-update schema: 本轮完成 reports delivered functionality and actual verification; 正在处理/接下来 identify the next feature. Add a compact chain line with `<checked>/<total>` features, round and effective cap, execution mode and either current-session continuation, a confirmed fresh handoff, or the concrete stop reason. Current checkpoints use `scripts/chain_session.py status --chain autorun`; never display a fabricated window/worker or claim background execution. Re-entry resumes the recorded task, not a new round. Distinguish archive acceptance, local commit, local-only merge and verified remote publication; none implies the next. Keep owner hashes, revisions and launch plumbing in machine output.
+Round replies follow the project-update schema: 本轮完成 reports delivered functionality and actual verification; 正在处理 identifies active work and 接下来 identifies the next feature. Add a compact chain line with `<checked>/<total>` features, round and effective cap, execution mode and either current-session continuation, a confirmed fresh handoff, or the concrete stop reason. Current checkpoints use `scripts/chain_session.py status --chain autorun`; never display a fabricated window/worker or claim background execution. Re-entry resumes the recorded task, not a new round. Distinguish archive acceptance, local commit, local-only merge and verified remote publication; none implies the next. Keep owner hashes, revisions and launch plumbing in machine output.
 
 ## `/spec:autoplan`
 

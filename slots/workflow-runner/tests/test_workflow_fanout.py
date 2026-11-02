@@ -9,6 +9,19 @@ from pathlib import Path
 import pytest
 from workflow_fanout import build_command, load_plan, main, run_item
 
+requires_linux = pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="real bounded execution requires Linux"
+)
+
+
+@pytest.fixture
+def cached_main(monkeypatch):
+    """Exercise the cache contract with an explicitly verified synthetic context."""
+    monkeypatch.setattr(
+        "workflow_fanout._workspace_context", lambda value, binary: "test-context" if value and binary else None
+    )
+    return lambda args: main([*args, "--cache-context", "nonsecret-test-context"])
+
 
 def _make_stub(tmp_path: Path, name: str = "fakebin") -> Path:
     """既有端到端风格的可执行 stub：echo 一个可断言前缀。"""
@@ -79,9 +92,10 @@ def test_run_item_pi_success(tmp_path, monkeypatch):
     record = run_item("pi", {"id": "ok1", "prompt": "x"}, tmp_path, 5)
     assert record["ok"] is True
     assert record["stdoutSummary"] == "RESULT_TEXT"
-    assert (tmp_path / "ok1.stdout").exists()
+    assert Path(record["outputFile"]).exists()
 
 
+@requires_linux
 def test_run_item_large_output_is_rejected(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "workflow_fanout.build_command",
@@ -108,6 +122,7 @@ def test_main_backend_missing_fail_fast(tmp_path, monkeypatch):
     assert all(r["ok"] is False and "not found" in r["error"] for r in records)
 
 
+@requires_linux
 def test_main_stub_binary_end_to_end(tmp_path, monkeypatch):
     """用假二进制 stub 走完整链路：plan -> 并发派发 -> JSONL 收敛顺序稳定。"""
     stub = tmp_path / "fakebin"
@@ -144,10 +159,9 @@ def test_run_item_codex_success_preserves_output_file(tmp_path, monkeypatch):
     """回归：codex 的 --output-last-message 落盘文件不得被 stdout 倾倒覆盖。"""
     import subprocess as sp
 
-    message_file = tmp_path / "c1.out"
-
-    # codex 子进程先"写"最终消息（模拟 --output-last-message），再返回 noisy stdout
+    # codex 子进程先写本次唯一的最终消息，再返回 noisy stdout
     def fake_run(cmd, **kwargs):
+        message_file = Path(cmd[cmd.index("--output-last-message") + 1])
         message_file.write_text("FINAL_ANSWER_FROM_CODEX", encoding="utf-8")
         return sp.CompletedProcess(cmd, 0, stdout="lots of progress noise", stderr="")
 
@@ -155,10 +169,10 @@ def test_run_item_codex_success_preserves_output_file(tmp_path, monkeypatch):
     record = run_item("codex", {"id": "c1", "prompt": "x"}, tmp_path, 5)
     assert record["ok"] is True
     # outputFile 仍持有 codex 落盘的最终消息，而不是被 stdout 噪音覆盖
-    assert message_file.read_text(encoding="utf-8") == "FINAL_ANSWER_FROM_CODEX"
     assert Path(record["outputFile"]).read_text(encoding="utf-8") == "FINAL_ANSWER_FROM_CODEX"
     # stdout 噪音进了独立倾倒文件
-    assert (tmp_path / "c1.stdout").read_text(encoding="utf-8").startswith("lots of progress noise")
+    stdout_file = Path(record["outputFile"]).with_suffix(".stdout")
+    assert stdout_file.read_text(encoding="utf-8").startswith("lots of progress noise")
     assert record["stdoutSummary"].startswith("lots of progress noise")
 
 
@@ -176,6 +190,7 @@ def test_load_plan_rejects_empty(tmp_path):
         {"id": "a/b", "prompt": "x"},
         {"id": "a\x00b", "prompt": "x"},
         {"id": "a", "prompt": "x" * (128 * 1024 + 1)},
+        {"id": "a", "prompt": "x", "requiresWrite": "false"},
     ],
 )
 def test_load_plan_rejects_unsafe_item_paths_and_limits(tmp_path, item):
@@ -215,7 +230,8 @@ def test_main_rejects_symlinked_output_directory(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_cache_hit_backfills_record_with_cached_flag(tmp_path, monkeypatch, capsys):
+@requires_linux
+def test_cache_hit_backfills_record_with_cached_flag(tmp_path, monkeypatch, capsys, cached_main):
     """命中回填：第二跑同键 item 直接回填缓存记录并置 cached=true，不进线程池。"""
     stub = _make_stub(tmp_path)
     monkeypatch.setattr("workflow_fanout.resolve_binary", lambda backend: str(stub))
@@ -228,7 +244,7 @@ def test_cache_hit_backfills_record_with_cached_flag(tmp_path, monkeypatch, caps
     plan.write_text(json.dumps({"items": [{"id": "i1", "prompt": "task one"}]}))
     out = tmp_path / "res.jsonl"
 
-    assert main(["--backend", "pi", "--plan", str(plan), "--out", str(out)]) == 0
+    assert cached_main(["--backend", "pi", "--plan", str(plan), "--out", str(out)]) == 0
     first = json.loads(out.read_text().splitlines()[0])
     assert first["ok"] is True
     assert first.get("cached") is not True  # 首跑是真派发，不带 cached 标志
@@ -240,7 +256,7 @@ def test_cache_hit_backfills_record_with_cached_flag(tmp_path, monkeypatch, caps
         "workflow_fanout.build_command",
         lambda backend, prompt, output_file: dispatches.append(prompt) or [str(stub), prompt],
     )
-    assert main(["--backend", "pi", "--plan", str(plan), "--out", str(out)]) == 0
+    assert cached_main(["--backend", "pi", "--plan", str(plan), "--out", str(out)]) == 0
     second = json.loads(out.read_text().splitlines()[0])
     assert second["ok"] is True
     assert second["cached"] is True
@@ -251,6 +267,7 @@ def test_cache_hit_backfills_record_with_cached_flag(tmp_path, monkeypatch, caps
     assert "cached=1" in summary
 
 
+@requires_linux
 def test_failed_item_not_cached_and_redispatched(tmp_path, monkeypatch):
     """失败不缓存：exit!=0 的 item 不落缓存，重跑时重新派发。"""
     stub = _make_stub(tmp_path)
@@ -289,8 +306,9 @@ def test_failed_item_not_cached_and_redispatched(tmp_path, monkeypatch):
     assert len(calls) == 2  # 第二跑确实重新派发了
 
 
-def test_all_cached_skips_binary_fail_fast(tmp_path, monkeypatch, capsys):
-    """全命中免二进制：全部 item 命中缓存时二进制缺失也收敛退出 0。"""
+@requires_linux
+def test_missing_backend_disables_cache_and_fails_closed(tmp_path, monkeypatch, capsys, cached_main):
+    """后端身份无法核验时，即使存在旧缓存也不能回填成功。"""
     stub = _make_stub(tmp_path)
     monkeypatch.setattr("workflow_fanout.resolve_binary", lambda backend: str(stub))
     monkeypatch.setattr(
@@ -301,18 +319,19 @@ def test_all_cached_skips_binary_fail_fast(tmp_path, monkeypatch, capsys):
     plan = tmp_path / "plan.json"
     plan.write_text(json.dumps({"items": [{"id": "i1", "prompt": "task one"}]}))
     out = tmp_path / "res.jsonl"
-    assert main(["--backend", "pi", "--plan", str(plan), "--out", str(out)]) == 0
+    assert cached_main(["--backend", "pi", "--plan", str(plan), "--out", str(out)]) == 0
     capsys.readouterr()  # 清空首跑输出
 
-    # 第二跑前把二进制换成不存在：全命中时 fail-fast 不生效
+    # 后端不存在时上下文未知，旧缓存不可复用。
     monkeypatch.setattr("workflow_fanout.resolve_binary", lambda backend: None)
-    assert main(["--backend", "pi", "--plan", str(plan), "--out", str(out)]) == 0
+    assert cached_main(["--backend", "pi", "--plan", str(plan), "--out", str(out)]) == 1
     records = [json.loads(line) for line in out.read_text().splitlines()]
-    assert all(r["ok"] is True and r["cached"] is True for r in records)
-    assert "cached=1" in capsys.readouterr().out
+    assert all(r["ok"] is False and "not found" in r["error"] for r in records)
+    assert "cached=0" in capsys.readouterr().out
 
 
-def test_no_cache_flag_bypasses_cache(tmp_path, monkeypatch):
+@requires_linux
+def test_no_cache_flag_bypasses_cache(tmp_path, monkeypatch, cached_main):
     """--no-cache：跳过读与写——既不命中也不落盘，强制全量派发。"""
     stub = _make_stub(tmp_path)
     monkeypatch.setattr("workflow_fanout.resolve_binary", lambda backend: str(stub))
@@ -325,7 +344,7 @@ def test_no_cache_flag_bypasses_cache(tmp_path, monkeypatch):
     plan.write_text(json.dumps({"items": [{"id": "i1", "prompt": "task one"}]}))
     out = tmp_path / "res.jsonl"
 
-    assert main(["--backend", "pi", "--plan", str(plan), "--out", str(out), "--no-cache"]) == 0
+    assert cached_main(["--backend", "pi", "--plan", str(plan), "--out", str(out), "--no-cache"]) == 0
     out_dir = out.with_suffix(".jsonl.d")
     cache_dir = out_dir / "cache"
     assert not cache_dir.exists()  # 写被跳过，连目录都不建
@@ -339,19 +358,20 @@ def test_no_cache_flag_bypasses_cache(tmp_path, monkeypatch):
         "workflow_fanout.build_command",
         lambda backend, prompt, output_file: dispatches.append(prompt) or [str(stub), prompt],
     )
-    assert main(["--backend", "pi", "--plan", str(plan), "--out", str(out), "--no-cache"]) == 0
+    assert cached_main(["--backend", "pi", "--plan", str(plan), "--out", str(out), "--no-cache"]) == 0
     assert len(dispatches) == 1
     record = json.loads(out.read_text().splitlines()[0])
     assert record["ok"] is True and "cached" not in record
 
 
-def test_concurrent_items_distinct_cache_keys(tmp_path, monkeypatch):
+@requires_linux
+def test_concurrent_items_distinct_cache_keys(tmp_path, monkeypatch, cached_main):
     """并发写不冲突：两 item 同后端不同 id/prompt -> 不同 key 各自落盘互不覆盖。"""
     from workflow_fanout import _cache_key, cache_path
 
-    k1 = _cache_key("pi", "a", "prompt one")
-    k2 = _cache_key("pi", "b", "prompt two")
-    k3 = _cache_key("pi", "a", "prompt one")  # 同输入同键（幂等基础）
+    k1 = _cache_key("pi", "a", "prompt one", "test-context")
+    k2 = _cache_key("pi", "b", "prompt two", "test-context")
+    k3 = _cache_key("pi", "a", "prompt one", "test-context")  # 同输入同键（幂等基础）
     assert k1 != k2 and k1 == k3
     assert len({k1, _cache_key("codex", "a", "prompt one")}) == 2  # backend 入键
     # id 入键防同 prompt 换位误命中
@@ -376,7 +396,7 @@ def test_concurrent_items_distinct_cache_keys(tmp_path, monkeypatch):
         )
     )
     out = tmp_path / "res.jsonl"
-    assert main(["--backend", "pi", "--plan", str(plan), "--out", str(out), "--concurrency", "2"]) == 0
+    assert cached_main(["--backend", "pi", "--plan", str(plan), "--out", str(out), "--concurrency", "2"]) == 0
 
     cache_dir = out.with_suffix(".jsonl.d") / "cache"
     cached_files = sorted(p.name for p in cache_dir.iterdir())
@@ -388,7 +408,8 @@ def test_concurrent_items_distinct_cache_keys(tmp_path, monkeypatch):
         assert data["id"] == item_id and data["ok"] is True
 
 
-def test_idempotent_second_run_all_cached(tmp_path, monkeypatch, capsys):
+@requires_linux
+def test_idempotent_second_run_all_cached(tmp_path, monkeypatch, capsys, cached_main):
     """幂等重跑：stub 端到端两跑，第二跑全 cached、零派发、退出码 0。"""
     stub = _make_stub(tmp_path)
     monkeypatch.setattr("workflow_fanout.resolve_binary", lambda backend: str(stub))
@@ -410,7 +431,7 @@ def test_idempotent_second_run_all_cached(tmp_path, monkeypatch, capsys):
     )
     out = tmp_path / "res.jsonl"
 
-    assert main(["--backend", "pi", "--plan", str(plan), "--out", str(out)]) == 0
+    assert cached_main(["--backend", "pi", "--plan", str(plan), "--out", str(out)]) == 0
     capsys.readouterr()
     first = [json.loads(line) for line in out.read_text().splitlines()]
     assert [r["id"] for r in first] == ["i1", "i2", "i3"]
@@ -420,7 +441,7 @@ def test_idempotent_second_run_all_cached(tmp_path, monkeypatch, capsys):
         "workflow_fanout.build_command",
         lambda backend, prompt, output_file: dispatches.append(prompt) or [str(stub), prompt],
     )
-    assert main(["--backend", "pi", "--plan", str(plan), "--out", str(out)]) == 0
+    assert cached_main(["--backend", "pi", "--plan", str(plan), "--out", str(out)]) == 0
     second = [json.loads(line) for line in out.read_text().splitlines()]
     assert [r["id"] for r in second] == ["i1", "i2", "i3"]  # 收敛顺序仍按 plan
     assert all(r["ok"] is True and r["cached"] is True for r in second)
@@ -455,20 +476,21 @@ def test_duplicate_items_same_key_no_crash(tmp_path, monkeypatch):
     assert not out.exists()
 
 
-def test_write_cache_failure_does_not_fail_item(tmp_path, monkeypatch):
-    """缓存写失败吞错：write_cache 抛 OSError 时 item 仍 ok=True 记
-    cacheWriteError，绝不击穿 run_item「永不抛错」承诺。"""
-    import subprocess as sp
-
-    monkeypatch.setattr(
-        "workflow_fanout.subprocess.run",
-        lambda cmd, **k: sp.CompletedProcess(cmd, 0, stdout="RESULT_TEXT", stderr=""),
-    )
+@requires_linux
+def test_write_cache_failure_does_not_fail_item(tmp_path, monkeypatch, cached_main):
+    """缓存落盘失败不能改变这次实际执行结果。"""
+    stub = _make_stub(tmp_path)
+    monkeypatch.setattr("workflow_fanout.resolve_binary", lambda backend: str(stub))
+    monkeypatch.setattr("workflow_fanout.build_command", lambda backend, prompt, output: [str(stub), prompt])
 
     def broken_write_cache(out_dir, key, record):
         raise OSError("disk full")
 
     monkeypatch.setattr("workflow_fanout.write_cache", broken_write_cache)
-    record = run_item("pi", {"id": "c1", "prompt": "x"}, tmp_path, 5)
-    assert record["ok"] is True  # 派发成功不受缓存故障影响
+    plan = tmp_path / "plan.json"
+    out = tmp_path / "results.jsonl"
+    plan.write_text(json.dumps({"items": [{"id": "c1", "prompt": "x"}]}))
+    assert cached_main(["--backend", "pi", "--plan", str(plan), "--out", str(out)]) == 0
+    record = json.loads(out.read_text())
+    assert record["ok"] is True
     assert record["cacheWriteError"] == "cache write failed"

@@ -36,7 +36,7 @@ from spec_package_support import (
     task_title_signals_blocked,
     validate_slug,
 )
-from update_checkpoint_support import CheckpointStatus, detect_update_checkpoint
+from update_checkpoint_support import CheckpointStatus, checkpoint_display_text, detect_update_checkpoint
 
 PENDING_TOKEN = " "
 COMPLETED_TOKEN = "x"
@@ -159,8 +159,9 @@ def tasks_by_section(tasks: list[Task], sections: list[str]) -> dict[str, list[T
 
 
 def find_primary_task(tasks: list[Task]) -> Task | None:
+    """Select a next-action candidate, not evidence that a task is active."""
     for task in tasks:
-        if task.is_explicit_in_progress:
+        if task.is_explicit_in_progress and not task.is_blocked:
             return task
     for task in tasks:
         if task.is_pending:
@@ -210,9 +211,9 @@ def status_next_step(
 ) -> str:
     """Priority ordering mirrors route_spec_package: blocked > pending >
     definition gaps (incl. dependency errors) > orchestration >
-    acceptance/execution. A historical checkpoint is advisory-only here: the
-    recovery guidance rides the alert line, not the next step (check/done
-    still refuse while the file exists)."""
+    acceptance/execution. A historical checkpoint is advisory-only while
+    other work remains, but becomes the next step once otherwise converged;
+    check/done still refuse while the file exists."""
     if blocked_tasks:
         return f"解除阻塞：{blocked_tasks[0].text}"
     if standalone_blocked:
@@ -235,34 +236,40 @@ def status_next_step(
     if checkpoint_pending:
         # Converged except for the historical checkpoint: resolving it is the
         # only step left (check/done refuse while the file exists).
-        return "处理历史遗留 update checkpoint：按 Git 历史确认/恢复三件套后删除 update-checkpoint.json，再继续归档"
+        return f"处理历史遗留 update checkpoint：{checkpoint_recovery_guidance()}"
     return "整理交付结果并完成归档"
 
 
+def checkpoint_recovery_guidance() -> str:
+    """Guide review, not automatic deletion or an assumed Git rollback."""
+    return (
+        "先备份当前文件和 checkpoint；核验记录结构、校验和与包身份后审阅有效 snapshot，"
+        "或审阅可信备份或逐路径检查 Git 历史（可能缺少未提交内容）。"
+        "snapshot 仅含文本，不恢复文件模式或索引，缺失项不表示应删除。"
+        "损坏或身份不符的记录不可相信；确认安全后选择保留现状或逐路径安全恢复，"
+        "无法确认安全状态则保持门禁阻塞。问题解决且 checkpoint（update-checkpoint.json）未变后"
+        "才删除 update-checkpoint.json 这一工作树文件并重跑门禁；"
+        "另查暂存状态，未经单独授权不得变更索引。详见 references/update-recovery.md"
+    )
+
+
 def checkpoint_alert(status: CheckpointStatus | None) -> str:
-    """Advisory line for a historical unresolved checkpoint (Git recovery)."""
+    """Advisory line for a historical unresolved checkpoint."""
+    heading = "存在未完成 update checkpoint（历史遗留，机制已退役）："
     if status is not None and status.state == "active" and status.checkpoint is not None:
-        return (
-            f"存在未完成 update checkpoint（历史遗留，机制已退役）：更新「{status.checkpoint.intent}」"
-            "未确认完成；按 Git 历史确认/恢复三件套后删除 update-checkpoint.json，再继续 check/done"
-        )
+        if status.checkpoint.package == status.path.parent.name:
+            return f"{heading}更新「{checkpoint_display_text(status.checkpoint.intent)}」未确认完成；{checkpoint_recovery_guidance()}"
+        return f"{heading}记录包身份不符，不可信任；{checkpoint_recovery_guidance()}"
     if status is not None and status.state == "corrupted":
-        return (
-            "存在未完成 update checkpoint（历史遗留，机制已退役）：记录已损坏；"
-            "按 Git 历史恢复三件套后删除 update-checkpoint.json，再重跑 check"
-        )
-    return "存在未完成 update checkpoint（历史遗留，机制已退役）：需按 Git 历史恢复后删除该文件"
+        if status.identity_mismatch:
+            return f"{heading}记录包身份不符，不可信任；{checkpoint_recovery_guidance()}"
+        return f"{heading}记录已损坏，不可信任；{checkpoint_recovery_guidance()}"
+    return f"{heading}记录状态尚未确认；{checkpoint_recovery_guidance()}"
 
 
 def render_unreadable_checkpoint(slug: str, status: CheckpointStatus) -> str:
     alert = checkpoint_alert(status)
-    next_step = (
-        "处理未完成 update checkpoint（历史遗留）：按 Git 历史确认/恢复三件套后"
-        "删除 update-checkpoint.json，再重跑 status"
-        if status.state == "active"
-        else "处理未完成 update checkpoint（历史遗留）：记录已损坏；"
-        "按 Git 历史恢复三件套后删除 update-checkpoint.json，再重跑 status"
-    )
+    next_step = f"处理未完成 update checkpoint（历史遗留）：{checkpoint_recovery_guidance()}；再重跑 status"
     return (
         f"# {slug}\n\n"
         f"状态：{HEALTH_BLOCKED}（status）\n\n"
@@ -342,8 +349,6 @@ def render_status(
     else:
         active_stage = "run"
 
-    current = primary_task.text if primary_task else None
-
     next_step = status_next_step(
         primary_task,
         blocked_tasks,
@@ -376,7 +381,6 @@ def render_status(
             "证据": str(r.evidence_filled_count),
             "范围": r.verification_scope or "",
         },
-        current=current,
         alerts=alerts,
         next_step=next_step,
         detail=[handoff_line] if handoff_line else [],
@@ -387,19 +391,19 @@ def render_status(
     return dash.render()
 
 
-def display_marker(task: Task, primary_task: Task | None) -> str:
+def display_marker(task: Task, primary_task: Task | None = None) -> str:
+    """Preserve the recorded state; the legacy primary argument is not evidence."""
     if task.is_completed:
         return COMPLETED_TOKEN
     if task.is_blocked:
         return BLOCKED_TOKEN
-    if primary_task and task is primary_task:
+    if task.is_explicit_in_progress:
         return IN_PROGRESS_TOKEN
     return PENDING_TOKEN
 
 
 def render_tasks(slug: str, sections: list[str], tasks: list[Task]) -> str:
     grouped = tasks_by_section(tasks, sections)
-    primary_task = find_primary_task(tasks)
     missing_verify_tasks = [task for task in tasks if not task.verify]
     lines = [f"# {slug} - 任务列表", ""]
 
@@ -408,7 +412,7 @@ def render_tasks(slug: str, sections: list[str], tasks: list[Task]) -> str:
         completed, total = section_progress(section_tasks)
         lines.append(f"## {section}（{completed} / {total}）")
         for task in section_tasks:
-            marker = display_marker(task, primary_task)
+            marker = display_marker(task)
             lines.append(f"- [{marker}] {task.text}")
             if task.boundary:
                 lines.append(f"  - boundary: {task.boundary}")
@@ -441,7 +445,7 @@ def package_status_summary(
 ) -> dict[str, str]:
     total_tasks, completed_tasks = count_tasks(tasks_content)
     blocked_tasks = [task for task in tasks if task.is_blocked]
-    primary_task = find_primary_task(tasks)
+    active_tasks = [task.text for task in tasks if task.is_explicit_in_progress and not task.is_blocked]
     r = compute_gate_results(spec_content, tasks_content, checklist_content, slug=slug)
     pending_questions = list(r.pending_questions)
     dependency_errors_list = list(r.task_contract_errors)
@@ -477,7 +481,7 @@ def package_status_summary(
         "title": extract_title_from_content(spec_content, slug),
         "progress": f"{completed_tasks}/{total_tasks}",
         "state": state,
-        "primary": primary_task.text if primary_task else "无",
+        "primary": "、".join(active_tasks) if active_tasks else "无",
         "blocked": blocked_label,
         "pending": pending_questions[0] if pending_questions else "无",
         "dependency": dependency_label,
@@ -524,11 +528,13 @@ def render_multi_status(
     corrupted_checkpoint_packages = 0
     read_failure_packages = 0
     worst = HEALTH_OK
-    primary_line: str | None = None
+    primary_lines: list[str] = []
     for slug in packages:
         try:
             package_dir = resolve_specs_child(specs_root, "specs", slug)
             checkpoint_status = detect_update_checkpoint(package_dir)
+            if checkpoint_status.state == "corrupted":
+                corrupted_checkpoint_packages += 1
         except (OSError, UnicodeError, ValueError) as exc:
             rows.append(f"- {slug}：状态读取失败（{exc}）")
             read_failure_packages += 1
@@ -545,8 +551,6 @@ def render_multi_status(
             if checkpoint_status.interrupted:
                 rows.append(f"- {slug}：已完成 未知；阻塞 {checkpoint_alert(checkpoint_status)}；任务记录不可读")
                 checkpoint_packages += 1
-                if checkpoint_status.state == "corrupted":
-                    corrupted_checkpoint_packages += 1
                 blocked_packages += 1
                 worst = worst_health(worst, HEALTH_BLOCKED)
                 continue
@@ -562,8 +566,6 @@ def render_multi_status(
             if checkpoint_status.interrupted:
                 row += f"；历史遗留 {checkpoint_alert(checkpoint_status)}"
                 checkpoint_packages += 1
-                if checkpoint_status.state == "corrupted":
-                    corrupted_checkpoint_packages += 1
                 blocked_packages += 1
             else:
                 read_failure_packages += 1
@@ -591,16 +593,14 @@ def render_multi_status(
             task_blocked_packages += 1
         if summary["checkpoint"] != "无":
             checkpoint_packages += 1
-            if checkpoint_status.state == "corrupted":
-                corrupted_checkpoint_packages += 1
         if summary["pending"] != "无":
             pending_packages += 1
         if summary["needs_work"] == "是":
             gate_packages += 1
         if summary["gate_failed"] == "是":
             failed_gate_packages += 1
-        if primary_line is None and summary["primary"] != "无":
-            primary_line = f"{summary['title']}：{summary['primary']}"
+        if summary["primary"] != "无":
+            primary_lines.append(f"{summary['title']}：{summary['primary']}")
         row = f"- {summary['title']}：已完成 {summary['progress']}"
         if summary["primary"] != "无":
             row += f"；当前 {summary['primary']}"
@@ -629,7 +629,7 @@ def render_multi_status(
     alerts = []
     if checkpoint_packages:
         alerts.append(
-            f"{checkpoint_packages} 个项目存在历史遗留 update checkpoint（机制已退役）：按 Git 历史恢复后删除该文件"
+            f"{checkpoint_packages} 个项目存在历史遗留 update checkpoint（机制已退役）：{checkpoint_recovery_guidance()}"
         )
     if read_failure_packages:
         alerts.append(f"{read_failure_packages} 个项目状态读取失败或尚无可执行任务")
@@ -645,9 +645,9 @@ def render_multi_status(
         alerts.append(f"{dependency_packages} 个项目任务依赖存在错误")
 
     if corrupted_checkpoint_packages:
-        next_step = "处理历史遗留 update checkpoint：记录已损坏；按 Git 历史恢复三件套后删除 update-checkpoint.json"
+        next_step = f"处理历史遗留 update checkpoint：记录已损坏，不可信任；{checkpoint_recovery_guidance()}"
     elif checkpoint_packages:
-        next_step = "处理历史遗留 update checkpoint：按 Git 历史确认/恢复三件套后删除 update-checkpoint.json"
+        next_step = f"处理历史遗留 update checkpoint：{checkpoint_recovery_guidance()}"
     elif read_failure_packages:
         next_step = "修复项目记录读取失败或补齐可执行任务"
     elif task_blocked_packages:
@@ -676,7 +676,7 @@ def render_multi_status(
             "门禁": f"待补 {failed_gate_packages}" if failed_gate_packages else "通过",
             "证据": "无",
         },
-        current=primary_line,
+        current_items=primary_lines,
         alerts=alerts,
         next_step=next_step,
         detail=detail,

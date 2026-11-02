@@ -8,13 +8,15 @@
 - TaskCompleted：任务被标记完成时触发，可在关闭前强制验收。
 
 行为：在活跃 run 中定位 teammate 对应的 in_flight 任务；
-- 任务未记录 ok 结果 -> exit 2，反馈「先跑 verify 并记录 task result」；
-- 无活跃 run 或无对应任务 -> 放行（exit 0）。
+- 未交接时要求 worker 仅提交非终态报告并通知主会话；
+- 已交接后放行，以免阻止 worker 结束；该报告不会释放并发额度。
+- 主会话须从宿主核实执行结束后才记录终态；无活跃 run 或无对应任务则放行。
 """
 
 from __future__ import annotations
 
 import json
+import shlex
 import sys
 from pathlib import Path
 
@@ -113,12 +115,22 @@ def main() -> int:
         )
 
     run_dir, round_index, tid, task = matches[0]
-    # TaskCompleted/TeammateIdle 语义：任务在 run 状态里还挂着 in_flight
+    if task.get("workerReport"):
+        # Let the worker end; the disk task remains in_flight until the coordinator
+        # confirms actual host termination. Idle is not proof of process exit.
+        return 0
+    fence = ""
+    if task.get("reservationToken"):
+        fence = " --reservation " + shlex.quote(task["reservationToken"])
+    elif task.get("attempts", 0) > 1:
+        fence = " --submission " + shlex.quote(task.get("submissionId") or "")
     return fail_closed(
-        f"spec team-loop 门禁：run {run_dir.name} 中任务 r{round_index}/{tid}（{task.get('description', '')[:80]}）"
-        f"仍是 in_flight。先完成工作并运行验证，然后记录结果："
-        f"python3 {SKILL_DIR}/scripts/loop_state.py task result --run-dir {run_dir} "
-        f'--round {round_index} --id {tid} --outcome ok --result "<验证证据>"。'
+        f"spec team-loop 门禁：run {run_dir.name} 的任务 r{round_index}/{tid} 仍是 in_flight。"
+        "请将真实工作与验证记录写入 JSON 对象文件 worker-report.json（若文件已存在则另选文件名并调整命令），"
+        "仅提交非终态交接并通知主会话，不要自行记录 task result 或取消任务：\n"
+        f"python3 {shlex.quote(str(SKILL_DIR / 'scripts' / 'loop_state.py'))} task report --run-dir {shlex.quote(str(run_dir))} "
+        f"--round {round_index} --id {shlex.quote(tid)} --result @worker-report.json{fence}\n"
+        "交接不释放额度；主会话须向宿主核实该 worker 已结束后才记录终态。"
     )
 
 

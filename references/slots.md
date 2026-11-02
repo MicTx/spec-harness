@@ -5,7 +5,7 @@ Slots answer a narrow extension question: can a capability ship beside the task-
 ## When to build a slot
 
 - The capability has an independent boundary (its own scripts / hooks / tests / docs)
-- It works without modifying the spec core state machine (the task-package trio, gates, archiving)
+- It works without modifying the spec core state machine (task-package documents, gates, archiving)
 - Typical example: `team-loop` (agents-team loop triggering and efficient management)
 
 Not slot material: changes to the task-package lifecycle itself (they belong in core `scripts/`); pure documentation (belongs in `references/`).
