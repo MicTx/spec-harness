@@ -549,3 +549,189 @@ def test_sandbox_install_reports_unwired_activation_and_the_one_time_command(tmp
     assert "not wired by default" in output
     assert "install_activation_hooks.py --mode on" in output
     assert not (home / ".claude" / "settings.json").exists()
+
+
+def _fingerprint_dir(root: Path) -> dict:
+    out = {}
+    for path in sorted(root.rglob("*")):
+        rel = str(path.relative_to(root))
+        if path.is_file():
+            out[rel] = path.read_bytes()
+        else:
+            out[rel + "/"] = b""
+    return out
+
+
+def _source_runtime_fingerprint() -> dict:
+    root = ROOT / ".spec"
+    out = {}
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root)
+        if relative.parts[0] == "artifacts" or any(part in ("__pycache__", ".pytest_cache") for part in relative.parts):
+            continue
+        if path.is_symlink():
+            out[str(relative)] = ("symlink", os.readlink(path))
+        elif path.is_file():
+            out[str(relative)] = ("file", path.read_bytes())
+        else:
+            out[str(relative)] = ("directory", b"")
+    return out
+
+
+def _seed_claude_home(home: Path, cwd: Path):
+    import json as _json
+
+    enc = "".join(c if c.isalnum() or c in "_-" else "-" for c in str(cwd))
+    bucket = home / ".claude" / "projects" / enc
+    bucket.mkdir(parents=True)
+    records = [
+        {
+            "type": "user",
+            "cwd": str(cwd),
+            "sessionId": "sid-1",
+            "uuid": "u1",
+            "timestamp": "2026-11-02T10:00:00Z",
+            "message": {"role": "user", "content": [{"type": "text", "text": "export alpha"}]},
+        },
+        {
+            "type": "assistant",
+            "cwd": str(cwd),
+            "sessionId": "sid-1",
+            "uuid": "u2",
+            "parentUuid": "u1",
+            "timestamp": "2026-11-02T10:01:00Z",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "alpha next step"}]},
+        },
+    ]
+    with open(bucket / "sid-1.jsonl", "w", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(_json.dumps(record) + "\n")
+
+
+@requires_bash
+def test_installed_cli_recovers_context_core_and_full(tmp_path):
+    import json as _json
+
+    for profile in ("core", "full"):
+        home = tmp_path / f"home-{profile}"
+        home.mkdir()
+        before_source = _source_runtime_fingerprint()
+        result = run_installer(home, {"INSTALL_PROFILE": profile, "PYTHONDONTWRITEBYTECODE": "1"})
+        assert result.returncode == 0, result.stderr[-300:]
+        script = home / ".claude" / "skills" / "spec" / "scripts" / "spec_context.py"
+        assert script.is_file(), profile
+        if profile == "core":
+            assert all(not (script.parent / name).exists() for name in CORE_EXCLUDED_SCRIPTS)
+
+        target = tmp_path / f"target-{profile}"
+        target.mkdir()
+        native_home = tmp_path / f"native-{profile}"
+        _seed_claude_home(native_home, target)
+        before_target = _fingerprint_dir(target)
+        before_native = _fingerprint_dir(native_home)
+
+        env = dict(os.environ)
+        env["HOME"] = str(native_home)
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        discovered = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                str(script),
+                "discover",
+                "--root",
+                ".",
+                "--home",
+                str(native_home),
+                "--client",
+                "devin",
+            ],
+            cwd=target,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert discovered.returncode == 0, discovered.stderr[-300:]
+        payload = _json.loads(discovered.stdout)
+        assert payload["candidates"] and payload["candidates"][0]["agent"] == "claude"
+        read = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                str(script),
+                "read",
+                "--root",
+                ".",
+                "--home",
+                str(native_home),
+                "--agent",
+                "claude",
+                "--session",
+                payload["candidates"][0]["session_id"],
+            ],
+            cwd=target,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert read.returncode == 0, read.stderr[-300:]
+        body = _json.loads(read.stdout)
+        assert [m["text"] for m in body["messages"]] == ["export alpha", "alpha next step"]
+        assert body["authority"] == "context-only"
+        assert "untrusted" in " ".join(body["advisories"])
+        assert any("completion" in advisory or "evidence" in advisory for advisory in body["advisories"])
+        assert _fingerprint_dir(target) == before_target
+        assert _fingerprint_dir(native_home) == before_native
+        assert _source_runtime_fingerprint() == before_source
+        assert not (target / ".spec").exists()
+        assert not list(script.parent.rglob("__pycache__"))
+
+
+@requires_bash
+def test_installer_preserves_user_settings_both_ways(tmp_path):
+    import json as _json
+
+    for profile in ("core", "full"):
+        for preexisting in (False, True):
+            home = tmp_path / f"home-{profile}-{preexisting}"
+            home.mkdir()
+            settings = home / ".claude" / "settings.json"
+            if preexisting:
+                settings.parent.mkdir(parents=True)
+                settings.write_text(_json.dumps({"permissions": {"allow": ["Bash(ls)"]}, "sentinel": "keep-me"}))
+                original = settings.read_bytes()
+            result = run_installer(home, {"INSTALL_PROFILE": profile, "PYTHONDONTWRITEBYTECODE": "1"})
+            assert result.returncode == 0, result.stderr[-300:]
+            if preexisting:
+                assert settings.read_bytes() == original
+            else:
+                assert not settings.exists()
+
+
+@requires_bash
+def test_generated_wrappers_load_recovery_contract(tmp_path):
+    for host, install_env in (("claude", {}), ("pi", {"INSTALL_HOSTS": "pi"})):
+        home = tmp_path / f"home-{host}"
+        home.mkdir()
+        result = run_installer(home, {**install_env, "PYTHONDONTWRITEBYTECODE": "1"})
+        assert result.returncode == 0, result.stderr[-300:]
+        if host == "claude":
+            wrappers = home / ".claude" / "commands" / "spec"
+            texts = [p.read_text() for p in wrappers.glob("*.md")]
+            assert not (home / ".claude" / "commands" / "spec.md").exists()
+            skill = (home / ".claude" / "skills" / "spec" / "SKILL.md").read_text()
+            assert skill.index("spec_context.py discover") < skill.index("scripts/route_spec_package.py")
+        else:
+            pi_prompts = home / ".pi" / "agent" / "prompts"
+            texts = (
+                [p.read_text() for p in pi_prompts.glob("*.md") if not p.name.endswith(".spec-skill-install")]
+                if pi_prompts.exists()
+                else []
+            )
+        assert texts, host
+        for text in texts:
+            normalized = " ".join(text.lower().split())
+            assert normalized.index("installed skill") < normalized.index("native session recovery")
+            assert normalized.index("native session recovery") < normalized.index("before stage analysis")

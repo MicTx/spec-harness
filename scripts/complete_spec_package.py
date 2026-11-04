@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -30,11 +31,14 @@ from safe_open_support import SafeOpenError, open_regular_read
 from spec_package_support import (
     MAX_SPEC_FILE_BYTES,
     SECTION_BEHAVIOR_METRICS,
+    SECTION_CORRECTION_LOG,
+    SECTION_DEVIATION_LOG,
     SECTION_KEY_ASSUMPTIONS,
     SECTION_MINIMAL_PATH,
     SECTION_OUT_OF_SCOPE,
     SPEC_TITLE_SUFFIXES,
     SpecControlError,
+    _titled_section_lines,
     add_specs_dir_arg,
     detect_language,
     extract_evidence_fields,
@@ -49,7 +53,10 @@ from spec_package_support import (
     validate_branch_bound_package,
     verification_scope,
 )
-from spec_verify import machine_verification_summary, runs_protocol_enabled
+from spec_package_support import (
+    parse_task_records as parse_task_records_for_machine_notes,
+)
+from spec_verify import latest_record_by_task, machine_verification_summary, read_runs_records, runs_protocol_enabled
 
 
 def parse_args() -> argparse.Namespace:
@@ -170,6 +177,149 @@ def completed_task_subjects(tasks_content: str) -> list[str]:
     return [str(record["subject"]) for record in parse_task_records(tasks_content).values() if record["completed"]]
 
 
+MISTAKE_DIRECTIONS = ("DEFERENCE", "OVERREACH", "KNOWLEDGE", "PROCESS")
+
+
+def _classify_review_issue(issue: dict[str, object]) -> str:
+    values = [str(issue.get(key, "")) for key in ("id", "summary", "evidence")]
+    text = " ".join(values).lower()
+    if any(token in text for token in ("deference", "literal request", "literal ask", "wrong request")):
+        return "DEFERENCE"
+    if any(token in text for token in ("overreach", "unrequested", "beyond the need", "addition", "scope creep")):
+        return "OVERREACH"
+    if any(token in text for token in ("knowledge", "external fact", "stale source", "assumption", "api behavior")):
+        return "KNOWLEDGE"
+    return "PROCESS"
+
+
+def _classify_deviation_row(line: str) -> str:
+    cells = [cell.strip().lower() for cell in line.strip("|").split("|")]
+    text = " ".join(cells[1:])
+    if any(
+        token in text
+        for token in (
+            "deference",
+            "skipped requested",
+            "deferred requested",
+            "omitted requested",
+            "not implement requested",
+        )
+    ):
+        return "DEFERENCE"
+    if any(token in text for token in ("external fact", "stale source", "assumption", "api behavior", "knowledge")):
+        return "KNOWLEDGE"
+    if any(token in text for token in ("gate sequencing", "process", "test", "tool")):
+        return "PROCESS"
+    return "OVERREACH"
+
+
+def mistake_direction_entries(
+    spec_content: str,
+    issue_dispositions: list[dict[str, object]],
+) -> dict[str, list[str]]:
+    """Derive source-cited mistake-direction counts from persisted package state."""
+    entries = {direction: [] for direction in MISTAKE_DIRECTIONS}
+    for line in _titled_section_lines(spec_content, SECTION_CORRECTION_LOG):
+        if not line.startswith("|") or set(line) <= {"|", "-", " ", ":"}:
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if len(cells) != 4 or not cells[0].isdigit():
+            continue
+        knowledge_marker = re.compile(r"A\d+\s+FALSI" r"FIED", re.IGNORECASE)
+        direction = "KNOWLEDGE" if knowledge_marker.search(cells[3]) else "PROCESS"
+        entries[direction].append(f"spec.md ### 5.5 修正日志 round {cells[0]}")
+    for line in _titled_section_lines(spec_content, SECTION_DEVIATION_LOG):
+        if not line.startswith("|") or set(line) <= {"|", "-", " ", ":"}:
+            continue
+        match = re.match(r"\|?\s*(D\d+)\s*\|", line)
+        if match:
+            entries[_classify_deviation_row(line)].append(f"spec.md ### 5.6 偏离日志 {match.group(1)}")
+    for issue in issue_dispositions:
+        issue_id = str(issue.get("id", "")).strip()
+        if not issue_id:
+            continue
+        entries[_classify_review_issue(issue)].append(f"completion-summary.md 问题处置 {issue_id}")
+    return entries
+
+
+def render_mistake_directions(directions: dict[str, list[str]] | None) -> str:
+    supplied = directions or {}
+    values = {direction: list(supplied.get(direction, [])) for direction in MISTAKE_DIRECTIONS}
+    lines = ["## 失误方向统计"]
+    for direction in MISTAKE_DIRECTIONS:
+        lines.append(f"- {direction}：{len(values[direction])}")
+        lines.extend(f"  - {source}" for source in values[direction])
+    lines.append("- 只统计，不自动调整 Autonomy。")
+    return "\n".join(lines)
+
+
+_MACHINE_NOTE_PREFIX = re.compile(r"^-\s*(?:测试|构建|脚本验证)：")
+_MACHINE_NOTE_SYNTAX = re.compile(
+    r"^-\s*(?:(?:测试|构建|脚本验证)：)?`([^`]+)` -> exit 0 "
+    r"\(runs:(task_\d{4,}|task-[a-z0-9][a-z0-9-]{0,58})\)$"
+)
+_RUN_REFERENCE = re.compile(r"\bruns:(task_\d{4,}|task-[a-z0-9][a-z0-9-]{0,58})\b", re.IGNORECASE)
+
+
+def machine_success_note_errors(
+    summary: str,
+    tasks_content: str,
+    package_dir: Path,
+) -> list[str]:
+    """Require successful test/build prose to name a replayable machine run."""
+    lines = summary.splitlines()
+    machine_notes: list[str] = []
+    in_evidence = False
+    in_gate = False
+    for line in lines:
+        if line == "## 验证证据":
+            in_evidence, in_gate = True, False
+            continue
+        if line == "## 门禁证据":
+            in_evidence, in_gate = False, True
+            continue
+        if re.match(r"^##\s+", line):
+            in_evidence = in_gate = False
+            continue
+        machine_category = in_evidence and bool(_MACHINE_NOTE_PREFIX.match(line))
+        gate_claim = in_gate and line.strip() != "- 无"
+        if (in_evidence or in_gate) and line.startswith("- ") and (machine_category or gate_claim):
+            machine_notes.append(line)
+    if not machine_notes:
+        return []
+
+    task_commands: dict[str, str] = {}
+    for task_record in parse_task_records_for_machine_notes(tasks_content):
+        command_match = re.search(r"`([^`]+)`", task_record.verify)
+        if command_match and not task_record.verify.strip().lower().startswith("manual:"):
+            task_commands[task_record.id] = command_match.group(1)
+    records = read_runs_records(package_dir) or []
+    latest = latest_record_by_task(records)
+    errors: list[str] = []
+    for note in machine_notes:
+        syntax_match = _MACHINE_NOTE_SYNTAX.fullmatch(note)
+        if not syntax_match:
+            errors.append(f"机器成功声明必须使用 closed syntax：`<command>` -> exit 0 (runs:<task id>)：{note}")
+            continue
+        references = [syntax_match.group(2)]
+        for task_id in references:
+            if task_id not in task_commands:
+                errors.append(f"机器成功声明引用了不存在的机器任务：{task_id}")
+                continue
+            record = latest.get(task_id)
+            if not record:
+                errors.append(f"机器成功声明没有 runs.jsonl 记录：{task_id}")
+            elif record.get("exit") != 0:
+                errors.append(f"机器成功声明引用的任务未通过：{task_id} exit={record.get('exit')}")
+                continue
+            recorded_command = str(record.get("cmd", ""))
+            if recorded_command != task_commands.get(task_id):
+                errors.append(f"机器成功声明引用的任务命令不一致：{task_id}")
+            elif syntax_match.group(1) != recorded_command:
+                errors.append(f"机器成功声明与 run 命令不一致：{task_id}：{recorded_command}")
+    return errors
+
+
 def archive_summary_values(
     spec_content: str,
     tasks_content: str,
@@ -183,16 +333,10 @@ def archive_summary_values(
     ``--test-evidence`` / ``--build-evidence`` / ``--manual-evidence``
     arguments aggregate into the notes list and never gate the archive.
     """
-    evidence = extract_evidence_fields(checklist_content or "")
     assumptions = normalize_items(extract_section_bullets(spec_content, SECTION_KEY_ASSUMPTIONS))
     minimal_path = normalize_items(extract_section_bullets(spec_content, SECTION_MINIMAL_PATH))
     out_of_scope = normalize_items(extract_section_bullets(spec_content, SECTION_OUT_OF_SCOPE))
     behavior = normalize_items(extract_section_bullets(spec_content, SECTION_BEHAVIOR_METRICS))
-    command_evidence = [
-        f"{key}：{value}"
-        for key in ("脚本验证", "测试", "构建")
-        if (value := evidence.get(key, "")) and not is_placeholder_value(value)
-    ]
     delivered = completed_task_subjects(tasks_content)
     evidence_notes = (
         [
@@ -200,7 +344,7 @@ def archive_summary_values(
             *(f"构建：{value}" for value in args.build_evidence),
             *(f"手工：{value}" for value in args.manual_evidence),
         ]
-        or command_evidence
+        or ([] if runs_protocol_enabled(spec_content) else ["手工：legacy checklist evidence retained in checklist.md"])
         or [
             (
                 "机器证据：runs.jsonl（见验证范围的机器验证率）"
@@ -219,7 +363,7 @@ def archive_summary_values(
         "evidence_notes": evidence_notes,
         "effect_metrics": args.effect_metric or behavior or ["Development Record 行为门禁通过"],
         "consistency_evidence": args.consistency_evidence or ["验收面（checklist 或成功标准）已通过"],
-        "gate_evidences": args.gate_evidence or ["check_spec_package.py exit 0"],
+        "gate_evidences": args.gate_evidence or ["无"],
     }
 
 
@@ -478,6 +622,7 @@ def build_summary(
     verification_scope_level: str | None = None,
     machine_verification_rate: str | None = None,
     commit_range: str | None = None,
+    mistake_directions: dict[str, list[str]] | None = None,
 ) -> str:
     git_labels = git_record_labels(git_record_language)
     closure = render_issue_closure(issue_dispositions or [])
@@ -488,6 +633,7 @@ def build_summary(
     # localized) because it is the machine-readable anchor the footer
     # interval judge parses; None keeps legacy callers' output unchanged.
     commit_range_section = f"- 提交区间：{commit_range}\n" if commit_range else ""
+    mistake_direction_section = render_mistake_directions(mistake_directions)
     # Optional process-metrics section: rendered only when real entries are
     # passed, so legacy summaries keep their exact field order.
     process_metrics_section = ""
@@ -556,6 +702,8 @@ def build_summary(
 
 ### 一致性门禁回顾
 {bullet_lines(consistency_evidence, "待补充")}
+
+{mistake_direction_section}
 
 ## {git_labels["section"]}
 - {git_labels["datetime"]}：{completed_at}
@@ -819,9 +967,16 @@ def main() -> int:
         verification_scope_level=verification_scope(spec_content),
         machine_verification_rate=machine_rate,
         commit_range=archive_commit_range(root, args.main_branch),
+        mistake_directions=mistake_direction_entries(spec_content, issue_dispositions),
     )
 
     if args.archive:
+        machine_note_failures = machine_success_note_errors(summary, tasks_content, package_dir)
+        if machine_note_failures:
+            print("error: machine evidence note gate failed:", file=sys.stderr)
+            for failure in machine_note_failures:
+                print(f"  - {failure}", file=sys.stderr)
+            return 1
         summary_failures = validate_completion_summary(
             summary,
             specs_root=specs_root,

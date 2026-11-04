@@ -322,20 +322,19 @@ def test_check_section_states_respond_prohibition():
     assert "严禁把未通过项回写成成功结果" in section, "respond prohibition sentence missing"
 
 
-def test_check_section_states_dual_stop_conditions():
+def test_check_section_states_evidence_based_stop_conditions():
     section = _check_section()
-    assert "无新增项" in section, "semantic stop condition must be readable directly from the doc"
-    assert "最多 3 轮" in section, "default budget-cap stop condition must be readable directly from the doc"
-    assert "may declare a different N" in section, "budget cap must stay overridable, never a declaration requirement"
+    assert "no new evidence" in section, "semantic stop condition must be readable directly from the doc"
+    assert "change strategy" in section, "a no-progress round must require a different strategy"
+    assert "goes to the owner" in section, "repeated no progress after a strategy change must escalate"
+    assert "最多 3 轮" not in section, "fixed correction-round budgets are retired"
 
 
-def test_check_section_states_stop_loss_attribution_rule():
+def test_check_section_points_to_correction_log_contract():
     section = _check_section()
-    assert "同一门禁连续 N 轮失败" in section
-    assert "停止重跑" in section
-    assert "拆细" in section, "attribution must name splitting an over-broad standard"
-    assert "verify" in section, "attribution must allow fixing the verify itself"
-    assert "转人工" in section, "attribution must allow marking a human escalation"
+    assert "`### 5.5 修正日志`" in section
+    assert "templates.md" in section, "the detailed evidence and immutability rules have one owner"
+    assert "`PASS`" in section, "the gate must reject success rows in the correction log"
 
 
 def test_check_section_reuses_task_stable_ids_for_dedup():

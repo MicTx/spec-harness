@@ -78,7 +78,7 @@ Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.22.3
+git checkout v0.24.0
 bash install.sh
 ```
 
@@ -294,8 +294,11 @@ spec/
 │   ├── route_decision.py
 │   ├── route_spec_package.py
 │   ├── safe_open_support.py
+│   ├── session_adapters.py
+│   ├── session_context_support.py
 │   ├── slot_registry.py
 │   ├── smoke_test_spec_skill.py
+│   ├── spec_context.py
 │   ├── spec_handoff.py
 │   ├── spec_package_support.py
 │   ├── spec_verify.py

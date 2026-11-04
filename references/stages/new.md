@@ -1,6 +1,6 @@
 # `/spec:new`
 
-Goal: create a new task package and compress a complex task into an executable specification.
+Goal: [recover context](../handoff.md#native-session-recovery), then scope a new task package when needed.
 
 Compatible invocation:
 
@@ -10,7 +10,7 @@ Compatible invocation:
 Execution order:
 
 1. Clarify the most critical information: project goal, target users, MVP, technology preferences, boundaries, and exclusions.
-2. Record facts, assumptions, questions and trade-offs. For 1–2 uncertain claims that could change the conclusion, write primary sources, a falsifier and task `verify` before implementation in existing §2/§5.1/§6; no invented uncertainty. Missing sources stay unverified; independent-oracle examples: [`../templates.md`](../templates.md).
+2. Record facts, external facts, assumptions, questions and trade-offs. For 1–2 uncertain claims that could change the conclusion, write primary sources, a falsifier and task `verify` before implementation in existing §2/§5.1/§6; no invented uncertainty. Missing sources stay unverified; independent-oracle examples: [`../templates.md`](../templates.md).
 3. Name the package with a stable, readable `YYYY-MM-DD_<verb>-<object>` Development Record slug (e.g. `2026-06-12_add-login-rate-limit`); verbs come from the controlled vocabulary in [`../naming-and-commits.md`](../naming-and-commits.md).
 4. In a Git repository, run the `/spec:new` branch preflight before writing any package file:
    - Require a clean tree; with uncommitted or untracked changes, stop and output triage advice (commit, stash, or move unrelated changes into their own Development Record). One class of dirt is carried instead of blocking: entries consisting solely of another active package's own documents under `<specs>/specs/<slug>/` (checklist ticks, evidence, handoff) are attributed per file with `--untracked-files=all` and skipped, so a previous round's unarchived documents never block the next package. Business files and `archive/` dirt still stop.
@@ -42,4 +42,3 @@ Constraints:
 Output contract:
 
 - Render the `/spec:new` dashboard per [`../output-contracts.md`](../output-contracts.md).
-

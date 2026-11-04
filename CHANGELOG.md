@@ -4,6 +4,54 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [0.24.0] - 2026-11-04
+
+### Changed
+
+- **BREAKING — 任务包验收契约**：LITE/FULL 包必须声明 `UI surface: changed|unchanged`；交互面变化必须绑定可重放的 Browser check 命令，并原样出现在 machine verify；完成总结的机器成功声明必须写成 `命令 -> exit 0 (runs:<task>)` 且匹配真实运行记录。
+- **BREAKING — Package acceptance contract**: LITE/FULL packages must declare `UI surface: changed|unchanged`; a changed interactive surface must bind a replayable Browser check command that appears verbatim in a machine task verify; completion-summary machine success claims must use `command -> exit 0 (runs:<task>)` and match an actual passing run.
+- **FULL 方案阶梯收敛**：FULL 只强制 B0/B1，B2/B3 按需出现且必须实质填写；四个 reading 固定为 literal ask / minimal change / recommended alternative / no new build。
+- **FULL option ladder**: FULL requires only B0/B1; B2/B3 appear only when plausible and must be substantive; the four readings are fixed to literal ask / minimal change / recommended alternative / no new build.
+- **数据作用域审查**：审查者现在检查候选集合是否只使用同一对象作用域的数据，避免把全量历史混进当前对象的结果。
+- **Data-scope review**: Reviewers now check that candidate sets use data from the same object scope, preventing full-history data from leaking into a current-object result.
+- **任务包意图与偏离**：`spec.md` 模板新增 literal ask、推断结果、假设格式、方案阶梯、修正日志和偏离日志；审查契约区分超出需要的改动、字面请求偏离和目标漂移，不可逆偏离必须获得本任务所有者授权。
+- **Package intent and deviations**: The `spec.md` template now carries a literal ask, inferred outcome, structured assumptions, an option ladder, correction log, and deviation log; review distinguishes additions from literal-ask deviations and goal drift, while irreversible deviations require a task-specific owner grant.
+- **LITE 契约补齐**：LITE 的五个 Intent 字段可各写一行短语；B0 与 B1 相同时可只写 `B0 is the minimal change.`；LITE/FULL 的修正和偏离日志无事件时必须保留一行 `none`。
+- **LITE contract completion**: LITE Intent fields may each be one short phrase; when B0 and B1 match, the option ladder may contain only `B0 is the minimal change.`; LITE/FULL correction and deviation logs must retain one `none` line when empty.
+- **按新信息停止修正**：检查循环不再默认三轮停止；每轮失败必须记录新输出、新定位或被证伪假设，重复无新信息会触发换策略或交由所有者决定。
+- **Evidence-based correction stopping**: Check loops no longer stop after a fixed round count by default; every failed round records new output, a newly located path, or a falsified assumption, and repeated no-progress rounds change strategy or escalate to the owner.
+
+### Added
+
+- **失误方向统计**：完成总结新增 DEFERENCE / OVERREACH / KNOWLEDGE / PROCESS 计数，来源覆盖偏离日志、修正日志和结构化审查发现；只统计，不自动调整 Autonomy。
+- **Mistake direction statistics**: Completion summaries now count DEFERENCE / OVERREACH / KNOWLEDGE / PROCESS from deviation rows, correction rows, and typed review findings; the section reports only and never adjusts Autonomy automatically.
+- **外部事实证据**：影响计划的版本、API、弃用、安全、价格或配额事实必须记录一手来源、日期、反证检索和受影响假设；来源日期未知或无网络时保持 `UNVERIFIED-EXTERNAL`。
+- **External fact evidence**: Plan-changing versions, APIs, deprecations, security notices, pricing, and quotas record primary sources, dates, counter-evidence searches, and affected assumptions; unknown source dates or unavailable network access leave `UNVERIFIED-EXTERNAL`.
+
+### Fixed
+
+- **默认日志遗漏**：LITE/FULL 包缺少修正日志或偏离日志时不再静默通过，空日志必须保留一行 `none`。
+- **Default log omission**: LITE/FULL packages can no longer pass silently when a correction or deviation log is missing; empty logs must keep one `none` line.
+- **重复章节绕过**：重复的修正日志、偏离日志或方案阶梯不再能绕过契约检查。
+- **Duplicate-section bypass**: Duplicated correction logs, deviation logs, or option ladders can no longer bypass contract checks.
+- **Autonomy 授权缺口**：偏离日志中的授权声明现在与 Autonomy 等级和可逆性交叉校验，缺少授权的偏离会被拒绝。
+- **Autonomy authorization gap**: Authority claims in the deviation log are now cross-checked against the Autonomy level and reversibility, and deviations without the required grant are rejected.
+
+### Docs
+
+- **Bash 写入缺口调研**：新增 ADR 比较保守命令匹配、验收期路径边界和分层防护，推荐先用验收期 diff boundary，并给出翻转条件。
+- **Bash write-gap research**: A new ADR compares a conservative command matcher, acceptance-time path audit, and layered guard; it recommends the diff boundary first and records its flip condition.
+- **范围状态更正**：WS1 status: NOT APPLICABLE — WS1 only added guard tests；WS5 status: DEFERRED，学习方向维度待稳定反馈真源后再落地。独立复审的默认日志缺失、重复节绕过和 Autonomy 授权缺口均已修复。
+- **Scope status correction**: WS1 status: NOT APPLICABLE — WS1 only added guard tests; WS5 status: DEFERRED until a stable feedback truth source exists. The independently reviewed default-log omission, duplicate-section bypass, and autonomy authorization gap are fixed.
+
+## [0.23.0] - 2026-11-03
+
+### Changed
+
+- **接上次的工作**：在同一项目说“继续”，Spec Harness 会先查找相关助手会话；目标不清会先询问，明确禁读时不扫描历史。
+- **Continue across assistants**: Say “continue” in the same project to find relevant earlier context; unclear goals trigger a question, and an explicit history-access ban skips the scan.
+- **BREAKING — 入口顺序 / Entry order**：没有活动任务包但找到相关会话时，`/spec` 会先提示接续，不再直接建议新建。 / With no active package but a relevant session, `/spec` offers recovery before suggesting a new task.
+
 ## [0.22.3] - 2026-11-02
 
 ### Fixed

@@ -113,8 +113,18 @@ def populate_spec(path: Path) -> None:
             "一句话描述项目要解决什么问题": "修复 spec helper scripts 的状态机与模板一致性",
             "谁会使用这个产品或系统": "维护 spec 技能的 agent 与仓库作者",
             "完成后能持续提供什么价值": "让 route/status/check 输出可依赖",
+            "<verbatim request>": "修复状态机与模板一致性",
+            "<purpose|unknown>": "让状态输出可依赖",
+            (
+                "<result>; confidence: <high|medium|low>; evidence: <source>"
+            ): "状态输出可依赖; confidence: high; evidence: route/status/check fixtures",
+            "<constraints|unknown>": "不重写整个 workflow",
+            "<speed|quality|cost|maintainability|unknown>": "correctness",
             "- 事实 A": "- 已确认 fresh package 需要先澄清而不是直接执行",
-            "- 假设 A": "- 保持标准库实现，不引入第三方依赖",
+            "- 假设 A": (
+                "- A1 | 保持标准库实现，不引入第三方依赖 | kind: system | "
+                "evidence: pyproject dev dependencies | CONFIRMED | if false: 收窄运行环境"
+            ),
             # v2 template ships the 2.3 question as an unchecked checkbox; the
             # smoke package has no open questions, so fill the 无 declaration.
             "- [ ] 问题 A": "- 无",

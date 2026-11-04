@@ -1,6 +1,6 @@
 # `/spec:run`
 
-Orchestration never decides admission; resume a matching active package. If an all-green package receives a new goal, update scope and unfinished tasks via `update` or `new` before implementation; resume proves identity, not scope coverage.
+Recover [native context](../handoff.md#native-session-recovery) before routing. Orchestration never decides admission; resume a matching active package. If an all-green package receives a new goal, update scope and unfinished tasks via `update` or `new` before implementation; resume proves identity, not scope coverage.
 
 Goal: the main session completes all tasks in dependency order, verifying each before checking it off.
 
@@ -26,4 +26,3 @@ Constraints:
 - No busy-waiting, no polling; user interruptions always outrun the loop.
 
 Output follows [../output-contracts.md](../output-contracts.md): project goal, real progress, results, blockers.
-

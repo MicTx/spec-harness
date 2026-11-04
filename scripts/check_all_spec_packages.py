@@ -704,6 +704,53 @@ def _validate_package(
     return failures
 
 
+def archived_package_failures(
+    root: Path,
+    *,
+    baseline_revision: str | None = None,
+) -> list[CheckFailure]:
+    """Validate every archived package against the current gates.
+
+    Active packages are excluded: a rule change must keep already-delivered
+    records green without being blocked by in-progress work. Archived packages
+    byte-identical to the authoritative baseline stay exempt through the same
+    legacy-hash path the full gate uses.
+    """
+    resolved_root = root.resolve(strict=False)
+    try:
+        specs_roots = discover_specs_roots(resolved_root)
+    except (OSError, ValueError) as exc:
+        return [CheckFailure(resolved_root, "<discovery>", str(exc))]
+
+    failures: list[CheckFailure] = []
+    for specs_root in specs_roots:
+        try:
+            specs_identity = specs_root.relative_to(resolved_root).as_posix()
+        except ValueError:
+            failures.append(CheckFailure(specs_root, "<identity>", "Spec root is outside project root"))
+            continue
+        try:
+            archived = archived_package_dirs(specs_root)
+        except OSError as exc:
+            failures.append(CheckFailure(specs_root, "<enumeration>", str(exc)))
+            continue
+        if not archived:
+            continue
+        legacy_hashes = legacy_archive_hashes(resolved_root, baseline_revision, [specs_identity])
+        for package in archived:
+            failures.extend(
+                _validate_package(
+                    resolved_root,
+                    specs_root,
+                    package,
+                    archived=True,
+                    legacy_hashes=legacy_hashes,
+                    specs_identity=specs_identity,
+                )
+            )
+    return failures
+
+
 def check_all_packages(
     root: Path,
     explicit: list[str] | None = None,

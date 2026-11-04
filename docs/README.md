@@ -23,7 +23,7 @@
 - [Releases](../RELEASE.md)：版本、归档、校验和回滚。
 - [Security](../SECURITY.md)：漏洞报告和 server-mode 安全边界。
 - [Support](../SUPPORT.md)：安装或运行失败时应提供哪些信息。
-- 架构决策记录（ADR，`adr/` 目录）：[会话生成与窗口生命周期](adr/0001-terminal-spawn-window-lifecycle.md)、[阶段契约拆分](adr/0002-stage-contracts-by-file.md)、[推送门禁归属区间](adr/0003-push-gate-attribution-and-inflight-split.md)；不进运行时导出树。
+- 架构决策记录（ADR，`adr/` 目录）：[会话生成与窗口生命周期](adr/0001-terminal-spawn-window-lifecycle.md)、[阶段契约拆分](adr/0002-stage-contracts-by-file.md)、[推送门禁归属区间](adr/0003-push-gate-attribution-and-inflight-split.md)、[Adapt SDD workflow semantics](adr/0004-adapt-sdd-workflow-semantics.md)、[External facts in package planning](adr/0005-external-facts.md)、[Evidence-based correction stopping](adr/0006-evidence-based-correction-stopping.md)、[Bash write coverage gap](adr/0007-bash-write-gap.md)；不进运行时导出树。
 
 ## 入口归类
 

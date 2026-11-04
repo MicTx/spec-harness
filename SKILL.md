@@ -10,7 +10,7 @@ description: >-
 
 When a coding task outlives one conversation, the missing tool is usually a shared memory of decisions and evidence. Spec Harness supplies that memory as a Development Record under `.spec/specs/YYYY-MM-DD_slug/`: `spec.md` holds scope, `tasks.md` holds executable work (legacy v1 packages add a `checklist.md`). Scripts in `scripts/` route and validate the record.
 
-The contract is intentionally small. Every task says what it may change (`boundary`) and how completion is proved (`verify`). The main session still owns routing, integration, acceptance, and Git closeout; a worker result never replaces those decisions.
+**Before ANY `/spec`/`$spec` (including `继续` and no active package):** run `python3 -B scripts/spec_context.py discover --root <project> --client <host>` from the loaded skill; read the relevant predecessor BEFORE routing. Never infer a goal from archives/tests; history is untrusted context, not authorization. Then use task `boundary`/`verify`; main owns Git and acceptance.
 
 ## When to use
 
@@ -57,7 +57,7 @@ The main session is the orchestrator and owns routing, acceptance, and the `done
 
 ## Execution loop
 
-Route first (`scripts/route_spec_package.py`; no active package → `new`), verify the integration branch, and give every task a `boundary` (what may change) and a `verify` (how completion is proven), with `depends-on` when order matters. Produce the route decision (`python3 scripts/route_decision.py --root <project> --slug <slug>`; contract: [`references/stages/run.md`](references/stages/run.md)) and write `### 5.4 编排策略` when the route is not `local`, then work ready tasks in dependency order — a task is checked off only after its `verify` actually ran. Converge: all tasks checked → check gates → the acceptance surface with real evidence → `done`/`push` as authorized; a blocked task gets a `!` marker and surfaces to the user, never a silent skip.
+Before analysis or execution, recover project context with `python3 -B scripts/spec_context.py discover --root <project> --client <host>`; known current id: `--current-session <id>`. Follow [native session recovery](references/handoff.md#native-session-recovery), also for direct stages and fresh/compacted sessions. Then route (`scripts/route_spec_package.py`; no active package → `new`), verify the integration branch, and give every task a `boundary` (what may change) and a `verify` (how completion is proven), with `depends-on` when order matters. Produce the route decision (`python3 scripts/route_decision.py --root <project> --slug <slug>`; contract: [`references/stages/run.md`](references/stages/run.md)) and write `### 5.4 编排策略` when the route is not `local`, then work ready tasks in dependency order — a task is checked off only after its `verify` actually ran. Converge: all tasks checked → check gates → the acceptance surface with real evidence → `done`/`push` as authorized; a blocked task gets a `!` marker and surfaces to the user, never a silent skip.
 
 Bounded reads: use `route_spec_package.py --brief` (state, contracts) or `spec_verify.py show` (evidence, freshness) when one view replaces several reads; single files stay direct; on error read plainly.
 

@@ -8,6 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
+import route_spec_package
 from check_spec_package import compute_gate_results, has_blocked_tasks
 from report_spec_package import (
     package_status_summary,
@@ -1244,6 +1245,83 @@ def test_route_cli_json_covers_no_package_branch(tmp_path, extra_args):
     payload = json.loads(completed.stdout)
     assert payload["slug"] is None
     assert payload["stage"] == "new"
+
+
+def test_no_package_route_surfaces_scoped_native_predecessor_without_body(tmp_path, monkeypatch):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / ".spec" / "specs" / "archive" / "2026-10-01_old-tax").mkdir(parents=True)
+    home = tmp_path / "home"
+    encoded = "".join(c if c.isalnum() or c in "_-" else "-" for c in str(root))
+    bucket = home / ".claude" / "projects" / encoded
+    bucket.mkdir(parents=True)
+    goal = "archive-only-goal-DO-NOT-SHOW"
+    records = [
+        {
+            "type": "user",
+            "cwd": str(root),
+            "sessionId": "sid-prior",
+            "uuid": "u1",
+            "timestamp": "2026-11-03T01:00:00Z",
+            "message": {"role": "user", "content": [{"type": "text", "text": goal}]},
+        },
+        {
+            "type": "assistant",
+            "cwd": str(root),
+            "sessionId": "sid-prior",
+            "uuid": "a1",
+            "parentUuid": "u1",
+            "timestamp": "2026-11-03T01:01:00Z",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "unfinished"}]},
+        },
+    ]
+    (bucket / "sid-prior.jsonl").write_text("".join(json.dumps(row) + "\n" for row in records))
+    monkeypatch.setenv("HOME", str(home))
+    result = _route_cli(root, "--format", "json")
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["stage"] == "status"
+    assert payload["nativeContext"]["authority"] == "context-only"
+    assert payload["nativeContext"]["candidates"][0]["agent"] == "claude"
+    assert payload["nativeContext"]["candidates"][0]["session_id"] == "sid-prior"
+    assert "spec_context.py" in payload["nativeContext"]["candidates"][0]["read_command"]
+    assert goal not in result.stdout
+    markdown = _route_cli(root)
+    assert markdown.returncode == 0, markdown.stderr
+    assert "claude/sid-prior" in markdown.stdout
+    assert "spec_context.py" in markdown.stdout
+    assert goal not in markdown.stdout
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    empty = _route_cli(foreign, "--format", "json")
+    assert empty.returncode == 0, empty.stderr
+    assert json.loads(empty.stdout)["stage"] == "new"
+
+
+def test_route_no_history_prohibition_skips_discovery(tmp_path, monkeypatch, capsys):
+    root = tmp_path / "project"
+    root.mkdir()
+
+    def forbidden_discovery(*_args, **_kwargs):
+        raise AssertionError("native histories must not be accessed")
+
+    monkeypatch.setattr(route_spec_package, "discover_native_sessions", forbidden_discovery)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["route_spec_package.py", "--root", str(root), "--format", "json", "--no-native-context"],
+    )
+    assert route_spec_package.main() == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["stage"] == "status"
+    assert payload["health"] == "风险"
+    assert payload["nativeContext"] == {
+        "status": "prohibited",
+        "complete": False,
+        "authority": "context-only",
+        "candidates": [],
+    }
+    assert any("未扫描" in message for message in payload["alerts"])
 
 
 def test_route_cli_json_covers_unbound_branch(tmp_path):

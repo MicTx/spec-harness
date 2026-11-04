@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import subprocess
@@ -259,7 +260,7 @@ def test_check_route_and_complete_share_acceptance_gate():
 - [x] Metrics filled
 
 ## 验收证据
-- 脚本验证：pytest passed
+- 脚本验证：pytest
 
 **验收结果**：通过
 """,
@@ -534,7 +535,7 @@ def _write_complete_package(root: Path, slug: str) -> Path:
     package_dir.mkdir(parents=True)
     (package_dir / "spec.md").write_text(_COMPLETE_SPEC_ZH, encoding="utf-8")
     (package_dir / "tasks.md").write_text(_COMPLETE_TASKS, encoding="utf-8")
-    (package_dir / "checklist.md").write_text(_COMPLETE_CHECKLIST, encoding="utf-8")
+    (package_dir / "checklist.md").write_text(_COMPLETE_LEGACY_CHECKLIST, encoding="utf-8")
     return package_dir
 
 
@@ -890,6 +891,8 @@ _COMPLETE_CHECKLIST = """\
 **验收结果**：通过
 """
 
+_COMPLETE_LEGACY_CHECKLIST = _COMPLETE_CHECKLIST.replace("pytest passed", "pytest")
+
 _COMPLETE_TASKS = "- [x] Task A\n  - boundary: x\n  - verify: x\n"
 
 
@@ -1077,6 +1080,232 @@ def test_build_summary_process_metrics_default_backward_compatible():
     assert "## 过程指标" not in summary
     assert summary.index("## 门禁证据") < summary.index("## 遗留事项")
     assert summary.index("## 遗留事项") < summary.index("## 问题处置")
+
+
+def test_mistake_directions_classify_package_and_review_sources():
+    spec = """\
+# Direction - 项目范围
+
+### 5.5 修正日志
+| round | approach | result | new information |
+| --- | --- | --- | --- |
+| 1 | update assumption | failed | A1 FALSIFIED by new output |
+| 2 | tighten gate | failed | newly located parser branch |
+
+### 5.6 偏离日志
+| id | literal ask | actual | reason | reversibility | authority |
+| --- | --- | --- | --- | --- | --- |
+| D1 | ask A | use B | unrequested scope | reversible | checkpoint abc |
+| D2 | ask A | defer part | skipped requested work | reversible | checkpoint abc |
+| D3 | ask A | use B | external assumption changed | reversible | checkpoint abc |
+| D4 | ask A | use B | gate sequencing error | reversible | checkpoint abc |
+"""
+    issues = [
+        {"id": "task-deference", "summary": "agent accepted the wrong literal request"},
+        {"id": "task-process", "summary": "default init logs omitted"},
+    ]
+    directions = complete_module.mistake_direction_entries(spec, issues)
+    assert directions["OVERREACH"] == ["spec.md ### 5.6 偏离日志 D1"]
+    assert directions["DEFERENCE"] == [
+        "spec.md ### 5.6 偏离日志 D2",
+        "completion-summary.md 问题处置 task-deference",
+    ]
+    assert directions["PROCESS"] == [
+        "spec.md ### 5.5 修正日志 round 2",
+        "spec.md ### 5.6 偏离日志 D4",
+        "completion-summary.md 问题处置 task-process",
+    ]
+    assert directions["KNOWLEDGE"] == [
+        "spec.md ### 5.5 修正日志 round 1",
+        "spec.md ### 5.6 偏离日志 D3",
+    ]
+
+
+def test_build_summary_renders_mistake_direction_statistics_without_autonomy_change():
+    directions = {
+        "DEFERENCE": ["completion-summary.md 问题处置 task-deference"],
+        "OVERREACH": ["spec.md ### 5.6 偏离日志 D1"],
+        "KNOWLEDGE": ["spec.md ### 5.5 修正日志 round 1"],
+        "PROCESS": ["spec.md ### 5.5 修正日志 round 2"],
+    }
+    summary = build_summary(
+        title="Direction",
+        completed_at="2026-11-04",
+        result="完成",
+        verified_assumptions=[],
+        open_risks=[],
+        delivered=[],
+        not_delivered=[],
+        deviations=[],
+        simplifications=[],
+        out_of_scope=[],
+        touched_areas=[],
+        untouched_areas=[],
+        evidence_notes=[],
+        effect_metrics=[],
+        consistency_evidence=[],
+        commit_ref="abc123",
+        push_ref="pending",
+        git_record_language="zh",
+        agents_proposals=[],
+        follow_ups=[],
+        rejected_extensions=[],
+        gate_evidences=[],
+        mistake_directions=directions,
+    )
+    assert "## 失误方向统计" in summary
+    for direction, count in (("DEFERENCE", 1), ("OVERREACH", 1), ("KNOWLEDGE", 1), ("PROCESS", 1)):
+        assert f"- {direction}：{count}" in summary
+    assert "spec.md ### 5.6 偏离日志 D1" in summary
+    assert "只统计，不自动调整 Autonomy" in summary
+
+
+def test_machine_success_notes_require_replayable_runs(tmp_path):
+    package = tmp_path / ".spec" / "specs" / "2026-11-04_fix-evidence"
+    package.mkdir(parents=True)
+    tasks = """\
+# Task
+
+- [x] Run tests
+  - boundary: tests
+  - verify: `python3 -m pytest -q`
+"""
+    summary = """\
+# Summary
+
+## 验证证据
+### 备注
+- 测试：`python3 -m pytest -q` -> exit 0 {ref}
+
+## 验证范围
+"""
+    assert complete_module.machine_success_note_errors(summary.format(ref=""), tasks, package), (
+        "successful machine note must name a run"
+    )
+
+    record = {
+        "task": "task_0001",
+        "cmd": "python3 -m pytest -q",
+        "exit": 0,
+        "tree_fp": "0" * 64,
+    }
+    (package / "runs.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+    assert complete_module.machine_success_note_errors(summary.format(ref="(runs:task_0001)"), tasks, package) == []
+
+    record["exit"] = 1
+    (package / "runs.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+    errors = complete_module.machine_success_note_errors(summary.format(ref="(runs:task_0001)"), tasks, package)
+    assert any("task_0001" in error and "exit" in error for error in errors)
+
+
+def test_machine_success_notes_reject_unrelated_or_disguised_claims(tmp_path):
+    package = tmp_path / ".spec" / "specs" / "2026-11-04_fix-unrelated"
+    package.mkdir(parents=True)
+    tasks = """\
+# Task
+
+- [x] Run browser
+  - boundary: browser
+  - verify: `python3 tests/browser/test_button.py`
+- [x] Run tests
+  - boundary: tests
+  - verify: `python3 -m pytest -q`
+"""
+    record = {
+        "task": "task_0001",
+        "cmd": "python3 tests/browser/test_button.py",
+        "exit": 0,
+        "tree_fp": "0" * 64,
+    }
+    (package / "runs.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+    summary = """\
+# Summary
+
+## 验证证据
+### 备注
+- 测试：`python3 -m pytest -q` -> exit 0 (runs:task_0001)
+
+## 验证范围
+"""
+    errors = complete_module.machine_success_note_errors(summary, tasks, package)
+    assert any("命令不一致" in error for error in errors)
+
+    disguised = summary.replace("成功 (runs:task_0001)", "success")
+    errors = complete_module.machine_success_note_errors(disguised, tasks, package)
+    assert errors
+
+    zero_failures = """\
+# Summary
+
+## 验证证据
+### 备注
+- 测试：`python3 -m pytest -q` 0 failures
+
+## 验证范围
+"""
+    errors = complete_module.machine_success_note_errors(zero_failures, tasks, package)
+    assert any("closed syntax" in error for error in errors)
+
+    decorated_unrelated = """\
+# Summary
+
+## 验证证据
+### 备注
+- 测试：`python3 scripts/check.py` pytest passed (runs:task_0001)
+
+## 验证范围
+"""
+    errors = complete_module.machine_success_note_errors(decorated_unrelated, tasks, package)
+    assert any("closed syntax" in error for error in errors)
+
+
+def test_gate_evidence_claims_require_closed_run_syntax(tmp_path):
+    package = tmp_path / ".spec" / "specs" / "2026-11-04_fix-gate-syntax"
+    package.mkdir(parents=True)
+    tasks = "- [x] Check\n  - boundary: check\n  - verify: `python3 scripts/check.py`\n"
+    record = {
+        "task": "task_0001",
+        "cmd": "python3 scripts/check.py",
+        "exit": 0,
+        "tree_fp": "0" * 64,
+    }
+    (package / "runs.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+    summary = """\
+# Summary
+
+## 门禁证据
+- check clean
+
+## 遗留事项
+"""
+    errors = complete_module.machine_success_note_errors(summary, tasks, package)
+    assert any("closed syntax" in error for error in errors)
+
+    summary = summary.replace("- check clean", "- `python3 scripts/check.py` -> exit 0 (runs:task_0001)")
+    assert complete_module.machine_success_note_errors(summary, tasks, package) == []
+
+
+def test_complete_archive_rejects_unreferenced_success_claim_without_runs_protocol(tmp_path):
+    package = _write_complete_package(tmp_path, "2026-11-04_fix-free-text-success")
+    script = Path(complete_module.__file__)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--root",
+            str(tmp_path),
+            "--slug",
+            package.name,
+            "--archive",
+            "--test-evidence",
+            "pytest passed",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1
+    assert "machine evidence note gate failed" in result.stderr
+    assert "runs:<task id>" in result.stderr
 
 
 def test_build_summary_process_metrics_place_between_gate_evidence_and_followups():

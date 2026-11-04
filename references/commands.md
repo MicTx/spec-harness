@@ -18,7 +18,7 @@ Goal: act as the default user entry point; run route internally, then continue w
 
 Execution order:
 
-1. Run `python3 scripts/route_spec_package.py --root <project>` first; when the package carries a `handoff.md`, the route output includes a 交接 line, and a resuming session reads it with `python3 scripts/spec_handoff.py show --slug <slug>` before continuing (contract: [handoff.md](handoff.md)).
+1. Before analysis/planning/execution, follow [native session recovery](handoff.md#native-session-recovery): discover current-project sessions, read relevant predecessors, reconcile disk truth. This shared preflight also applies to direct stage entry. Then run `python3 scripts/route_spec_package.py --root <project>`; if a package has `handoff.md`, read `python3 scripts/spec_handoff.py show --slug <slug>` before continuing. No active package does not prove no unfinished work.
 2. No active package → `new`; if the user also asks for `push` and the work tree / unpushed commits carry discrete changes, enter the push retro-pack path (atomic packing by theme, or one whole new spec package) — never skip packing and push directly.
 3. Active package that can continue → `run`; review request → `check`; archive/close-out request → `done`.
 4. Full goal with the one-shot chain → `goal` (new/run/check/done/commit); push only when explicitly authorized. Merge-push-and-delete after done → the standalone `push` stage internally, reporting only the publication result or external blocker.

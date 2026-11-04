@@ -816,7 +816,7 @@ description: $description
 
 $(command_body "$command_name" "$stage")
 
-Use the installed skill \`$skill_ref\` for this request. Forward user arguments unchanged.
+First load the installed skill \`$skill_ref\` and follow its shared native session recovery contract in references/handoff.md before stage analysis or execution. Forward user arguments unchanged.
 EOF_COMMAND
   write_file_from_stdin "$target_file.spec-skill-install" <<EOF_MARKER
 installed_by=spec/install.sh
@@ -1116,7 +1116,8 @@ description: "$description"
 argument-hint: "[query]"
 ---
 Use the installed skill \`$SKILL_NAME\` for this request. Follow the stage
-index in the skill's references/commands.md.
+index in the skill's references/commands.md; first follow shared native session
+recovery in references/handoff.md before stage analysis or execution.
 Forward user arguments unchanged: \$@
 EOF_TEMPLATE
   else
@@ -1127,6 +1128,8 @@ argument-hint: "[stage arguments]"
 ---
 Use the installed skill \`$SKILL_NAME\` for this request. Follow the /$SKILL_NAME:$stage
 stage contract in the skill's references/stages/ (index: references/commands.md).
+First follow shared native session recovery in references/handoff.md before
+stage analysis or execution.
 Forward user arguments unchanged: \$@
 EOF_TEMPLATE
   fi

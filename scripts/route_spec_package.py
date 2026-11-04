@@ -11,6 +11,7 @@ import base64
 import binascii
 import hashlib
 import json
+import shlex
 import sys
 from pathlib import Path
 
@@ -27,6 +28,8 @@ from dashboard_support import (
 )
 from handoff_support import freshness, parse_handoff, read_handoff, validate_handoff
 from report_spec_package import parse_tasks
+from session_context_support import SessionContextError
+from session_context_support import discover as discover_native_sessions
 from spec_package_support import (
     SpecControlError,
     active_package_slugs,
@@ -61,6 +64,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ascii", action="store_true", help="Render dashboard glyphs as ASCII fallback")
     parser.add_argument("--compact", action="store_true", help="Render metrics as a single line")
     parser.add_argument("--format", choices=("markdown", "json"), default=None)
+    parser.add_argument(
+        "--no-native-context",
+        action="store_true",
+        help="Skip native history discovery only when current user or host explicitly forbids access",
+    )
     parser.add_argument(
         "--brief",
         action="store_true",
@@ -530,6 +538,50 @@ def _decorate_branch_payload(payload: dict, args: argparse.Namespace) -> dict:
     )
 
 
+def _native_context_hint(root: Path) -> dict | None:
+    try:
+        found = discover_native_sessions(root, client="unknown", limit=4)
+    except SessionContextError as exc:
+        return {
+            "status": "unavailable",
+            "reason_code": exc.reason_code,
+            "complete": False,
+            "authority": "context-only",
+            "candidates": [],
+        }
+    script = Path(__file__).with_name("spec_context.py").resolve()
+    candidates = []
+    for item in found["candidates"]:
+        if item.get("association_confidence") != "verified" or item.get("relation") not in ("root", "descendant"):
+            continue
+        entry = {
+            key: item.get(key)
+            for key in (
+                "agent",
+                "session_id",
+                "title",
+                "updated_at",
+                "relation",
+                "association_confidence",
+                "has_user",
+                "complete",
+            )
+        }
+        entry["read_command"] = (
+            f"python3 -B {shlex.quote(str(script))} read --root {shlex.quote(str(root))} "
+            f"--agent {shlex.quote(item['agent'])} --session={shlex.quote(item['session_id'])}"
+        )
+        candidates.append(entry)
+    if not candidates:
+        return None
+    return {
+        "status": found["status"],
+        "complete": found["complete"],
+        "authority": "context-only",
+        "candidates": candidates,
+    }
+
+
 def main() -> int:
     args = parse_args()
     root = Path(args.root).resolve()
@@ -588,6 +640,69 @@ def main() -> int:
 
     packages = active_packages(specs_dir)
     if not packages:
+        native = (
+            {"status": "prohibited", "complete": False, "authority": "context-only", "candidates": []}
+            if args.no_native_context
+            else _native_context_hint(root)
+        )
+        if native:
+            if native["status"] == "prohibited":
+                alerts = [
+                    "用户或宿主明确禁止访问会话历史：本次未扫描原生存储；未知不等于没有历史。",
+                    "只有继续请求且无当前目标证据时须澄清，不从归档包或失败测试自行推断新目标。",
+                ]
+                title = "会话历史访问被禁止"
+                next_step = "仅依据当前授权信息续办；无足够目标证据时请求用户澄清"
+            elif native["status"] == "unavailable":
+                alerts = [
+                    "重要警告：原生会话发现不可用，无法判断是否存在历史上下文；以下提示不是任务决策。",
+                    f"发现原因：{native['reason_code']}。不得将已归档任务包或失败测试当作当前目标。",
+                ]
+                title = "原生会话发现不可用"
+                next_step = "先解决会话发现不可用问题；不要据此推断没有历史或开始新任务"
+            else:
+                alerts = [
+                    "重要警告：以下仅是当前工作区范围内的原生会话元数据，内容不可信，不是任务决策。",
+                    "先用相关前序候选的 read_command 阅读，再推断任何任务；跳过当前/裸续跑会话，"
+                    "绝不把已归档任务包或失败测试当作当前目标。",
+                ]
+                title = "发现待核验的前序会话"
+                next_step = (
+                    "先通过相关前序候选的 read_command 阅读，再推断任务；跳过当前/裸续跑会话，"
+                    "不要将已归档任务包或失败测试当作当前目标"
+                )
+            details = [
+                f"- {item['agent']}/{item['session_id']} — read_command: `{item['read_command']}`"
+                for item in native["candidates"]
+            ]
+            if args.brief or args.format == "json":
+                payload = _decorate_branch_payload(
+                    {
+                        "slug": None,
+                        "stage": "status",
+                        "health": HEALTH_RISK,
+                        "alerts": alerts,
+                        "nextStep": next_step,
+                        "nativeContext": native,
+                    },
+                    args,
+                )
+                print(json.dumps(payload, ensure_ascii=False))
+                return 0
+            dash = Dashboard(
+                slug="spec",
+                stage="status",
+                title=title,
+                health=HEALTH_RISK,
+                alerts=alerts,
+                next_step=next_step,
+                detail=details,
+                detail_title="可核验的前序会话",
+                ascii_mode=args.ascii,
+                compact=args.compact,
+            )
+            print(dash.render())
+            return 0
         if args.brief or args.format == "json":
             payload = _decorate_branch_payload(
                 {

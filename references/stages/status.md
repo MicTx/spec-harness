@@ -1,6 +1,6 @@
 # `/spec:status`
 
-Goal: give the user an overview across task packages: per-package progress, blockers, and next steps.
+Goal: before status or `$spec 继续`, run `scripts/spec_context.py discover`, read prior context, then report progress; archives/test failures are not a goal.
 
 Compatible invocation:
 
@@ -29,4 +29,3 @@ Output contract:
 - Render the `/spec:status` dashboard per the dashboard contract in `references/output-contracts.md`.
 - Explicitly distinguish: completed, in progress, blocked, awaiting confirmation.
 - When script output conflicts with manual judgment, the package's actual content wins; fix the documents.
-

@@ -25,8 +25,7 @@ Execution requirements:
 - Failures state gap and fix action, are written back into the package and fixed this round; follow-up specs are executed and archived before returning.
 - Structured failure writeback: every failing item is written back with two required fields — `未通过项` (what failed; reuse the `id: task-` identity to dedupe across rounds) and `处置枚举` (exactly one of `resolved_current` / `resolved_followup` / `accepted_risk` / `external_blocked` / `non_actionable`) — plus a conditional `说明` line merging gap and next-round alternative (required when the disposition is `resolved_followup`, `accepted_risk`, `external_blocked`, or `non_actionable`; optional for `resolved_current`). 严禁把未通过项回写成成功结果 — no failing item may ever be recorded as passing.
 - Single disposition vocabulary: the five closure types (SKILL rule 3) are the only closure words; the retired labels (`fix_this_round` / `followup`) never appear in new writebacks.
-- Dual stop conditions end the check→fix loop; both readable from the package docs: (a) semantic — a round produces `无新增项`; (b) budget — `最多 3 轮` by default; `spec.md` may declare a different N.
-- Stop-loss attribution: 同一门禁连续 N 轮失败即停止重跑 that gate; 拆细 an over-broad standard, fix the `verify` itself, or mark 转人工.
+- Correction progress follows the `### 5.5 修正日志` rules in [`templates.md`](templates.md): with no new evidence, stop and change strategy; a repeated no-evidence round after a strategy change goes to the owner. The gate rejects malformed rows and `PASS`.
 - Findings stay on the acceptance surface (stable IDs dedupe); three-state count: fixed / still failing / newly found.
 - Do not enter `done` before passing.
 

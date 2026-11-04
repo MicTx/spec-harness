@@ -24,7 +24,10 @@ from handoff_support import HANDOFF_FILENAME, read_handoff, validate_handoff
 from spec_package_support import (
     EVIDENCE_ANCHOR_KEY,
     SECTION_BOUNDARY_REGRESSION,
+    SECTION_CORRECTION_LOG,
     SECTION_CROSS_CARRIER_CONSISTENCY,
+    SECTION_DEVIATION_LOG,
+    SECTION_EXTERNAL_FACTS,
     SECTION_MINIMAL_PATH,
     SECTION_ORCHESTRATION,
     SECTION_OUT_OF_SCOPE,
@@ -34,11 +37,14 @@ from spec_package_support import (
     add_specs_dir_arg,
     checklist_passed,
     clarification_gaps,
+    correction_log_errors,
     count_task_detail_gaps,
     count_tasks,
     count_unchecked_checkboxes,
     dependency_errors,
+    deviation_log_errors,
     evidence_anchor_format_errors,
+    external_fact_errors,
     extract_evidence_anchor,
     extract_evidence_fields,
     extract_pending_questions,
@@ -59,12 +65,14 @@ from spec_package_support import (
     section_checkboxes_by_prefix,
     section_exists,
     section_prefix_exists,
+    spec_introduced_date,
     validate_branch_bound_package,
     validate_slug,
     verification_scope,
     verification_scope_errors,
     verification_scope_fields,
     verification_scope_section_exists,
+    workflow_ledger_errors,
 )
 from spec_verify import evaluate_runs_gate, runs_protocol_enabled
 from update_checkpoint_support import detect_update_checkpoint
@@ -215,6 +223,19 @@ class GateResults:
     orchestration_section_exists: bool = False
     orchestration_errors: list[str] = field(default_factory=list)
 
+    # Correction progress (optional 5.5 section; absent = no rounds recorded)
+    correction_log_section_exists: bool = False
+    correction_log_errors: list[str] = field(default_factory=list)
+
+    # Deviation control (optional 5.6 section; absent = no deviations recorded)
+    deviation_log_section_exists: bool = False
+    deviation_log_errors: list[str] = field(default_factory=list)
+
+    # Intent / option / external-fact ledgers (Workflow-opt-in; external rows
+    # remain valid whenever that optional section is present).
+    workflow_ledger_active: bool = False
+    workflow_ledger_errors: list[str] = field(default_factory=list)
+
     # Verification strategy (optional for historical packages; required for
     # newly initialized packages whose template carries 5.1).
     verification_scope: str | None = None
@@ -225,6 +246,18 @@ class GateResults:
     @property
     def orchestration_ok(self) -> bool:
         return not self.orchestration_errors
+
+    @property
+    def correction_log_ok(self) -> bool:
+        return not self.correction_log_errors
+
+    @property
+    def deviation_log_ok(self) -> bool:
+        return not self.deviation_log_errors
+
+    @property
+    def workflow_ledger_ok(self) -> bool:
+        return not self.workflow_ledger_errors
 
     # Tasks
     total_tasks: int = 0
@@ -350,6 +383,17 @@ def compute_gate_results(
     r.orchestration_errors = orchestration_strategy_errors(spec_content)
     orchestration_seen = section_exists(spec_content, SECTION_ORCHESTRATION)
     r.orchestration_section_exists = orchestration_seen or section_prefix_exists(spec_content, SECTION_ORCHESTRATION)
+    r.correction_log_errors = correction_log_errors(spec_content)
+    r.correction_log_section_exists = section_exists(spec_content, SECTION_CORRECTION_LOG)
+    r.deviation_log_errors = deviation_log_errors(spec_content)
+    r.deviation_log_section_exists = section_exists(spec_content, SECTION_DEVIATION_LOG)
+    introduced_date = spec_introduced_date(root, package_dir) if root is not None and package_dir is not None else None
+    r.workflow_ledger_errors = workflow_ledger_errors(spec_content, tasks_content) + external_fact_errors(
+        spec_content, introduced_date=introduced_date
+    )
+    r.workflow_ledger_active = bool(re.search(r"(?m)^-\s*Workflow:", spec_content)) or section_exists(
+        spec_content, SECTION_EXTERNAL_FACTS
+    )
     r.verification_scope = verification_scope(spec_content)
     r.verification_scope_fields = verification_scope_fields(spec_content)
     r.verification_scope_errors = verification_scope_errors(spec_content)
@@ -517,6 +561,9 @@ def compute_gate_results(
         or r.structure_section_exists
         or r.boundary_regression_section_exists
         or r.verification_scope_section_exists
+        or r.correction_log_section_exists
+        or r.deviation_log_section_exists
+        or r.workflow_ledger_active
     )
     verification_scope_ok = not r.verification_scope_errors
     # v2 machine evidence: runs gate when declared, §6 command span otherwise.
@@ -556,6 +603,9 @@ def compute_gate_results(
             and (not r.consistency_section_exists or r.consistency_ok)
             and (not r.structure_section_exists or r.structure_ok)
             and (not r.boundary_regression_section_exists or r.boundary_regression_ok)
+            and (not r.correction_log_section_exists or r.correction_log_ok)
+            and (not r.deviation_log_section_exists or r.deviation_log_ok)
+            and (not r.workflow_ledger_active or r.workflow_ledger_ok)
             and r.evidence_refill_ok
         )
     else:
@@ -639,6 +689,12 @@ def convergence_state(results: GateResults) -> tuple[bool, list[str]]:
         gaps.append("存在阻塞任务")
     if r.verification_scope_errors:
         gaps.extend(r.verification_scope_errors)
+    if r.correction_log_section_exists and r.correction_log_errors:
+        gaps.extend(r.correction_log_errors)
+    if r.deviation_log_section_exists and r.deviation_log_errors:
+        gaps.extend(r.deviation_log_errors)
+    if r.workflow_ledger_active and r.workflow_ledger_errors:
+        gaps.extend(r.workflow_ledger_errors)
     evidence_satisfied = r.evidence_refill_ok if r.has_new_gate_markers else r.command_evidence_ok
     if not evidence_satisfied:
         if r.checklist_present:
@@ -691,6 +747,21 @@ def gate_rows(r: GateResults, slug: str | None) -> list[tuple[str, bool | None, 
                 if r.verification_scope
                 else "历史包未声明"
             ),
+        ),
+        (
+            "修正日志",
+            r.correction_log_ok if r.correction_log_section_exists else None,
+            "; ".join(r.correction_log_errors) or "每轮均有新证据",
+        ),
+        (
+            "偏离日志",
+            r.deviation_log_ok if r.deviation_log_section_exists else None,
+            "; ".join(r.deviation_log_errors) or "格式与授权有效",
+        ),
+        (
+            "意图与外部事实",
+            r.workflow_ledger_ok if r.workflow_ledger_active else None,
+            "; ".join(r.workflow_ledger_errors) or "格式、翻转条件和日期有效",
         ),
         ("开发记录规范", r.development_record_ok, f"slug `{slug}`"),
         (

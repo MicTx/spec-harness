@@ -134,12 +134,16 @@ class SectionKey:
 
 SECTION_CONFIRMED_FACTS = SectionKey("confirmed-facts", "### 2.1 已确认事实", "### 2.1 Confirmed Facts")
 SECTION_KEY_ASSUMPTIONS = SectionKey("key-assumptions", "### 2.2 关键假设", "### 2.2 Key Assumptions")
+SECTION_EXTERNAL_FACTS = SectionKey("external-facts", "### 2.6 外部事实", "### 2.6 External Facts")
 SECTION_OPEN_QUESTIONS = SectionKey("open-questions", "### 2.3 待确认问题", "### 2.3 Open Questions")
 SECTION_FALSIFIED_PATHS = SectionKey("falsified-paths", "### 2.5 已证伪路径", "### 2.5 Falsified Paths")
 SECTION_OUT_OF_SCOPE = SectionKey("out-of-scope", "### 3.3 不在范围内", "### 3.3 Out of Scope")
 SECTION_MINIMAL_PATH = SectionKey("minimal-path", "## 4. 最小实现路径", "## 4. Minimal Implementation Path")
+SECTION_OPTION_LADDER = SectionKey("option-ladder", "### 4.1 方案阶梯", "### 4.1 Option Ladder")
 SECTION_VERIFICATION_STRATEGY = SectionKey("verification-strategy", "### 5.1 验证策略", "### 5.1 Verification Strategy")
 SECTION_ORCHESTRATION = SectionKey("orchestration", "### 5.4 编排策略", "### 5.4 Orchestration Strategy")
+SECTION_CORRECTION_LOG = SectionKey("correction-log", "### 5.5 修正日志", "### 5.5 Correction Log")
+SECTION_DEVIATION_LOG = SectionKey("deviation-log", "### 5.6 偏离日志", "### 5.6 Deviation Log")
 SECTION_ACCEPTANCE_EVIDENCE = SectionKey("acceptance-evidence", "## 验收证据", "## Acceptance Evidence")
 SECTION_BEHAVIOR_METRICS = SectionKey("behavior-metrics", "### 6.1 行为成效指标", "### 6.1 Behavior Metrics")
 SECTION_CROSS_CARRIER_CONSISTENCY = SectionKey(
@@ -155,12 +159,16 @@ PACKAGE_SECTION_KEYS: dict[str, SectionKey] = {
     for section in (
         SECTION_CONFIRMED_FACTS,
         SECTION_KEY_ASSUMPTIONS,
+        SECTION_EXTERNAL_FACTS,
         SECTION_OPEN_QUESTIONS,
         SECTION_FALSIFIED_PATHS,
         SECTION_OUT_OF_SCOPE,
         SECTION_MINIMAL_PATH,
+        SECTION_OPTION_LADDER,
         SECTION_VERIFICATION_STRATEGY,
         SECTION_ORCHESTRATION,
+        SECTION_CORRECTION_LOG,
+        SECTION_DEVIATION_LOG,
         SECTION_ACCEPTANCE_EVIDENCE,
         SECTION_BEHAVIOR_METRICS,
         SECTION_CROSS_CARRIER_CONSISTENCY,
@@ -736,6 +744,417 @@ def falsified_path_entries(spec_content: str) -> list[str]:
             continue
         entries.append(bullet)
     return entries
+
+
+_NO_CORRECTION_ROUNDS_DECLARATION = re.compile(
+    r"(?:无修正记录|no correction rounds(?: yet)?|none)(?:\s*[（(][^（）()\r\n]*[）)])?[。.]?",
+    re.IGNORECASE,
+)
+_CORRECTION_EVIDENCE_PATTERN = re.compile(
+    r"(?:new output\s*:|newly located|新输出\s*：|新定位|A\d+\s+FALSIFIED)",
+    re.IGNORECASE,
+)
+
+
+def _section_occurrences(content: str, section: SectionKey) -> int:
+    folded = fold_section_key_anchors(content)
+    return sum(1 for line in folded.splitlines() if section.matches(line))
+
+
+def _titled_section_lines(content: str, section: SectionKey) -> list[str]:
+    """Return nonblank bodies across every keyed section, without crossing peers."""
+    folded = fold_section_key_anchors(content)
+    section_lines: list[str] = []
+    in_section = False
+    target_level = _heading_level(section) or 3
+    for line in folded.splitlines():
+        if section.matches(line):
+            in_section = True
+            continue
+        if not in_section:
+            continue
+        if re.match(r"^#{1,%d} " % target_level, line):
+            in_section = False
+            continue
+        if line.strip():
+            section_lines.append(line.strip())
+    return section_lines
+
+
+def correction_log_errors(spec_content: str) -> list[str]:
+    """Validate the optional correction log without regrading legacy packages."""
+    if not section_exists(spec_content, SECTION_CORRECTION_LOG):
+        return []
+    occurrences = _section_occurrences(spec_content, SECTION_CORRECTION_LOG)
+    section_lines = _titled_section_lines(spec_content, SECTION_CORRECTION_LOG)
+    errors: list[str] = []
+    if occurrences > 1:
+        errors.append(f"`### 5.5 修正日志` 出现 {occurrences} 次，必须唯一")
+
+    table = [line for line in section_lines if line.startswith("|")]
+    nonempty = [re.sub(r"^-\s+", "", line) for line in section_lines if not line.startswith("|")]
+    has_none = any(_NO_CORRECTION_ROUNDS_DECLARATION.fullmatch(line) for line in nonempty)
+    if has_none and table:
+        errors.append("`### 5.5 修正日志` 的 none 声明只能用于空日志 (empty log)")
+    if has_none and not table and len(nonempty) == 1:
+        return errors
+    if not table:
+        errors.append("`### 5.5 修正日志` 缺少表格或无修正记录声明")
+        return errors
+    normalized_header = table[0].strip("|").strip().replace(" | ", "|")
+    if normalized_header != "round|approach|result|new information":
+        errors.append("`### 5.5 修正日志` 表头必须是 round | approach | result | new information")
+        return errors
+    if len(table) < 2 or not re.fullmatch(r"\|[-\s|]+\|", table[1]):
+        errors.append("`### 5.5 修正日志` 缺少 Markdown 表格分隔行")
+        return errors
+
+    for row in table[2:]:
+        cells = [cell.strip() for cell in row.strip("|").split("|")]
+        if len(cells) != 4:
+            errors.append(f"`### 5.5 修正日志` 行列数错误：{row}")
+            continue
+        round_number, _approach, result, new_information = cells
+        if not round_number.isdigit() or int(round_number) < 1:
+            errors.append(f"`### 5.5 修正日志` round 必须是正整数：{round_number}")
+        if result.upper() == "PASS":
+            errors.append("`### 5.5 修正日志` 不能用 PASS 记录修正轮；只有任务 verify 可以证明通过")
+        if not _CORRECTION_EVIDENCE_PATTERN.search(new_information):
+            errors.append(
+                f"`### 5.5 修正日志` 第 {round_number} 轮缺少 new evidence"
+                "（new output / newly located / A<n> FALSIFIED）"
+            )
+    return errors
+
+
+_NO_DEVIATIONS_DECLARATION = re.compile(
+    r"(?:无偏离|no deviations(?: yet)?|none)(?:\s*[（(][^（）()\r\n]*[）)])?[。.]?",
+    re.IGNORECASE,
+)
+_DEVIATION_REVERSIBILITY_LEVELS = frozenset({"reversible", "partly reversible", "irreversible"})
+_AUTONOMY_LINE = re.compile(r"(?m)^-\s*Autonomy:\s*(.+?)\s*$", re.IGNORECASE)
+_AUTONOMY_LEVELS = frozenset({"low", "medium", "high"})
+_WORKFLOW_LINE = re.compile(r"(?m)^-\s*Workflow:\s*`?([A-Za-z]+)`?\s*$", re.IGNORECASE)
+_WORKFLOW_LEVELS = frozenset({"micro", "lite", "full"})
+_UI_SURFACE_LINE = re.compile(r"(?m)^-\s*UI surface:\s*`?(changed|unchanged)`?\s*$", re.IGNORECASE)
+_BROWSER_CHECK_LINE = re.compile(r"(?m)^-\s*Browser check:\s*`([^`]+)`\s*$", re.IGNORECASE)
+_INTENT_FIELD = re.compile(
+    r"(?m)^-\s*\*\*(Literal ask|Stated purpose|Inferred outcome|Constraints and exclusions|"
+    r"Trade-off preference)\*\*\s*[：:]\s*(.+?)\s*$"
+)
+_RECOMMENDATION_FLIP = re.compile(r"(?im)^Recommendation:.*\bFlips\s+if\s+A(\d+)\s+is\s+FALSIFIED")
+_RECOMMENDATION_OPTION = re.compile(r"(?im)^Recommendation:\s*`?B(\d+)`?\s+because\b")
+
+
+def _autonomy_state(spec_content: str) -> tuple[str, list[str]]:
+    matches = list(_AUTONOMY_LINE.finditer(spec_content))
+    if not matches:
+        return "medium", []
+    if len(matches) > 1:
+        return "medium", [f"`Autonomy:` 出现 {len(matches)} 次，必须唯一"]
+    value = matches[0].group(1).strip().strip("`")
+    if value.lower() not in _AUTONOMY_LEVELS:
+        return "medium", [f"`Autonomy:` 必须是 low | medium | high，当前为 {value}"]
+    return value.lower(), []
+
+
+def deviation_log_errors(spec_content: str) -> list[str]:
+    """Validate optional deviation rows and owner authorization."""
+    if not section_exists(spec_content, SECTION_DEVIATION_LOG):
+        return []
+    occurrences = _section_occurrences(spec_content, SECTION_DEVIATION_LOG)
+    section_lines = _titled_section_lines(spec_content, SECTION_DEVIATION_LOG)
+    errors = _autonomy_state(spec_content)[1]
+    if occurrences > 1:
+        errors.append(f"`### 5.6 偏离日志` 出现 {occurrences} 次，必须唯一")
+    table = [line for line in section_lines if line.startswith("|")]
+    nonempty = [re.sub(r"^-\s+", "", line) for line in section_lines if not line.startswith("|")]
+    has_none = any(_NO_DEVIATIONS_DECLARATION.fullmatch(line) for line in nonempty)
+    if has_none and table:
+        errors.append("`### 5.6 偏离日志` 的 none 声明只能用于空日志 (empty log)")
+    if has_none and not table and len(nonempty) == 1:
+        return errors
+    if not table:
+        errors.append("`### 5.6 偏离日志` 缺少表格或无偏离声明")
+        return errors
+    normalized_header = table[0].strip("|").strip().replace(" | ", "|")
+    if normalized_header != "id|literal ask|actual|reason|reversibility|authority":
+        errors.append("`### 5.6 偏离日志` 表头必须是 id | literal ask | actual | reason | reversibility | authority")
+        return errors
+    if len(table) < 2 or not re.fullmatch(r"\|[-\s|]+\|", table[1]):
+        errors.append("`### 5.6 偏离日志` 缺少 Markdown 表格分隔行")
+        return errors
+
+    autonomy, _autonomy_errors = _autonomy_state(spec_content)
+    for row in table[2:]:
+        cells = [cell.strip() for cell in row.strip("|").split("|")]
+        if len(cells) != 6:
+            errors.append(f"`### 5.6 偏离日志` 行列数错误：{row}")
+            continue
+        deviation_id, _literal, _actual, _reason, reversibility, authority = cells
+        if not re.fullmatch(r"D\d+", deviation_id):
+            errors.append(f"`### 5.6 偏离日志` id 必须形如 D<n>：{deviation_id}")
+        if reversibility not in _DEVIATION_REVERSIBILITY_LEVELS:
+            errors.append(f"`### 5.6 偏离日志` reversibility 非法：{reversibility}")
+        if not authority or authority.lower() == "pending":
+            errors.append(f"`### 5.6 偏离日志` {deviation_id} 缺少已获授权的 authority")
+            continue
+        if reversibility == "irreversible" and not re.search(r"owner grant", authority, re.IGNORECASE):
+            errors.append(f"`### 5.6 偏离日志` {deviation_id} irreversible 偏离需要 owner grant")
+            continue
+        owner_granted = re.search(r"owner grant", authority, re.IGNORECASE) is not None
+        checkpoint_granted = re.search(r"\bcheckpoint\b", authority, re.IGNORECASE) is not None
+        autonomy_permits = (autonomy == "high" and reversibility in {"reversible", "partly reversible"}) or (
+            autonomy == "medium" and reversibility == "reversible"
+        )
+        if not owner_granted and not (checkpoint_granted and autonomy_permits):
+            errors.append(f"`### 5.6 偏离日志` {deviation_id} 的授权不符合 Autonomy: {autonomy}")
+    return errors
+
+
+def workflow_ledger_errors(spec_content: str, tasks_content: str | None = None) -> list[str]:
+    """Validate intent and option ledgers for opted-in non-MICRO packages.
+
+    Packages without an explicit ``Workflow`` stay legacy-readable. MICRO is
+    intentionally exempt because its lightweight route does not carry the full
+    planning ledger.
+    """
+    workflows = list(_WORKFLOW_LINE.finditer(spec_content))
+    if not workflows:
+        return []
+    if len(workflows) > 1:
+        return [f"`Workflow:` 出现 {len(workflows)} 次，必须唯一"]
+    workflow = workflows[0].group(1).lower()
+    if workflow not in _WORKFLOW_LEVELS:
+        return [f"`Workflow:` 必须是 MICRO | LITE | FULL，当前为 {workflow}"]
+    if workflow == "micro":
+        return []
+
+    errors: list[str] = []
+    intent_matches = list(_INTENT_FIELD.finditer(spec_content))
+    field_counts: dict[str, int] = {}
+    for match in intent_matches:
+        field_counts[match.group(1)] = field_counts.get(match.group(1), 0) + 1
+    errors.extend(f"Intent 项 {label} 出现 {count} 次，必须唯一" for label, count in field_counts.items() if count > 1)
+    fields = {match.group(1): match.group(2).strip() for match in intent_matches}
+    for label in (
+        "Literal ask",
+        "Stated purpose",
+        "Inferred outcome",
+        "Constraints and exclusions",
+        "Trade-off preference",
+    ):
+        value = fields.get(label, "")
+        if not value or is_placeholder_value(value) or bool(re.fullmatch(r"<[^>\n]+>", value)):
+            errors.append(f"非 MICRO 规格缺少有效 Intent 项：{label}")
+    inferred = fields.get("Inferred outcome", "")
+    confidence = re.search(r"\bconfidence:\s*(high|medium|low)\b", inferred, re.IGNORECASE)
+    evidence = re.search(r"\bevidence:\s*([^;]+)", inferred, re.IGNORECASE)
+    if inferred and (
+        not confidence
+        or not evidence
+        or is_placeholder_value(evidence.group(1).strip())
+        or evidence.group(1).strip().lower() == "unknown"
+    ):
+        errors.append("Inferred outcome 必须同时带 confidence 和非空 evidence")
+
+    option_occurrences = _section_occurrences(spec_content, SECTION_OPTION_LADDER)
+    if option_occurrences > 1:
+        errors.append(f"`Option Ladder` 出现 {option_occurrences} 次，必须唯一")
+    option_lines = _titled_section_lines(spec_content, SECTION_OPTION_LADDER)
+    option_rows: dict[str, list[str]] = {}
+    for line in option_lines:
+        match = re.match(r"^-\s*(B[0-3])\s*\|", line)
+        if match:
+            option_rows.setdefault(match.group(1), []).append(line)
+    for option_id, rows in option_rows.items():
+        if len(rows) > 1:
+            errors.append(f"方案 {option_id} 出现 {len(rows)} 次，必须唯一")
+    option_roles = {
+        "B0": "literal ask",
+        "B1": "minimal change",
+        "B2": "recommended alternative",
+        "B3": "no new build",
+    }
+    b0_rows = option_rows.get("B0", [])
+    minimal_line = "- b0 is the minimal change."
+    has_minimal_line = any(line.strip().lower().rstrip(".") == minimal_line.rstrip(".") for line in option_lines)
+    if not b0_rows and not (workflow == "lite" and has_minimal_line):
+        errors.append("方案阶梯缺少 B0（literal ask）")
+        if has_minimal_line:
+            errors.append("B0 is the minimal change. 单行格式仅允许 LITE 使用")
+    if workflow == "full" and not option_rows.get("B1"):
+        errors.append("FULL 方案阶梯缺少 B1（minimal change）")
+    for option_id in ("B0", "B1", "B2", "B3"):
+        for row in option_rows.get(option_id, []):
+            cells = [cell.strip() for cell in re.sub(r"^-\s*", "", row).split("|")]
+            if len(cells) < 3 or not cells[1] or not cells[2] or is_placeholder_value(cells[2]):
+                errors.append(f"{option_id} 必须同时填写 reading 和非空 compare 内容")
+            elif cells[1] != option_roles[option_id]:
+                errors.append(f"{option_id} 的 reading 必须是 {option_roles[option_id]}")
+    for row in b0_rows:
+        cells = [cell.strip() for cell in re.sub(r"^-\s*", "", row).split("|")]
+        if len(cells) >= 2 and cells[1] != "literal ask":
+            errors.append("B0 的 reading 必须是 literal ask")
+    recommendation = next((line for line in option_lines if line.lower().startswith("recommendation:")), "")
+    flip_match = _RECOMMENDATION_FLIP.search("\n".join(option_lines))
+    recommendation_match = _RECOMMENDATION_OPTION.search("\n".join(option_lines))
+    if not recommendation or not flip_match:
+        errors.append("Recommendation 行必须写 Flips if A<n> is FALSIFIED")
+    else:
+        assumption_ids = {
+            f"A{match.group(1)}"
+            for match in re.finditer(
+                r"(?m)^\s*A(\d+)\s*\|", "\n".join(extract_section_bullets(spec_content, SECTION_KEY_ASSUMPTIONS))
+            )
+        }
+        if f"A{flip_match.group(1)}" not in assumption_ids:
+            available = ", ".join(sorted(assumption_ids, key=lambda value: int(value[1:]))) or "none"
+            errors.append(f"Recommendation 引用的 A{flip_match.group(1)} 不存在于关键假设；可用 A 编号：{available}")
+    if recommendation and not recommendation_match:
+        errors.append("Recommendation 必须引用存在的 B<n> 方案")
+    elif recommendation_match:
+        option_ids = {match.group(1) for line in option_lines if (match := re.match(r"^-\s*B(\d+)\s*\|", line))}
+        if workflow == "lite" and has_minimal_line:
+            option_ids.add("0")
+        if recommendation_match.group(1) not in option_ids:
+            errors.append(f"Recommendation 引用的 B{recommendation_match.group(1)} 不存在于方案阶梯")
+    for section, label in ((SECTION_CORRECTION_LOG, "5.5"), (SECTION_DEVIATION_LOG, "5.6")):
+        if not section_exists(spec_content, section):
+            errors.append(f"Workflow LITE/FULL 缺少 ### {label} 日志 (missing)；无事件时写一行 none")
+    ui_surfaces = _UI_SURFACE_LINE.findall(spec_content)
+    if len(ui_surfaces) != 1:
+        errors.append("Workflow LITE/FULL 必须唯一声明 UI surface: changed|unchanged")
+    else:
+        ui_changed = ui_surfaces[0].lower() == "changed"
+        browser_matches = _BROWSER_CHECK_LINE.findall(spec_content)
+        if len(browser_matches) > 1:
+            errors.append("Browser check 声明必须唯一")
+        if ui_changed and not browser_matches:
+            errors.append("UI surface changed 时必须声明 Browser check 命令")
+        if browser_matches:
+            command = browser_matches[0].strip()
+            if not command or is_placeholder_value(command):
+                errors.append("Browser check 命令不能为空或占位内容")
+            else:
+                machine_verify_commands: set[str] = set()
+                if tasks_content is not None:
+                    for task_record in parse_task_records(tasks_content):
+                        if task_record.verify.strip().lower().startswith("manual:"):
+                            continue
+                        command_match = re.search(r"`([^`]+)`", task_record.verify)
+                        if command_match:
+                            machine_verify_commands.add(command_match.group(1))
+                if command not in machine_verify_commands:
+                    errors.append("Browser check 命令必须原样出现在 tasks.md 的 machine verify 中")
+    return errors
+
+
+_EXTERNAL_FACT_ROW = re.compile(r"(?:^|\|)\s*E\d+\s*\|")
+_URL_PATTERN = re.compile(r"^https?://\S+$", re.IGNORECASE)
+
+
+def _parse_iso_date(value: str) -> date | None:
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError:
+        return None
+
+
+def external_fact_errors(spec_content: str, introduced_date: date | None = None) -> list[str]:
+    """Validate external-fact rows against their source and retrieval dates."""
+    if not section_exists(spec_content, SECTION_EXTERNAL_FACTS):
+        return []
+    introduced = introduced_date or date.today()
+    if hasattr(introduced, "date"):
+        introduced = introduced.date()  # type: ignore[attr-defined]
+    errors: list[str] = []
+    assumption_ids = {
+        f"A{match.group(1)}"
+        for match in re.finditer(
+            r"(?m)^\s*A(\d+)\s*\|", "\n".join(extract_section_bullets(spec_content, SECTION_KEY_ASSUMPTIONS))
+        )
+    }
+    table_lines = [line for line in _titled_section_lines(spec_content, SECTION_EXTERNAL_FACTS) if line.startswith("|")]
+    if not table_lines:
+        return errors
+    normalized_header = table_lines[0].strip("|").strip().replace(" | ", "|")
+    if normalized_header != "id|claim|source title|URL|published or updated|retrieved|counter-evidence search|affects":
+        return [
+            "外部事实表头必须是 id | claim | source title | URL | published or updated | "
+            "retrieved | counter-evidence search | affects"
+        ]
+    for row in table_lines[2:]:
+        row_id = re.search(r"(?:^|\|)\s*(E\d+)\s*\|", row)
+        first_cell = row.strip("|").split("|", 1)[0].strip()
+        fact_id = row_id.group(1) if row_id else (first_cell or "unknown")
+        if not row_id:
+            errors.append(f"外部事实行 ID 必须形如 E<n>，当前为 {fact_id}")
+            continue
+        cells = [cell.strip() for cell in row.strip("|").split("|")]
+        if len(cells) != 8:
+            errors.append(f"外部事实 {fact_id} 必须有 8 列：id/claim/source/URL/两个日期/反证检索/影响假设")
+        if len(cells) < 8:
+            continue
+        if not cells[6] or is_placeholder_value(cells[6]):
+            errors.append(f"外部事实 {fact_id} 缺少反证检索词 (counter-evidence search)")
+        affects_ids = re.findall(r"A(\d+)", cells[7])
+        if not affects_ids:
+            errors.append(f"外部事实 {fact_id} 必须关联 A<n> 假设")
+        else:
+            for assumption_number in affects_ids:
+                if f"A{assumption_number}" not in assumption_ids:
+                    available = ", ".join(sorted(assumption_ids, key=lambda value: int(value[1:]))) or "none"
+                    errors.append(
+                        f"外部事实 {fact_id} 关联的 A{assumption_number} 不存在于关键假设；可用 A 编号：{available}"
+                    )
+        if "UNVERIFIED-EXTERNAL" in cells[1].upper():
+            continue
+        url, published, retrieved = cells[3], cells[4], cells[5]
+        if not _URL_PATTERN.fullmatch(url):
+            errors.append(f"外部事实 {fact_id} 缺少有效 URL")
+        published_date = _parse_iso_date(published)
+        if published_date is None:
+            errors.append(f"外部事实 {fact_id} 的 published or updated date 必须是 ISO 日期")
+        retrieved_date = _parse_iso_date(retrieved)
+        if retrieved_date is None:
+            errors.append(f"外部事实 {fact_id} 的 retrieved date 必须是 ISO 日期")
+            continue
+        if published_date is not None and published_date > retrieved_date:
+            errors.append(f"外部事实 {fact_id} 的 published date 不能晚于 retrieved date")
+        elif retrieved_date > introduced:
+            errors.append(
+                f"外部事实 {fact_id} 的 retrieved date 不能晚于规格提交日期 (not later than spec commit date)"
+            )
+    return errors
+
+
+def spec_introduced_date(root: Path, package_dir: Path) -> date | None:
+    """Return the first committed committer date for a package's spec.md."""
+    spec_path = package_dir / "spec.md"
+    if not root.is_dir() or not spec_path.is_file():
+        return None
+    try:
+        spec_path = spec_path.resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return None
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(root), "log", "--follow", "--diff-filter=A", "--format=%cI", "--", str(spec_path)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    dates = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    if not dates:
+        return None
+    try:
+        return datetime.fromisoformat(dates[-1].replace("Z", "+00:00")).date()
+    except ValueError:
+        return None
 
 
 def extract_structured_section_fields(content: str, heading_prefix: str | SectionKey) -> dict[str, str]:
