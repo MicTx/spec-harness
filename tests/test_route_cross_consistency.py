@@ -1,6 +1,6 @@
 """三层决策器组合语义回归钉：route_decision × loop_route × workflow_route。
 
-实测基线：2026-09-25 @ HEAD 3f6f35c（分支 spec/2026-09-25_add-route-decision-table），
+实测基线：2026-09-25 @ HEAD 3f6f35c（分支 spec/2026-09-25_add-public-example-13），
 三脚本对全量候选文本实跑后入库；入库语料的任何一条失配都只调语料、不调启发式
 （「语料失配只调语料」是本文件的入库纪律）。
 
@@ -47,19 +47,19 @@
     负样本用 F11 前历史漂移片段字符串走同一断言助手（不动仓库文件），缺任一
     语义关键词即红。
 
-历史裁定（2026-10-04_remove-process-bloat）：
+历史裁定（2026-10-04_remove-public-example-15）：
 - team-loop 已让出 batch-fanout / review-fix 触发域（归 workflow-runner，仓库自有
   执行面裁定），loop_route.py 不再对批量/评审-修复形态做推荐。
 
 已知缺口（workflow 侧）——已全部收口：
 - 泛化「批量」过触发缺口已于 2026-10-08（F9，spec 包
-  2026-10-08_fix-workflow-route-triggers）收口：workflow_route.py 改为强弱分权
+  2026-10-08_fix-public-example-19）收口：workflow_route.py 改为强弱分权
   （强命中 ×2 + 弱命中 ×1，推荐需强命中 ≥1），泛化「批量」单词不再独立过推荐阈。
   原缺口文本「批量更新这 3 个配置文件的版本号」从已知缺口登记退役为收口断言
   （local + workflowRecommended=False，见 RETIRED_BATCH_GAP_TEXTS）。依据
   plans/03-route-semantics.md F9 强弱分权裁定。
 - 循环收敛形态缺口已于 2026-10-08（F10，spec 包
-  2026-10-08_fix-loop-converge-semantics）收口：workflow_route.py 的 LOOP 形态
+  2026-10-08_fix-public-example-18）收口：workflow_route.py 的 LOOP 形态
   拆强（评审-修复复合）/弱（裸收敛标记）两表，`iterate until all tests pass` 等
   裸收敛文本不再推荐 workflow（裸收敛语义归 team-loop until-converged）；loop 侧
   同步补完评审-修复显式让出早退（REVIEW_FIX_DEFER_PATTERNS，与 workflow 侧 LOOP
@@ -67,7 +67,7 @@
   loopRecommended=True + workflowRecommended=False，wf reason 含「裸收敛(弱)」，见
   RETIRED_LOOP_GAP_TEXTS）。依据 plans/03-route-semantics.md F10 强弱拆分裁定与
   R3 改判（2026-10-07，选项 a）。
-- F11（2026-10-08，spec 包 2026-10-08_align-route-activation-docs）例外层登记：
+- F11（2026-10-08，spec 包 2026-10-08_align-public-example-17）例外层登记：
   显式 workflow 请求（`用 workflow 编排这个任务`/`ultracode` 等 WORKFLOW_EXPLICIT
   词表命中）route=local + wf=True 是已知有意的例外——用户显式指定执行面，
   advisory 建议不改写五路由判定（见 WORKFLOW_EXPLICIT_EXCEPTIONS，不入泛化不变量）；

@@ -61,6 +61,7 @@ from spec_package_support import (
     read_regular_text,
     resolve_specs_child,
     resolve_specs_root,
+    rule_message,
     section_checkboxes,
     section_checkboxes_by_prefix,
     section_exists,
@@ -677,7 +678,12 @@ def convergence_state(results: GateResults) -> tuple[bool, list[str]]:
         gaps.append(f"未勾任务 {r.total_tasks - r.completed_tasks} 项")
     if not r.checklist_present:
         if not r.success_criteria_ok:
-            gaps.append(f"成功标准未勾 {r.success_criteria_total - r.success_criteria_checked} 项")
+            gaps.append(
+                rule_message(
+                    "SPEC-SUCCESS-001",
+                    f"成功标准未勾 {r.success_criteria_total - r.success_criteria_checked} 项",
+                )
+            )
     else:
         if r.unchecked_items > 0:
             gaps.append(f"未勾检查清单 {r.unchecked_items} 项")

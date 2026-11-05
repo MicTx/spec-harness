@@ -49,9 +49,9 @@ def test_render_template_records_integration_branch():
     result = render_template(
         "Git integration branch：`spec/YYYY-MM-DD_<slug>` 或适用外理由",
         "My Project",
-        "spec/2026-08-07_add-new-branch-preflight",
+        "spec/2026-08-07_add-public-example-04",
     )
-    assert "`spec/2026-08-07_add-new-branch-preflight`" in result
+    assert "`spec/2026-08-07_add-public-example-04`" in result
     assert "spec/YYYY-MM-DD_<slug>" not in result
 
 
@@ -59,10 +59,10 @@ def test_render_template_records_local_branch_note():
     result = render_template(
         "Git integration branch：`spec/YYYY-MM-DD_<slug>` 或适用外理由",
         "My Project",
-        "spec/2026-08-28_fix-spec-logic-integrity",
+        "spec/2026-08-28_fix-public-example-06",
         LOCAL_BRANCH_NOTE,
     )
-    assert "`spec/2026-08-28_fix-spec-logic-integrity`" in result
+    assert "`spec/2026-08-28_fix-public-example-06`" in result
     assert "本地模式" in result
     assert "从本地主分支创建" in result
 
@@ -133,12 +133,12 @@ def test_new_preflight_switches_to_main_and_creates_spec_branch(tmp_path):
 
     creation = create_integration_branch_from_main(
         repo,
-        "2026-08-07_add-new-branch-preflight",
+        "2026-08-07_add-public-example-04",
         "main",
         None,
     )
 
-    assert creation.branch == "spec/2026-08-07_add-new-branch-preflight"
+    assert creation.branch == "spec/2026-08-07_add-public-example-04"
     assert creation.mode == "synced"
     assert git(repo, "branch", "--show-current") == creation.branch
     assert git(repo, "merge-base", "main", creation.branch) == git(repo, "rev-parse", "main")
@@ -152,7 +152,7 @@ def test_new_preflight_rejects_dirty_tree_before_branching(tmp_path):
     (repo / "dirty.txt").write_text("dirty\n", encoding="utf-8")
 
     try:
-        create_integration_branch_from_main(repo, "2026-08-07_add-new-branch-preflight", "main", None)
+        create_integration_branch_from_main(repo, "2026-08-07_add-public-example-04", "main", None)
     except RuntimeError as exc:
         message = str(exc)
     else:  # pragma: no cover - explicit assertion path
@@ -160,7 +160,7 @@ def test_new_preflight_rejects_dirty_tree_before_branching(tmp_path):
 
     assert "working tree is not clean" in message
     assert git(repo, "branch", "--show-current") == "feature/existing-work"
-    assert "spec/2026-08-07_add-new-branch-preflight" not in git(repo, "branch", "--list")
+    assert "spec/2026-08-07_add-public-example-04" not in git(repo, "branch", "--list")
 
 
 def add_unreachable_upstream(repo: Path) -> None:
@@ -180,12 +180,12 @@ def test_new_preflight_uses_local_main_when_upstream_fetch_is_unreachable(tmp_pa
 
     creation = create_integration_branch_from_main(
         repo,
-        "2026-08-28_fix-spec-logic-integrity",
+        "2026-08-28_fix-public-example-06",
         "main",
         None,
     )
 
-    assert creation.branch == "spec/2026-08-28_fix-spec-logic-integrity"
+    assert creation.branch == "spec/2026-08-28_fix-public-example-06"
     assert creation.mode == "local"
     assert "本地模式" in creation.note
     assert git(repo, "branch", "--show-current") == creation.branch
@@ -217,7 +217,7 @@ def test_new_preflight_still_fails_when_fetch_is_permission_denied(monkeypatch, 
     try:
         create_integration_branch_from_main(
             repo,
-            "2026-08-28_fix-spec-logic-integrity",
+            "2026-08-28_fix-public-example-06",
             "main",
             None,
         )
@@ -229,7 +229,7 @@ def test_new_preflight_still_fails_when_fetch_is_permission_denied(monkeypatch, 
     assert "failed to fetch upstream for main" in message
     assert "permission denied" in message
     assert git(repo, "branch", "--show-current") == "main"
-    assert "spec/2026-08-28_fix-spec-logic-integrity" not in git(repo, "branch", "--list")
+    assert "spec/2026-08-28_fix-public-example-06" not in git(repo, "branch", "--list")
 
 
 def test_new_preflight_still_fails_when_fetch_says_repository_not_found(monkeypatch, tmp_path):
@@ -257,7 +257,7 @@ def test_new_preflight_still_fails_when_fetch_says_repository_not_found(monkeypa
     try:
         create_integration_branch_from_main(
             repo,
-            "2026-08-28_fix-spec-logic-integrity",
+            "2026-08-28_fix-public-example-06",
             "main",
             None,
         )
@@ -268,7 +268,7 @@ def test_new_preflight_still_fails_when_fetch_says_repository_not_found(monkeypa
 
     assert "failed to fetch upstream for main" in message
     assert "repository not found" in message.lower()
-    assert "spec/2026-08-28_fix-spec-logic-integrity" not in git(repo, "branch", "--list")
+    assert "spec/2026-08-28_fix-public-example-06" not in git(repo, "branch", "--list")
 
 
 def test_init_cli_records_local_mode_when_upstream_is_unreachable(tmp_path):
@@ -284,7 +284,7 @@ def test_init_cli_records_local_mode_when_upstream_is_unreachable(tmp_path):
             "--root",
             str(repo),
             "--slug",
-            "2026-08-28_fix-spec-logic-integrity",
+            "2026-08-28_fix-public-example-06",
             "--title",
             "本地模式建分支",
             "--disable-git-hooks",
@@ -295,13 +295,11 @@ def test_init_cli_records_local_mode_when_upstream_is_unreachable(tmp_path):
     )
 
     assert result.returncode == 0, result.stderr
-    assert "branch: spec/2026-08-28_fix-spec-logic-integrity" in result.stdout
+    assert "branch: spec/2026-08-28_fix-public-example-06" in result.stdout
     assert "branch-mode: local" in result.stdout
-    assert git(repo, "branch", "--show-current") == "spec/2026-08-28_fix-spec-logic-integrity"
-    spec_text = (repo / ".spec" / "specs" / "2026-08-28_fix-spec-logic-integrity" / "spec.md").read_text(
-        encoding="utf-8"
-    )
-    assert "`spec/2026-08-28_fix-spec-logic-integrity`" in spec_text
+    assert git(repo, "branch", "--show-current") == "spec/2026-08-28_fix-public-example-06"
+    spec_text = (repo / ".spec" / "specs" / "2026-08-28_fix-public-example-06" / "spec.md").read_text(encoding="utf-8")
+    assert "`spec/2026-08-28_fix-public-example-06`" in spec_text
     assert "本地模式" in spec_text
 
 

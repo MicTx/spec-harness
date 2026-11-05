@@ -3,7 +3,7 @@
 The Pi assembly face writes, alongside the skill copy, native prompt
 templates into <pi-root>/agent/prompts: ``spec.md`` (/spec) and
 ``spec:<stage>.md`` (/spec:<stage>, colon layout — validated end to end on
-Pi 1.2.0; empirics recorded in the 2026-10-14_normalize-command-registration
+Pi 1.2.0; empirics recorded in the 2026-10-14_normalize-public-example-25
 package evidence). This suite pins, under a sandbox HOME:
 
 * template sets per profile (full/core), counts parsed from install.sh's

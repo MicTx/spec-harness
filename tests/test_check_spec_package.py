@@ -834,7 +834,7 @@ def test_orchestration_section_absent_does_not_block():
     from check_spec_package import compute_gate_results
 
     results = compute_gate_results(
-        _make_spec(), _make_tasks(), _make_checklist(passed=True), slug="2026-09-21_add-orchestration-core"
+        _make_spec(), _make_tasks(), _make_checklist(passed=True), slug="2026-09-21_add-public-example-08"
     )
     assert results.orchestration_section_exists is False
     assert results.orchestration_ok is True
@@ -846,7 +846,7 @@ def test_orchestration_single_token_route_passes():
 
     spec = _make_spec() + "\n### 5.4 编排策略\n- route: `explore`\n- ownership: 主线程\n"
     results = compute_gate_results(
-        spec, _make_tasks(), _make_checklist(passed=True), slug="2026-09-21_add-orchestration-core"
+        spec, _make_tasks(), _make_checklist(passed=True), slug="2026-09-21_add-public-example-08"
     )
     assert results.orchestration_section_exists is True
     assert results.orchestration_ok is True
@@ -858,7 +858,7 @@ def test_orchestration_multi_token_route_fails():
 
     spec = _make_spec() + "\n### 5.4 编排策略\n- route: build（主线程关键路径）+ 局部 review\n"
     results = compute_gate_results(
-        spec, _make_tasks(), _make_checklist(passed=True), slug="2026-09-21_add-orchestration-core"
+        spec, _make_tasks(), _make_checklist(passed=True), slug="2026-09-21_add-public-example-08"
     )
     assert results.orchestration_ok is False
     assert results.overall_ok is False
@@ -870,26 +870,11 @@ def test_orchestration_opt_out_counts_as_local():
 
     spec = _make_spec() + "\n### 5.4 编排策略（仅在需要时填写）\n- 适用外：单线执行，未启用编排。\n"
     results = compute_gate_results(
-        spec, _make_tasks(), _make_checklist(passed=True), slug="2026-09-21_add-orchestration-core"
+        spec, _make_tasks(), _make_checklist(passed=True), slug="2026-09-21_add-public-example-08"
     )
     assert results.orchestration_section_exists is True
     assert results.orchestration_ok is True
     assert results.orchestration_errors == []
-
-
-def test_orchestration_archive_samples_pass():
-    """Historical 5.4 forms (backticks, titled heading, opt-out) stay valid."""
-    from spec_package_support import orchestration_strategy_errors
-
-    samples = [
-        Path(__file__).resolve().parent.parent / ".spec/specs/archive/2026-09-09_fix-late-wakeup-review/spec.md",
-        Path(__file__).resolve().parent.parent / ".spec/specs/archive/2026-06-12_update-all-docs/spec.md",
-        Path(__file__).resolve().parent.parent / ".spec/specs/archive/2026-06-15_add-spec-training-slides/spec.md",
-        Path(__file__).resolve().parent.parent / ".spec/specs/archive/2026-06-14_fix-smoke-output/spec.md",
-    ]
-    for path in samples:
-        content = path.read_text(encoding="utf-8")
-        assert orchestration_strategy_errors(content) == [], path.name
 
 
 # -- 5.4 gate hardening: an opt-out bullet is a declaration, not a mask over an
@@ -903,7 +888,7 @@ def test_orchestration_opt_out_words_in_sibling_bullets_do_not_mask_invalid_rout
 
     spec = _make_spec() + f"\n### 5.4 编排策略\n- route: build + review\n- {sibling}: 主线程{mask}合流\n"
     results = compute_gate_results(
-        spec, _make_tasks(), _make_checklist(passed=True), slug="2026-09-21_fix-orchestration-review-gaps"
+        spec, _make_tasks(), _make_checklist(passed=True), slug="2026-09-21_fix-public-example-10"
     )
     assert results.orchestration_section_exists is True
     assert results.orchestration_ok is False, f"{mask!r} in {sibling!r} must not mask an invalid route"
@@ -917,7 +902,7 @@ def test_orchestration_opt_out_words_do_not_mask_invalid_route_as_sole_bullet(ma
 
     spec = _make_spec() + f"\n### 5.4 编排策略\n- route: review + build\n- ownership: {mask}\n"
     results = compute_gate_results(
-        spec, _make_tasks(), _make_checklist(passed=True), slug="2026-09-21_fix-orchestration-review-gaps"
+        spec, _make_tasks(), _make_checklist(passed=True), slug="2026-09-21_fix-public-example-10"
     )
     assert results.orchestration_ok is False, f"sole {mask!r} sibling must not mask an invalid route"
     assert results.overall_ok is False
@@ -936,7 +921,7 @@ def test_orchestration_anchored_opt_out_declaration_still_counts_as_local(opt_ou
 
     spec = _make_spec() + f"\n### 5.4 编排策略（仅在需要时填写）\n{opt_out}\n"
     results = compute_gate_results(
-        spec, _make_tasks(), _make_checklist(passed=True), slug="2026-09-21_fix-orchestration-review-gaps"
+        spec, _make_tasks(), _make_checklist(passed=True), slug="2026-09-21_fix-public-example-10"
     )
     assert results.orchestration_section_exists is True
     assert results.orchestration_ok is True
@@ -948,7 +933,7 @@ def test_orchestration_standalone_opt_out_bullet_without_route_still_local():
 
     spec = _make_spec() + "\n### 5.4 编排策略\n- 未启用\n"
     results = compute_gate_results(
-        spec, _make_tasks(), _make_checklist(passed=True), slug="2026-09-21_fix-orchestration-review-gaps"
+        spec, _make_tasks(), _make_checklist(passed=True), slug="2026-09-21_fix-public-example-10"
     )
     assert results.orchestration_ok is True
 
@@ -958,7 +943,7 @@ def test_orchestration_nested_route_cannot_rescue_invalid_top_level():
 
     spec = _make_spec() + "\n### 5.4 编排策略\n- route: nonsense\n- example:\n  - route: local\n"
     results = compute_gate_results(
-        spec, _make_tasks(), _make_checklist(passed=True), slug="2026-09-21_fix-orchestration-review-gaps"
+        spec, _make_tasks(), _make_checklist(passed=True), slug="2026-09-21_fix-public-example-10"
     )
     assert results.orchestration_ok is False, "nested route: local must not rescue an invalid top-level route"
 
@@ -968,7 +953,7 @@ def test_orchestration_nested_route_cannot_poison_valid_top_level():
 
     spec = _make_spec() + "\n### 5.4 编排策略\n- route: local\n- ownership:\n  - route: nonsense\n"
     results = compute_gate_results(
-        spec, _make_tasks(), _make_checklist(passed=True), slug="2026-09-21_fix-orchestration-review-gaps"
+        spec, _make_tasks(), _make_checklist(passed=True), slug="2026-09-21_fix-public-example-10"
     )
     assert results.orchestration_ok is True, "nested route: nonsense must not poison a valid top-level route"
 
@@ -978,7 +963,7 @@ def test_orchestration_duplicate_top_level_route_fails_closed():
 
     spec = _make_spec() + "\n### 5.4 编排策略\n- route: local\n- route: review\n"
     results = compute_gate_results(
-        spec, _make_tasks(), _make_checklist(passed=True), slug="2026-09-21_fix-orchestration-review-gaps"
+        spec, _make_tasks(), _make_checklist(passed=True), slug="2026-09-21_fix-public-example-10"
     )
     assert results.orchestration_ok is False
     assert any("route" in err for err in results.orchestration_errors)
@@ -997,7 +982,7 @@ def test_orchestration_spaced_or_tabbed_route_is_still_an_explicit_route(route_l
 
     spec = _make_spec() + f"\n### 5.4 编排策略\n{route_line}\n- 未启用\n"
     results = compute_gate_results(
-        spec, _make_tasks(), _make_checklist(passed=True), slug="2026-09-21_fix-orchestration-review-gaps"
+        spec, _make_tasks(), _make_checklist(passed=True), slug="2026-09-21_fix-public-example-10"
     )
     assert results.orchestration_ok is False, f"{route_line!r} must be validated before opt-out"
     assert results.overall_ok is False
@@ -1009,7 +994,7 @@ def test_orchestration_spaced_duplicate_route_fails_closed():
 
     spec = _make_spec() + "\n### 5.4 编排策略\n- route: local\n- route : nonsense\n"
     results = compute_gate_results(
-        spec, _make_tasks(), _make_checklist(passed=True), slug="2026-09-21_fix-orchestration-review-gaps"
+        spec, _make_tasks(), _make_checklist(passed=True), slug="2026-09-21_fix-public-example-10"
     )
     assert results.orchestration_ok is False
     assert any("route" in err for err in results.orchestration_errors)
@@ -1020,13 +1005,13 @@ def test_orchestration_titled_section_route_error_is_visible_in_render_and_json(
 
     spec = _make_spec() + "\n### 5.4 编排策略: review\n- route: bad\n"
     results = compute_gate_results(
-        spec, _make_tasks(), _make_checklist(passed=True), slug="2026-09-21_fix-orchestration-review-gaps"
+        spec, _make_tasks(), _make_checklist(passed=True), slug="2026-09-21_fix-public-example-10"
     )
     assert results.orchestration_ok is False
-    failure_details = gate_failure_details(results, "2026-09-21_fix-orchestration-review-gaps")
+    failure_details = gate_failure_details(results, "2026-09-21_fix-public-example-10")
     assert "编排策略" in failure_details, "route errors must surface in failure details, not hide as out-of-scope"
     output = render(
-        "2026-09-21_fix-orchestration-review-gaps",
+        "2026-09-21_fix-public-example-10",
         "T",
         spec,
         _make_tasks(),
@@ -1042,7 +1027,7 @@ def test_overall_ok_rejects_standalone_blocked_status_line():
         _make_spec(),
         tasks,
         _make_checklist(passed=True),
-        slug="2026-09-22_fix-checkpoint-blocker-gates",
+        slug="2026-09-22_fix-public-example-11",
     )
     assert results.blocked_tasks
     assert not results.overall_ok
@@ -1050,7 +1035,7 @@ def test_overall_ok_rejects_standalone_blocked_status_line():
 
 # -- evidence freshness anchor gate (证据锚点：HEAD <sha> @ <iso>) --
 
-ANCHOR_SLUG = "2026-09-25_add-evidence-freshness-anchor"
+ANCHOR_SLUG = "2026-09-25_add-public-example-12"
 
 
 def _git(cwd: Path, *args: str) -> str:

@@ -14,8 +14,8 @@ the user's own windows (never recorded) are untouched by construction.
 single-tab windows never raise the confirmation sheet) and reports
 closed/skipped.
 
-This is the third authorized Terminal.app automation step (F18, recorded in
-the ``2026-10-08_sweep-dead-chain-windows`` Development Record); the sweep
+This is the third authorized Terminal.app automation step, documented in
+ADR 0001; the sweep
 is manual by design — an automatic hook could destroy a round summary the
 user is still reading.
 """

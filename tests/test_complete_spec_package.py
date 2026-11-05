@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -930,11 +931,11 @@ def test_git_record_language_auto_detects_chinese_title():
 def test_complete_archive_rejects_interrupted_update_checkpoint(
     tmp_path, checkpoint_state, write_historical_checkpoint
 ):
-    slug = "2026-09-22_fix-checkpoint-blocker-gates"
+    slug = "2026-09-22_fix-public-example-11"
     root = tmp_path
     package = root / ".spec" / "specs" / slug
     package.mkdir(parents=True)
-    spec = SPEC + "\n- Git integration branch：`spec/2026-09-22_fix-checkpoint-blocker-gates`\n"
+    spec = SPEC + "\n- Git integration branch：`spec/2026-09-22_fix-public-example-11`\n"
     (package / "spec.md").write_text(spec, encoding="utf-8")
     (package / "tasks.md").write_text(TASKS_DONE, encoding="utf-8")
     (package / "checklist.md").write_text(CHECKLIST_DONE, encoding="utf-8")
@@ -954,7 +955,7 @@ def test_complete_archive_rejects_interrupted_update_checkpoint(
 
 
 def test_complete_archive_rejects_standalone_blocked_status_line(tmp_path):
-    slug = "2026-09-22_fix-checkpoint-blocker-gates"
+    slug = "2026-09-22_fix-public-example-11"
     package = tmp_path / ".spec" / "specs" / slug
     package.mkdir(parents=True)
     (package / "spec.md").write_text(SPEC, encoding="utf-8")
@@ -1160,6 +1161,33 @@ def test_build_summary_renders_mistake_direction_statistics_without_autonomy_cha
     assert "只统计，不自动调整 Autonomy" in summary
 
 
+def test_archive_summary_values_uses_auto_machine_evidence():
+    spec = "# X - 项目范围\n\n本包启用 evidence: runs 协议。\n"
+    tasks = "- [x] T\n  - boundary: x\n  - verify: `true`\n"
+    args = SimpleNamespace(
+        test_evidence=[],
+        build_evidence=[],
+        manual_evidence=[],
+        verified_assumption=[],
+        delivered=[],
+        simplification=[],
+        out_of_scope=[],
+        touched_area=[],
+        untouched_area=[],
+        effect_metric=[],
+        consistency_evidence=[],
+        gate_evidence=[],
+    )
+    values = complete_module.archive_summary_values(
+        spec,
+        tasks,
+        None,
+        args,
+        auto_machine_evidence=["`true` -> exit 0 (runs:task_0001)"],
+    )
+    assert values["evidence_notes"][0] == "脚本验证：`true` -> exit 0 (runs:task_0001)"
+
+
 def test_machine_success_notes_require_replayable_runs(tmp_path):
     package = tmp_path / ".spec" / "specs" / "2026-11-04_fix-evidence"
     package.mkdir(parents=True)
@@ -1179,7 +1207,7 @@ def test_machine_success_notes_require_replayable_runs(tmp_path):
 
 ## 验证范围
 """
-    assert complete_module.machine_success_note_errors(summary.format(ref=""), tasks, package), (
+    assert complete_module.machine_success_note_errors(summary.format(ref=""), tasks, package, root=None), (
         "successful machine note must name a run"
     )
 
@@ -1190,11 +1218,16 @@ def test_machine_success_notes_require_replayable_runs(tmp_path):
         "tree_fp": "0" * 64,
     }
     (package / "runs.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
-    assert complete_module.machine_success_note_errors(summary.format(ref="(runs:task_0001)"), tasks, package) == []
+    assert (
+        complete_module.machine_success_note_errors(summary.format(ref="(runs:task_0001)"), tasks, package, root=None)
+        == []
+    )
 
     record["exit"] = 1
     (package / "runs.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
-    errors = complete_module.machine_success_note_errors(summary.format(ref="(runs:task_0001)"), tasks, package)
+    errors = complete_module.machine_success_note_errors(
+        summary.format(ref="(runs:task_0001)"), tasks, package, root=None
+    )
     assert any("task_0001" in error and "exit" in error for error in errors)
 
 
@@ -1227,11 +1260,11 @@ def test_machine_success_notes_reject_unrelated_or_disguised_claims(tmp_path):
 
 ## 验证范围
 """
-    errors = complete_module.machine_success_note_errors(summary, tasks, package)
+    errors = complete_module.machine_success_note_errors(summary, tasks, package, root=None)
     assert any("命令不一致" in error for error in errors)
 
     disguised = summary.replace("成功 (runs:task_0001)", "success")
-    errors = complete_module.machine_success_note_errors(disguised, tasks, package)
+    errors = complete_module.machine_success_note_errors(disguised, tasks, package, root=None)
     assert errors
 
     zero_failures = """\
@@ -1243,7 +1276,7 @@ def test_machine_success_notes_reject_unrelated_or_disguised_claims(tmp_path):
 
 ## 验证范围
 """
-    errors = complete_module.machine_success_note_errors(zero_failures, tasks, package)
+    errors = complete_module.machine_success_note_errors(zero_failures, tasks, package, root=None)
     assert any("closed syntax" in error for error in errors)
 
     decorated_unrelated = """\
@@ -1255,7 +1288,7 @@ def test_machine_success_notes_reject_unrelated_or_disguised_claims(tmp_path):
 
 ## 验证范围
 """
-    errors = complete_module.machine_success_note_errors(decorated_unrelated, tasks, package)
+    errors = complete_module.machine_success_note_errors(decorated_unrelated, tasks, package, root=None)
     assert any("closed syntax" in error for error in errors)
 
 
@@ -1278,11 +1311,11 @@ def test_gate_evidence_claims_require_closed_run_syntax(tmp_path):
 
 ## 遗留事项
 """
-    errors = complete_module.machine_success_note_errors(summary, tasks, package)
+    errors = complete_module.machine_success_note_errors(summary, tasks, package, root=None)
     assert any("closed syntax" in error for error in errors)
 
     summary = summary.replace("- check clean", "- `python3 scripts/check.py` -> exit 0 (runs:task_0001)")
-    assert complete_module.machine_success_note_errors(summary, tasks, package) == []
+    assert complete_module.machine_success_note_errors(summary, tasks, package, root=None) == []
 
 
 def test_complete_archive_rejects_unreferenced_success_claim_without_runs_protocol(tmp_path):
@@ -1306,6 +1339,69 @@ def test_complete_archive_rejects_unreferenced_success_claim_without_runs_protoc
     assert result.returncode == 1
     assert "machine evidence note gate failed" in result.stderr
     assert "runs:<task id>" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("run_bytes", "expected_id"),
+    [
+        (None, "SPEC-EVID-001"),
+        (b"", "SPEC-EVID-001"),
+        (b'{"task":"task_9999","cmd":"python3 -m pytest -q","exit":0}\n', "SPEC-EVID-001"),
+        (b'{"task":', "SPEC-EVID-003"),
+        (b"\xff\n", "SPEC-EVID-003"),
+    ],
+    ids=["missing", "empty", "other-task", "malformed-json", "invalid-utf8"],
+)
+def test_archive_rejects_missing_or_unreadable_claimed_run_without_writes(tmp_path, run_bytes, expected_id):
+    package = _write_complete_package(tmp_path, "2026-11-05_fix-missing-run")
+    (package / "tasks.md").write_text(
+        "- [x] Test\n  - boundary: tests\n  - verify: `python3 -m pytest -q`\n", encoding="utf-8"
+    )
+    if run_bytes is not None:
+        (package / "runs.jsonl").write_bytes(run_bytes)
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(Path(complete_module.__file__)),
+            "--root",
+            str(tmp_path),
+            "--slug",
+            package.name,
+            "--archive",
+            "--test-evidence",
+            "`python3 -m pytest -q` -> exit 0 (runs:task_0001)",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1
+    assert expected_id in result.stderr
+    assert "Traceback" not in result.stderr
+    if expected_id == "SPEC-EVID-003":
+        assert result.stderr.count("SPEC-EVID-003") == 1
+        assert "run --task" not in result.stderr
+    assert package.is_dir()
+    assert not (tmp_path / ".spec" / "specs" / "archive" / package.name).exists()
+    after = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    assert after == before
+
+
+def test_machine_success_notes_report_missing_run_without_losing_other_claims(tmp_path):
+    tasks = (
+        "- [x] First\n  - boundary: one\n  - verify: `python3 first.py`\n"
+        "- [x] Second\n  - boundary: two\n  - verify: `python3 second.py`\n"
+    )
+    summary = (
+        "## 验证证据\n"
+        "- 测试：`python3 first.py` -> exit 0 (runs:task_0001)\n"
+        "- 测试：`python3 second.py` -> exit 0 (runs:task_0002)\n"
+    )
+    record = {"task": "task_0001", "cmd": "python3 first.py", "exit": 0}
+    (tmp_path / "runs.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+    errors = complete_module.machine_success_note_errors(summary, tasks, tmp_path, root=None)
+    assert len(errors) == 1
+    assert "SPEC-EVID-001" in errors[0] and "task_0002" in errors[0]
 
 
 def test_build_summary_process_metrics_place_between_gate_evidence_and_followups():
@@ -1516,7 +1612,7 @@ def _archived_summary(tmp_path: Path, slug: str) -> str:
 
 
 def test_archive_records_resolvable_commit_interval(tmp_path):
-    slug = "2026-10-12_record-archive-commit-range"
+    slug = "2026-10-12_record-public-example-22"
     root = _interval_sandbox(tmp_path, slug)
     result = subprocess.run(
         [sys.executable, str(Path(complete_module.__file__)), "--root", str(root), "--slug", slug, "--archive"],

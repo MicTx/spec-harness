@@ -1,4 +1,4 @@
-"""Prose-dedup doc contracts (F2, `.spec/specs/2026-10-19_refactor-skill-prose`).
+"""Prose-dedup doc contracts (F2, `.spec/specs/2026-10-19_refactor-public-example-28`).
 
 The dedup map (`<package>/dedup-map.md`) classifies each compressed rule's
 behavior witness into three tiers. This file is the doc-contract tier: minimal

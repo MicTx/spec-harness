@@ -50,13 +50,24 @@ from spec_package_support import (
     read_regular_text,
     resolve_specs_child,
     resolve_specs_root,
+    rule_message,
     validate_branch_bound_package,
     verification_scope,
 )
 from spec_package_support import (
     parse_task_records as parse_task_records_for_machine_notes,
 )
-from spec_verify import latest_record_by_task, machine_verification_summary, read_runs_records, runs_protocol_enabled
+from spec_verify import (
+    compute_package_fingerprint,
+    compute_tree_fingerprint,
+    fresh_machine_evidence,
+    latest_record_by_task,
+    machine_verification_summary,
+    package_identities,
+    read_runs_records,
+    runs_protocol_enabled,
+    stale_record_reason,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -265,8 +276,10 @@ def machine_success_note_errors(
     summary: str,
     tasks_content: str,
     package_dir: Path,
+    *,
+    root: Path | None,
 ) -> list[str]:
-    """Require successful test/build prose to name a replayable machine run."""
+    """Validate explicit claims; ``root=None`` is only for syntax-only callers."""
     lines = summary.splitlines()
     machine_notes: list[str] = []
     in_evidence = False
@@ -292,10 +305,14 @@ def machine_success_note_errors(
     for task_record in parse_task_records_for_machine_notes(tasks_content):
         command_match = re.search(r"`([^`]+)`", task_record.verify)
         if command_match and not task_record.verify.strip().lower().startswith("manual:"):
-            task_commands[task_record.id] = command_match.group(1)
-    records = read_runs_records(package_dir) or []
+            task_commands[task_record.id] = command_match.group(1).strip()
+    try:
+        records = read_runs_records(package_dir) or []
+    except (OSError, UnicodeError, ValueError) as exc:
+        return [rule_message("SPEC-EVID-003", f"runs 证据不可读：{exc}")]
     latest = latest_record_by_task(records)
     errors: list[str] = []
+    fingerprints: tuple[str, str, str] | None = None
     for note in machine_notes:
         syntax_match = _MACHINE_NOTE_SYNTAX.fullmatch(note)
         if not syntax_match:
@@ -308,7 +325,13 @@ def machine_success_note_errors(
                 continue
             record = latest.get(task_id)
             if not record:
-                errors.append(f"机器成功声明没有 runs.jsonl 记录：{task_id}")
+                errors.append(
+                    rule_message(
+                        "SPEC-EVID-001",
+                        f"机器成功声明没有 runs.jsonl 记录：{task_id}；使用 spec_verify.py run --task {task_id} 重跑",
+                    )
+                )
+                continue
             elif record.get("exit") != 0:
                 errors.append(f"机器成功声明引用的任务未通过：{task_id} exit={record.get('exit')}")
                 continue
@@ -317,6 +340,23 @@ def machine_success_note_errors(
                 errors.append(f"机器成功声明引用的任务命令不一致：{task_id}")
             elif syntax_match.group(1) != recorded_command:
                 errors.append(f"机器成功声明与 run 命令不一致：{task_id}：{recorded_command}")
+            elif root is not None:
+                try:
+                    if fingerprints is None:
+                        tree_fp = compute_tree_fingerprint(root, package_dir)
+                        if tree_fp is None:
+                            raise ValueError("工作树指纹不可计算；无法核验显式运行证据")
+                        fingerprints = (
+                            tree_fp,
+                            compute_package_fingerprint(package_dir),
+                            package_identities(root, package_dir),
+                        )
+                    stale = stale_record_reason(record, recorded_command, *fingerprints)
+                except (OSError, UnicodeError, ValueError) as exc:
+                    errors.append(rule_message("SPEC-EVID-003", f"运行证据无法核验：{exc}"))
+                    continue
+                if stale:
+                    errors.append(rule_message("SPEC-EVID-002", f"{task_id}：证据过期（{stale}）"))
     return errors
 
 
@@ -325,6 +365,8 @@ def archive_summary_values(
     tasks_content: str,
     checklist_content: str | None,
     args: argparse.Namespace,
+    *,
+    auto_machine_evidence: list[str] | None = None,
 ) -> dict[str, list[str]]:
     """Fill archive summary sections from the already-passed package.
 
@@ -338,21 +380,22 @@ def archive_summary_values(
     out_of_scope = normalize_items(extract_section_bullets(spec_content, SECTION_OUT_OF_SCOPE))
     behavior = normalize_items(extract_section_bullets(spec_content, SECTION_BEHAVIOR_METRICS))
     delivered = completed_task_subjects(tasks_content)
-    evidence_notes = (
-        [
-            *(f"测试：{value}" for value in args.test_evidence),
-            *(f"构建：{value}" for value in args.build_evidence),
-            *(f"手工：{value}" for value in args.manual_evidence),
-        ]
-        or ([] if runs_protocol_enabled(spec_content) else ["手工：legacy checklist evidence retained in checklist.md"])
-        or [
-            (
-                "机器证据：runs.jsonl（见验证范围的机器验证率）"
-                if runs_protocol_enabled(spec_content)
-                else "命令证据：spec.md §6 成功标准 verify span"
-            )
-        ]
-    )
+    explicit_machine = [
+        *(f"测试：{value}" for value in args.test_evidence),
+        *(f"构建：{value}" for value in args.build_evidence),
+    ]
+    manual = [f"手工：{value}" for value in args.manual_evidence]
+    auto_machine = [f"脚本验证：{value}" for value in (auto_machine_evidence or [])]
+    if explicit_machine:
+        evidence_notes = explicit_machine + manual
+    elif auto_machine:
+        evidence_notes = auto_machine + manual
+    elif manual:
+        evidence_notes = manual
+    elif runs_protocol_enabled(spec_content):
+        evidence_notes = ["机器证据：runs.jsonl（见验证范围的机器验证率）"]
+    else:
+        evidence_notes = ["手工：legacy checklist evidence retained in checklist.md"]
     return {
         "verified_assumptions": args.verified_assumption or assumptions or ["Development Record 假设与范围门禁通过"],
         "delivered": args.delivered or delivered or ["Development Record 内全部任务已完成"],
@@ -902,7 +945,25 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 1
-        summary_values = archive_summary_values(spec_content, tasks_content, checklist_content, args)
+        auto_machine_evidence: list[str] = []
+        if runs_protocol_enabled(spec_content) and not args.test_evidence and not args.build_evidence:
+            try:
+                auto_machine_evidence = fresh_machine_evidence(
+                    spec_content,
+                    tasks_content,
+                    package_dir,
+                    root,
+                )
+            except (OSError, UnicodeError, ValueError, SpecControlError) as exc:
+                print(f"error: runs 证据不可读：{exc}", file=sys.stderr)
+                return 1
+        summary_values = archive_summary_values(
+            spec_content,
+            tasks_content,
+            checklist_content,
+            args,
+            auto_machine_evidence=auto_machine_evidence,
+        )
     else:
         summary_values = {
             "verified_assumptions": args.verified_assumption,
@@ -971,7 +1032,7 @@ def main() -> int:
     )
 
     if args.archive:
-        machine_note_failures = machine_success_note_errors(summary, tasks_content, package_dir)
+        machine_note_failures = machine_success_note_errors(summary, tasks_content, package_dir, root=root)
         if machine_note_failures:
             print("error: machine evidence note gate failed:", file=sys.stderr)
             for failure in machine_note_failures:

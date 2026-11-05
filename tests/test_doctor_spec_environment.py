@@ -1172,7 +1172,7 @@ def test_core_marker_selects_core_audit_face(tmp_path):
     assert face == tuple(_core_face_files())
     # core keeps exactly the discovery metadata from agents/ (CORE_KEPT_FILES) and nothing from server/
     assert [name for name in face if name.startswith(("agents/", "server/"))] == ["agents/openai.yaml"]
-    assert doctor.user_stages() == ["new", "run", "check", "done", "push"]
+    assert doctor.user_stages() == ["new", "run", "check", "done", "push", "doctor"]
 
     # A bogus stamp never narrows the audit face silently.
     (skill / ".spec-skill-install").write_text("installed_by=spec/install.sh\nprofile=bogus\n", encoding="utf-8")
@@ -1180,7 +1180,7 @@ def test_core_marker_selects_core_audit_face(tmp_path):
 
 
 def test_layout_core_face_passes_without_extension_components(tmp_path):
-    """The closed followup from 2026-10-13_add-install-profile: a core install
+    """The closed followup from 2026-10-13_add-public-example-23: a core install
     must not be flagged for missing agents/server/slots."""
     skill = tmp_path / "skill"
     _write_runtime_face(skill, _core_face_files())

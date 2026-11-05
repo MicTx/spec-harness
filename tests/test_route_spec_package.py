@@ -861,7 +861,7 @@ ORCHESTRATION_VALID_SPEC = ORCHESTRATION_BLOCK_SPEC.replace("- route: build + re
 
 
 def test_route_invalid_54_blocks_run_before_execution(tmp_path):
-    slug = "2026-09-21_fix-orchestration-lifecycle"
+    slug = "2026-09-21_fix-public-example-09"
     _create_package(
         tmp_path / ".spec" / "specs",
         slug,
@@ -880,7 +880,7 @@ def test_route_invalid_54_blocks_run_before_execution(tmp_path):
 def test_route_and_report_agree_on_invalid_54_with_completed_tasks(tmp_path):
     """All tasks done + invalid 5.4: route blocks, and the status views must
     not advertise done/archiving for the same package state."""
-    slug = "2026-09-21_fix-orchestration-lifecycle-done"
+    slug = "2026-09-21_fix-public-example-09-done"
     tasks_text = "## 实现\n- [x] Task A\n  - boundary: x\n  - verify: x\n"
     _create_package(
         tmp_path / ".spec" / "specs",
@@ -917,7 +917,7 @@ def test_route_and_report_agree_on_invalid_54_with_completed_tasks(tmp_path):
 
 
 def test_route_valid_54_still_runs_and_absent_54_still_runs(tmp_path):
-    slug_valid = "2026-09-21_fix-orchestration-lifecycle-ok"
+    slug_valid = "2026-09-21_fix-public-example-09-ok"
     _create_package(
         tmp_path / ".spec" / "specs",
         slug_valid,
@@ -927,7 +927,7 @@ def test_route_valid_54_still_runs_and_absent_54_still_runs(tmp_path):
     )
     assert _route_state(tmp_path, slug_valid)["stage"] == "run"
 
-    slug_absent = "2026-09-21_fix-orchestration-lifecycle-absent"
+    slug_absent = "2026-09-21_fix-public-example-09-absent"
     _create_package(
         tmp_path / ".spec" / "specs",
         slug_absent,

@@ -234,7 +234,7 @@ def test_health_and_start_result_contract(tmp_path: Path):
 
 
 def test_archived_package_is_completed(tmp_path: Path):
-    slug = "2026-08-17_add-server-mode"
+    slug = "2026-08-17_add-public-example-05"
     write_valid_archive(tmp_path, slug)
 
     with running_server(tmp_path) as base:

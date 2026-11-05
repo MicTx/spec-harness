@@ -775,6 +775,58 @@ def _archive_integrity(root: Path, state: Dict[str, object]) -> Tuple[bool, Opti
     return True, None
 
 
+def _completed_autorun_reconciliation(root: Path, state: Dict[str, object]) -> Dict[str, object]:
+    """Prove an old plan was implemented, without re-grading its old review."""
+    if state.get("lifecycle") != "ready":
+        raise ChainSpawnError("completed reconciliation requires a recorded autoplan ready chain")
+    if _active_package_names(root):
+        raise ChainSpawnError("completed reconciliation refuses active Development Records")
+    view = _effective_view(root, "autorun")
+    if view["diverged"] or view["closed"]:
+        raise ChainSpawnError("completed reconciliation requires one live current autorun chain")
+    autorun = view["state"]
+    if not isinstance(autorun, dict) or autorun.get("lifecycle") != "complete":
+        raise ChainSpawnError("completed reconciliation requires a complete autorun chain")
+    if (
+        autorun.get("plan_docs") != state.get("plan_docs")
+        or not autorun.get("feature_fingerprint")
+        or autorun.get("feature_fingerprint") != state.get("feature_fingerprint")
+    ):
+        raise ChainSpawnError("autoplan and autorun scope/fingerprint do not match")
+    if not _recorded_complete(root, state):
+        raise ChainSpawnError("the original plan still has unchecked features")
+    completed = autorun.get("completed_step_ids") or []
+    step = autorun.get("step") or {}
+    packages = [*completed, *([step["id"]] if step.get("id") else [])]
+    if not packages:
+        raise ChainSpawnError("autorun has no completed package evidence")
+    rows = {
+        row.get("state", {}).get("step", {}).get("id"): row.get("state", {})
+        for row in view["rows"]
+        if row.get("state", {}).get("step", {}).get("kind") == "package"
+    }
+    for slug in packages:
+        proof = (rows.get(slug) or {}).get("step", {})
+        if proof.get("status") != "complete" or proof.get("outcome") != "passed":
+            raise ChainSpawnError(f"autorun package {slug} has no passed completion proof")
+        archive = (proof.get("proof") or {}).get("archive_hashes")
+        if not archive:
+            raise ChainSpawnError(f"autorun package {slug} has no archive proof")
+        intact, reason = _archive_integrity(root, rows[slug])
+        if not intact:
+            raise ChainSpawnError(f"autorun package {slug} archive changed: {reason}")
+    step_state = autorun.get("step") or {}
+    if step_state.get("status") != "complete" or step_state.get("outcome") != "passed":
+        raise ChainSpawnError("the final autorun step is not passed")
+    return {
+        "status": "reconciled_completed",
+        "autorun_chain_id": autorun.get("chain_id"),
+        "autorun_revision": autorun.get("revision"),
+        "feature_fingerprint": state.get("feature_fingerprint"),
+        "completed_packages": packages,
+    }
+
+
 def _active_package_names(root: Path) -> List[str]:
     specs_dir = _safe_path(root, root / ".spec" / "specs")
     if not specs_dir.is_dir():
@@ -1994,6 +2046,13 @@ def _apply_resume(view: Dict[str, object], args, root: Path, chain: str):
             takeover = True
         new_step = dict(step)
         new_step["status"] = "active"
+    elif lifecycle == "ready" and chain == "autoplan" and getattr(args, "reconcile_completed", False):
+        if not args.takeover:
+            raise ChainSpawnError("completed reconciliation resume requires --takeover to confirm ownership takeover")
+        _completed_autorun_reconciliation(root, state)
+        new_step = dict(step) if isinstance(step, dict) else step
+        new_owner = caller
+        takeover = True
     else:
         if known is not None and not args.takeover:
             if not isinstance(step, dict) or step.get("status") in ("active", "paused"):
@@ -2020,14 +2079,20 @@ def _apply_close(view: Dict[str, object], args, root: Path, chain: str, dry_run:
     caller = _require_local_owner(view, args.owner)
     _expect_revision(state, args.expected_revision)
     step = state.get("step") or {}
+    reconciliation = None
     if chain == "autoplan":
-        if state.get("lifecycle") != "ready":
+        if getattr(args, "reconcile_completed", False):
+            reconciliation = _completed_autorun_reconciliation(root, state)
+        elif state.get("lifecycle") != "ready":
             raise ChainSpawnError(
                 f"autoplan close requires a proven ready chain (lifecycle is {state.get('lifecycle')})"
             )
-        ok, reason = _autoplan_ready_check(root, state)
-        if not ok:
-            raise ChainSpawnError(f"readiness no longer valid: {reason}")
+        else:
+            ok, reason = _autoplan_ready_check(root, state)
+            if not ok:
+                raise ChainSpawnError(f"readiness no longer valid: {reason}")
+    elif getattr(args, "reconcile_completed", False):
+        raise ChainSpawnError("--reconcile-completed only applies to autoplan close")
     else:
         if step.get("status") != "complete" or step.get("outcome") != "passed":
             raise ChainSpawnError(
@@ -2068,6 +2133,8 @@ def _apply_close(view: Dict[str, object], args, root: Path, chain: str, dry_run:
             "closed_at": closed_at,
             "execution_mode": "current",
         }
+        if reconciliation is not None:
+            snapshot["reconciliation"] = reconciliation
         if not dry_run:
             _atomic_write(archive_path, json.dumps(snapshot, indent=2, sort_keys=True) + "\n")
     marker = {
@@ -2081,6 +2148,8 @@ def _apply_close(view: Dict[str, object], args, root: Path, chain: str, dry_run:
         "chain_id": state.get("chain_id"),
         "revision": int(state["revision"]) + 1,
     }
+    if reconciliation is not None:
+        marker["reconciliation"] = reconciliation
     return marker, caller, {"status": "closed", "archive": marker["archive"]}
 
 
@@ -2156,9 +2225,19 @@ def build_parser() -> argparse.ArgumentParser:
     resume = sub.add_parser("resume", help="resume a paused step or take over after takeover confirmation")
     _add_mutation_args(resume)
     resume.add_argument("--takeover", action="store_true")
+    resume.add_argument(
+        "--reconcile-completed",
+        action="store_true",
+        help="take over stale ready autoplan only after matching complete autorun evidence verifies",
+    )
 
     close = sub.add_parser("close", help="archive a proven ready/complete current chain")
     _add_mutation_args(close)
+    close.add_argument(
+        "--reconcile-completed",
+        action="store_true",
+        help="close stale ready autoplan only with matching complete autorun and intact package evidence",
+    )
     return parser
 
 

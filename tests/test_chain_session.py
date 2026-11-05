@@ -493,6 +493,113 @@ class TestReadOnly:
 
 
 class TestAutoplanLifecycle:
+    def test_reconcile_completed_autorun_closes_stale_ready_chain(self, tmp_path, capsys):
+        done = autoplan_to_ready(capsys, tmp_path)
+        revision = done["revision"]
+        master = tmp_path / MASTER_REL
+        master.write_text(MASTER_EXPANDED, encoding="utf-8")
+        slug = "2026-01-03_ship-alpha"
+        make_active_package(tmp_path, slug, f"spec/{slug}")
+        subprocess.run(["git", "-C", str(tmp_path), "checkout", "-q", "-b", f"spec/{slug}"], check=True)
+        autorun_begin(
+            capsys,
+            tmp_path,
+            slug,
+            step_id=slug,
+            revision=0,
+            plan=MASTER_REL,
+        )
+        archive_package(tmp_path, slug)
+        autorun_done = finish(capsys, tmp_path, "autorun", revision=1)
+        assert autorun_done["state"]["lifecycle"] == "active"
+        master.write_text(
+            master.read_text(encoding="utf-8").replace("- [ ] Feature", "- [x] Feature"), encoding="utf-8"
+        )
+        second_slug = "2026-01-04_ship-beta"
+        make_active_package(tmp_path, second_slug, f"spec/{second_slug}")
+        subprocess.run(["git", "-C", str(tmp_path), "checkout", "-q", "-b", f"spec/{second_slug}"], check=True)
+        autorun_begin(
+            capsys,
+            tmp_path,
+            second_slug,
+            step_id=second_slug,
+            revision=2,
+            plan=MASTER_REL,
+        )
+        archive_package(tmp_path, second_slug)
+        autorun_done = finish(capsys, tmp_path, "autorun", revision=3)
+        assert autorun_done["state"]["lifecycle"] == "complete"
+        status = cli_ok(capsys, "status", "--chain", "autoplan", "--root", str(tmp_path), "--format", "json")
+        assert status["ready_valid"] is False
+        err = cli_err(capsys, "close", *mut_args("autoplan", tmp_path, OWNER_A, revision), "--dry-run")
+        assert "readiness no longer valid" in err
+        closed = cli_ok(
+            capsys,
+            "close",
+            *mut_args("autoplan", tmp_path, OWNER_A, revision),
+            "--reconcile-completed",
+            "--dry-run",
+        )
+        assert closed["state"]["reconciliation"]["status"] == "reconciled_completed"
+        assert closed["state"]["reconciliation"]["completed_packages"] == [slug, second_slug]
+        assert closed["state"]["revision"] == revision + 1
+        other_owner = cli_err(
+            capsys,
+            "close",
+            *mut_args("autoplan", tmp_path, OWNER_B, revision),
+            "--reconcile-completed",
+            "--dry-run",
+        )
+        assert "--owner does not match" in other_owner
+        before = tree_bytes(tmp_path)
+        for owner in (OWNER_B, OWNER_A):
+            for flags in ((), ("--dry-run",)):
+                err = cli_err(
+                    capsys,
+                    "resume",
+                    *mut_args("autoplan", tmp_path, owner, revision),
+                    "--reconcile-completed",
+                    *flags,
+                )
+                assert "--takeover" in err
+                assert tree_bytes(tmp_path) == before
+        taken = cli_ok(
+            capsys,
+            "resume",
+            *mut_args("autoplan", tmp_path, OWNER_B, revision),
+            "--takeover",
+            "--reconcile-completed",
+            "--dry-run",
+        )
+        assert taken["takeover"] is True
+        taken = cli_ok(
+            capsys,
+            "resume",
+            *mut_args("autoplan", tmp_path, OWNER_B, revision),
+            "--takeover",
+            "--reconcile-completed",
+        )
+        closed = cli_ok(
+            capsys,
+            "close",
+            *mut_args("autoplan", tmp_path, OWNER_B, taken["revision"]),
+            "--reconcile-completed",
+        )
+        assert closed["status"] == "closed"
+
+    def test_reconcile_completed_refuses_unproven_scope(self, tmp_path, capsys):
+        done = autoplan_to_ready(capsys, tmp_path)
+        before = tree_bytes(tmp_path)
+        err = cli_err(
+            capsys,
+            "close",
+            *mut_args("autoplan", tmp_path, OWNER_A, done["revision"]),
+            "--reconcile-completed",
+            "--dry-run",
+        )
+        assert "autorun" in err
+        assert tree_bytes(tmp_path) == before
+
     def test_framework_detail_review_to_ready_and_close(self, tmp_path, capsys):
         done = autoplan_to_ready(capsys, tmp_path)
         state = done["state"]

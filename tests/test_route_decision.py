@@ -280,7 +280,7 @@ _PACKAGE_SPEC = """\
 
 
 def test_cli_package_context_changes_decision_when_open_tasks_change(tmp_path):
-    slug = "2026-09-21_fix-orchestration-lifecycle"
+    slug = "2026-09-21_fix-public-example-09"
     copy_tasks = "- [ ] 改文案\n  - boundary: README.md\n  - verify: rg\n"
     auth_tasks = "- [ ] 认证 token 与 session 存储\n  - boundary: auth/storage\n  - verify: pytest -q\n"
     _write_package(tmp_path, slug, _PACKAGE_SPEC, copy_tasks)
@@ -296,7 +296,7 @@ def test_cli_package_context_changes_decision_when_open_tasks_change(tmp_path):
 
 
 def test_cli_package_explicit_54_route_overrides_heuristic(tmp_path):
-    slug = "2026-09-21_fix-orchestration-lifecycle"
+    slug = "2026-09-21_fix-public-example-09"
     spec = _PACKAGE_SPEC + "\n## 5. 技术决策\n### 5.4 编排策略\n- route: review\n- ownership: 主线程\n"
     tasks = "- [ ] 梳理结构不清的代码库\n  - boundary: src/\n  - verify: notes\n"
     _write_package(tmp_path, slug, spec, tasks)

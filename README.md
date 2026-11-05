@@ -78,11 +78,10 @@ Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.24.0
 bash install.sh
 ```
 
-`install.sh` 是本地 Skill 的唯一安装入口；可选的 `server/install.sh` 只用于部署 self-hosted server-mode。更新或回滚时切换到目标 tag 后重新运行安装器。
+`install.sh` 是本地 Skill 的唯一安装入口；可选的 `server/install.sh` 只用于部署 self-hosted server-mode。需要固定版本时切换到目标 tag，并使用该 tag 自带的文档；更新或回滚后重新运行安装器。
 
 源码树安装不需要签名凭据：本地没有签发凭据时，安装器自动以 `--skip-signing` 导出并打印一行提示；发布签名只由 release 构建强制（release 压缩包出厂自带签名）。需要本地签发时设置 `SPEC_SIGNING_IDENTITY` 与 `SPEC_SIGNING_KEY` 指向身份 JSON 与密钥文件；显式跳过也可用 `SPEC_SKIP_SIGNING=1`。
 
@@ -90,7 +89,7 @@ bash install.sh
 
 | `INSTALL_HOSTS` | 宿主 | 默认目录 | 额外行为 |
 | --- | --- | --- | --- |
-| `claude` | Claude Code | `~/.claude/skills` | 生成 `/spec` 与阶段命令（core 5 个，full 12 个） |
+| `claude` | Claude Code | `~/.claude/skills` | 生成 `/spec` 与阶段命令（core 6 个，full 12 个） |
 | `claude-desktop` | Claude Desktop | `~/.claude-desktop/skills` | 只安装 Skill |
 | `codex`、`codex-desktop` | Codex | `~/.codex/skills` | 两个 token 共用目录 |
 | `gemini` | Gemini CLI | `~/.gemini/skills` | |
@@ -114,7 +113,7 @@ bash install.sh
 INSTALL_HOSTS=codex CODEX_SKILLS_DIR=~/.codex/skills bash install.sh
 ```
 
-安装 profile：`INSTALL_PROFILE` 选择组件面，缺省 `core`——只装内核（核心阶段命令 `/spec:new` `/spec:run` `/spec:check` `/spec:done` `/spec:push`、Git 钩子与脚本树），不装扩展组件（`slots/`、`agents/`）与扩展阶段命令（`goal`/`autoplan`/`autorun`/`update`/`status`/`doctor`/`organize`）；`INSTALL_PROFILE=full` 恢复完整安装（全部 12 个阶段命令与扩展组件，与旧版字节等价）。已装 full 的机器重跑默认安装会降回 core：扩展阶段命令与 agents 先入备份再移除。需要链、规划链或扩展能力时显式指定：
+安装 profile：`INSTALL_PROFILE` 选择组件面，缺省 `core`——只装内核（核心阶段命令 `/spec:new` `/spec:run` `/spec:check` `/spec:done` `/spec:push` `/spec:doctor`、Git 钩子与脚本树），不装扩展组件（`slots/`、`agents/`）与扩展阶段命令（`goal`/`autoplan`/`autorun`/`update`/`status`/`organize`）；`INSTALL_PROFILE=full` 恢复完整安装（全部 12 个阶段命令与扩展组件，与旧版字节等价）。已装 full 的机器重跑默认安装会降回 core：扩展阶段命令与 agents 先入备份再移除。需要链、规划链或扩展能力时显式指定：
 
 ```bash
 INSTALL_PROFILE=full bash install.sh
@@ -176,6 +175,8 @@ python3 scripts/export_skill_package.py --output /tmp/spec --force
 DeepSeek Harness（dsh）插件模式：`python3 scripts/package_agent_plugin.py --format dsh` 产出 dsh bundle（`package.json` 声明 `dsh.bundle.patch`，`index.js` 在 `ctx.skills` 注册提供者），解压后用 `dsh plugin --profile <name> add ./spec-harness` 装入 profile，`dsh plugin --profile <name> remove spec-harness` 卸载。dsh 处于 developer preview，未做 live 验收。
 
 ## 快速开始
+
+第一次使用建议先走[从零完成第一个任务：保姆级教程](docs/getting-started.md)，其中按命令、预期结果和失败处理演示安装、建包、验证、归档与恢复。
 
 装好之后，最短的路径是在宿主里给出一句完整目标：
 

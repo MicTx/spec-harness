@@ -13,13 +13,13 @@ machine tasks lack a fresh ``exit == 0`` record — 「通过」再次意味着�
 
 Protocol data shape (one JSON object per line, append-only):
 
-    {task, cmd, exit, duration_s, stdout_tail_sha256, tree_fp, at}
+    {task, cmd, exit, duration_s, stdout_tail_sha256, tree_fp, package_fp, package_id, at}
 
 ``tree_fp`` covers HEAD + tracked diff (``git diff --binary HEAD``) + content
-of untracked-but-not-ignored files, with every ``.spec/`` path excluded: the
-package's own documents (checkboxes, evidence, this very file) legitimately
-change after evidence capture and must not invalidate it. ``exit == -1`` means
-the command did not exit normally (timeout kill or fatal spawn error).
+of untracked-but-not-ignored files, excluding ``.spec/`` and a custom specs
+package subtree. ``package_fp`` binds auxiliary files in the current package.
+Both fingerprints describe observed states, not atomic snapshots.
+``exit == -1`` means execution failed abnormally or changed package inputs.
 
 Hooks never execute verify commands; they only read the conclusions this
 recorder produces.
@@ -32,7 +32,9 @@ import base64
 import binascii
 import hashlib
 import json
+import os
 import re
+import stat
 import subprocess
 import sys
 import time
@@ -40,13 +42,16 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from safe_open_support import SafeOpenError, open_regular_read
 from spec_package_support import (
+    MAX_SPEC_FILE_BYTES,
     SpecControlError,
     add_specs_dir_arg,
     parse_task_records,
     read_regular_text,
     resolve_specs_child,
     resolve_specs_root,
+    rule_message,
 )
 
 RUNS_FILENAME = "runs.jsonl"
@@ -56,7 +61,24 @@ BACKTICK_SPAN = re.compile(r"`([^`]+)`")
 DEFAULT_TIMEOUT_S = 600
 STDOUT_TAIL_BYTES = 4096
 FINGERPRINT_EXCLUDED_PREFIX = ".spec/"
-#: exit code recorded when the command was killed (timeout) or never ran.
+# Archive container between the specs root and the slug; archiving only moves the
+# directory, so records keep the identity they were written under.
+ARCHIVE_DIRNAME = "archive"
+SPECS_CONTAINER = "specs"
+PACKAGE_STATE_FILES = frozenset(
+    {
+        "spec.md",
+        "tasks.md",
+        "checklist.md",
+        "handoff.md",
+        "completion-summary.md",
+        "runs.jsonl",
+        "runs.jsonl.corrupt",
+        "adoption.json",
+        "update-checkpoint.json",
+    }
+)
+#: Exit code for timeouts, spawn errors, or auxiliary inputs changed during verification.
 ABNORMAL_EXIT = -1
 
 
@@ -134,25 +156,36 @@ def _git(root: Path, *args: str, text: bool) -> subprocess.CompletedProcess:
     return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=text)
 
 
-def compute_tree_fingerprint(root: Path) -> str | None:
+def compute_tree_fingerprint(root: Path, package_dir: Path | None = None) -> str | None:
     """Bind evidence to the exact worktree it ran against.
 
     sha256 over: ``HEAD`` sha + NUL + ``git diff --binary HEAD`` (pathspec
     excluding ``.spec``) + NUL + per untracked-unignored file
     ``path + NUL + content + NUL`` (sorted by path, ``.spec`` excluded).
-    Binary diff output is hashed as raw bytes. Returns ``None`` when the root
-    is not a usable Git worktree; callers treat that as 不适用 (never crash,
-    never silently pass).
+    A custom specs package subtree is also excluded: the package fingerprint
+    separately binds the current package's auxiliary files. Binary diff output
+    is hashed as raw bytes. Returns ``None`` for an unusable Git worktree.
     """
+    excluded_package_root = ""
+    if package_dir is not None:
+        try:
+            relative_package = package_dir.relative_to(root)
+        except ValueError:
+            return None
+        if relative_package.parts and relative_package.parts[0] != ".spec":
+            excluded_package_root = relative_package.parent.as_posix()
+    exclusions = [":(exclude).spec"]
+    if excluded_package_root:
+        exclusions.append(f":(exclude,literal){excluded_package_root}")
     head = _git(root, "rev-parse", "HEAD", text=True)
     if head.returncode == 0:
         head_text = head.stdout.strip()
-        diff = _git(root, "diff", "--binary", "HEAD", "--", ".", ":(exclude).spec", text=False)
+        diff = _git(root, "diff", "--binary", "HEAD", "--", ".", *exclusions, text=False)
     else:
         # No commits yet (fresh ``git init``): fingerprint the worktree
         # against the index so an initial tree still hashes deterministically.
         head_text = ""
-        diff = _git(root, "diff", "--binary", "--", ".", ":(exclude).spec", text=False)
+        diff = _git(root, "diff", "--binary", "--", ".", *exclusions, text=False)
     if diff.returncode != 0:
         return None
     hasher = hashlib.sha256()
@@ -166,6 +199,8 @@ def compute_tree_fingerprint(root: Path) -> str | None:
     for raw_path in sorted(part for part in untracked.stdout.split(b"\0") if part):
         path = raw_path.decode("utf-8", "surrogateescape")
         if path == ".spec" or path.startswith(FINGERPRINT_EXCLUDED_PREFIX):
+            continue
+        if excluded_package_root and (path == excluded_package_root or path.startswith(excluded_package_root + "/")):
             continue
         if path == "runs.jsonl" or path.endswith("/runs.jsonl"):
             # Engine-written evidence self-exclusion (F11): runs.jsonl
@@ -185,6 +220,77 @@ def compute_tree_fingerprint(root: Path) -> str | None:
         hasher.update(content)
         hasher.update(b"\0")
     return hasher.hexdigest()
+
+
+def package_input_snapshot(package_dir: Path) -> tuple[str, dict[str, tuple[int, bytes]]]:
+    """Hash auxiliary files and retain ephemeral per-file digests for diagnostics."""
+    if package_dir.resolve(strict=True) != package_dir.absolute():
+        raise ValueError("package path contains a symlink")
+    digest = hashlib.sha256()
+    entries: dict[str, tuple[int, bytes]] = {}
+    for path in sorted(package_dir.rglob("*")):
+        relative = path.relative_to(package_dir)
+        if len(relative.parts) == 1 and relative.name in PACKAGE_STATE_FILES:
+            continue
+        if path.is_symlink():
+            raise ValueError(f"package auxiliary path is a symlink: {relative}")
+        if path.is_dir():
+            continue
+        try:
+            with open_regular_read(path, max_bytes=MAX_SPEC_FILE_BYTES) as descriptor:
+                content = hashlib.sha256()
+                while chunk := os.read(descriptor, 65536):
+                    content.update(chunk)
+                mode = os.fstat(descriptor).st_mode & 0o111
+        except SafeOpenError as exc:
+            raise ValueError(str(exc)) from exc
+        name = relative.as_posix()
+        file_digest = content.digest()
+        entries[name] = (mode, file_digest)
+        digest.update(os.fsencode(name))
+        digest.update(b"\0")
+        digest.update(str(mode).encode("ascii"))
+        digest.update(b"\0")
+        digest.update(file_digest)
+    return digest.hexdigest(), entries
+
+
+def compute_package_fingerprint(package_dir: Path) -> str:
+    """Bind auxiliary package files while leaving harness state mutable."""
+    return package_input_snapshot(package_dir)[0]
+
+
+def package_identity(root: Path, package_dir: Path) -> str:
+    """Identify a package relative to its project, including a custom specs root.
+
+    This is the identity a run record is *written* under, and the one an
+    active package is judged by.
+    """
+    return package_dir.relative_to(root).as_posix()
+
+
+def package_identities(root: Path, package_dir: Path) -> frozenset[str]:
+    """Identities a run record may carry and still describe this package.
+
+    Archiving only moves the directory (``<specs>/<slug>`` ->
+    ``<specs>/archive/<slug>``, possibly through a dated retired container),
+    so an archived package keeps the identity its records earned while it was
+    active — historical archives are not regraded by a path rename. An active
+    package accepts exactly one identity, so a copied archived record can
+    never satisfy a new active package.
+
+    The relaxation is anchored to the layout the archive step creates: an
+    ``archive`` segment directly below ``specs``. Any other directory that
+    happens to be called ``archive`` stays strict.
+    """
+    relative = package_identity(root, package_dir)
+    identities = {relative}
+    parts = relative.split("/")
+    for index in range(len(parts) - 2, 0, -1):
+        if parts[index] == ARCHIVE_DIRNAME and parts[index - 1] == SPECS_CONTAINER:
+            identities.add("/".join(parts[:index] + [parts[-1]]))
+            break
+    return frozenset(identities)
 
 
 # --------------------------------------------------------------------------- #
@@ -255,6 +361,30 @@ def latest_record_by_task(records: list[dict]) -> dict[str, dict]:
     return latest
 
 
+def duplicate_verify_error(task_id: str, block_text: str) -> str | None:
+    if len(re.findall(r"(?m)^-\s+verify:", block_text)) > 1:
+        return rule_message("SPEC-VERIFY-002", f"{task_id}：verify 必须唯一；合并命令或拆分任务")
+    return None
+
+
+def stale_record_reason(
+    record: dict, command: str, tree_fp: str, package_fp: str, package_ids: frozenset[str]
+) -> str | None:
+    """Use the same freshness contract for the runs gate and explicit claims."""
+    if record.get("cmd") != command:
+        return "记录命令与当前 verify 不一致；需重跑 spec_verify.py"
+    if record.get("package_fp") != package_fp:
+        return "包内辅助文件变化或旧记录缺少 package_fp；需重跑 spec_verify.py"
+    recorded_id = record.get("package_id")
+    if not isinstance(recorded_id, str) or recorded_id not in package_ids:
+        return "任务包身份不匹配或旧记录缺少身份；需重跑 spec_verify.py"
+    recorded_fp = record.get("tree_fp")
+    if not isinstance(recorded_fp, str) or recorded_fp != tree_fp:
+        shown = recorded_fp if isinstance(recorded_fp, str) else str(recorded_fp)
+        return f"记录指纹 {shown[:12]} ≠ 当前工作树指纹 {tree_fp[:12]}；工作树变更后需重跑 spec_verify.py"
+    return None
+
+
 def _machine_tasks(tasks_content: str) -> tuple[list[tuple[str, str, str]], list[str], int]:
     """(machine (id, command, verify) triples, errors, manual count)."""
     machine: list[tuple[str, str, str]] = []
@@ -262,6 +392,10 @@ def _machine_tasks(tasks_content: str) -> tuple[list[tuple[str, str, str]], list
     manual_count = 0
     records = parse_task_records(tasks_content)
     for record in records:
+        duplicate = duplicate_verify_error(record.id, record.block_text)
+        if duplicate:
+            errors.append(duplicate)
+            continue
         classification = classify_verify(record.verify)
         if classification is None:
             errors.append(f"{record.id}：verify 无反引号命令且非 manual:（evidence: runs 包要求二者其一）")
@@ -302,36 +436,38 @@ def _runs_gate_states(
         records = read_runs_records(package_dir)
     except (OSError, UnicodeError, ValueError) as exc:
         unverified = {task_id: "unverified" for task_id, _c, _v in machine}
-        return False, [f"runs 证据不可读：{exc}"], "runs 证据不可读", unverified
-    fingerprint = compute_tree_fingerprint(root)
+        return False, [rule_message("SPEC-EVID-003", f"runs 证据不可读：{exc}")], "runs 证据不可读", unverified
+    fingerprint = compute_tree_fingerprint(root, package_dir)
     if fingerprint is None:
         return None, [], "适用外：非 Git 工作区或指纹不可计算，跳过 runs 比对", {}
+    try:
+        package_fingerprint = compute_package_fingerprint(package_dir)
+        current_package_ids = package_identities(root, package_dir)
+    except (OSError, UnicodeError, ValueError) as exc:
+        unverified = {task_id: "unverified" for task_id, _c, _v in machine}
+        return False, [rule_message("SPEC-EVID-003", f"包内辅助文件不可读：{exc}")], "包内辅助文件不可读", unverified
     latest = latest_record_by_task(records or [])
     passed = 0
     states: dict[str, str] = {task_id: "manual" for task_id in manual_ids}
-    for task_id, _command, _verify in machine:
+    for task_id, command, _verify in machine:
         record = latest.get(task_id)
         if record is None:
-            errors.append(f"{task_id}：未验证（{RUNS_FILENAME} 无该任务记录）")
+            errors.append(rule_message("SPEC-EVID-001", f"{task_id}：未验证（{RUNS_FILENAME} 无该任务记录）"))
             states[task_id] = "unverified"
             continue
         exit_code = record.get("exit")
         if exit_code != 0:
-            errors.append(f"{task_id}：未验证（最近记录 exit={exit_code}）")
+            errors.append(rule_message("SPEC-EVID-001", f"{task_id}：未验证（最近记录 exit={exit_code}）"))
             states[task_id] = "unverified"
             continue
-        recorded_fp = record.get("tree_fp")
-        if not isinstance(recorded_fp, str) or recorded_fp != fingerprint:
-            shown = recorded_fp if isinstance(recorded_fp, str) else str(recorded_fp)
-            errors.append(
-                f"{task_id}：证据过期（记录指纹 {shown[:12]} ≠ 当前工作树指纹 {fingerprint[:12]}；"
-                "工作树变更后需重跑 spec_verify.py）"
-            )
+        stale_reason = stale_record_reason(record, command, fingerprint, package_fingerprint, current_package_ids)
+        if stale_reason:
+            errors.append(rule_message("SPEC-EVID-002", f"{task_id}：证据过期（{stale_reason}）"))
             states[task_id] = "stale"
             continue
         passed += 1
         states[task_id] = "fresh"
-    detail = f"机器任务 {passed}/{len(machine)} 最近记录 exit==0 且指纹匹配；manual 任务 {manual_count} 项"
+    detail = f"机器任务 {passed}/{len(machine)} 最近记录 exit==0 且命令、双指纹匹配；manual 任务 {manual_count} 项"
     return not errors, errors, detail, states
 
 
@@ -347,7 +483,7 @@ def evaluate_runs_gate(
     not opted in, or routing/report context without ``root``/``package_dir``,
     or a non-Git root; the gate never blocks there (same contract as the
     evidence anchor). Machine tasks need a latest record with ``exit == 0``
-    and ``tree_fp`` equal to the current fingerprint; anything else is named
+    and ``cmd`` equal to the current verify and ``tree_fp`` equal to the current fingerprint; anything else is named
     precisely: 未验证 (no usable record) or 证据过期 (tree moved since).
     """
     ok, errors, detail, _states = _runs_gate_states(spec_content, tasks_content, package_dir, root)
@@ -376,6 +512,37 @@ def machine_verification_summary(tasks_content: str, package_dir: Path) -> str |
 # --------------------------------------------------------------------------- #
 
 
+def fresh_machine_evidence(
+    spec_content: str,
+    tasks_content: str,
+    package_dir: Path,
+    root: Path,
+) -> list[str]:
+    """Closed-syntax evidence lines for fresh passing machine tasks.
+
+    Used by ``done --archive`` so users never have to hand-copy a command and
+    task id into the completion summary. The helper is read-only: it never
+    appends to runs.jsonl and never relaxes the verifier's freshness rules.
+    """
+    if not runs_protocol_enabled(spec_content):
+        return []
+    machine, _errors, _manual_count = _machine_tasks(tasks_content)
+    records = read_runs_records(package_dir) or []
+    latest = latest_record_by_task(records)
+    fingerprint = compute_tree_fingerprint(root, package_dir)
+    package_fingerprint = compute_package_fingerprint(package_dir)
+    current_package_ids = package_identities(root, package_dir)
+    lines: list[str] = []
+    for task_id, command, _verify in machine:
+        record = latest.get(task_id)
+        if record is None or record.get("exit") != 0 or fingerprint is None:
+            continue
+        if stale_record_reason(record, command, fingerprint, package_fingerprint, current_package_ids):
+            continue
+        lines.append(f"`{command}` -> exit 0 (runs:{task_id})")
+    return lines
+
+
 def _record_run(
     package_dir: Path,
     task_id: str,
@@ -384,6 +551,8 @@ def _record_run(
     duration_s: float,
     stdout_bytes: bytes,
     tree_fp: str,
+    package_fp: str,
+    package_id: str,
 ) -> dict:
     record = {
         "task": task_id,
@@ -392,11 +561,49 @@ def _record_run(
         "duration_s": round(duration_s, 3),
         "stdout_tail_sha256": hashlib.sha256(stdout_bytes[-STDOUT_TAIL_BYTES:]).hexdigest(),
         "tree_fp": tree_fp,
+        "package_fp": package_fp,
+        "package_id": package_id,
         "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
-    with (package_dir / RUNS_FILENAME).open("a", encoding="utf-8") as runs_file:
-        runs_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+    if package_dir.resolve(strict=True) != package_dir.absolute():
+        raise ValueError("package path contains a symlink")
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise ValueError("platform lacks O_NOFOLLOW support for runs.jsonl")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | nofollow | getattr(os, "O_NONBLOCK", 0)
+    descriptor = os.open(package_dir / RUNS_FILENAME, flags, 0o600)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise ValueError("runs.jsonl must be a regular, non-hardlinked file")
+        pending = memoryview((json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8"))
+        while pending:
+            written = os.write(descriptor, pending)
+            if written == 0:
+                raise OSError("cannot append runs.jsonl")
+            pending = pending[written:]
+    finally:
+        os.close(descriptor)
     return record
+
+
+def _record_abnormal_attempt(
+    package_dir: Path,
+    task_id: str,
+    command: str,
+    duration_s: float,
+    stdout_bytes: bytes,
+    tree_fp: str,
+    package_fp: str,
+    package_id: str,
+) -> None:
+    """Do not leave a previous pass as the latest result after an attempted run."""
+    try:
+        _record_run(
+            package_dir, task_id, command, ABNORMAL_EXIT, duration_s, stdout_bytes, tree_fp, package_fp, package_id
+        )
+    except (OSError, ValueError) as exc:
+        print(rule_message("SPEC-EVID-003", f"无法记录失败的验证尝试：{exc}"), file=sys.stderr)
 
 
 def run_selected_tasks(args: argparse.Namespace) -> int:
@@ -434,6 +641,11 @@ def run_selected_tasks(args: argparse.Namespace) -> int:
     package_dir.mkdir(parents=True, exist_ok=True)
     failures = 0
     for record in selected:
+        duplicate = duplicate_verify_error(record.id, record.block_text)
+        if duplicate:
+            print(duplicate, file=sys.stderr)
+            failures += 1
+            continue
         classification = classify_verify(record.verify)
         if classification is None:
             print(f"{record.id}: 契约错误（无反引号命令且非 manual:）")
@@ -455,7 +667,14 @@ def run_selected_tasks(args: argparse.Namespace) -> int:
             )
             failures += 1
             continue
+        try:
+            package_fp_before, package_inputs_before = package_input_snapshot(package_dir)
+        except (OSError, UnicodeError, ValueError) as exc:
+            print(rule_message("SPEC-EVID-003", f"包内辅助文件不可读：{exc}"), file=sys.stderr)
+            failures += 1
+            continue
         started = time.monotonic()
+        timed_out = False
         try:
             completed = subprocess.run(
                 command,
@@ -468,6 +687,7 @@ def run_selected_tasks(args: argparse.Namespace) -> int:
             stdout_bytes = completed.stdout or b""
             stderr_text = (completed.stderr or b"").decode("utf-8", "replace").strip()
         except subprocess.TimeoutExpired as exc:
+            timed_out = True
             exit_code = ABNORMAL_EXIT
             stdout_bytes = exc.stdout if isinstance(exc.stdout, bytes) else b""
             stderr_text = f"timeout after {args.timeout}s"
@@ -475,15 +695,84 @@ def run_selected_tasks(args: argparse.Namespace) -> int:
         # Fingerprint after execution: the record binds to the tree the
         # verification leaves behind, so a command that legitimately formats
         # files keeps its own evidence fresh.
-        tree_fp = compute_tree_fingerprint(root)
+        tree_fp = compute_tree_fingerprint(root, package_dir)
         if tree_fp is None:
-            print(f"{record.id}: 指纹不可计算（非 Git 工作区？），拒绝记录", file=sys.stderr)
+            _record_abnormal_attempt(
+                package_dir,
+                record.id,
+                command,
+                duration,
+                stdout_bytes,
+                "",
+                package_fp_before,
+                package_identity(root, package_dir),
+            )
+            print(f"{record.id}: 指纹不可计算（非 Git 工作区？），拒绝成功证据", file=sys.stderr)
             failures += 1
             continue
-        _record_run(package_dir, record.id, command, exit_code, duration, stdout_bytes, tree_fp)
+        try:
+            package_fp, package_inputs_after = package_input_snapshot(package_dir)
+        except (OSError, UnicodeError, ValueError) as exc:
+            _record_abnormal_attempt(
+                package_dir,
+                record.id,
+                command,
+                duration,
+                stdout_bytes,
+                tree_fp,
+                package_fp_before,
+                package_identity(root, package_dir),
+            )
+            print(rule_message("SPEC-EVID-003", f"包内辅助文件不可读：{exc}"), file=sys.stderr)
+            failures += 1
+            continue
+        if package_fp != package_fp_before:
+            _record_abnormal_attempt(
+                package_dir,
+                record.id,
+                command,
+                duration,
+                stdout_bytes,
+                tree_fp,
+                package_fp,
+                package_identity(root, package_dir),
+            )
+            changed = sorted(
+                name
+                for name in package_inputs_before.keys() | package_inputs_after.keys()
+                if package_inputs_before.get(name) != package_inputs_after.get(name)
+            )
+            paths = ", ".join(repr(name) for name in changed[:5])
+            if len(changed) > 5:
+                paths += f"（另有 {len(changed) - 5} 项）"
+            print(
+                rule_message(
+                    "SPEC-EVID-002",
+                    f"{record.id}：验证期间包内辅助文件发生变化：{paths}；请将输出写到包外并重跑",
+                ),
+                file=sys.stderr,
+            )
+            failures += 1
+            continue
+        try:
+            _record_run(
+                package_dir,
+                record.id,
+                command,
+                exit_code,
+                duration,
+                stdout_bytes,
+                tree_fp,
+                package_fp,
+                package_identity(root, package_dir),
+            )
+        except (OSError, ValueError) as exc:
+            print(rule_message("SPEC-EVID-003", f"无法写入 runs.jsonl：{exc}"), file=sys.stderr)
+            failures += 1
+            continue
         verdict = "OK" if exit_code == 0 else "FAIL"
         tail = f" exit={exit_code}"
-        if exit_code == ABNORMAL_EXIT:
+        if timed_out:
             tail = " exit=timeout"
         if stderr_text and exit_code != 0:
             tail += f" stderr={stderr_text[:200]!r}"

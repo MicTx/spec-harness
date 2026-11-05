@@ -4,6 +4,10 @@ Decide what you want to accomplish first, then pick the one document that does i
 
 [🇨🇳 中文索引](README.md)
 
+## I want to complete my first task
+
+- [From zero to your first task](getting-started.md) — Chinese only: a step-by-step walkthrough with commands, expected results, and failure handling for Claude Code.
+
 ## I want to understand it first
 
 - [Spec Harness introduction](introduction.md) — Chinese only: start from why a long-running task loses control, then see what task packages, verification, and Git closeout each solve.

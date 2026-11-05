@@ -44,7 +44,7 @@ Examples:
 .spec/specs/2026-06-12_add-push-stage/
 .spec/specs/2026-06-12_fix-push-safety/
 .spec/specs/2026-06-12_refactor-spec-architecture/
-.spec/specs/2026-06-12_update-all-docs/
+.spec/specs/2026-06-12_update-example-guide/
 ```
 
 Rules:

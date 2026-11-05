@@ -44,9 +44,8 @@ The chain-state read/write, lock, audit, and Terminal recycle mechanics live
 in ``scripts/chain_spawn_support.py`` (the F5 shared module, imported here by
 name — one implementation, two authorized Terminal-automation callers: this
 script's autorun round spawn and the autoplan pass spawn in
-``scripts/autoplan_spawn.py``, both inheriting the recorded overturn of the
-2026-09-03 no-AppleScript policy in the ``2026-10-06_add-autorun-command``
-Development Record; no other caller may reuse it).
+``scripts/autoplan_spawn.py``, both following the bounded Terminal policy
+described in ADR 0001; no other caller may reuse it).
 """
 
 from __future__ import annotations

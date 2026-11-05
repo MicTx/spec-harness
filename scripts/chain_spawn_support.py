@@ -44,10 +44,8 @@ The Terminal.app automation pieces here are scope-limited to exactly three
 authorized steps — the autorun round spawn (``scripts/autorun_spawn.py``),
 the autoplan pass spawn (``scripts/autoplan_spawn.py``), and the dead
 chain-window sweep (``scripts/sweep_chain_windows.py``, F18) — the first
-two inheriting the recorded overturn of the 2026-09-03 no-AppleScript policy
-in the ``2026-10-06_add-autorun-command`` Development Record, the sweep
-extending that authorization in the ``2026-10-08_sweep-dead-chain-windows``
-Development Record; no other caller may reuse them.
+two and the sweep following the bounded Terminal automation policy in
+ADR 0001; no other caller may reuse them.
 
 Collaborator seams: several functions accept injectable collaborators
 (``controlling``, ``worker_check``, ``schedule_close``, ``pid_alive``,
@@ -1047,8 +1045,7 @@ def build_worker_command(
 
     Every host runs its CLI's normal interactive session (visible TUI,
     session persisted), not a print/exec mode; the prompt is the initial
-    message. Recorded overturn of the headless worker choice in the
-    ``2026-10-06_add-autorun-command`` Development Record. Shared by both
+    message. The visible-session policy is described in ADR 0001. Shared by both
     spawn scripts since F14 (the render surface lives here once; the
     identity lock/propagation/refusal semantics stay in each script).
 

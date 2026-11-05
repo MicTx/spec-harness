@@ -524,7 +524,7 @@ def test_legacy_hash_matches_crlf_worktree_copy_against_lf_baseline(tmp_path):
 
 @pytest.mark.parametrize("checkpoint_state", ["active", "corrupted"])
 def test_check_all_rejects_interrupted_update_checkpoint(tmp_path, checkpoint_state, write_historical_checkpoint):
-    slug = "2026-09-22_fix-checkpoint-blocker-gates"
+    slug = "2026-09-22_fix-public-example-11"
     package = make_package(tmp_path, slug, passed=True)
     checkpoint_file = write_historical_checkpoint(package, "封堵归档绕过")
     if checkpoint_state == "corrupted":
@@ -540,7 +540,7 @@ def test_check_all_rejects_interrupted_update_checkpoint(tmp_path, checkpoint_st
 
 
 def test_check_all_rejects_standalone_blocked_status_line(tmp_path):
-    slug = "2026-09-22_fix-checkpoint-blocker-gates"
+    slug = "2026-09-22_fix-public-example-11"
     package = make_package(tmp_path, slug, passed=True)
     (package / "tasks.md").write_text(TASKS_DONE + "\n阻塞：等待外部系统\n", encoding="utf-8")
 
@@ -631,7 +631,7 @@ def test_followup_spec_gate_still_fails_drifted_archive_with_unchecked_spec_boxe
 
 def test_lint_only_carries_gate_failing_active_package(tmp_path):
     """A work-in-progress package fails the full gate but passes the lint."""
-    slug = "2026-10-12_allow-integration-wip-and-handoff"
+    slug = "2026-10-12_allow-public-example-21"
     make_package(tmp_path, slug, passed=False)
 
     gate_failures = check_all_packages(tmp_path)
@@ -670,7 +670,7 @@ def test_lint_only_still_enforces_archive_completeness(tmp_path):
 
 
 def test_lint_only_cli_flag_switches_channel(tmp_path):
-    make_package(tmp_path, "2026-10-12_allow-integration-wip-and-handoff", passed=False)
+    make_package(tmp_path, "2026-10-12_allow-public-example-21", passed=False)
     cli = [sys.executable, str(Path(check_all_module.__file__).resolve()), "--root", str(tmp_path)]
 
     full = subprocess.run(cli, capture_output=True, text=True)

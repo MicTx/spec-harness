@@ -43,7 +43,7 @@ Read only the current stage's file under `references/stages/` ([`references/comm
 | `/spec:doctor` | environment self-check and repair |
 | `/spec:organize` | audit structure/contracts; `--apply` opts in to fixes; never delete |
 
-Install profile: `new / run / check / done / push` ship in every install; extended stages need `INSTALL_PROFILE=full` — core answers them with the reinstall hint ([`references/commands.md`](references/commands.md)).
+Install profile: `new / run / check / done / push / doctor` ship always; extended stages need `INSTALL_PROFILE=full` — core answers them with the reinstall hint ([`references/commands.md`](references/commands.md)).
 
 ## Core capability: single-orchestrator execution
 

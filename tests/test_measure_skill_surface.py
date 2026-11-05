@@ -281,12 +281,16 @@ def test_manifest_context_digests_declared():
 
 
 def test_manifest_public_safe():
+    scripts = str(REPO / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    from export_public_repo import private_remote_patterns
+
     text = MANIFEST.read_text(encoding="utf-8")
-    # the private remote host is assembled from parts: the public exporter's
-    # content scan would flag this very file if the literal appeared here
-    private_host = "git.mxk" + ".dev"
-    for needle in ("/Users/", "/home/", private_host, ".spec/specs/", ".spec/autorun/"):
+    for needle in ("/Users/", "/home/", ".spec/specs/", ".spec/autorun/"):
         assert needle not in text, f"private marker leaked into the fixture: {needle!r}"
+    for pattern in private_remote_patterns(REPO):
+        assert not pattern.search(text), "private remote leaked into the fixture"
 
 
 def test_manifest_digests_match_current_worktree():

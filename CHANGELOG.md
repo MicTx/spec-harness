@@ -4,6 +4,33 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [0.25.0] - 2026-11-05
+
+### Added
+
+- **默认环境自检**：默认 core 安装现已包含 `/spec:doctor`，无需切换 full profile 即可检查并修复安装接线。
+- **Default environment checks**: The default core install now includes `/spec:doctor`, so installation wiring can be checked and repaired without switching to the full profile.
+- **已完成规划对账**：新增 `--reconcile-completed` 显式恢复路径，在同源 autorun 已完成、原范围全部勾选且归档证据完整时关闭旧规划；不替代新规划审查。
+- **Completed-plan reconciliation**: The new explicit `--reconcile-completed` recovery path closes an old plan only when a matching autorun is complete, every original feature is checked, and archive evidence is intact; it does not replace review of a new plan.
+
+### Fixed
+
+- **运行证据绑定**：验证记录同时匹配实际命令、工作树、包辅助输入与包身份，阻止变更后的旧证据被继续当作通过依据。
+- **Execution evidence binding**: Verification records must match the command, worktree, auxiliary package inputs, and package identity, preventing stale evidence from being reused after changes.
+- **归档身份连续性**：归档移动后按记录生成时的身份核验原运行证据，避免已完成的任务包因目录移动在后续链路中被误拒绝。
+- **Archive identity continuity**: Archived runs retain the identity under which they were recorded, so moving a completed package into the archive no longer causes a false rejection later in the chain.
+- **完成证据补齐**：完成总结从有效运行记录生成闭合式机器成功声明，关键任务包契约错误附带稳定规则编号，便于定位缺项。
+- **Completion evidence**: Completion summaries generate closed machine-success claims from valid run records, and key package-contract errors carry stable rule identifiers to help locate missing requirements.
+- **恢复接管确认**：恢复旧规划的 `resume --reconcile-completed` 必须同时显式传入 `--takeover`；缺少确认时拒绝且不修改状态。
+- **Recovery takeover confirmation**: Resuming an old plan with `--reconcile-completed` now also requires explicit `--takeover`; missing confirmation is rejected without changing state.
+- **公开交付边界**：私有历史断言与公开测试分层，公开测试实际执行语义模块；发布门禁从私有记录动态派生禁止标识，清理公开注释与夹具中的真实身份。
+- **Public delivery boundary**: Private-history assertions are separated from portable public tests, and export regression tests execute the semantic module; the release gate derives forbidden identifiers from private records, while public comments and fixtures use synthetic identities.
+
+### Docs
+
+- **可复制的入门练习**：新增从安装、首个任务到中断恢复的实操指南，配套预期输出、失败处理与可复现检出方式。
+- **Hands-on onboarding**: A new copy-paste guide covers installation, a first task, and recovery after interruption, with expected output, failure handling, and reproducible checkouts.
+
 ## [0.24.0] - 2026-11-04
 
 ### Changed

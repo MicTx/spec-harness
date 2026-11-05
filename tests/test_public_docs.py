@@ -13,6 +13,7 @@ if str(SCRIPTS) not in sys.path:
 
 from check_all_spec_packages import ACTIVE_REQUIRED_FILES, ARCHIVE_REQUIRED_FILES, LEGACY_ARCHIVE_BUNDLE  # noqa: E402
 from export_public_repo import PRIVATE_PATH_PARTS, PUBLIC_ROOT_FILES, private_remote_patterns  # noqa: E402
+from spec_package_support import RULE_IDS  # noqa: E402
 
 PUBLIC_DOCS = (
     "CHANGELOG.md",
@@ -24,6 +25,7 @@ PUBLIC_DOCS = (
     "docs/README-en.md",
     "docs/introduction.md",
     "docs/tutorial.md",
+    "docs/getting-started.md",
     "docs/git-workflow.md",
     "docs/git-workflow.en.md",
 )
@@ -84,6 +86,14 @@ def test_bilingual_git_guides_cover_the_same_sections():
     en = headings("docs/git-workflow.en.md")
     assert len(zh) == len(en)
     assert len(zh) >= 6
+
+
+def test_getting_started_documents_known_limits_and_rule_ids():
+    text = (ROOT / "docs" / "getting-started.md").read_text(encoding="utf-8")
+    assert "## 已知限制与设计边界" in text
+    mentioned = set(re.findall(r"SPEC-[A-Z]+-\d{3}", text))
+    assert mentioned
+    assert mentioned <= set(RULE_IDS), mentioned - set(RULE_IDS)
 
 
 def test_public_doc_links_resolve_inside_repository():

@@ -27,9 +27,6 @@ PLANNER = ROOT / "agents" / "planner.md"
 REVIEWER = ROOT / "agents" / "reviewer.md"
 WRITE_GAP_ADR = ROOT / "docs" / "adr" / "0007-bash-write-gap.md"
 ADAPTATION_ADR = ROOT / "docs" / "adr" / "0004-adapt-sdd-workflow-semantics.md"
-ADAPTATION_SUMMARY = ROOT / ".spec/specs/archive/2026-11-03_adapt-sdd-workflow-optimizations/completion-summary.md"
-TRIAL_METRICS = ROOT / ".spec/specs/archive/2026-11-04_complete-workflow-contract-trials/trial/metrics.md"
-CHANGELOG = ROOT / "CHANGELOG.md"
 
 
 def _support_module():
@@ -297,24 +294,6 @@ def test_runtime_read_surface_stays_split_and_budgeted():
     assert (ROOT / "references" / "00-readme.md").read_text(encoding="utf-8").count(
         "do not load every page at once"
     ) == 1
-
-
-def test_adaptation_closeout_states_deferred_and_inapplicable_scope():
-    summary = ADAPTATION_SUMMARY.read_text(encoding="utf-8")
-    changelog = CHANGELOG.read_text(encoding="utf-8")
-
-    assert "WS5 status: DEFERRED" in summary
-    assert "WS1 status: NOT APPLICABLE" in summary
-    assert "WS1 only added guard tests" in summary
-    assert "Independent review HIGH follow-up" in summary
-    for issue in (
-        "Default init logs omitted",
-        "Duplicate keyed sections bypassed validation",
-        "Deviation authority ignored Autonomy",
-    ):
-        assert issue in summary, issue
-    assert "WS5 status: DEFERRED" in changelog
-    assert "WS1 status: NOT APPLICABLE" in changelog
 
 
 def test_non_micro_workflow_requires_complete_intent_and_real_flip_assumption():
@@ -654,18 +633,39 @@ Recommendation: B1 because it is minimal. Flips if A1 is FALSIFIED.
     assert any("Browser check" in error and "唯一" in error for error in errors)
 
 
-def test_trial_scope_and_data_scope_review_are_recorded():
-    metrics = TRIAL_METRICS.read_text(encoding="utf-8")
-    reviewer = REVIEWER.read_text(encoding="utf-8")
+def test_gate_errors_expose_stable_rule_ids():
+    support = _support_module()
+    spec = """\
+# X - 项目范围
+- Workflow: FULL
 
-    assert "新流程提升了证据质量，产品结果持平；效率差异未得到证明。" in metrics
-    for limitation in (
-        "盲审可以通过格式识别出哪份来自新流程",
-        "任务书预先使用了新流程的术语",
-        "样本数为 1",
-        "执行顺序固定",
-    ):
-        assert limitation in metrics, limitation
+### 4.1 方案阶梯
+- B0 | literal ask | x
+- B2 | different approach | y
+
+Recommendation: B2 because y. Flips if A1 is FALSIFIED.
+
+### 5.5 修正日志
+| round | approach | result | new information |
+| --- | --- | --- | --- |
+| 1 | retry | failed | still failing |
+
+### 5.6 偏离日志
+- none.
+"""
+    errors = support.workflow_ledger_errors(
+        spec,
+        "# Tasks\n- [x] T\n  - boundary: x\n  - verify: `true`\n",
+    )
+    joined = "\n".join(errors)
+    for rule_id in ("SPEC-UI-001", "SPEC-OPT-001", "SPEC-OPT-002"):
+        assert rule_id in joined, errors
+    log_errors = support.correction_log_errors(spec)
+    assert any("SPEC-LOG-001" in error for error in log_errors), log_errors
+
+
+def test_data_scope_review_contract_is_recorded():
+    reviewer = REVIEWER.read_text(encoding="utf-8")
     assert "数据作用域一致性" in reviewer
     assert "Store.getStudents" in reviewer and "Store.getRecords" in reviewer
     assert "同一班级" in reviewer or "同一作用域" in reviewer

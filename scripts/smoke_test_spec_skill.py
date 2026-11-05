@@ -135,6 +135,8 @@ def populate_spec(path: Path) -> None:
             "- 最简单可行方案：xxx": "- 最简单可行方案：收敛模板源并修补状态机判断",
             "- 暂不引入：xxx": "- 暂不引入：测试框架和额外配置层",
             "- 不做的抽象/配置化：xxx": "- 不做的抽象/配置化：不引入 DSL 或数据库",
+            # This synthetic smoke task covers only helper logic, not a UI.
+            "- UI surface: <changed|unchanged>": "- UI surface: unchanged",
             (
                 "- 变更对象：本任务包 boundary 涉及的模块、入口和数据契约"
             ): "- 变更对象：spec helper scripts、模板与状态机入口",

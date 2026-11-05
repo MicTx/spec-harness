@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """2026-10-04 chain/loop 审计回归测试。
 
-覆盖问题台账（见 `.spec/specs/2026-10-04_fix-chain-loop-mechanisms/`）中
+覆盖问题台账（见 `.spec/specs/2026-10-04_fix-public-example-14/`）中
 team-loop 侧修复：#4/#5/#6/#7/#8/#13/#14/#15/#17/#18/#19。
 """
 

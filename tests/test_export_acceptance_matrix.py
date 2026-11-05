@@ -36,8 +36,8 @@ INSTALLER = ROOT / "install.sh"
 EXPORTER = ROOT / "scripts" / "export_skill_package.py"
 PARITY = ROOT / "scripts" / "verify_install_parity.py"
 
-CORE_STAGES = ("new", "run", "check", "done", "push")
-EXTENDED_STAGES = ("goal", "autoplan", "autorun", "update", "status", "doctor", "organize")
+CORE_STAGES = ("new", "run", "check", "done", "push", "doctor")
+EXTENDED_STAGES = ("goal", "autoplan", "autorun", "update", "status", "organize")
 CORE_EXCLUDED_SCRIPTS = (
     "autorun_spawn.py",
     "autoplan_spawn.py",

@@ -121,6 +121,20 @@ def test_public_tree_suite_collects(tmp_path: Path):
     assert completed.returncode == 0, completed.stdout[-2000:] + completed.stderr[-2000:]
 
 
+def test_public_workflow_semantics_runs_without_private_history(tmp_path: Path):
+    output = tmp_path / "public"
+    build_public_tree(ROOT, output)
+    completed = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests/test_workflow_semantics.py", "-q", "-p", "no:cacheprovider"],
+        cwd=output,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+    )
+    assert completed.returncode == 0, completed.stdout[-3000:] + completed.stderr[-3000:]
+
+
 def test_ci_public_ignores_only_name_exported_files(tmp_path: Path):
     output = tmp_path / "public"
     build_public_tree(ROOT, output)

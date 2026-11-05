@@ -3,8 +3,7 @@
 """
 Package this repository's runtime skill as a distributable agent plugin zip.
 
-Two manifest formats are supported (spike-verified 2026-09-02, see
-.spec/docs/2026-09-02_add-open-task-package-standard_agent-plugins-spike.md):
+Two manifest formats are supported:
 
 - agent-plugins (default): Agent Plugins 1.0, root ``plugin.json`` with a
   closed top-level schema and skills discovered from ``skills/``.

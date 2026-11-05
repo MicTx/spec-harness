@@ -53,7 +53,7 @@ HOST_ALIASES = {"devin-desktop": "devin", "cursor-cli": "cursor"}
 # are hardcoded here (payload_contract is maintainer-side and never ships);
 # alignment with the contract is pinned by tests/test_install_profile.py.
 PROFILE_VALUES = ("core", "full")
-CORE_STAGE_COMMANDS = ("new", "run", "check", "done", "push")
+CORE_STAGE_COMMANDS = ("new", "run", "check", "done", "push", "doctor")
 EXTENSION_FILE_PREFIXES = ("agents/", "server/", "scripts/chain_session.py")
 #: Files core keeps from an otherwise excluded prefix (host discovery metadata).
 #: Mirrors payload_contract.CORE_KEPT_FILES; pinned by tests/test_doctor_spec_environment.py.

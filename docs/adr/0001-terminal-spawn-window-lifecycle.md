@@ -12,7 +12,7 @@ autorun 每轮、autoplan 每个 pass 都需要一个全新的完整交互会话
 
 ## 决策
 
-1. **自动化域三步授权**：Terminal.app/osascript 自动化只允许出现在三处——autorun 轮生成、autoplan pass 生成、死链窗口清扫（`scripts/sweep_chain_windows.py`）。其余任何阶段不得操纵 Terminal 或 AppleScript。该授权推翻了 2026-09-03 的「禁止 AppleScript」政策， overturn 记录在 `2026-10-06_add-autorun-command` 开发记录；autoplan 扩展记录于 `2026-10-07_add-autoplan-pass-chain`；清扫扩展记录于 `2026-10-08_sweep-dead-chain-windows`（历史归档，不改写）。
+1. **自动化域三步授权**：Terminal.app/osascript 自动化只允许出现在三处——autorun 轮生成、autoplan pass 生成、死链窗口清扫（`scripts/sweep_chain_windows.py`）。其余任何阶段不得操纵 Terminal 或 AppleScript。该授权取代了早期的全面禁止策略；三步共享此处记录的有限授权，历史开发记录保持原样。
 2. **交接未确认 = 不留进程**（2026-10-09 裁定）：从「窗口已开」到「链状态已写入」之间的任何失败，都必须同步关掉刚开的窗口——先自然退出宽限，再 SIGTERM，再 SIGKILL（约 30 秒有界，记一条 `kind=refusal_close` 事件）；识别不了窗口就如实记跳过原因，绝不强关用户窗口。状态写入即交接确认，其后的失败（如审计追加失败）绝不再关该窗口——它已是链的合法 worker。
 3. **启动门（start gate）**：瞬间死掉的 worker（codex 的概率性启动失败）被捕获——静默关闭死窗口、零状态写入地拒绝 spawn（exit 1 + `kind=spawn_refusal`），重跑从原点恢复；「忙但未观测到」的 tab 按迟到启动处理，放行。
 4. **窗口回收（recycling）**：下一轮 worker 在新窗口 tty 上被确认运行后（有界 60 秒轮询；`--command` 原始覆盖可信、免轮询），前一窗口经 detached helper 延迟数秒关闭，让本轮总结先落地、长链不再每轮叠一个窗口。helper 升级路径：自然退出宽限 → SIGTERM 进程组 → SIGKILL → 关闭空闲窗口——交互式 TUI 完成回合后永久闲置正是被回收的对象，进程先消失所以 cancel/terminate 面板不会出现。回收 fail-open：无 Terminal.app 控制窗口、worker 未按时观测到、窗口共享多 tab、会话仍在运行——一律跳过并记录原因，窗口保持打开；绝不在未确认交接时关窗，绝不对运行中的会话弹出取消确认框。

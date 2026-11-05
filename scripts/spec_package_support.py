@@ -47,6 +47,30 @@ DEFAULT_EVIDENCE_PLACEHOLDERS = {
 
 MAX_SPEC_FILE_BYTES = 2 * 1024 * 1024
 
+# Stable anchors for the v0.24.0 package-contract errors that users are told to
+# look up in the tutorial. Keep IDs stable even when the human message changes.
+RULE_IDS = {
+    "SPEC-UI-001": "LITE/FULL package must declare exactly one UI surface",
+    "SPEC-UI-002": "UI surface changed requires a Browser check command",
+    "SPEC-UI-003": "Browser check command must appear verbatim in a machine verify",
+    "SPEC-OPT-001": "FULL option ladder requires B1",
+    "SPEC-OPT-002": "Option reading must use the fixed role label",
+    "SPEC-LOG-001": "Every failed correction round needs new evidence",
+    "SPEC-EVID-001": "Machine evidence is missing",
+    "SPEC-EVID-002": "Machine evidence is stale or its command changed",
+    "SPEC-EVID-003": "Machine evidence is unreadable or malformed",
+    "SPEC-SUCCESS-001": "Success criteria must be checked",
+    "SPEC-VERIFY-001": "Verification scope field is still a placeholder",
+    "SPEC-VERIFY-002": "A machine task must not declare multiple verify fields",
+}
+
+
+def rule_message(rule_id: str, message: str) -> str:
+    """Prefix a gate error with its stable rule anchor."""
+    if rule_id not in RULE_IDS:
+        raise ValueError(f"unknown rule id: {rule_id}")
+    return f"[{rule_id}] {message}"
+
 
 # --------------------------------------------------------------------------- #
 # Language-neutral section keys (F18 / AUD-21)
@@ -821,8 +845,11 @@ def correction_log_errors(spec_content: str) -> list[str]:
             errors.append("`### 5.5 修正日志` 不能用 PASS 记录修正轮；只有任务 verify 可以证明通过")
         if not _CORRECTION_EVIDENCE_PATTERN.search(new_information):
             errors.append(
-                f"`### 5.5 修正日志` 第 {round_number} 轮缺少 new evidence"
-                "（new output / newly located / A<n> FALSIFIED）"
+                rule_message(
+                    "SPEC-LOG-001",
+                    f"`### 5.5 修正日志` 第 {round_number} 轮缺少 new evidence"
+                    "（new output / newly located / A<n> FALSIFIED）",
+                )
             )
     return errors
 
@@ -984,14 +1011,14 @@ def workflow_ledger_errors(spec_content: str, tasks_content: str | None = None) 
         if has_minimal_line:
             errors.append("B0 is the minimal change. 单行格式仅允许 LITE 使用")
     if workflow == "full" and not option_rows.get("B1"):
-        errors.append("FULL 方案阶梯缺少 B1（minimal change）")
+        errors.append(rule_message("SPEC-OPT-001", "FULL 方案阶梯缺少 B1（minimal change）"))
     for option_id in ("B0", "B1", "B2", "B3"):
         for row in option_rows.get(option_id, []):
             cells = [cell.strip() for cell in re.sub(r"^-\s*", "", row).split("|")]
             if len(cells) < 3 or not cells[1] or not cells[2] or is_placeholder_value(cells[2]):
                 errors.append(f"{option_id} 必须同时填写 reading 和非空 compare 内容")
             elif cells[1] != option_roles[option_id]:
-                errors.append(f"{option_id} 的 reading 必须是 {option_roles[option_id]}")
+                errors.append(rule_message("SPEC-OPT-002", f"{option_id} 的 reading 必须是 {option_roles[option_id]}"))
     for row in b0_rows:
         cells = [cell.strip() for cell in re.sub(r"^-\s*", "", row).split("|")]
         if len(cells) >= 2 and cells[1] != "literal ask":
@@ -1024,14 +1051,14 @@ def workflow_ledger_errors(spec_content: str, tasks_content: str | None = None) 
             errors.append(f"Workflow LITE/FULL 缺少 ### {label} 日志 (missing)；无事件时写一行 none")
     ui_surfaces = _UI_SURFACE_LINE.findall(spec_content)
     if len(ui_surfaces) != 1:
-        errors.append("Workflow LITE/FULL 必须唯一声明 UI surface: changed|unchanged")
+        errors.append(rule_message("SPEC-UI-001", "Workflow LITE/FULL 必须唯一声明 UI surface: changed|unchanged"))
     else:
         ui_changed = ui_surfaces[0].lower() == "changed"
         browser_matches = _BROWSER_CHECK_LINE.findall(spec_content)
         if len(browser_matches) > 1:
             errors.append("Browser check 声明必须唯一")
         if ui_changed and not browser_matches:
-            errors.append("UI surface changed 时必须声明 Browser check 命令")
+            errors.append(rule_message("SPEC-UI-002", "UI surface changed 时必须声明 Browser check 命令"))
         if browser_matches:
             command = browser_matches[0].strip()
             if not command or is_placeholder_value(command):
@@ -1046,7 +1073,9 @@ def workflow_ledger_errors(spec_content: str, tasks_content: str | None = None) 
                         if command_match:
                             machine_verify_commands.add(command_match.group(1))
                 if command not in machine_verify_commands:
-                    errors.append("Browser check 命令必须原样出现在 tasks.md 的 machine verify 中")
+                    errors.append(
+                        rule_message("SPEC-UI-003", "Browser check 命令必须原样出现在 tasks.md 的 machine verify 中")
+                    )
     return errors
 
 
@@ -1371,7 +1400,9 @@ def verification_scope_errors(spec_content: str) -> list[str]:
     for field in VERIFICATION_SCOPE_REQUIRED_FIELDS:
         value = fields.get(field, "").strip()
         if value and is_placeholder_value(value):
-            errors.append(f"`{VERIFICATION_SCOPE_HEADING_PREFIX}` 字段 {field} 仍是占位内容")
+            errors.append(
+                rule_message("SPEC-VERIFY-001", f"`{VERIFICATION_SCOPE_HEADING_PREFIX}` 字段 {field} 仍是占位内容")
+            )
         if value.startswith("<") and value.endswith(">"):
             errors.append(f"`{VERIFICATION_SCOPE_HEADING_PREFIX}` 字段 {field} 必须填写真实内容")
     level = normalize_verification_scope_value(fields.get("范围级别", ""))

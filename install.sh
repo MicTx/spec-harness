@@ -126,7 +126,7 @@ USER_STAGES=(new goal autoplan autorun run check done push update status doctor 
 # scripts tree regardless of profile. Extended stages (USER_STAGES minus
 # CORE_STAGES) install only under `full`; membership may move back based on
 # usage evidence in later rounds.
-CORE_STAGES=(new run check done push)
+CORE_STAGES=(new run check done push doctor)
 # Extension components excluded under INSTALL_PROFILE=core (planning F16
 # sub-step 2, AUD-18): mirrors payload_contract.py CORE_EXCLUDED_DIRS and
 # CORE_EXCLUDED_SCRIPTS. Release trees ship no exporter (SCRIPT_BLACKLIST),

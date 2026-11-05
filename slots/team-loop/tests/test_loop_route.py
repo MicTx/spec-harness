@@ -1,6 +1,6 @@
 """loop_route 路由判定测试：正例路由、反例不路由、配置生成。
 
-批量 fan-out / 评审-修复形态已让渡给 workflow-runner（2026-10-04_remove-process-bloat
+批量 fan-out / 评审-修复形态已让渡给 workflow-runner（2026-10-04_remove-public-example-15
 裁定）：批量以删词让出，评审-修复以显式早退让出（F10 补完）——
 见 test_fanout_shapes_defer_to_workflow_runner 与
  test_review_fix_shapes_defer_to_workflow_runner。

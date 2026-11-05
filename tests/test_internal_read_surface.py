@@ -584,7 +584,7 @@ def test_show_missing_runs_is_missing_not_empty_success(tmp_path):
 
 def test_show_failures_only_lists_failed_and_stale(tmp_path):
     root = init_repo(tmp_path / "project")
-    from spec_verify import compute_tree_fingerprint
+    from spec_verify import compute_package_fingerprint, compute_tree_fingerprint
 
     records = synthetic_records(4, task_ids=("task_0001", "task_0002"))
     fresh_fp = compute_tree_fingerprint(root)
@@ -596,6 +596,9 @@ def test_show_failures_only_lists_failed_and_stale(tmp_path):
     records = json.loads(json.dumps(records))
     records[2]["tree_fp"] = compute_tree_fingerprint(root)
     package = root / ".spec" / "specs" / FIXTURE_SLUG
+    records[2]["cmd"] = "python3 -m pytest -q tests/"
+    records[2]["package_fp"] = compute_package_fingerprint(package)
+    records[2]["package_id"] = package.relative_to(root).as_posix()
     write_runs(package / RUNS_FILENAME, records)
     payload = json.loads(show_cli(root, FIXTURE_SLUG, "--failures-only").stdout)
     failed = {item["record"]["task"] for item in payload["items"]}
@@ -606,13 +609,13 @@ def test_show_failures_only_lists_failed_and_stale(tmp_path):
 
 def test_show_freshness_tri_state_matches_evaluate_runs_gate(tmp_path):
     sys.path.insert(0, str(SCRIPTS))
-    from spec_verify import compute_tree_fingerprint, evaluate_runs_gate
+    from spec_verify import compute_package_fingerprint, compute_tree_fingerprint, evaluate_runs_gate
 
     root = init_repo(tmp_path / "project")
     records = [
         {
             "task": "task_0001",
-            "cmd": "c",
+            "cmd": "v",
             "exit": 0,
             "duration_s": 1.0,
             "stdout_tail_sha256": "x",
@@ -641,11 +644,13 @@ def test_show_freshness_tri_state_matches_evaluate_runs_gate(tmp_path):
     records.append(
         {
             "task": "task_0001",
-            "cmd": "c",
+            "cmd": "v",
             "exit": 0,
             "duration_s": 1.0,
             "stdout_tail_sha256": "x",
             "tree_fp": fresh_fp,
+            "package_fp": compute_package_fingerprint(package),
+            "package_id": package.relative_to(root).as_posix(),
             "at": "2026-10-19T00:00:02+00:00",
         }
     )
@@ -790,21 +795,8 @@ class TestSchedulingDecisionTable:
         for text in (route_help, verify_help):
             assert "--read" not in text and "--file" not in text and "--cat" not in text
 
-    @pytest.mark.skipif(not (REPO / ".spec").is_dir(), reason="private .spec/ history is not part of the public export")
-    def test_row_stage_contract_chain_doc_capability_is_adjudicated_not_assumed(self):
-        # doc was rejected with data (T4): no runtime slice reader exists, and
-        # the adjudication record is the auditable artifact of that rejection
-        # (present while active and after archival).
+    def test_row_stage_contract_chain_doc_capability_is_not_registered(self):
         assert not (SCRIPTS / "spec_doc_reader.py").exists()
-        specs_root = REPO / ".spec" / "specs"
-        candidates = [
-            specs_root / "2026-10-19_add-internal-read-surface" / "doc-adjudication.md",
-            specs_root / "archive" / "2026-10-19_add-internal-read-surface" / "doc-adjudication.md",
-        ]
-        adjudication = next(path for path in candidates if path.is_file())
-        content = adjudication.read_text(encoding="utf-8")
-        assert "reject" in content and "D-2" in content
-        # stage pages stay native reads: no doc capability registered anywhere
         assert not any(SCRIPTS.glob("*doc*reader*"))
 
     def test_row_small_package_brief_has_no_forced_pagination_overhead(self, tmp_path):

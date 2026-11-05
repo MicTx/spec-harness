@@ -1,4 +1,4 @@
-"""Skill-surface ratchet (F1, `.spec/specs/2026-10-14_refactor-skill-surface`).
+"""Skill-surface ratchet (F1, `.spec/specs/2026-10-14_refactor-public-example-26`).
 
 Three frozen guarantees over the four measured surfaces of
 ``scripts/measure_skill_surface.py``:
@@ -44,7 +44,7 @@ CEILINGS: dict[str, int] = {
 
 
 def test_f3_dispatch_sentence_does_not_raise_f2_ceilings():
-    """F3 (2026-10-19_add-internal-read-surface): the one-sentence internal
+    """F3 (2026-10-19_add-public-example-27): the one-sentence internal
     dispatch note must ride inside the F2 headroom. The ceilings are frozen
     hand values; raising one to fit new prose is exactly the failure this
     ratchet exists to catch."""

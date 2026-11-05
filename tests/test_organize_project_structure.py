@@ -120,7 +120,7 @@ def test_is_historical_path_classifies_governance_text():
 
 
 def test_is_historical_path_classifies_archived_plan_records():
-    assert is_historical_path("plans/archive/2026-10-06_add-autorun-command.md", ".spec")
+    assert is_historical_path("plans/archive/2026-10-06_add-public-example-16.md", ".spec")
     assert not is_historical_path("plans/README.md", ".spec")
     assert not is_historical_path("plans/01-core.md", ".spec")
 

@@ -29,8 +29,8 @@ INSTALLER = ROOT / "install.sh"
 EXPORTER = ROOT / "scripts" / "export_skill_package.py"
 PARITY = ROOT / "scripts" / "verify_install_parity.py"
 
-CORE_STAGES = ("new", "run", "check", "done", "push")
-EXTENDED_STAGES = ("goal", "autoplan", "autorun", "update", "status", "doctor", "organize")
+CORE_STAGES = ("new", "run", "check", "done", "push", "doctor")
+EXTENDED_STAGES = ("goal", "autoplan", "autorun", "update", "status", "organize")
 CORE_EXCLUDED_DIRS = ("agents", "server", "slots")
 KEPT_COMPONENT_DIRS = ("hooks", "references")
 # F16 sub-step 2: chain-family scripts are extension surface. The list is
@@ -387,7 +387,7 @@ def test_sandbox_doctor_is_profile_aware(tmp_path):
     assert "profile=core" in layout["detail"]
     commands = next(check for check in payload["checks"] if check["id"] == "claude.commands")
     assert commands["status"] == "ok"
-    assert "5 个阶段命令文件" in commands["detail"]
+    assert "6 个阶段命令文件" in commands["detail"]
     assert all(check["id"] != "claude.agents" for check in payload["checks"])
 
     full_home = tmp_path / "home-full"

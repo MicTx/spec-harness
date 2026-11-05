@@ -4,6 +4,8 @@
 
 我们用“为已有 API 增加审计日志导出”做练习。业务名称可以替换；要练的是同一副骨架：先留下问题，再让代码逐步靠近答案。
 
+> 第一次使用请先完成[从零完成第一个任务：保姆级教程](getting-started.md)。本文偏向原理与整体流程，保姆级教程按操作步骤展开。
+
 ## 先约定终点
 
 完成后应留下五样东西：
@@ -25,7 +27,7 @@
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.24.0
+git checkout v0.25.0
 bash install.sh
 ```
 

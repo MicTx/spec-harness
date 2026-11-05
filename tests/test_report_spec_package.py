@@ -186,7 +186,7 @@ PASSED_CHECKLIST = """\
 def test_status_projects_illegal_orchestration_route_as_risk_not_done():
     tasks = [Task(section="Phase", text="done", indent=0, marker="x")]
     output = render_status(
-        "2026-09-21_fix-orchestration-lifecycle",
+        "2026-09-21_fix-public-example-09",
         "Status",
         "## Phase\n- [x] done\n",
         _status_spec_with_54("route: build + review"),
@@ -201,7 +201,7 @@ def test_status_projects_illegal_orchestration_route_as_risk_not_done():
 def test_status_legal_orchestration_route_stays_quiet():
     tasks = [Task(section="Phase", text="done", indent=0, marker="x", boundary="x", verify="x")]
     output = render_status(
-        "2026-09-21_fix-orchestration-lifecycle-ok",
+        "2026-09-21_fix-public-example-09-ok",
         "Status",
         "## Phase\n- [x] done\n  - boundary: x\n  - verify: x\n",
         _status_spec_with_54("route: build"),
@@ -216,7 +216,7 @@ def test_status_legal_orchestration_route_stays_quiet():
 def test_status_absent_54_section_stays_quiet():
     tasks = [Task(section="Phase", text="done", indent=0, marker="x", boundary="x", verify="x")]
     output = render_status(
-        "2026-09-21_fix-orchestration-lifecycle-none",
+        "2026-09-21_fix-public-example-09-none",
         "Status",
         "## Phase\n- [x] done\n  - boundary: x\n  - verify: x\n",
         VALID_STATUS_SPEC,
@@ -275,7 +275,7 @@ def test_status_next_step_respects_gate_priority_before_orchestration():
     tasks = [Task(section="P", text="todo", indent=0, marker=" ", boundary="x", verify="x")]
     incomplete_spec = _status_spec_with_54("route: build + review").replace("- **目标用户**：user\n", "")
     output = render_status(
-        "2026-09-21_fix-orchestration-lifecycle-prio",
+        "2026-09-21_fix-public-example-09-prio",
         "Status",
         "## P\n- [ ] todo\n  - boundary: x\n  - verify: x\n",
         incomplete_spec,
@@ -292,7 +292,7 @@ def test_status_next_step_respects_gate_priority_before_orchestration():
 def test_status_projects_dependency_errors():
     tasks = [Task(section="P", text="done", indent=0, marker="x", boundary="x", verify="x")]
     output = render_status(
-        "2026-09-21_fix-orchestration-lifecycle-dep",
+        "2026-09-21_fix-public-example-09-dep",
         "Status",
         "## P\n- [x] done\n  - depends-on: task-ghost\n  - boundary: x\n  - verify: x\n",
         VALID_STATUS_SPEC,
@@ -307,7 +307,7 @@ def test_status_projects_dependency_errors():
 def test_status_projects_standalone_blocked_line():
     tasks = [Task(section="P", text="done", indent=0, marker="x", boundary="x", verify="x")]
     output = render_status(
-        "2026-09-21_fix-orchestration-lifecycle-blocked",
+        "2026-09-21_fix-public-example-09-blocked",
         "Status",
         "## P\n- [x] done\n\n阻塞：等待外部系统恢复\n",
         VALID_STATUS_SPEC,
@@ -322,7 +322,7 @@ def test_status_projects_standalone_blocked_line():
 def test_status_projects_missing_evidence_gate():
     tasks = [Task(section="P", text="done", indent=0, marker="x", boundary="x", verify="x")]
     output = render_status(
-        "2026-09-21_fix-orchestration-lifecycle-ev",
+        "2026-09-21_fix-public-example-09-ev",
         "Status",
         "## P\n- [x] done\n",
         VALID_STATUS_SPEC,
@@ -336,7 +336,7 @@ def test_status_projects_missing_evidence_gate():
 
 def test_status_projects_update_checkpoint_block(tmp_path, capsys):
     """Status must surface an interrupted checkpoint and not claim completion."""
-    pkg = tmp_path / ".spec" / "specs" / "2026-09-21_fix-orchestration-lifecycle-ck"
+    pkg = tmp_path / ".spec" / "specs" / "2026-09-21_fix-public-example-09-ck"
     pkg.mkdir(parents=True)
     (pkg / "spec.md").write_text(_status_spec_with_54("route: build"), encoding="utf-8")
     (pkg / "tasks.md").write_text("## P\n- [x] done\n  - boundary: x\n  - verify: x\n", encoding="utf-8")
@@ -349,7 +349,7 @@ def test_status_projects_update_checkpoint_block(tmp_path, capsys):
     assert status.interrupted
     sections, tasks = parse_tasks((pkg / "tasks.md").read_text(encoding="utf-8"))
     output = render_status(
-        "2026-09-21_fix-orchestration-lifecycle-ck",
+        "2026-09-21_fix-public-example-09-ck",
         "Status",
         (pkg / "tasks.md").read_text(encoding="utf-8"),
         (pkg / "spec.md").read_text(encoding="utf-8"),

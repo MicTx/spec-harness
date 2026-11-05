@@ -8,8 +8,7 @@ same spawn discipline as ``/spec:autorun``: one pass = one full agent
 session in its own macOS Terminal.app window or Linux/WSL2 tmux session
 (attachable TUI, session persisted, never a print/exec headless mode),
 strictly sequential, fail fast. No
-pass runs as an in-process subagent of the spawning session (recorded in
-the ``2026-10-07_add-autoplan-pass-chain`` Development Record).
+pass runs as an in-process subagent of the spawning session.
 
 Subcommands:
 
@@ -54,10 +53,8 @@ here by name. The two spawn steps — the autorun round spawn in
 ``scripts/autorun_spawn.py`` and this autoplan pass spawn — plus the dead
 chain-window sweep (``scripts/sweep_chain_windows.py``, F18) are the only
 three callers authorized to automate Terminal.app (the spawns inherit the
-recorded overturn of the 2026-09-03 no-AppleScript policy in the
-``2026-10-06_add-autorun-command`` Development Record; the sweep extends
-that authorization in the ``2026-10-08_sweep-dead-chain-windows``
-Development Record; no other caller may reuse it). This module still imports the planning-document and worker-host
+Terminal automation policy described in ADR 0001; the sweep shares that
+bounded authorization and no other caller may reuse it). This module still imports the planning-document and worker-host
 helpers from ``autorun_spawn`` — that surface is public and single-sourced
 there (F5's boundary: shared mechanics in the support module, domain
 helpers in the script that owns them; the F14 worker-argv render moved to

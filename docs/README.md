@@ -4,6 +4,10 @@
 
 [🇬🇧 English index](README-en.md)
 
+## 我想第一次跑通
+
+- [从零完成第一个任务：保姆级教程](getting-started.md)：固定 Claude Code，按命令、预期结果和失败处理完成一次真实交付。
+
 ## 我想先理解它
 
 - [Spec Harness 介绍](introduction.md)：从一个长程任务为什么会失控开始，理解任务包、验证和 Git 收尾各自解决什么问题。

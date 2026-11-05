@@ -460,7 +460,6 @@ def test_acceptance_evidence_english_heading_matches():
 # --------------------------------------------------------------------------- #
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-ARCHIVE_ROOT = REPO_ROOT / ".spec" / "specs" / "archive"
 FIXTURE_SLUG = "2026-01-01_bilingual-fixture"
 
 CHINESE_V2_SPEC = """\
@@ -673,40 +672,3 @@ def test_mixed_v1_checklist_with_english_headings_keeps_legacy_gates():
     english = _gate_summary(spec, FIXTURE_TASKS, checklist_en_headings)
     assert chinese["overall_ok"] is True, chinese
     assert chinese == english
-
-
-@pytest.mark.skipif(not ARCHIVE_ROOT.is_dir(), reason="private .spec/ history is not part of the public export")
-def test_real_archived_chinese_packages_keep_pre_keying_verdicts():
-    """Verdict lock against real archives, captured before the keying change
-    (rg-audited snapshot, 2026-10-13): conclusions must not move."""
-    expectations = {
-        "2026-10-06_add-autorun-command": {
-            "checklist_present": True,
-            "overall_ok": True,
-            "total_tasks": 9,
-            "completed_tasks": 9,
-            "verification_scope": "integration",
-        },
-        "2026-10-13_gate-goal-push-and-organize-apply": {
-            "checklist_present": False,
-            "overall_ok": True,
-            "total_tasks": 4,
-            "completed_tasks": 4,
-            "verification_scope": "integration",
-        },
-    }
-    for slug, expected in expectations.items():
-        package = ARCHIVE_ROOT / slug
-        spec = (package / "spec.md").read_text(encoding="utf-8")
-        tasks = (package / "tasks.md").read_text(encoding="utf-8")
-        checklist_path = package / "checklist.md"
-        checklist = checklist_path.read_text(encoding="utf-8") if checklist_path.exists() else None
-        results = compute_gate_results(spec, tasks, checklist, slug=slug)
-        assert results.checklist_present == expected["checklist_present"], slug
-        assert results.overall_ok is expected["overall_ok"], slug
-        assert results.total_tasks == expected["total_tasks"], slug
-        assert results.completed_tasks == expected["completed_tasks"], slug
-        assert results.verification_scope == expected["verification_scope"], slug
-        assert results.spec_clarification_gaps == [], slug
-        assert results.pending_questions == [], slug
-        assert results.orchestration_errors == [], slug

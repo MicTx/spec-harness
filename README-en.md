@@ -78,11 +78,10 @@ Run the installer from a checked-out source or release tree:
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.24.0
 bash install.sh
 ```
 
-`install.sh` is the only local Skill installer. The optional `server/install.sh` is a separate self-hosted server-mode deployment entrypoint. To upgrade or roll back, check out the target tag and run the installer again.
+`install.sh` is the only local Skill installer. The optional `server/install.sh` is a separate self-hosted server-mode deployment entrypoint. To pin a version, check out its tag and use the documentation from that tag; rerun the installer after upgrading or rolling back.
 
 Installing from a source tree needs no signing credentials: when none are found locally, the installer exports with `--skip-signing` automatically and prints a one-line notice; distribution signing is enforced only by the release build (release archives ship pre-signed). To sign locally, point `SPEC_SIGNING_IDENTITY` and `SPEC_SIGNING_KEY` at an identity JSON and a key file; `SPEC_SKIP_SIGNING=1` skips explicitly.
 
@@ -90,7 +89,7 @@ Installing from a source tree needs no signing credentials: when none are found 
 
 | `INSTALL_HOSTS` | Host | Default directory | Extra behavior |
 | --- | --- | --- | --- |
-| `claude` | Claude Code | `~/.claude/skills` | writes `/spec` and stage commands (5 on core, 12 on full) |
+| `claude` | Claude Code | `~/.claude/skills` | writes `/spec` and stage commands (6 on core, 12 on full) |
 | `claude-desktop` | Claude Desktop | `~/.claude-desktop/skills` | Skill only |
 | `codex`, `codex-desktop` | Codex | `~/.codex/skills` | both tokens share the directory |
 | `gemini` | Gemini CLI | `~/.gemini/skills` | |
@@ -114,7 +113,7 @@ Select one host explicitly when needed:
 INSTALL_HOSTS=codex CODEX_SKILLS_DIR=~/.codex/skills bash install.sh
 ```
 
-Install profile: `INSTALL_PROFILE` selects the component surface and defaults to `core` — the kernel only (core stage commands `/spec:new` `/spec:run` `/spec:check` `/spec:done` `/spec:push`, Git hooks, and the scripts tree), without extension components (`slots/`, `agents/`) or extended stage commands (`goal`/`autoplan`/`autorun`/`update`/`status`/`doctor`/`organize`). `INSTALL_PROFILE=full` restores the complete install (all 12 stage commands plus extension components, byte-identical to the previous behavior). Re-running the default install on a machine that previously installed full downgrades it back to core: extended stage commands and agents are backed up, then removed. Opt in explicitly when you need the chains, planning passes, or extension capabilities:
+Install profile: `INSTALL_PROFILE` selects the component surface and defaults to `core` — the kernel only (core stage commands `/spec:new` `/spec:run` `/spec:check` `/spec:done` `/spec:push` `/spec:doctor`, Git hooks, and the scripts tree), without extension components (`slots/`, `agents/`) or extended stage commands (`goal`/`autoplan`/`autorun`/`update`/`status`/`organize`). `INSTALL_PROFILE=full` restores the complete install (all 12 stage commands plus extension components, byte-identical to the previous behavior). Re-running the default install on a machine that previously installed full downgrades it back to core: extended stage commands and agents are backed up, then removed. Opt in explicitly when you need the chains, planning passes, or extension capabilities:
 
 ```bash
 INSTALL_PROFILE=full bash install.sh
@@ -176,6 +175,8 @@ Place the exported `spec/` directory in the host's Skill directory. Trigger it w
 DeepSeek Harness (dsh) plugin mode: `python3 scripts/package_agent_plugin.py --format dsh` builds a dsh bundle (`package.json` declares `dsh.bundle.patch`; `index.js` registers a provider on `ctx.skills`). Unzip it, install with `dsh plugin --profile <name> add ./spec-harness`, remove with `dsh plugin --profile <name> remove spec-harness`. dsh is a developer preview and is not live verified.
 
 ## Quick Start
+
+First time here? Start with [From zero to your first task](docs/getting-started.md) (Chinese). It walks through installation, package creation, verification, archival, and recovery with expected results and failure handling.
 
 Once installed, the shortest path is to give your host one complete goal:
 

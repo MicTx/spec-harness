@@ -22,7 +22,7 @@ Check catalog:
 
 1. `python.runtime`: Python ≥ 3.9 (stdlib-only; newest syntax feature `str.removeprefix`)
 2. `git.available`: git on PATH (the done/push and hook gates depend on it)
-3. `skill.layout`: all 39 runtime files present (doctor holds the full manifest; core excludes extension files)
+3. `skill.layout`: all 39 runtime files present (full manifest; core uses the kernel subset without extension components)
 4. `skill.scripts`: every `scripts/*.py` compiles (detects truncated installs)
 5. `skill.channels`: bounded `--help` stdout/stderr spot-check on the five sample scripts (channel contract: contract output on stdout, diagnostics on stderr)
 6. `skill.marker` + `skill.drift`: installer ownership marker; when a source checkout exists, per-file hash comparison reports drift
