@@ -691,6 +691,7 @@ def _validate_package(
                 current_tasks_content=contents["tasks.md"],
                 require_v1=True,
                 baseline_equivalent=archive_baseline_equivalence(specs_root, specs_identity, legacy_hashes),
+                spec_gate=overall_check_passed,
             )
             failures.extend(CheckFailure(specs_root, slug, failure) for failure in closure_failures)
         elif legacy_hashes.get((specs_identity, slug)) != _archive_bundle_sha256(archive_texts or contents):

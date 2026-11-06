@@ -922,6 +922,7 @@ def main() -> int:
         specs_root=specs_root,
         current_slug=slug,
         current_tasks_content=tasks_content,
+        spec_gate=overall_check_passed,
     )
     if disposition_failures:
         print("error: issue closure gate failed:", file=sys.stderr)
@@ -1045,6 +1046,7 @@ def main() -> int:
             current_tasks_content=tasks_content,
             require_v1=True,
             baseline_equivalent=_archive_baseline_equivalence_for_done(root, specs_root),
+            spec_gate=overall_check_passed,
         )
         if summary_failures:
             print("error: completion summary closure gate failed:", file=sys.stderr)

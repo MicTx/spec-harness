@@ -4,6 +4,13 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [0.25.1] - 2026-11-06
+
+### Fixed
+
+- **结构契约零豁免**：问题处置校验不再反向导入检查命令；follow-up 归档的门禁判定由调用命令显式注入，缺少判定器时直接失败而非放行。项目结构契约基线不再保留任何豁免，新的反向依赖会被 `/spec:organize --check` 直接拦截。
+- **Zero-exemption structure contract**: Issue-closure validation no longer imports the check command; the calling command injects the follow-up archive gate explicitly, and a missing gate evaluator now fails instead of passing. The structure contract baseline carries no exemptions, so a new reverse dependency is rejected directly by `/spec:organize --check`.
+
 ## [0.25.0] - 2026-11-05
 
 ### Added

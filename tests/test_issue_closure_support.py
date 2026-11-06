@@ -9,6 +9,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 import issue_closure_support as closure_module  # noqa: E402
+from check_spec_package import overall_check_passed  # noqa: E402
 from issue_closure_support import (  # noqa: E402
     IssueClosureError,
     extract_issue_closure,
@@ -120,6 +121,7 @@ def test_validate_all_supported_dispositions(tmp_path: Path):
             specs_root=specs_root,
             current_slug="2026-08-22_fix-current",
             current_tasks_content=tasks,
+            spec_gate=overall_check_passed,
         )
         == []
     )
@@ -237,7 +239,9 @@ def test_followup_graph_memoizes_shared_nodes(tmp_path: Path, monkeypatch):
         return original(specs_root, slug, *args)
 
     monkeypatch.setattr(closure_module, "_load_archive_node", counted)
-    failures = closure_module.validate_followup_archives(tmp_path / ".spec", [left, right])
+    failures = closure_module.validate_followup_archives(
+        tmp_path / ".spec", [left, right], spec_gate=overall_check_passed
+    )
     assert failures == []
     assert counts[shared] == 1
 
@@ -301,6 +305,7 @@ def test_followup_spec_gate_still_fails_when_not_baseline_equivalent(tmp_path: P
         specs_root=tmp_path / ".spec",
         current_slug="2026-09-25_fix-current",
         baseline_equivalent=lambda candidate: False,
+        spec_gate=overall_check_passed,
     )
     assert any("Spec gate is not passed" in failure for failure in failures)
 
@@ -308,8 +313,26 @@ def test_followup_spec_gate_still_fails_when_not_baseline_equivalent(tmp_path: P
         [_issue("resolved_followup", followUpSpecSlug=slug, evidence="no exemption wired")],
         specs_root=tmp_path / ".spec",
         current_slug="2026-09-25_fix-current",
+        spec_gate=overall_check_passed,
     )
     assert any("Spec gate is not passed" in failure for failure in failures)
+
+
+def test_followup_spec_gate_is_injected_and_fails_closed_without_evaluator(tmp_path: Path):
+    """支撑层不再导入命令层门禁：缺失评估器即失败，注入的评估器才是唯一判据。"""
+    slug = "2026-08-22_fix-injected-gate"
+    _write_archived_followup(tmp_path, slug)
+    issue = _issue("resolved_followup", followUpSpecSlug=slug, evidence="archived")
+    kwargs = {"specs_root": tmp_path / ".spec", "current_slug": "2026-09-25_fix-current"}
+
+    failures = validate_issue_dispositions([issue], **kwargs)
+    assert any("cannot be evaluated without a gate evaluator" in failure for failure in failures)
+
+    failures = validate_issue_dispositions([issue], spec_gate=lambda *args, **kw: False, **kwargs)
+    assert any("Spec gate is not passed" in failure for failure in failures)
+
+    assert validate_issue_dispositions([issue], spec_gate=overall_check_passed, **kwargs) == []
+    assert "check_spec_package" not in Path(closure_module.__file__).read_text(encoding="utf-8")
 
 
 def test_issue_closure_markdown_round_trip():

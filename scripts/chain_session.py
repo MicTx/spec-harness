@@ -1652,6 +1652,7 @@ def _autorun_finish_proof(root: Path, state: Dict[str, object], slug: str) -> Di
         specs_root=root / ".spec",
         current_slug=slug,
         current_tasks_content=tasks_content,
+        spec_gate=check_spec_package.overall_check_passed,
     )
     if failures:
         raise ChainSpawnError("completion summary invalid: " + "; ".join(failures))

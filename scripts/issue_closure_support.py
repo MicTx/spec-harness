@@ -131,6 +131,7 @@ def validate_completion_summary(
     verify_targets: bool = True,
     verify_followups: bool = True,
     baseline_equivalent: Callable[[str], bool] | None = None,
+    spec_gate: Callable[..., bool] | None = None,
 ) -> list[str]:
     """Validate a generated completion summary and its structured closeout."""
     failures: list[str] = []
@@ -161,6 +162,7 @@ def validate_completion_summary(
             verify_targets=verify_targets,
             verify_followups=verify_followups,
             baseline_equivalent=baseline_equivalent,
+            spec_gate=spec_gate,
         )
     )
     return failures
@@ -170,6 +172,7 @@ def _load_archive_node(
     specs_root: Path,
     slug: str,
     baseline_equivalent: Callable[[str], bool] | None = None,
+    spec_gate: Callable[..., bool] | None = None,
 ) -> tuple[list[str], tuple[str, ...]]:
     failures: list[str] = []
     if not SLUG_PATTERN.fullmatch(slug):
@@ -195,7 +198,6 @@ def _load_archive_node(
     if not all(filename in contents for filename in ("spec.md", "tasks.md", "completion-summary.md")):
         return failures, ()
 
-    from check_spec_package import overall_check_passed
     from spec_package_support import acceptance_complete, count_unfinished_tasks
 
     unfinished = count_unfinished_tasks(contents["tasks.md"])
@@ -209,13 +211,16 @@ def _load_archive_node(
     # here. Structural checks above and the closure validation below stay in
     # force regardless.
     gate_exempt = baseline_equivalent is not None and baseline_equivalent(slug)
-    if not gate_exempt and not overall_check_passed(
-        contents["spec.md"],
-        contents["tasks.md"],
-        contents.get("checklist.md"),
-        slug=slug,
-    ):
-        failures.append(f"follow-up archive Spec gate is not passed: {slug}")
+    if not gate_exempt:
+        if spec_gate is None:
+            failures.append(f"follow-up archive Spec gate cannot be evaluated without a gate evaluator: {slug}")
+        elif not spec_gate(
+            contents["spec.md"],
+            contents["tasks.md"],
+            contents.get("checklist.md"),
+            slug=slug,
+        ):
+            failures.append(f"follow-up archive Spec gate is not passed: {slug}")
     summary_failures = validate_completion_summary(
         contents["completion-summary.md"],
         specs_root=specs_root,
@@ -247,6 +252,7 @@ def validate_followup_archives(
     *,
     origin_slug: str | None = None,
     baseline_equivalent: Callable[[str], bool] | None = None,
+    spec_gate: Callable[..., bool] | None = None,
 ) -> list[str]:
     """Validate a bounded, memoized follow-up graph without recursive calls."""
     failures: list[str] = []
@@ -260,7 +266,7 @@ def validate_followup_archives(
         if len(graph) >= MAX_FOLLOWUP_NODES:
             failures.append(f"follow-up graph exceeds {MAX_FOLLOWUP_NODES} archives")
             break
-        node_failures, outgoing = _load_archive_node(specs_root, slug, baseline_equivalent)
+        node_failures, outgoing = _load_archive_node(specs_root, slug, baseline_equivalent, spec_gate)
         graph[slug] = outgoing
         failures.extend(node_failures)
         for target in outgoing:
@@ -311,6 +317,7 @@ def validate_issue_dispositions(
     verify_targets: bool = True,
     verify_followups: bool = True,
     baseline_equivalent: Callable[[str], bool] | None = None,
+    spec_gate: Callable[..., bool] | None = None,
 ) -> list[str]:
     """Validate every finding has one complete, machine-checkable disposition."""
     if not isinstance(issues, list):
@@ -385,6 +392,7 @@ def validate_issue_dispositions(
                 followup_targets,
                 origin_slug=current_slug,
                 baseline_equivalent=baseline_equivalent,
+                spec_gate=spec_gate,
             )
         )
     return failures

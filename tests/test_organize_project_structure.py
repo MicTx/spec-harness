@@ -1340,7 +1340,8 @@ def test_contract_self_hosted_rule_rejects_new_reverse_dependency(tmp_path):
     root = make_tree(tmp_path, files)
     clean = run_audit(root, "--check", "--format", "json")
     assert clean.returncode == 0, clean.stderr
-    assert json.loads(clean.stdout)["contracts"]["baseline_hits"] == 1
+    contracts = json.loads(clean.stdout)["contracts"]
+    assert (contracts["baseline_hits"], contracts["violations"]) == (0, [])
 
     support = root / "scripts" / "safe_open_support.py"
     support.write_text(support.read_text(encoding="utf-8") + "\nimport route_spec_package\n", encoding="utf-8")
