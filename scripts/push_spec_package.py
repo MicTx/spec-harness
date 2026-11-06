@@ -544,8 +544,16 @@ def current_branch(root: Path) -> str:
     return branch
 
 
-def changed_files_against_main(root: Path, branch: str, main_branch: str) -> list[str] | None:
-    base = git(root, "merge-base", f"refs/heads/{main_branch}", f"refs/heads/{branch}", check=False)
+def changed_files_against_main(
+    root: Path, branch: str, main_branch: str, *, baseline_revision: str | None = None
+) -> list[str] | None:
+    base = git(
+        root,
+        "merge-base",
+        baseline_revision or f"refs/heads/{main_branch}",
+        f"refs/heads/{branch}",
+        check=False,
+    )
     if base.returncode != 0:
         return None
     base_sha = base.stdout.strip()
@@ -558,7 +566,9 @@ def changed_files_against_main(root: Path, branch: str, main_branch: str) -> lis
 SPEC_NONE_FOOTER_PATTERN = re.compile(r"^Spec:\s*none\s*\(([^()]+)\)\s*$")
 
 
-def spec_footer_attribution(root: Path, branch: str, main_branch: str) -> tuple[list[str], list[str]]:
+def spec_footer_attribution(
+    root: Path, branch: str, main_branch: str, *, baseline_revision: str | None = None
+) -> tuple[list[str], list[str]]:
     """Commit-footer attribution for a working branch (F11 lite channel).
 
     Returns ``(slugs, none_reasons)``: ordinary ``Spec: <slug>`` footers
@@ -566,7 +576,13 @@ def spec_footer_attribution(root: Path, branch: str, main_branch: str) -> tuple[
     attribute a trivial unpackaged commit and carry their reason here. A
     commit with neither footer is a push-blocking attribution gap.
     """
-    base = git(root, "merge-base", f"refs/heads/{main_branch}", f"refs/heads/{branch}", check=False)
+    base = git(
+        root,
+        "merge-base",
+        baseline_revision or f"refs/heads/{main_branch}",
+        f"refs/heads/{branch}",
+        check=False,
+    )
     if base.returncode != 0:
         return [], []
     commits = git(
@@ -630,9 +646,11 @@ def touched_spec_scope(
     branch: str,
     main_branch: str,
     specs_dirs: list[str] | None = None,
+    *,
+    baseline_revision: str | None = None,
 ) -> list[str] | None:
     """Return Spec slugs touched by one branch diff; None when undeterminable."""
-    changed = changed_files_against_main(root, branch, main_branch)
+    changed = changed_files_against_main(root, branch, main_branch, baseline_revision=baseline_revision)
     if changed is None:
         return None
     return scope_from_changed_paths(changed, specs_dirs or [])
@@ -937,11 +955,14 @@ def run_spec_gate(
         notes.append("check_all_spec_packages not installed; disk advisory skipped")
         return notes
 
-    attribution_slugs = touched_spec_scope(root, branch, main_branch, specs_dirs)
+    baseline_revision = legacy_baseline or f"refs/heads/{main_branch}"
+    attribution_slugs = touched_spec_scope(root, branch, main_branch, specs_dirs, baseline_revision=baseline_revision)
     if attribution_slugs is None:
         raise PushError("cannot determine target-branch Spec attribution from Git diff")
     if not attribution_slugs:
-        footer_slugs, none_reasons = spec_footer_attribution(root, branch, main_branch)
+        footer_slugs, none_reasons = spec_footer_attribution(
+            root, branch, main_branch, baseline_revision=baseline_revision
+        )
         if none_reasons and not footer_slugs:
             # F11 lite channel: trivial unpackaged work. The footer itself
             # (non-empty reason) is mandatory and already verified; the
@@ -976,7 +997,7 @@ def run_spec_gate(
             window = git(
                 root,
                 "merge-base",
-                f"refs/heads/{main_branch}",
+                baseline_revision,
                 f"refs/heads/{branch}",
                 check=False,
             )
