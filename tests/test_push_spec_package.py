@@ -695,6 +695,12 @@ def test_push_falls_back_to_local_only_when_remote_unreachable(tmp_path):
 
 def test_push_recovers_after_local_only_run_when_remote_returns(tmp_path):
     repo, branch = init_repo(tmp_path)
+    main_tip = git(repo, "rev-parse", "main")
+    package = repo / ".spec" / "specs" / "archive" / TEST_SPEC_SLUG
+    _write_summary_with_interval(package, TEST_SPEC_SLUG, main_tip, main_tip)
+    git(repo, "add", ".spec")
+    git(repo, "commit", "-m", "record delivery interval", "-m", f"Spec: {TEST_SPEC_SLUG}")
+    git(repo, "push", "origin", branch)
     remote_url = git(repo, "remote", "get-url", "origin")
     git(repo, "remote", "set-url", "origin", str(tmp_path / "missing-remote.git"))
 
@@ -709,6 +715,8 @@ def test_push_recovers_after_local_only_run_when_remote_returns(tmp_path):
     assert recovered.returncode == 0, recovered.stderr
     assert "mode: execute" in recovered.stdout
     assert "mode: local-only" not in recovered.stdout
+    assert "spec gate warning" not in recovered.stdout + recovered.stderr
+    assert f"changed-package attribution: {TEST_SPEC_SLUG}" in recovered.stdout
     assert git(repo, "branch", "--show-current") == "main"
     assert "spec/test" not in git(repo, "branch", "--list", "spec/test")
     assert "origin/spec/test" not in git(repo, "branch", "-r", "--list", "origin/spec/test")
@@ -1205,7 +1213,8 @@ def _footer_push_sandbox(tmp_path: Path) -> tuple[Path, str, str]:
     return repo, ancient, git(repo, "rev-parse", "HEAD")
 
 
-def test_push_warns_when_footer_cites_archive_before_window(tmp_path):
+@pytest.mark.parametrize("premerged", [False, True])
+def test_push_warns_when_footer_cites_archive_before_window(tmp_path, premerged):
     # EXP-04(c) replay: a code-only commit whose Spec footer cites an archived
     # package delivered long before this branch's window. Observation period:
     # the push succeeds and stderr names the evidence triple.
@@ -1214,14 +1223,61 @@ def test_push_warns_when_footer_cites_archive_before_window(tmp_path):
     (repo / "sneaky.py").write_text("import os\nos.system('echo pwned')\n", encoding="utf-8")
     git(repo, "add", "sneaky.py")
     git(repo, "commit", "-m", "feat: innocent change", "-m", f"Spec: {OLD_SPEC_SLUG}")
+    if premerged:
+        git(repo, "checkout", "main")
+        git(repo, "merge", "--no-ff", "spec/sneaky-reuse", "-m", "merge locally before recovery")
     result = run_push(repo, "--branch", "spec/sneaky-reuse")
     assert result.returncode == 0, result.stdout + result.stderr
     combined = result.stdout + result.stderr
     assert "spec gate warning: footer attribution cites an archive delivered before this push window" in combined
     assert f"- slug: {OLD_SPEC_SLUG}" in combined
     assert f"- archive commit range: {ancient}..{ancient}" in combined
-    assert "- push window base:" in combined
+    assert f"- push window base: {main_tip}" in combined
     assert "hard failure" in combined
+
+
+def test_push_recovery_checks_every_changed_package_in_remote_window(tmp_path):
+    repo, branch = init_repo(tmp_path)
+    remote_tip = git(repo, "rev-parse", "origin/main")
+    package = repo / ".spec" / "specs" / "archive" / TEST_SPEC_SLUG
+    (package / "checklist.md").write_text("- [ ] Not verified\n", encoding="utf-8")
+    final_slug = "2026-08-02_fix-recovery-fixture"
+    write_archived_spec(repo, final_slug)
+    git(repo, "add", ".spec")
+    git(repo, "commit", "-m", "archive another package", "-m", f"Spec: {final_slug}")
+    git(repo, "push", "origin", branch)
+    git(repo, "checkout", "main")
+    git(repo, "merge", "--no-ff", branch, "-m", "merge locally before recovery")
+
+    result = run_push(repo, "--branch", branch)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert TEST_SPEC_SLUG in result.stderr
+    assert git(repo, "ls-remote", "origin", "refs/heads/main").split()[0] == remote_tip
+    assert git(repo, "branch", "--list", branch).strip() == branch
+
+
+def test_push_recovery_checks_every_footer_in_remote_window(tmp_path):
+    repo, _ancient, remote_tip = _footer_push_sandbox(tmp_path)
+    branch = "spec/recovery-footer"
+    git(repo, "checkout", "-b", branch)
+    (repo / "unattributed.txt").write_text("missing attribution\n", encoding="utf-8")
+    git(repo, "add", "unattributed.txt")
+    git(repo, "commit", "-m", "feat: missing footer")
+    unattributed_sha = git(repo, "rev-parse", "HEAD")
+    (repo / "attributed.txt").write_text("cites archive\n", encoding="utf-8")
+    git(repo, "add", "attributed.txt")
+    git(repo, "commit", "-m", "fix: attributed tail", "-m", f"Spec: {OLD_SPEC_SLUG}")
+    git(repo, "checkout", "main")
+    git(repo, "merge", "--no-ff", branch, "-m", "merge locally before recovery")
+
+    result = run_push(repo, "--branch", branch)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "without `Spec: <slug>` attribution" in result.stderr
+    assert unattributed_sha[:12] in result.stderr
+    assert git(repo, "ls-remote", "origin", "refs/heads/main").split()[0] == remote_tip
+    assert git(repo, "branch", "--list", branch).strip() == branch
 
 
 def test_push_footer_multi_theme_multi_package_delivery_no_warning(tmp_path):

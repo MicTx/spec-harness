@@ -4,6 +4,13 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [0.25.2] - 2026-11-06
+
+### Fixed
+
+- **推送恢复门禁基线**：断网降级后恢复推送时，变更范围与 footer 归属检查统一使用已锁定的远端主线基线；本地 main 已包含待推送分支时不再把本轮归档误报为旧包复用，并继续检查此前提交和其他变更包。真正的旧包复用仍会告警。
+- **Push recovery baseline**: When a push resumes after an offline merge, change-scope and footer-attribution checks now share the locked remote-main baseline. A local main that already contains the branch no longer misreports the current archive as stale attribution, and earlier commits plus other changed packages remain covered. Genuine reuse of an older archive still warns.
+
 ## [0.25.1] - 2026-11-06
 
 ### Fixed
