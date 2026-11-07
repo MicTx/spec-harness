@@ -18,6 +18,7 @@ Decide what you want to accomplish first, then pick the one document that does i
 - [Git workflow (English)](git-workflow.en.md)
 - [Git 工作流（中文）](git-workflow.md)
 - [Client execution matrix](../README-en.md#execution-surfaces-and-support-boundaries): CLI, IDE agent extensions, desktop clients, and evidence boundaries.
+- [Deep-reasoning requests](../references/commands.md#mandatory-ultrathink) and [autonomous inquiry](../references/templates.md#autonomous-inquiry): maximum launch requests, host limits, question routing and conclusion-bound evidence.
 - Root [README (English)](../README-en.md): installation, host selection, runtime export, and regression commands.
 - Root [README（中文）](../README.md)：安装、宿主选择、导出运行时包和回归命令。
 

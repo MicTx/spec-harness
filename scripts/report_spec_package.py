@@ -25,12 +25,15 @@ from dashboard_support import (
 )
 from handoff_support import handoff_brief
 from spec_package_support import (
+    SpecControlError,
     acceptance_complete,
     active_package_slugs,
     add_specs_dir_arg,
     count_tasks,
     extract_title_from_content,
+    parse_task_records,
     read_regular_text,
+    ready_task_ids,
     resolve_specs_child,
     resolve_specs_root,
     task_title_signals_blocked,
@@ -205,6 +208,8 @@ def status_next_step(
     standalone_blocked: str | None = None,
     dependency_errors_list: list[str] | None = None,
     orchestration_errors_list: list[str] | None = None,
+    question_errors_list: list[str] | None = None,
+    inquiry_next_step: str | None = None,
     checkpoint_pending: bool = False,
     gate_passed: bool = True,
     spec_content: str = "",
@@ -218,6 +223,8 @@ def status_next_step(
         return f"解除阻塞：{blocked_tasks[0].text}"
     if standalone_blocked:
         return "处理任务阻塞：解决 tasks.md 中的独立阻塞状态行"
+    if question_errors_list:
+        return f"修复调查契约：{question_errors_list[0]}"
     if pending_questions:
         return f"确认需求：{pending_questions[0]}"
     if gate_gaps:
@@ -227,6 +234,8 @@ def status_next_step(
         return f"补齐项目定义：{project_gap_message(first_gap)}"
     if orchestration_errors_list:
         return f"修正编排策略：{orchestration_errors_list[0]}"
+    if inquiry_next_step and not all_completed:
+        return inquiry_next_step
     if primary_task and not all_completed:
         return primary_task.text
     if all_completed and not acceptance_complete(checklist_content, spec_content):
@@ -296,12 +305,29 @@ def render_status(
     checkpoint_pending: bool = False,
     checkpoint_status: CheckpointStatus | None = None,
     handoff_line: str | None = None,
+    root: Path | None = None,
+    package_dir: Path | None = None,
 ) -> str:
     primary_task = find_primary_task(tasks)
     blocked_tasks = [task for task in tasks if task.is_blocked]
     total_tasks, completed_tasks = count_tasks(tasks_content)
-    r = compute_gate_results(spec_content, tasks_content, checklist_content, slug=slug)
-    pending_questions = list(r.pending_questions)
+    r = compute_gate_results(
+        spec_content, tasks_content, checklist_content, slug=slug, root=root, package_dir=package_dir
+    )
+    pending_questions = list(r.human_questions)
+    inquiry_next_step = None
+    if r.autonomous_task_ids:
+        try:
+            records = parse_task_records(tasks_content)
+            ready = ready_task_ids(records)
+            inquiry = ready & set(r.autonomous_task_ids)
+            inquiry_task = next((record for record in records if record.id in inquiry), None)
+            ready_task = next((record for record in records if record.id in ready), None)
+            inquiry_next_step = (
+                f"自主调查：{inquiry_task.title}" if inquiry_task else ready_task.title if ready_task else None
+            )
+        except SpecControlError:
+            pass
     checkpoint_pending = checkpoint_pending or bool(checkpoint_status and checkpoint_status.interrupted)
 
     orchestration_errors = list(r.orchestration_errors)
@@ -320,7 +346,7 @@ def render_status(
     if checkpoint_pending:
         # Advisory-level attention mirroring route; gates still refuse.
         health = worst_health(health, HEALTH_RISK)
-    if orchestration_errors or (r.all_tasks_done and not r.overall_ok):
+    if orchestration_errors or r.question_errors or (r.all_tasks_done and not r.overall_ok):
         health = worst_health(health, HEALTH_RISK)
 
     strip, strip_labels = task_strip_from_records(tasks)
@@ -332,6 +358,8 @@ def render_status(
     if standalone_blocked_text:
         alerts.append(f"任务受阻：{standalone_blocked_text}")
     alerts.extend(f"需要确认需求：{question}" for question in pending_questions)
+    alerts.extend(f"自主调查：{question}" for question in r.autonomous_questions)
+    alerts.extend(f"调查契约尚未满足：{error}" for error in r.question_errors)
     for gap in ordered_gate_gaps:
         if gap in dependency_errors_list:
             alerts.append(f"修正任务依赖：{gap}")
@@ -362,6 +390,8 @@ def render_status(
         standalone_blocked=standalone_blocked_text,
         dependency_errors_list=dependency_errors_list,
         orchestration_errors_list=orchestration_errors,
+        question_errors_list=r.question_errors,
+        inquiry_next_step=inquiry_next_step,
         checkpoint_pending=checkpoint_pending,
         gate_passed=r.overall_ok,
         spec_content=spec_content,
@@ -445,12 +475,16 @@ def package_status_summary(
     tasks: list[Task],
     *,
     checkpoint_status: CheckpointStatus | None = None,
+    root: Path | None = None,
+    package_dir: Path | None = None,
 ) -> dict[str, str]:
     total_tasks, completed_tasks = count_tasks(tasks_content)
     blocked_tasks = [task for task in tasks if task.is_blocked]
     active_tasks = [task.text for task in tasks if task.is_explicit_in_progress and not task.is_blocked]
-    r = compute_gate_results(spec_content, tasks_content, checklist_content, slug=slug)
-    pending_questions = list(r.pending_questions)
+    r = compute_gate_results(
+        spec_content, tasks_content, checklist_content, slug=slug, root=root, package_dir=package_dir
+    )
+    pending_questions = list(r.human_questions)
     dependency_errors_list = list(r.task_contract_errors)
     ordered_gate_gaps = list(r.spec_clarification_gaps)
     checkpoint_pending = bool(checkpoint_status and checkpoint_status.interrupted)
@@ -462,7 +496,7 @@ def package_status_summary(
     if checkpoint_pending:
         # Advisory-level attention mirroring route; gates still refuse.
         state = worst_health(state, HEALTH_RISK)
-    if r.orchestration_errors or (r.all_tasks_done and not r.overall_ok):
+    if r.orchestration_errors or r.question_errors or (r.all_tasks_done and not r.overall_ok):
         state = worst_health(state, HEALTH_RISK)
 
     first_error = r.orchestration_errors[0] if r.orchestration_errors else "无"
@@ -487,6 +521,8 @@ def package_status_summary(
         "primary": "、".join(active_tasks) if active_tasks else "无",
         "blocked": blocked_label,
         "pending": pending_questions[0] if pending_questions else "无",
+        "inquiry": r.autonomous_questions[0] if r.autonomous_questions else "无",
+        "question_error": r.question_errors[0] if r.question_errors else "无",
         "dependency": dependency_label,
         "needs_work": "是" if (definition_gaps or acceptance_failed) else "否",
         "gate_failed": "是" if not r.overall_ok else "否",
@@ -523,6 +559,7 @@ def render_multi_status(
     blocked_packages = 0
     task_blocked_packages = 0
     pending_packages = 0
+    question_error_packages = 0
     gate_packages = 0
     failed_gate_packages = 0
     orchestration_packages = 0
@@ -584,6 +621,8 @@ def render_multi_status(
             sections,
             tasks,
             checkpoint_status=checkpoint_status,
+            root=root,
+            package_dir=package_dir,
         )
         state = summary["state"]
         worst = worst_health(worst, state)
@@ -598,6 +637,8 @@ def render_multi_status(
             checkpoint_packages += 1
         if summary["pending"] != "无":
             pending_packages += 1
+        if summary["question_error"] != "无":
+            question_error_packages += 1
         if summary["needs_work"] == "是":
             gate_packages += 1
         if summary["gate_failed"] == "是":
@@ -613,6 +654,10 @@ def render_multi_status(
             row += f"；阻塞 {summary['blocked']}"
         if summary["pending"] != "无":
             row += f"；待确认 {summary['pending']}"
+        if summary["inquiry"] != "无":
+            row += f"；自主调查 {summary['inquiry']}"
+        if summary["question_error"] != "无":
+            row += f"；调查契约尚未满足：{summary['question_error']}"
         if summary["dependency"] != "无":
             row += f"；任务依赖错误 {summary['dependency']}"
             dependency_packages += 1
@@ -641,6 +686,8 @@ def render_multi_status(
         alerts.append(f"{task_blocked_packages} 个项目有任务阻塞")
     if pending_packages:
         alerts.append(f"{pending_packages} 个项目需要确认需求")
+    if question_error_packages:
+        alerts.append(f"{question_error_packages} 个项目调查契约尚未满足")
     if gate_packages:
         alerts.append(f"{gate_packages} 个项目定义或验收尚未完整")
     if orchestration_packages:
@@ -656,6 +703,8 @@ def render_multi_status(
         next_step = "修复项目记录读取失败或补齐可执行任务"
     elif task_blocked_packages:
         next_step = "处理项目任务阻塞"
+    elif question_error_packages:
+        next_step = "修复调查契约"
     elif pending_packages:
         next_step = "确认项目需求"
     elif gate_packages:
@@ -778,6 +827,8 @@ def main() -> int:
             ascii_mode=args.ascii,
             compact=args.compact,
             checkpoint_status=checkpoint_status,
+            root=root,
+            package_dir=spec_path.parent,
             handoff_line=handoff_brief(spec_path.parent, root, tasks_content),
         )
     else:

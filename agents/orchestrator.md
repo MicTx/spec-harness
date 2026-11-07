@@ -44,3 +44,4 @@ Return an orchestration brief containing:
 - Auth, billing, secrets, migrations, and destructive operations require an explicit security review lane
 - Never claim work as done; task `verify` lines are run by the main session
 - If orchestration does not improve speed, clarity, or verification depth, answer `local`
+- Apply mandatory ultrathink and evidence-led inquiry before proposing human escalation. Prioritize ready fact/reversible investigations; decision labels never create authority. Native sidecars remain instruction_only unless host launch control is independently established.

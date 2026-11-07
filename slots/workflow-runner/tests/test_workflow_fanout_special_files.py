@@ -45,7 +45,7 @@ plan.write_text(json.dumps({"items": [{"id": "a", "prompt": "hello"}]}))
 calls = []
 wf.resolve_binary = lambda backend: sys.executable
 wf._workspace_context = lambda value, binary: "offline-context"
-def build(backend, prompt, output):
+def build(backend, prompt, output, model=None):
     calls.append(prompt)
     return [sys.executable, "-c", "print('stub answer')"]
 wf.build_command = build
@@ -79,10 +79,14 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 import workflow_fanout as wf
 root = Path(sys.argv[2])
-wf.build_command = lambda backend, prompt, output: [
+import reasoning_policy
+reasoning_policy.load_codex_catalog = lambda: reasoning_policy.CodexCatalog(
+    "/test/codex", "codex-cli test", {"test-model": ("high", "max")}
+)
+wf.build_command = lambda backend, prompt, output, model=None: [
     sys.executable, "-c", "import os,sys; os.mkfifo(sys.argv[1]); print('progress')", str(output)
 ]
-record = wf.run_item("codex", {"id": "a", "prompt": "hello"}, root, 4)
+record = wf.run_item("codex", {"id": "a", "prompt": "hello"}, root, 4, "test-model")
 assert not record["ok"] and "output read failed" in record["error"], record
 assert stat.S_ISFIFO(os.lstat(record["outputFile"]).st_mode)
 """,

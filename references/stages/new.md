@@ -9,8 +9,8 @@ Compatible invocation:
 
 Execution order:
 
-1. Clarify the most critical information: project goal, target users, MVP, technology preferences, boundaries, and exclusions.
-2. Record facts, external facts, assumptions, questions and trade-offs. For 1–2 uncertain claims that could change the conclusion, write primary sources, a falsifier and task `verify` before implementation in existing §2/§5.1/§6; no invented uncertainty. Missing sources stay unverified; independent-oracle examples: [`../templates.md`](../templates.md).
+1. Investigate goal, users, MVP, technology, boundaries and exclusions from the request, code and data before asking. Apply mandatory ultrathink; ask only about unresolved human decisions.
+2. Record evidence, external facts, assumptions and trade-offs. Classify §2.3 questions as `[fact]`, `[reversible]` or `[decision]` under [`../templates.md`](../templates.md#autonomous-inquiry); bind autonomous inquiry to machine tasks. For 1–2 decisive uncertain claims, write primary sources, a falsifier and `verify` in §2/§5.1/§6 before implementation; missing sources stay unverified.
 3. Name the package with a stable, readable `YYYY-MM-DD_<verb>-<object>` Development Record slug (e.g. `2026-06-12_add-login-rate-limit`); verbs come from the controlled vocabulary in [`../naming-and-commits.md`](../naming-and-commits.md).
 4. In a Git repository, run the `/spec:new` branch preflight before writing any package file:
    - Require a clean tree; with uncommitted or untracked changes, stop and output triage advice (commit, stash, or move unrelated changes into their own Development Record). One class of dirt is carried instead of blocking: entries consisting solely of another active package's own documents under `<specs>/specs/<slug>/` (checklist ticks, evidence, handoff) are attributed per file with `--untracked-files=all` and skipped, so a previous round's unarchived documents never block the next package. Business files and `archive/` dirt still stop.
@@ -27,9 +27,9 @@ python3 scripts/init_spec_package.py --root <project> --slug YYYY-MM-DD_<slug> -
 ```
 
 7. Fill the package documents under `.spec/specs/YYYY-MM-DD_<slug>/` per [`../templates.md`](../templates.md). Every task carries `boundary` and `verify` written to the complete-verify recipe (运行目录/前置条件/完整命令/成功判定/失败处理，存在即写) — replace the template examples with real boundaries and verification commands that prove delivery before execution.
-8. For layout judgments, record a first-principles audit in `spec.md`: directory/module responsibilities, dependency direction, runtime/source/state separation, entry discoverability, tests/docs. If unreasonable, add target tree, migration/merge and reference maps, deprecated items, verification; otherwise explain no restructuring.
-9. Lock the minimal implementation path in `spec.md` and name the abstractions, extensions, and configurability not done this round.
-10. After creation, continue straight into execution when no project-shaping decision is pending; only genuinely undecidable items go to the user.
+8. For layout judgments, audit responsibilities, dependency direction, source/runtime/state separation, entries and tests/docs in `spec.md`. If flawed, add target tree, migration/reference maps, deprecated items and verification; otherwise explain no restructuring.
+9. Lock the minimal path in `spec.md`; exclude unnecessary abstractions, extensions and configuration.
+10. Continue into execution or ready inquiry tasks; only permission, irreversible choices, genuine preferences or inaccessible external dependencies go to the user. Labels never authorize sensitive actions.
 
 Constraints:
 
@@ -39,6 +39,4 @@ Constraints:
 - `spec.md` §6 success criteria must be verifiable; no vague adjectives.
 - For directory optimization, `tasks.md` must split out structure audit, migration/merge, reference verification, documentation sync, and deprecated-item cleanup tasks; never collapse "tidy the directory" into one unauditable task.
 
-Output contract:
-
-- Render the `/spec:new` dashboard per [`../output-contracts.md`](../output-contracts.md).
+Output: [`../output-contracts.md`](../output-contracts.md).

@@ -29,6 +29,14 @@ Execution requirements:
 - Findings stay on the acceptance surface (stable IDs dedupe); three-state count: fixed / still failing / newly found.
 - Do not enter `done` before passing.
 
+Machine writeback hook (check → update → run): for recurring structured writebacks prefer the machine path over hand-transcribing gaps:
+
+1. Capture the gate output once: `python3 scripts/check_spec_package.py --root <project> --slug <slug> --format json > check.json` (the same report Stop hooks consume).
+2. Emit the proposed update without writing: `python3 scripts/check_issue_writeback.py plan --root <project> --slug <slug> --gaps check.json --out plan.json`. The plan proposes one checkfix task per gap with a stable weak identity (`task-checkfix-t-<hash8>`, counts/numbers normalized) and one §5.5 correction-log row.
+3. The main session reviews and edits `plan.json` before applying: dispositions beyond `resolved_current` (`accepted_risk`, `external_blocked`, `non_actionable`, `resolved_followup`) and real verify commands for gaps that have an adjudicating command are model decisions made here, not script defaults. The review is machine-enforced: apply rejects any task whose verify still carries the generated placeholder, so an unreviewed plan cannot be applied.
+4. Apply atomically: `python3 scripts/check_issue_writeback.py apply --root <project> --slug <slug> --plan plan.json`. The apply step appends the tasks at the end of `tasks.md` (append-only, explicit ids), upserts the §5.5 row, refuses a dirty worktree, validates dispositions against `issue_closure_support.DISPOSITION_TYPES`, re-runs the gate after writing and rolls back if it converges with unchecked checkfix tasks, refuses at 3 checkfix-source correction-log rounds with exit 3 (`next: escalate`; human correction rounds do not consume the machine quota), and keeps backups out of tree. Keep `check.json` and `plan.json` outside the package (a temp directory is fine); the dirty-tree guard only refuses changes to the package's own `spec.md`/`tasks.md`.
+5. Continue with `/spec:run` for the appended `task-checkfix-*` tasks. Re-running check right after apply still reports `converged: false` because the new tasks are unchecked — that is the anti-fake-success invariant working as designed; convergence is proven by the fix round's verify and the next green check.
+
 Output contract:
 
 - Render the `/spec:check` dashboard per [`../output-contracts.md`](../output-contracts.md); pending fixes must be fixed before continuing to `done`.

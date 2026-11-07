@@ -1,26 +1,26 @@
 {
   "schema_version": 1,
   "sources": {
-    "SKILL.md": "406196b10a57b816a816360acc37f477fe69c0a2551ef0dd1f52d7e0f6696539",
-    "agents/planner.md": "03f9ba6ebc9a203ce4ebcc7057d3d31da97aff7f40ef45626ed9ddb6d21bacca",
-    "references/commands.md": "f3115cc039ec57afd613be493cae0918ab6aa298d80100a9f9776b4f196763aa",
+    "SKILL.md": "74cf9bf3eb62af866bded2693b415ca84fe4c603c237167c7af188b3c4a0d5f6",
+    "agents/planner.md": "28beba395a76024003d75363e42cc12e589d46a84965ac8b702ff45d9fb15b98",
+    "references/commands.md": "d54b8be9be4d560945e714408b4b087e3b17f668d8e385ad11bd8056771ab0fa",
     "references/handoff.md": "cd073391379d82184c16bb7cf797f282b20de89bb1bce3bb14d1a4afbbb72cd0",
     "references/naming-and-commits.md": "17c1ee9e3856b7c31bdb333acf81559a966f93e26d3a7b664d03b1564991c444",
     "references/orchestration.md": "673615df4e3ccdebcb5b185a0b6e15dbc7e2ac79aada71408441bc7db2b5333a",
     "references/output-contracts.md": "d1ef014ec16d0d73f9b314651f945d46c2d31ac4d3eaed2bfb94842a8ae056b4",
-    "references/stages/autoplan.md": "08ff0658d7768a05ea216fce8aa027587147d4ef4d11329f161524f345bd5ae8",
-    "references/stages/autorun.md": "283ef3bb790c4bf00ad570c3b37efed05307272e4b01f26ff9368a65bb346035",
-    "references/stages/check.md": "38d764ee3a07e26be27c81e1f202e60f95836fd091280f878d0662e444e84eb3",
+    "references/stages/autoplan.md": "b113d322beec27aa57d3a1bc5b10a100a98dd91a384ef187ece548b2719d1356",
+    "references/stages/autorun.md": "4b53e25c60bed7c4b66f88ad5d6422e73c40cd372e4a723d6881e7b7b8393e1e",
+    "references/stages/check.md": "f534bef4eb5cadf28131540f55eefacd021aa54e11951ec6746890bedd6c1991",
     "references/stages/doctor.md": "60a9240eab4af0418d8603adb67da795b727f3b54a9067cc3b5021e4bf3b23e7",
     "references/stages/done.md": "fa4224c59e471a0109a93aa3c99bb74d7325811c4b242f459191eca1456005ee",
     "references/stages/goal.md": "b1c2ca61d52e5cef406a5bf7bea979cc55334dba7d711d4b7d02a705d16169e6",
-    "references/stages/new.md": "2ca7af09ba88212f14e19107ea7dadf0318da396291d762d24d5c448b312de51",
+    "references/stages/new.md": "5503f1902b1de1858886efb7a57a74062882fd4a12af1acb4a18753cdaee9cea",
     "references/stages/organize.md": "007d747067760bd414683f4c812b74858c6f4dc82576daaf8500449cc7ddaaa1",
     "references/stages/push.md": "6298191bcf7ee651970fc6c9aae3e1d74f6844cf98f57f4e1f557e2a04e69db1",
-    "references/stages/run.md": "23b75e02f6194d6df7cebb0cb13df46d8972c51b8f21007e7ea443d4ed429c19",
+    "references/stages/run.md": "320f3fffaa838c18b7888b89eb22235a7506171e131b729126ffc96d8951b3bc",
     "references/stages/status.md": "bd0088a5dfa1cd4c2669090a3b5e39011c02e30c8a89875c9f28093232cf0dc3",
     "references/stages/update.md": "0f6c610a13d88898f4291bf7202171ac7c5d68347c6c94dbf4b50bffebd0cf6c",
-    "references/templates.md": "738c9e598a31fe1bbc150c8fae35a24a87fe7cd54e04b4132161a09b69fcc562",
+    "references/templates.md": "448e0959e248e9c3fb213bd240538fac926edc977f8152a1df22f2b38b78391e",
     "slots/team-loop/README.md": "e7fbd53f29294cd963b8879534c3e07e06aa70326751124ea6aa3baf0c8d0dec",
     "tests/fixtures/skill_surface/inputs/handoff-snapshot.md": "8b04243b0211414d1b0d15d328bfd6092b1d29c4154fc813f45f7e4790729f1a",
     "tests/fixtures/skill_surface/inputs/pkg-large/tasks.md": "5cd8c2f991948e35a64eb5c323494201edd7ae2860f66943ff5f4c9a01bfec4b",
@@ -139,11 +139,15 @@
               99
             ],
             [
-              125,
-              150
+              120,
+              142
+            ],
+            [
+              149,
+              174
             ]
           ],
-          "reason": "spec/tasks init fences instantiated per new package",
+          "reason": "spec/tasks init fences and autonomous inquiry contract used per new package",
           "contract_anchor": "templates.md init fences",
           "call_id": "read:templates",
           "expected_keys": [
@@ -163,7 +167,7 @@
       "context_available": [
         {
           "source": "SKILL.md",
-          "sha256": "406196b10a57b816a816360acc37f477fe69c0a2551ef0dd1f52d7e0f6696539"
+          "sha256": "74cf9bf3eb62af866bded2693b415ca84fe4c603c237167c7af188b3c4a0d5f6"
         }
       ],
       "success_condition": "next ready task executed with its verify actually run",
@@ -257,7 +261,7 @@
       "context_available": [
         {
           "source": "SKILL.md",
-          "sha256": "406196b10a57b816a816360acc37f477fe69c0a2551ef0dd1f52d7e0f6696539"
+          "sha256": "74cf9bf3eb62af866bded2693b415ca84fe4c603c237167c7af188b3c4a0d5f6"
         }
       ],
       "success_condition": "slot lane assignment contract satisfied; no second state machine",
@@ -361,7 +365,7 @@
       "context_available": [
         {
           "source": "SKILL.md",
-          "sha256": "406196b10a57b816a816360acc37f477fe69c0a2551ef0dd1f52d7e0f6696539"
+          "sha256": "74cf9bf3eb62af866bded2693b415ca84fe4c603c237167c7af188b3c4a0d5f6"
         }
       ],
       "success_condition": "failure diagnosed, written back, fixed and fully re-verified in-round",
@@ -455,7 +459,7 @@
       "context_available": [
         {
           "source": "SKILL.md",
-          "sha256": "406196b10a57b816a816360acc37f477fe69c0a2551ef0dd1f52d7e0f6696539"
+          "sha256": "74cf9bf3eb62af866bded2693b415ca84fe4c603c237167c7af188b3c4a0d5f6"
         }
       ],
       "success_condition": "legacy evidence completeness judged with full log, not first screen",
@@ -522,7 +526,7 @@
       "context_available": [
         {
           "source": "SKILL.md",
-          "sha256": "406196b10a57b816a816360acc37f477fe69c0a2551ef0dd1f52d7e0f6696539"
+          "sha256": "74cf9bf3eb62af866bded2693b415ca84fe4c603c237167c7af188b3c4a0d5f6"
         }
       ],
       "success_condition": "package archived and committed with naming/commit contract",
@@ -608,7 +612,7 @@
       "context_available": [
         {
           "source": "SKILL.md",
-          "sha256": "406196b10a57b816a816360acc37f477fe69c0a2551ef0dd1f52d7e0f6696539"
+          "sha256": "74cf9bf3eb62af866bded2693b415ca84fe4c603c237167c7af188b3c4a0d5f6"
         }
       ],
       "success_condition": "merge to main pushed on the recorded integration branch only",
@@ -777,7 +781,7 @@
       "context_available": [
         {
           "source": "SKILL.md",
-          "sha256": "406196b10a57b816a816360acc37f477fe69c0a2551ef0dd1f52d7e0f6696539"
+          "sha256": "74cf9bf3eb62af866bded2693b415ca84fe4c603c237167c7af188b3c4a0d5f6"
         }
       ],
       "success_condition": "assigned detail document written per planner mission, nothing else",
@@ -828,7 +832,7 @@
           "ranges": [
             [
               82,
-              117
+              129
             ]
           ],
           "reason": "execution strategy, current-session recovery and fresh CLI transport contract",
@@ -877,7 +881,7 @@
       "context_available": [
         {
           "source": "SKILL.md",
-          "sha256": "406196b10a57b816a816360acc37f477fe69c0a2551ef0dd1f52d7e0f6696539"
+          "sha256": "74cf9bf3eb62af866bded2693b415ca84fe4c603c237167c7af188b3c4a0d5f6"
         }
       ],
       "success_condition": "fail-fast honored: chain stops, failure reported per goal contract",
@@ -928,7 +932,7 @@
           "ranges": [
             [
               82,
-              117
+              129
             ]
           ],
           "reason": "execution strategy, current-session recovery and fresh CLI transport contract",
@@ -977,7 +981,7 @@
       "context_available": [
         {
           "source": "SKILL.md",
-          "sha256": "406196b10a57b816a816360acc37f477fe69c0a2551ef0dd1f52d7e0f6696539"
+          "sha256": "74cf9bf3eb62af866bded2693b415ca84fe4c603c237167c7af188b3c4a0d5f6"
         }
       ],
       "success_condition": "spec/tasks updated with affected acceptance surface still coherent",

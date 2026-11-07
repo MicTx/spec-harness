@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import autoplan_spawn as autoplan
 import autorun_spawn as autorun
 import chain_spawn_support as support
+from worker_decision_guard import worker_argv
 
 
 @pytest.fixture(params=[autoplan, autorun], ids=["autoplan", "autorun"])
@@ -103,7 +104,7 @@ def test_linux_commit_or_rollback(entry, monkeypatch, capsys, failure):
 def test_launch_quoting(tmp_path):
     argv = ["pi", "--", "a 'quote' $HOME; echo unsafe\n中文"]
     launch, command, name = support.build_tmux_command(tmp_path / "a b'c", argv, "autoplan")
-    assert shlex.split(launch[-1]) == ["exec", *argv]
+    assert shlex.split(launch[-1]) == ["exec", *worker_argv(tmp_path / "a b'c", argv)]
     assert launch[launch.index("-c") + 1] == str(tmp_path / "a b'c")
     assert name.startswith("spec-autoplan-")
     assert command == launch[-1]
@@ -238,9 +239,9 @@ def test_native_windows_backend_override_still_refused(system, monkeypatch):
         support.resolve_terminal_backend("tmux")
 
 
-def test_custom_command_is_only_explicit_raw_shell_path(tmp_path):
-    _, command, _ = support.build_tmux_command(tmp_path, [], "autorun", "printf '%s' hi && sleep 1")
-    assert command == "printf '%s' hi && sleep 1"
+def test_custom_command_cannot_bypass_reasoning_policy(tmp_path):
+    with pytest.raises(support.ChainSpawnError, match="mandatory ultrathink"):
+        support.build_tmux_command(tmp_path, [], "autorun", "printf '%s' hi && sleep 1")
 
 
 def test_cleanup_never_targets_user_sessions(monkeypatch):

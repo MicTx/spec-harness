@@ -39,7 +39,7 @@ def test_build_command_pi():
 
 def test_build_command_codex_with_output_file(tmp_path):
     out = tmp_path / "item.out"
-    cmd = build_command("codex", "do work", out)
+    cmd = build_command("codex", "do work", out, "test-model")
     assert cmd[0] == "codex"
     assert "--output-last-message" in cmd
     assert str(out) in cmd
@@ -99,7 +99,7 @@ def test_run_item_pi_success(tmp_path, monkeypatch):
 def test_run_item_large_output_is_rejected(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "workflow_fanout.build_command",
-        lambda backend, prompt, output_file: [
+        lambda backend, prompt, output_file, model=None: [
             sys.executable,
             "-c",
             "print('x' * (9 * 1024 * 1024))",
@@ -131,7 +131,7 @@ def test_main_stub_binary_end_to_end(tmp_path, monkeypatch):
     monkeypatch.setattr("workflow_fanout.resolve_binary", lambda backend: str(stub))
     monkeypatch.setattr(
         "workflow_fanout.build_command",
-        lambda backend, prompt, output_file: [str(stub), prompt],
+        lambda backend, prompt, output_file, model=None: [str(stub), prompt],
     )
 
     plan = tmp_path / "plan.json"
@@ -166,7 +166,7 @@ def test_run_item_codex_success_preserves_output_file(tmp_path, monkeypatch):
         return sp.CompletedProcess(cmd, 0, stdout="lots of progress noise", stderr="")
 
     monkeypatch.setattr("workflow_fanout.subprocess.run", fake_run)
-    record = run_item("codex", {"id": "c1", "prompt": "x"}, tmp_path, 5)
+    record = run_item("codex", {"id": "c1", "prompt": "x"}, tmp_path, 5, "test-model")
     assert record["ok"] is True
     # outputFile 仍持有 codex 落盘的最终消息，而不是被 stdout 噪音覆盖
     assert Path(record["outputFile"]).read_text(encoding="utf-8") == "FINAL_ANSWER_FROM_CODEX"
@@ -237,7 +237,7 @@ def test_cache_hit_backfills_record_with_cached_flag(tmp_path, monkeypatch, caps
     monkeypatch.setattr("workflow_fanout.resolve_binary", lambda backend: str(stub))
     monkeypatch.setattr(
         "workflow_fanout.build_command",
-        lambda backend, prompt, output_file: [str(stub), prompt],
+        lambda backend, prompt, output_file, model=None: [str(stub), prompt],
     )
 
     plan = tmp_path / "plan.json"
@@ -254,7 +254,7 @@ def test_cache_hit_backfills_record_with_cached_flag(tmp_path, monkeypatch, caps
     dispatches = []
     monkeypatch.setattr(
         "workflow_fanout.build_command",
-        lambda backend, prompt, output_file: dispatches.append(prompt) or [str(stub), prompt],
+        lambda backend, prompt, output_file, model=None: dispatches.append(prompt) or [str(stub), prompt],
     )
     assert cached_main(["--backend", "pi", "--plan", str(plan), "--out", str(out)]) == 0
     second = json.loads(out.read_text().splitlines()[0])
@@ -277,7 +277,7 @@ def test_failed_item_not_cached_and_redispatched(tmp_path, monkeypatch):
     monkeypatch.setattr("workflow_fanout.resolve_binary", lambda backend: str(stub))
     calls = []
 
-    def flaky_build(backend, prompt, output_file):
+    def flaky_build(backend, prompt, output_file, model=None):
         calls.append(prompt)
         # 首次派发走坏 stub（exit 3），之后返回好 stub
         if len(calls) == 1:
@@ -313,7 +313,7 @@ def test_missing_backend_disables_cache_and_fails_closed(tmp_path, monkeypatch, 
     monkeypatch.setattr("workflow_fanout.resolve_binary", lambda backend: str(stub))
     monkeypatch.setattr(
         "workflow_fanout.build_command",
-        lambda backend, prompt, output_file: [str(stub), prompt],
+        lambda backend, prompt, output_file, model=None: [str(stub), prompt],
     )
 
     plan = tmp_path / "plan.json"
@@ -337,7 +337,7 @@ def test_no_cache_flag_bypasses_cache(tmp_path, monkeypatch, cached_main):
     monkeypatch.setattr("workflow_fanout.resolve_binary", lambda backend: str(stub))
     monkeypatch.setattr(
         "workflow_fanout.build_command",
-        lambda backend, prompt, output_file: [str(stub), prompt],
+        lambda backend, prompt, output_file, model=None: [str(stub), prompt],
     )
 
     plan = tmp_path / "plan.json"
@@ -356,7 +356,7 @@ def test_no_cache_flag_bypasses_cache(tmp_path, monkeypatch, cached_main):
     dispatches = []
     monkeypatch.setattr(
         "workflow_fanout.build_command",
-        lambda backend, prompt, output_file: dispatches.append(prompt) or [str(stub), prompt],
+        lambda backend, prompt, output_file, model=None: dispatches.append(prompt) or [str(stub), prompt],
     )
     assert cached_main(["--backend", "pi", "--plan", str(plan), "--out", str(out), "--no-cache"]) == 0
     assert len(dispatches) == 1
@@ -373,7 +373,7 @@ def test_concurrent_items_distinct_cache_keys(tmp_path, monkeypatch, cached_main
     k2 = _cache_key("pi", "b", "prompt two", "test-context")
     k3 = _cache_key("pi", "a", "prompt one", "test-context")  # 同输入同键（幂等基础）
     assert k1 != k2 and k1 == k3
-    assert len({k1, _cache_key("codex", "a", "prompt one")}) == 2  # backend 入键
+    assert len({k1, _cache_key("codex", "a", "prompt one", model="test-model")}) == 2  # backend 入键
     # id 入键防同 prompt 换位误命中
     assert _cache_key("pi", "a", "p") != _cache_key("pi", "b", "p")
     assert cache_path(tmp_path, k1) != cache_path(tmp_path, k2)
@@ -382,7 +382,7 @@ def test_concurrent_items_distinct_cache_keys(tmp_path, monkeypatch, cached_main
     monkeypatch.setattr("workflow_fanout.resolve_binary", lambda backend: str(stub))
     monkeypatch.setattr(
         "workflow_fanout.build_command",
-        lambda backend, prompt, output_file: [str(stub), prompt],
+        lambda backend, prompt, output_file, model=None: [str(stub), prompt],
     )
     plan = tmp_path / "plan.json"
     plan.write_text(
@@ -415,7 +415,7 @@ def test_idempotent_second_run_all_cached(tmp_path, monkeypatch, capsys, cached_
     monkeypatch.setattr("workflow_fanout.resolve_binary", lambda backend: str(stub))
     monkeypatch.setattr(
         "workflow_fanout.build_command",
-        lambda backend, prompt, output_file: [str(stub), prompt],
+        lambda backend, prompt, output_file, model=None: [str(stub), prompt],
     )
     plan = tmp_path / "plan.json"
     plan.write_text(
@@ -481,7 +481,9 @@ def test_write_cache_failure_does_not_fail_item(tmp_path, monkeypatch, cached_ma
     """缓存落盘失败不能改变这次实际执行结果。"""
     stub = _make_stub(tmp_path)
     monkeypatch.setattr("workflow_fanout.resolve_binary", lambda backend: str(stub))
-    monkeypatch.setattr("workflow_fanout.build_command", lambda backend, prompt, output: [str(stub), prompt])
+    monkeypatch.setattr(
+        "workflow_fanout.build_command", lambda backend, prompt, output, model=None: [str(stub), prompt]
+    )
 
     def broken_write_cache(out_dir, key, record):
         raise OSError("disk full")

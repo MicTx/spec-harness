@@ -114,18 +114,18 @@ def test_real_path_normal_completion_captures_output(tmp_path):
 def test_build_command_dash_prompt_is_guarded_by_separator():
     """issue-12：以 '-' 开头的 prompt 必须位于 '--' 之后。"""
     for backend in ("pi", "codex"):
-        cmd = wf.build_command(backend, "--version", None)
+        cmd = wf.build_command(backend, "--version", None, "test-model")
         assert "--" in cmd
         assert cmd[cmd.index("--") + 1] == "--version"
         assert cmd[-1] == "--version"
-    cmd = wf.build_command("codex", "--version", Path("/tmp/x.out"))
+    cmd = wf.build_command("codex", "--version", Path("/tmp/x.out"), "test-model")
     assert cmd[cmd.index("--") + 1] == "--version"
 
 
 def test_run_item_pi_outputfile_points_to_real_dump(tmp_path, monkeypatch):
     """issue-10：pi 成功项的 outputFile 必须指向真实存在的产物。"""
     stub = _emitter(tmp_path, "fakepi.sh", 'echo "STUB_ANSWER"')
-    monkeypatch.setattr(wf, "build_command", lambda backend, prompt, output_file: [str(stub)])
+    monkeypatch.setattr(wf, "build_command", lambda backend, prompt, output_file, model=None: [str(stub)])
     record = wf.run_item("pi", {"id": "p-dash", "prompt": "hi"}, tmp_path, 10)
     assert record["ok"] is True, record
     assert record["outputFile"], "outputFile 不得为空"
@@ -143,7 +143,7 @@ def test_run_item_pi_dash_prompt_end_to_end(tmp_path, monkeypatch):
         "echo STUB_OK\n"
     )
     stub.chmod(0o755)
-    monkeypatch.setattr(wf, "build_command", lambda backend, prompt, output_file: [str(stub), "--", prompt])
+    monkeypatch.setattr(wf, "build_command", lambda backend, prompt, output_file, model=None: [str(stub), "--", prompt])
     record = wf.run_item("pi", {"id": "p-argv", "prompt": "--dangerous"}, tmp_path, 10)
     assert record["ok"] is True, record
     argv = __import__("json").loads(received.read_text())
@@ -177,7 +177,9 @@ print(f"previous_alive={previous_alive} child={child.pid}", flush=True)
 """
     monkeypatch.setattr(wf, "resolve_binary", lambda backend: sys.executable)
     monkeypatch.setattr(
-        wf, "build_command", lambda backend, prompt, output: [sys.executable, "-c", worker, str(children), prompt]
+        wf,
+        "build_command",
+        lambda backend, prompt, output, model=None: [sys.executable, "-c", worker, str(children), prompt],
     )
     try:
         code = wf.main(["--backend", "pi", "--plan", str(plan), "--out", str(result), "--concurrency", "1"])

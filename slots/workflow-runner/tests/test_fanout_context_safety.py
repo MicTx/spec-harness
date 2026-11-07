@@ -32,7 +32,7 @@ def stub_worker(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(wf, "resolve_binary", lambda backend: sys.executable)
 
-    def command(backend, prompt, output):
+    def command(backend, prompt, output, model=None):
         calls.append(prompt)
         return [sys.executable, "-c", "import sys; print(sys.argv[1])", prompt]
 
@@ -169,7 +169,7 @@ def test_old_codex_final_is_not_this_attempts_output(tmp_path, monkeypatch):
         "_run_bounded",
         lambda cmd, timeout: (subprocess.CompletedProcess(cmd, 0, "progress noise", ""), False, False),
     )
-    record = wf.run_item("codex", {"id": "same", "prompt": "new task"}, tmp_path, 3)
+    record = wf.run_item("codex", {"id": "same", "prompt": "new task"}, tmp_path, 3, "test-model")
     assert record["ok"] is False and "output read failed" in record["error"]
     assert old.read_text() == "old final message"
     assert record["outputFile"] != str(old)
@@ -179,7 +179,7 @@ def test_codex_explicit_write_requirement_fails_without_dispatch(tmp_path, monke
     monkeypatch.setattr(wf, "_run_bounded", lambda *args: pytest.fail("must not dispatch"))
     record = wf.run_item("codex", {"id": "build", "prompt": "implement", "requiresWrite": True}, tmp_path, 3)
     assert record["ok"] is False and "read-only" in record["error"]
-    cmd = wf.build_command("codex", "inspect", tmp_path / "answer.out")
+    cmd = wf.build_command("codex", "inspect", tmp_path / "answer.out", "test-model")
     assert cmd[cmd.index("--sandbox") + 1] == "read-only"
 
 
@@ -189,7 +189,20 @@ def test_codex_requires_write_rejected_by_main_without_escalation(tmp_path, monk
     monkeypatch.setattr(wf, "resolve_binary", lambda backend: "codex-stub")
     monkeypatch.setattr(wf, "_workspace_context", lambda value, binary: "proven-context")
     monkeypatch.setattr(wf, "_run_bounded", lambda *args: pytest.fail("must not dispatch"))
-    code = wf.main(["--backend", "codex", "--plan", str(plan), "--out", str(out), "--cache-context", "context"])
+    code = wf.main(
+        [
+            "--backend",
+            "codex",
+            "--model",
+            "test-model",
+            "--plan",
+            str(plan),
+            "--out",
+            str(out),
+            "--cache-context",
+            "context",
+        ]
+    )
     record = json.loads(out.read_text())
     assert code == 2 and not record["ok"] and "read-only" in record["error"]
     assert record.get("cached") is not True

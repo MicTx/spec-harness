@@ -73,6 +73,16 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
+from reasoning_policy import (
+    POLICY_VERSION,
+    REASONING_FLAGS,
+    ReasoningPolicyError,
+    reasoning_flags,
+    resolve_reasoning,
+    worker_launch_argv,
+)
+from worker_decision_guard import worker_argv
+
 try:
     import fcntl
 except ImportError:  # Native Windows: help/status work; spawn explains the WSL2 route.
@@ -969,21 +979,75 @@ def recovery_event_recorded(events_path: Path, action: str, target: Optional[str
 HOST_MODEL_FLAGS: Dict[str, Dict[str, Optional[Tuple[Tuple[str, ...], str]]]] = {
     "pi": {
         "id": (("--model",), "{}"),
-        "reasoning": (("--thinking",), "{}"),
+        "reasoning": REASONING_FLAGS["pi"],
     },
     "codex": {
         "id": (("--model",), "{}"),
-        "reasoning": (("-c",), "model_reasoning_effort={}"),
+        "reasoning": REASONING_FLAGS["codex"],
     },
     "claude": {
         "id": (("--model",), "{}"),
-        "reasoning": (("--effort",), "{}"),
+        "reasoning": REASONING_FLAGS["claude"],
     },
 }
 
 # Identity components in render order; keys of the identity dict and of each
 # HOST_MODEL_FLAGS per-host entry.
 MODEL_IDENTITY_COMPONENTS: Tuple[str, ...] = ("id", "reasoning")
+
+
+def resolve_chain_model_identity(
+    host: str, model: Optional[str], reasoning: Optional[str], state: Dict[str, object]
+) -> Optional[Dict[str, str]]:
+    locked = state.get("model")
+    if locked is not None and (
+        not isinstance(locked, dict)
+        or not isinstance(locked.get("id"), str)
+        or not locked["id"].strip()
+        or ("reasoning" in locked and not isinstance(locked["reasoning"], str))
+    ):
+        raise ChainSpawnError("chain state has a malformed model identity lock")
+    if model is not None and not model.strip():
+        raise ChainSpawnError("--model must be a non-empty model id")
+    if reasoning is not None and not reasoning.strip():
+        raise ChainSpawnError("--reasoning must be a non-empty level when given")
+    if "model" in state and model is not None:
+        if locked is None:
+            raise ChainSpawnError(f"model identity conflict: locked model: null but incoming model is {model!r}")
+        if model != locked["id"]:
+            raise ChainSpawnError(f"model identity conflict: locked id {locked['id']!r} vs incoming id {model!r}")
+    effective_model = locked["id"] if isinstance(locked, dict) else model
+    if host == "codex" and state and not isinstance(locked, dict):
+        raise ChainSpawnError(
+            "Codex ultrathink cannot upgrade a legacy chain without a frozen model; "
+            "explicitly close/restart this chain with --model <id>"
+        )
+    state_host = state.get("host")
+    if effective_model and isinstance(state_host, str) and state_host != host:
+        raise ChainSpawnError(
+            f"model identity conflict: resolved host {host!r} differs from the chain host {state_host!r}; "
+            "model ids are host-namespace-specific; finish this chain before changing identity"
+        )
+    locked_reasoning = locked.get("reasoning") if isinstance(locked, dict) else state.get("reasoning_request")
+    verified_maximum = (
+        host == "codex"
+        and state.get("reasoning_policy") == POLICY_VERSION
+        and state.get("reasoning_control") == "enforced"
+        and locked_reasoning == state.get("reasoning_request")
+    )
+    try:
+        maximum = resolve_reasoning(
+            host,
+            effective_model,
+            None if verified_maximum else locked_reasoning,
+            previous_maximum=locked_reasoning if verified_maximum else None,
+        )
+        if not verified_maximum:
+            resolve_reasoning(host, effective_model, state.get("reasoning_request"))
+        resolve_reasoning(host, effective_model, reasoning)
+    except ReasoningPolicyError as exc:
+        raise ChainSpawnError(str(exc)) from exc
+    return {"id": effective_model, "reasoning": maximum} if effective_model is not None else None
 
 
 def build_model_flag_argv(host: str, identity: Dict[str, str]) -> Optional[List[str]]:
@@ -1049,10 +1113,8 @@ def build_worker_command(
     spawn scripts since F14 (the render surface lives here once; the
     identity lock/propagation/refusal semantics stay in each script).
 
-    F14: ``model_identity`` (``{id, reasoning?}`` or ``None`` for the worker
-    default) renders through the shared host flag mapping right after the
-    worker binary; ``None`` keeps the argv byte-identical to the pre-F14
-    form (the compatibility red line).
+    Model identity remains optional except for Codex. Reasoning is always
+    requested at the verified maximum; it never changes permissions.
 
     F1 (AUD-01): ``permission_mode`` carries the *effective* mode — the
     spawn script resolves ``inherit`` by probing the parent session before
@@ -1066,6 +1128,14 @@ def build_worker_command(
         raise ChainSpawnError(
             f"unknown worker permission mode: {permission_mode!r} (expected one of {WORKER_PERMISSION_MODES})"
         )
+    identity = model_identity or {}
+    try:
+        resolve_reasoning(host, identity.get("id"), identity.get("reasoning"))
+        if HOST_MODEL_FLAGS[host].get("reasoning") != REASONING_FLAGS[host]:
+            raise ReasoningPolicyError("ultrathink reasoning flag unavailable; refusing partial injection")
+        flags = reasoning_flags(host, identity.get("id"), identity.get("reasoning"))
+    except ReasoningPolicyError as exc:
+        raise ChainSpawnError(str(exc)) from exc
     if host == "codex":
         # codex >=0.160 seatbelt denies .git writes under workspace-write, so
         # `git add`/`git commit` die with EPERM at the round's commit stage
@@ -1091,13 +1161,11 @@ def build_worker_command(
         argv = ["claude"]
         if permission_mode == "bypass":
             argv.append(CLAUDE_BYPASS_FLAG)
-        argv.append(prompt)
+        argv.extend(["--", prompt])
     else:
         raise ChainSpawnError(f"unknown worker host: {host}")
-    if model_identity:
-        model_argv = build_model_flag_argv(host, model_identity)
-        if model_argv:
-            argv[1:1] = model_argv
+    model_argv = build_model_flag_argv(host, {"id": identity.get("id", "")}) or []
+    argv[1:1] = [*model_argv, *flags]
     return argv
 
 
@@ -1194,7 +1262,9 @@ def build_tmux_command(
     if chain not in ("autoplan", "autorun"):
         raise ChainSpawnError(f"unknown chain: {chain!r}")
     name = f"spec-{chain}-{uuid.uuid4().hex}"
-    command = custom_command if custom_command is not None else "exec " + shlex.join(worker_command)
+    if custom_command is not None:
+        raise ChainSpawnError("--command bypass is incompatible with mandatory ultrathink")
+    command = "exec " + shlex.join(worker_argv(root, worker_launch_argv(worker_command)))
     argv = [
         "tmux",
         "-L",
@@ -1490,6 +1560,45 @@ def session_tty(
     return nearest_ancestor_tty()
 
 
+def worker_command_matches(worker: str, command: str) -> bool:
+    """Recognize a worker executable or its controlled decision-guard wrapper."""
+    tokens = command.split()
+
+    def matches(argv: List[str]) -> bool:
+        return bool(argv) and (
+            os.path.basename(argv[0].rstrip("/")) == worker
+            or (len(argv) > 1 and "/" in argv[1] and os.path.basename(argv[1].rstrip("/")) == worker)
+        )
+
+    if matches(tokens):
+        return True
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        pass
+    if not tokens or not re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", os.path.basename(tokens[0]), re.I):
+        return False
+    script_index = 2 if tokens[1:2] == ["-B"] else 1
+    guard_script = str(Path(__file__).resolve().with_name("worker_decision_guard.py"))
+    if tokens[script_index : script_index + 2] != [guard_script, "--root"]:
+        return False
+    try:
+        separator = tokens.index("--", script_index + 3)
+    except ValueError:
+        return False
+    executable = tokens[separator + 1 :]
+    if executable and os.path.basename(executable[0]) == "env":
+        executable = executable[1:]
+        while executable:
+            if executable[0] == "-u" and len(executable) > 1:
+                executable = executable[2:]
+            elif re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", executable[0]):
+                executable = executable[1:]
+            else:
+                break
+    return matches(executable)
+
+
 def worker_running_on_tty(worker: str, tty: str) -> bool:
     """Check whether a ``worker`` process runs on the given Terminal tty.
 
@@ -1517,17 +1626,7 @@ def worker_running_on_tty(worker: str, tty: str) -> bool:
         fields = line.split(None, 1)
         if len(fields) != 2 or fields[0].strip() != tty_name:
             continue
-        # Only the leading tokens carry the host identity: token[0] for a
-        # native binary (``pi`` / ``claude``), token[1] for an interpreter
-        # running a shebang script (``/bin/sh /usr/local/bin/pi``,
-        # ``node …/codex``). A bare word further right (``sh -c 'echo pi'``,
-        # ``tail -f logs/pi``, ``vim pi``) is unrelated command data.
-        tokens = fields[1].split()
-        if not tokens:
-            continue
-        if os.path.basename(tokens[0].rstrip("/")) == worker:
-            return True
-        if len(tokens) > 1 and "/" in tokens[1] and os.path.basename(tokens[1].rstrip("/")) == worker:
+        if worker_command_matches(worker, fields[1]):
             return True
     return False
 
@@ -1535,8 +1634,7 @@ def worker_running_on_tty(worker: str, tty: str) -> bool:
 def worker_pids_on_tty(worker: str, tty: str) -> List[int]:
     """Pids of the ``worker`` processes running on the given Terminal tty.
 
-    Same token matching as :func:`worker_running_on_tty` (which stays
-    untouched — its tests pin the ``tty=,command=`` call shape), but with the
+    Same executable matching as :func:`worker_running_on_tty`, but with the
     pid column: the session-recycle escalation targets exactly these
     processes by pid, never by tty (the close helper and the spawning
     python both hang off the same tty and must survive the kill).
@@ -1559,12 +1657,7 @@ def worker_pids_on_tty(worker: str, tty: str) -> List[int]:
         fields = line.split(None, 2)
         if len(fields) != 3 or fields[0].strip() != tty_name:
             continue
-        tokens = fields[2].split()
-        if not tokens:
-            continue
-        if os.path.basename(tokens[0].rstrip("/")) == worker or (
-            len(tokens) > 1 and "/" in tokens[1] and os.path.basename(tokens[1].rstrip("/")) == worker
-        ):
+        if worker_command_matches(worker, fields[2]):
             try:
                 pid = int(fields[1])
             except ValueError:
@@ -1625,9 +1718,8 @@ def build_terminal_command(
     id from a second call sticks).
     """
     if custom_command is not None:
-        tail = custom_command
-    else:
-        tail = " ".join(shlex.quote(part) for part in worker_command)
+        raise ChainSpawnError("--command bypass is incompatible with mandatory ultrathink")
+    tail = shlex.join(worker_argv(root, worker_launch_argv(worker_command)))
     shell_command = "cd {} && {}".format(shlex.quote(str(root)), tail)
     applescript = "\n".join(
         [
@@ -2066,27 +2158,34 @@ def _session_kill_lines(session_pids: List[int], signal_name: str, worker_name: 
     Targets the pgid of each recorded worker pid — never the tty (the close
     helper and the spawning python both hang off it and must survive). Each
     pid is identity-checked first (F19): the pid was captured ~13s before
-    the signal fires, and a reused pid must never pass — the ps command
-    line has to name the worker with a token boundary (``*codex *`` or
-    ``*/codex`` — ``pip3``-style substrings do not match). A worker name
+    the signal fires, so the shared executable matcher rechecks native,
+    interpreter and decision-guard forms rather than prompt substrings. A worker name
     that is not a plain token (never the case for the three hosts; the
     bypass carries no name) skips the escalation entirely — conservative.
     """
     if not session_pids or not worker_name or not _WORKER_NAME_TOKEN.match(worker_name):
         return ""
     pid_list = " ".join(str(pid) for pid in session_pids)
+    identity_check = shlex.join(
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            f"import sys; sys.path.insert(0, {str(Path(__file__).resolve().parent)!r}); "
+            "from chain_spawn_support import worker_command_matches; "
+            "raise SystemExit(0 if worker_command_matches(sys.argv[1], sys.argv[2]) else 1)",
+            worker_name,
+        ]
+    )
     return (
         "for pid in {pids}; do "
         'cmd=$(ps -o command= -p "$pid" 2>/dev/null); '
-        # the space-bearing alternative must stay quoted: macOS /bin/sh is
-        # bash 3.2, whose case parser rejects an unquoted ``*w *`` pattern
-        # outright (verified on-device — the whole helper would die at parse)
-        'case "$cmd" in *"{worker} "*|*/{worker}) '
+        'if {identity_check} "$cmd"; then '
         'pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d " "); '
-        '[ -n "$pgid" ] && kill -{signal} -"$pgid" 2>/dev/null || true ;; '
-        "esac; "
+        '[ -n "$pgid" ] && kill -{signal} -"$pgid" 2>/dev/null || true; '
+        "fi; "
         "done\n"
-    ).format(pids=pid_list, signal=signal_name, worker=worker_name)
+    ).format(pids=pid_list, signal=signal_name, identity_check=identity_check)
 
 
 def build_close_argv(

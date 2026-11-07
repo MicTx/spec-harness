@@ -330,7 +330,9 @@ def route_for_package(
 
     # Single computation: compute_gate_results replaces 8 separate function
     # calls that overall_check_passed would recompute internally.
-    r = compute_gate_results(spec_content, tasks_content, checklist_content, slug=slug)
+    r = compute_gate_results(
+        spec_content, tasks_content, checklist_content, slug=slug, root=root, package_dir=package_dir
+    )
     _, tasks = parse_tasks(tasks_content)
     strip, strip_labels = task_strip_from_records(tasks)
     title = extract_title_from_content(spec_content, slug)
@@ -351,19 +353,23 @@ def route_for_package(
         alerts.extend(f"任务受阻：{task}" for task in blocked_tasks)
     elif blocked:
         alerts.append("项目中存在受阻任务，具体原因已记录在任务清单")
-    alerts.extend(f"需要确认需求：{question}" for question in r.pending_questions)
+    alerts.extend(f"需要确认需求：{question}" for question in r.human_questions)
+    alerts.extend(f"自主调查：{question}" for question in r.autonomous_questions)
+    alerts.extend(f"调查契约尚未满足：{error}" for error in r.question_errors)
     alerts.extend(f"项目定义不完整：{project_gap_message(gap)}" for gap in r.spec_clarification_gaps)
     # 编排策略结构错误在执行前拦截：非法 5.4 route 不得继续 stage=run。
     alerts.extend(f"编排策略尚未满足：{error}" for error in r.orchestration_errors)
     alerts.extend(f"验证范围尚未满足：{error}" for error in r.verification_scope_errors)
 
     orchestration_blocked = bool(r.orchestration_errors)
-    if blocked or r.pending_questions or r.spec_clarification_gaps or orchestration_blocked:
+    if blocked or r.human_questions or r.question_errors or r.spec_clarification_gaps or orchestration_blocked:
         next_stage = "status"
         health = HEALTH_BLOCKED if blocked else HEALTH_RISK
         # Still scoping when clarification is missing; otherwise stalled mid-run.
         pipeline = default_pipeline(
-            "new" if (r.pending_questions or r.spec_clarification_gaps or orchestration_blocked) else "run"
+            "new"
+            if (r.human_questions or r.question_errors or r.spec_clarification_gaps or orchestration_blocked)
+            else "run"
         )
     elif all_done and check_passed:
         next_stage = "done"
@@ -389,8 +395,11 @@ def route_for_package(
     try:
         records = parse_task_records(tasks_content)
         ready = ready_task_ids(records)
-        current_task = next((record.title for record in records if record.id in ready), None)
+        inquiry = set(r.autonomous_task_ids)
+        inquiry_task = next((record.title for record in records if record.id in ready & inquiry), None)
+        current_task = inquiry_task or next((record.title for record in records if record.id in ready), None)
     except SpecControlError:
+        inquiry_task = None
         current_task = None
     if checkpoint_pending:
         # Advisory-level attention: gates refuse until resolved, but routing
@@ -398,8 +407,10 @@ def route_for_package(
         health = worst_health(health, HEALTH_RISK)
     if blocked:
         next_action = next((f"解除阻塞：{task.text}" for task in tasks if task.is_blocked), "处理任务阻塞")
-    elif r.pending_questions:
-        next_action = f"确认需求：{r.pending_questions[0]}"
+    elif r.question_errors:
+        next_action = f"修复调查契约：{r.question_errors[0]}"
+    elif r.human_questions:
+        next_action = f"确认需求：{r.human_questions[0]}"
     elif r.spec_clarification_gaps:
         next_action = f"补齐项目定义：{project_gap_message(r.spec_clarification_gaps[0])}"
     elif orchestration_blocked:
@@ -416,7 +427,7 @@ def route_for_package(
     elif all_done:
         next_action = "修复验收未通过项"
     else:
-        next_action = current_task or "继续实现项目任务"
+        next_action = (f"自主调查：{inquiry_task}" if inquiry_task else current_task) or "继续实现项目任务"
     gate_gap_total = len(r.spec_clarification_gaps) + r.missing_boundary + r.missing_verify + r.unchecked_items
     handoff_line = None
     try:
@@ -444,7 +455,7 @@ def route_for_package(
         strip_labels=strip_labels,
         metrics={
             "阻塞": "1" if blocked else "0",
-            "待确认": str(len(r.pending_questions)),
+            "待确认": str(len(r.human_questions)),
             "门禁": "通过" if check_passed else f"缺口 {gate_gap_total}",
             "证据": str(r.evidence_filled_count),
             "范围": r.verification_scope or "",
@@ -468,6 +479,10 @@ def route_for_package(
             "orchestrationErrors": r.orchestration_errors,
             "verificationScope": r.verification_scope,
             "updateCheckpoint": checkpoint_status.state,
+            "humanQuestions": r.human_questions,
+            "autonomousQuestions": r.autonomous_questions,
+            "questionErrors": r.question_errors,
+            "nextAction": next_action,
             **({"handoff": handoff_line} if handoff_line else {}),
         }
         if brief:
@@ -583,6 +598,8 @@ def _native_context_hint(root: Path) -> dict | None:
 
 
 def main() -> int:
+    from worker_decision_guard import decision_guard_errors
+
     args = parse_args()
     root = Path(args.root).resolve()
     invalid = _validate_envelope_flags(args)
@@ -591,6 +608,21 @@ def main() -> int:
     # Preserve an explicit Markdown conflict while letting --brief imply JSON.
     if args.format is None:
         args.format = "json" if args.brief else "markdown"
+    decision_errors = decision_guard_errors(root)
+    if decision_errors:
+        payload = {
+            "slug": args.slug,
+            "stage": "status",
+            "health": HEALTH_BLOCKED,
+            "alerts": decision_errors,
+            "questionErrors": decision_errors,
+            "nextStep": "停止相关 worker，由用户在运行之外核对 decision 决策及异常记录",
+        }
+        if args.brief or args.format == "json":
+            print(json.dumps(_decorate_branch_payload(payload, args), ensure_ascii=False))
+        else:
+            print("\n".join(decision_errors))
+        return 0
     try:
         specs_root = resolve_specs_root(root, args.specs_dir)
     except ValueError as exc:

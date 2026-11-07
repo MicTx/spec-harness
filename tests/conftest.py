@@ -38,6 +38,16 @@ def clean_host_session_markers(monkeypatch: pytest.MonkeyPatch):
     yield
 
 
+@pytest.fixture
+def codex_reasoning_catalog(monkeypatch):
+    import reasoning_policy
+
+    catalog = reasoning_policy.CodexCatalog(
+        "/test/codex", "codex-cli test", {"test-model": ("high", "max"), "gpt-5.5": ("high", "xhigh")}
+    )
+    monkeypatch.setattr(reasoning_policy, "load_codex_catalog", lambda: catalog)
+
+
 def historical_checkpoint_document(package_name: str, intent: str) -> dict:
     """Build an on-disk-format checkpoint document, checksum computed exactly
     like the retired writer did (locks the historical format contract)."""

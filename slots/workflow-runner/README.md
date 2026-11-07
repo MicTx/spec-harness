@@ -22,7 +22,7 @@ identity and tool inventory do not change the orchestration contract:
 
 | Owner | Execution surface | How | Notes |
 |---|---|---|---|
-| **spec-harness** | `subprocess-fanout` | `python3 slots/workflow-runner/scripts/workflow_fanout.py --backend <pi|codex> --plan plan.json --out results.jsonl` — bounded concurrency, per-item worker deadline, JSONL convergence | The main session authors `plan.json`; caching is **off by default** unless a verifiable workspace and explicit external-context attestation are supplied (below); failures rerun |
+| **spec-harness** | `subprocess-fanout` | `python3 slots/workflow-runner/scripts/workflow_fanout.py --backend <pi|codex> --model <id> --plan plan.json --out results.jsonl` — bounded concurrency, per-item worker deadline, JSONL convergence | The main session authors `plan.json`; caching is **off by default** unless a verifiable workspace and explicit external-context attestation are supplied (below); failures rerun |
 
 If the selected worker CLI is unavailable, use ordinary sidecar orchestration or `team-loop` under
 `references/orchestration.md`. Never fabricate a backend result or a host capability. Codex always
@@ -31,6 +31,21 @@ driver rejects it for Codex rather than silently escalating. Route such work to 
 authorized, suitably capable sidecar or do it on the main thread. An omitted declaration is not
 proof that a task is read-only; the coordinator must classify assignments. Pi permissions remain
 the host’s responsibility, not a permission grant by this slot.
+
+Mandatory ultrathink uses the shared `scripts/reasoning_policy.py` before dispatch: Pi requests
+`--thinking max` (`--model` optional); Codex requires an explicit catalog `--model` and requests
+that model's highest advertised effort. Unknown models/capabilities fail before any worker starts;
+no lower-effort retry or raw command is supported. JSONL records the policy, requested level and
+`provider_effect=unverified`; this proves a launch request, not actual provider reasoning. Cache
+keys bind policy/model/level, so old lower/default-effort entries cannot be reused. Protocol and
+host limitations: [mandatory ultrathink](../../references/commands.md#mandatory-ultrathink).
+
+Every dispatched item snapshots active package decisions before execution. A worker that alters,
+closes, removes or relabels an existing decision, or creates an already-closed decision, fails
+with `returncode=-1`; a persistent abnormal guard also blocks route/check and further launches.
+New open decisions remain valid escalation. This is an invocation-integrity check, not actor
+authentication or protection for current-session/ABA edits. Stop related workers before user
+review and explicit guard-record resolution; no automatic clearing or acceptance.
 
 ### Cache and output provenance
 

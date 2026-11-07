@@ -51,6 +51,17 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
+
+from reasoning_policy import (  # noqa: E402
+    ReasoningPolicyError,
+    reasoning_cache_identity,
+    reasoning_flags,
+    reasoning_record,
+    resolve_reasoning,
+)
+from worker_decision_guard import DecisionGuardError, guarded_decisions  # noqa: E402
+
 BACKENDS = ("pi", "codex")
 STDOUT_SUMMARY_CAP = 2000  # JSONL 内 stdout 摘要上限；完整输出另落文件
 MAX_PLAN_ITEMS = 1000
@@ -340,20 +351,23 @@ def _write_results(path: Path, records: list[dict[str, Any]]) -> None:
         os.close(directory)
 
 
-def build_command(backend: str, prompt: str, output_file: Optional[Path]) -> list[str]:
+def build_command(backend: str, prompt: str, output_file: Optional[Path], model: Optional[str] = None) -> list[str]:
     """按后端构造一次性子进程命令。codex 用 --output-last-message 落盘。
 
     prompt 之前固定加 ``--``：plan.json 是外部输入面，以 ``-`` 开头的
     prompt 否则会被 worker CLI 的参数解析器吞成选项（pi 与 codex 的
     解析器都支持 ``--`` 终止符）。
     """
+    flags = reasoning_flags(backend, model)
+    if model is not None:
+        flags = ["--model", model, *flags]
     if backend == "pi":
-        return ["pi", "-p", "--no-session", "--mode", "text", "--", prompt]
+        return ["pi", "-p", "--no-session", "--mode", "text", *flags, "--", prompt]
     if backend == "codex":
-        cmd = ["codex", "exec", "--sandbox", "read-only", "--", prompt]
+        cmd = ["codex", "exec", "--sandbox", "read-only", *flags]
         if output_file is not None:
-            cmd[4:4] = ["--output-last-message", str(output_file)]
-        return cmd
+            cmd.extend(["--output-last-message", str(output_file)])
+        return [*cmd, "--", prompt]
     raise ValueError(f"unknown backend: {backend!r}")
 
 
@@ -517,9 +531,19 @@ def _workspace_context(attestation: Optional[str], binary: Optional[str]) -> Opt
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
-def _cache_key(backend: str, item_id: str, prompt: str, context: str = "", requires_write: bool = False) -> str:
+def _cache_key(
+    backend: str,
+    item_id: str,
+    prompt: str,
+    context: str = "",
+    requires_write: bool = False,
+    model: Optional[str] = None,
+) -> str:
     """Key by attested context and the complete execution-relevant item."""
-    source = json.dumps(["v2", backend, item_id, prompt, context, requires_write], ensure_ascii=False)
+    source = json.dumps(
+        ["v3", backend, item_id, prompt, context, requires_write, reasoning_cache_identity(backend, model)],
+        ensure_ascii=False,
+    )
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
@@ -616,6 +640,7 @@ def run_item(
     item: dict[str, Any],
     out_dir: Path,
     timeout: float,
+    model: Optional[str] = None,
 ) -> dict[str, Any]:
     """派发单个 item；缓存由 main 在整批结束且上下文未变化时写入。"""
     item_id = item.get("id") if isinstance(item, dict) else "item"
@@ -637,6 +662,7 @@ def run_item(
         _validate_item(item)
         if backend == "codex" and item.get("requiresWrite") is True:
             raise ValueError("codex backend is read-only; item requires workspace writes")
+        policy_record = reasoning_record(backend, model)
         # Names do not include user ids: Unicode ids can exceed filesystem byte
         # limits even when they satisfy the character-count validation.
         invocation = uuid.uuid4().hex
@@ -663,11 +689,19 @@ def run_item(
         "durationSec": 0.0,
         "outputFile": str(full_output),
         "stdoutSummary": "",
+        "model": model,
+        **policy_record,
     }
 
     try:
-        cmd = build_command(backend, prompt, full_output)
-        completed, timed_out, output_limited = _run_bounded(cmd, timeout)
+        cmd = build_command(backend, prompt, full_output, model)
+        with guarded_decisions(Path.cwd()):
+            completed, timed_out, output_limited = _run_bounded(cmd, timeout)
+    except DecisionGuardError as exc:
+        record["error"] = str(exc)
+        record["returncode"] = -1
+        record["durationSec"] = round(time.time() - started, 2)
+        return record
     except subprocess.TimeoutExpired:
         record["error"] = f"timeout after {timeout}s"
         record["durationSec"] = round(time.time() - started, 2)
@@ -752,6 +786,7 @@ def load_plan(plan_path: Path) -> list[dict[str, Any]]:
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="workflow_fanout.py", description="子进程确定性 fan-out 驱动")
     parser.add_argument("--backend", required=True, choices=BACKENDS)
+    parser.add_argument("--model", default=None, help="显式模型 ID；Codex 必填并由本机 bundled catalog 验证最高档")
     parser.add_argument("--plan", required=True, help="任务清单 JSON（items + prompt）")
     parser.add_argument("--out", required=True, help="结果 JSONL 输出路径")
     parser.add_argument("--out-dir", default=None, help="完整输出目录（默认 <out>.d/）")
@@ -798,6 +833,12 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # Unknown external context, worker identity or workspace is never cacheable.
     binary = resolve_binary(args.backend)
+    if binary is not None:
+        try:
+            resolve_reasoning(args.backend, args.model)
+        except ReasoningPolicyError as exc:
+            print(f"[fanout] reasoning policy: {exc}", file=sys.stderr)
+            return 2
     context = None if args.no_cache else _workspace_context(args.cache_context, binary)
     if args.cache_context and not args.no_cache and context is None:
         print("[fanout] cache disabled: workspace/context cannot be verified", file=sys.stderr)
@@ -809,7 +850,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         requires_write = item.get("requiresWrite", False)
         cached = None
         if context is not None and not (args.backend == "codex" and requires_write):
-            cached = read_cache(out_dir, _cache_key(args.backend, item_id, prompt, context, requires_write))
+            cached = read_cache(out_dir, _cache_key(args.backend, item_id, prompt, context, requires_write, args.model))
         if cached is not None and cached.get("id") == item_id and cached.get("backend") == args.backend:
             record = dict(cached)
             record["cached"] = True
@@ -835,7 +876,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"[fanout] backend missing: {args.backend}; {len(pending)} items recorded as failed")
     elif pending:
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as pool:
-            futures = {pool.submit(run_item, args.backend, item, out_dir, args.timeout): item for item in pending}
+            futures = {
+                pool.submit(run_item, args.backend, item, out_dir, args.timeout, args.model): item for item in pending
+            }
             cancelled: set[concurrent.futures.Future[dict[str, Any]]] = set()
             for future in concurrent.futures.as_completed(futures):
                 if future in cancelled:
@@ -892,7 +935,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                     continue
                 item = by_id[record["id"]]
                 key = _cache_key(
-                    args.backend, item["id"], item["prompt"].strip(), context, item.get("requiresWrite", False)
+                    args.backend,
+                    item["id"],
+                    item["prompt"].strip(),
+                    context,
+                    item.get("requiresWrite", False),
+                    args.model,
                 )
                 try:
                     write_cache(out_dir, key, record)

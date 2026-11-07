@@ -33,7 +33,9 @@ Spec Harness 把跨会话、跨测试轮次的工程任务保存为可恢复的 
 - **明确的入口**：`new`、`goal`、`autoplan`、`autorun`、`run`、`check`、`done`、`push`、`update`、`status`、`doctor`、`organize`。
 - **可恢复的状态**：报告、失败原因、完成摘要和归档都来自磁盘文件，换会话仍能继续。
 - **会话边界交接**：任务包可选 `handoff.md`——生成式快照头 + append-only 条目日志，必填小节随协作模式（单人/多人/agent/集群）自适应，`spec_handoff.py` 维护、check 门禁校验、done 归档时冻结。
-- **交互式规划**：`autoplan` 澄清目标后依次完成框架、阶段细节和一致性复核；桌面及 IDE agent 插件在当前会话推进，已验证 CLI 可使用新会话链。无子代理时明确标注主会话复核；规划就绪即停止，不自动启动开发。
+- **证据驱动规划**：`autoplan` 先查代码与数据，再完成框架、阶段细节和一致性复核；只将权限、不可逆动作、真实偏好和无法获取的外部依赖交给用户。桌面及 IDE 插件在当前会话推进，已验证 CLI 可使用新会话链；无子代理时明确标注主会话复核，规划就绪不自动启动开发。
+- **强制深度推理请求**：受控 fresh/fanout worker 请求最高原生档位，拒绝低档和 `--command` 旁路。Codex 必须显式传本机 catalog 中的 `--model`，最高档随模型而定；Pi/Claude 请求 `max`。当前宿主为 `instruction_only`，不宣称设置已改变；提供商实际效果仍为 `unverified`。[推理控制边界](references/commands.md#mandatory-ultrathink)。
+- **自主调查而非反复确认**：新问题区分 `[fact]`、`[reversible]`、`[decision]`；前两类绑定机器任务，凭新鲜且绑定结论的 `runs` 证据关闭。旧无标签问题与真正需要人的决策仍阻断，Git 和权限门禁不放宽。[问题格式与证据](references/templates.md#autonomous-inquiry)。
 - **可恢复的自动链**：`autorun` 按规划功能逐包执行与验证，完成已授权的 Git 收尾后推进下一轮。桌面端不因 PATH 上装了另一 CLI 就跳过去；暂停后从同一步恢复，默认最多 5 个已接纳轮次（`--max-rounds` 可改设，`--unbounded` 解除）。当前会话不承诺关闭客户端后继续后台运行。
 - **稳定的任务身份**：任务可用 `id:` 与 `depends-on` 声明身份与依赖；协议迁移不改写历史归档。
 - **受控的执行面**：主会话保留路由、集成、验收和 done/push 门禁；`workflow-runner` 与其他 slots 只执行有边界的工作段。
@@ -291,6 +293,7 @@ spec/
 │   ├── gitea_hook_repair.py
 │   ├── push_spec_package.py
 │   ├── read_version.py
+│   ├── reasoning_policy.py
 │   ├── report_spec_package.py
 │   ├── route_decision.py
 │   ├── route_spec_package.py
@@ -302,6 +305,7 @@ spec/
 │   ├── spec_context.py
 │   ├── spec_handoff.py
 │   ├── spec_package_support.py
+│   ├── worker_decision_guard.py
 │   ├── spec_verify.py
 │   ├── structure_contracts.py
 │   ├── sweep_chain_windows.py
@@ -343,6 +347,7 @@ spec/
         └── tests/
             ├── conftest.py
             ├── test_fanout_context_safety.py
+            ├── test_fanout_decision_guard.py
             ├── test_workflow_fanout.py
             ├── test_workflow_fanout_batch_safety.py
             ├── test_workflow_fanout_proc_race.py

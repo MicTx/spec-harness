@@ -1,6 +1,6 @@
 # `/spec:autorun`
 
-Goal: finish each planned package in the current host or a verified fresh CLI session until the scope is implemented. Task packages remain the work truth: no second task state machine and no skipped gate.
+Goal: implement planned scope in the current host or a verified fresh CLI. Packages remain the work truth: no second task state machine or skipped gate.
 
 Compatible invocation:
 
@@ -23,7 +23,7 @@ Execution order (each round):
    ```
 
    New chains use a fresh chain-id and revision 0. Re-entry carries the recorded identity/revision, reads [handoff](../handoff.md) and resumes unfinished work; resume a paused step before execution.
-3. Execute [`run.md`](run.md), review per [`check.md`](check.md), fix failures, then archive per [`done.md`](done.md). Every package includes a final plan-sync task covering its planning documents and `.spec/autorun/` summary; checked features must have real implementation evidence.
+3. Apply mandatory ultrathink and execute [`run.md`](run.md): investigate `[fact]`/`[reversible]` questions rather than asking users; `[decision]` still blocks. Review per [`check.md`](check.md), repair with new evidence, then archive per [`done.md`](done.md). Include a final plan-sync task for plan documents and `.spec/autorun/`; checked features require implementation evidence.
 4. Current mode: after archive and before commit, call `scripts/chain_session.py finish` with the receipt revision/owner. It validates archive/summary and verification evidence, not publication. Include the receipt in the scoped commit.
 5. Finish Git closeout per [`done.md`](done.md)/[`push.md`](push.md); push only when explicitly authorized, otherwise stop with recoverable progress. Push exit 0 may mean local-only fallback: verify remote publication. A receipt never grants Git authorization.
 6. Re-run `plan` on the recorded scope. Complete → stop; otherwise after authorized closeout create the next package and begin its current-session step. A round ending never requires opening a Terminal or ending this session.
@@ -35,7 +35,7 @@ Chain rules:
 - Round cap: a restored default bounds every chain — 5 admitted rounds; explicit `--max-rounds` overrides and `--unbounded` removes it (mutually exclusive). A repeated current step or recovery spends no new round, including the last admitted round. Fresh spawn retains its recorded counter semantics and prompt forwarding.
 - Single orchestrator, sequential steps; the lock protects transactions, not agent lifetime. Current owner/revision checks coordinate handoff; confirm the old owner stopped before takeover. No fabricated PID/heartbeat.
 - Scope freezes on the first execution round. Added/removed/reworded feature text or missing plan documents refuses advancement; checking off verified work is legitimate progress.
-- Current models/permissions are host-managed: no CLI injection claim, no implicit elevation. Fresh keeps `--permission-mode inherit|ask|bypass` (undetectable parent → ask), explicit `--model/--reasoning` identity lock and legacy worker resolution. Pass the already resolved worker instead of falling back from a desktop to PATH.
+- Current models/permissions remain host-managed (`instruction_only`), never implicitly elevated. Fresh applies [mandatory ultrathink](../commands.md#mandatory-ultrathink) with the identity lock; `--permission-mode inherit|ask|bypass` remains separate (unknown parent → ask). Pass the resolved worker, never a desktop-to-PATH fallback.
 - Terminal automation is limited to the two explicit spawn operations and the dead-window sweep. Current mode never invokes those paths. User pause/abort, pending messages and trust prompts outrank both loops.
 
 Output: [`../output-contracts.md`](../output-contracts.md).

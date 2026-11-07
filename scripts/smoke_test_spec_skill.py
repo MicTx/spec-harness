@@ -465,6 +465,7 @@ def assert_core_layout(root: Path) -> None:
         "chain_recovery.py",
         "chain_lifecycle.py",
         "chain_session.py",
+        "reasoning_policy.py",
         "sweep_chain_windows.py",
     ):
         if (root / "scripts" / excluded).exists():

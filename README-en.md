@@ -33,7 +33,9 @@ Pick your entry point by what you want to do: to understand the idea first, read
 - **Explicit stages**: `new`, `goal`, `autoplan`, `autorun`, `run`, `check`, `done`, `push`, `update`, `status`, `doctor`, and `organize`.
 - **Recoverable state**: reports, failures, completion summaries, and archives come from files on disk, so another session can continue.
 - **Session-boundary handoff**: packages may carry an optional `handoff.md` — a generated snapshot head plus an append-only entry log whose required slots adapt to the collaboration mode (solo / team / agent / cluster); maintained by `spec_handoff.py`, validated by the check gate, and frozen by a terminal entry at archive time.
-- **Interactive planning**: `autoplan` clarifies the goal, then runs framework, phase-detail and consistency-review passes. Desktop and IDE agent plugins proceed in the current session; verified CLIs may use a fresh-session chain. Without a native reviewer, the result is explicitly main-session review. Readiness stops planning; it never starts development automatically.
+- **Evidence-led planning**: `autoplan` inspects code and data before framework, phase-detail and consistency-review passes. Only permission, irreversible actions, genuine preferences and inaccessible external dependencies go to the user. Desktop and IDE plugins stay in-session; verified CLIs may use a fresh-session chain. Review without a native reviewer is labeled main-session review; readiness never starts development automatically.
+- **Mandatory deep-reasoning requests**: controlled fresh/fanout workers request the highest native level; lower levels and raw `--command` are rejected. Codex requires an explicit catalog `--model`, with a model-specific maximum; Pi/Claude request `max`. Current hosts are `instruction_only`, never claimed reconfigured; provider effect stays `unverified`. [Reasoning control boundaries](references/commands.md#mandatory-ultrathink).
+- **Autonomous inquiry, not repeated confirmation**: new questions use `[fact]`, `[reversible]` or `[decision]`. The first two bind machine tasks and close only with fresh, conclusion-bound `runs` evidence. Legacy unclassified questions and real human decisions still block; Git and permission gates remain intact. [Question and evidence format](references/templates.md#autonomous-inquiry).
 - **Recoverable autorun**: `autorun` executes and verifies each planned package, then advances after authorized Git closeout. A desktop session never switches to another agent just because its CLI is on PATH. Paused work resumes the same unit; the default cap is 5 admitted rounds (`--max-rounds` changes it, `--unbounded` removes it). Current-session execution does not continue after the client is closed.
 - **Stable task identity**: tasks can declare an `id:` and explicit `depends-on`; protocol migrations never rewrite historical archives.
 - **Controlled execution**: the main session keeps routing, integration, acceptance, and done/push gates; `workflow-runner` and other slots only execute bounded work.
@@ -291,6 +293,7 @@ spec/
 │   ├── gitea_hook_repair.py
 │   ├── push_spec_package.py
 │   ├── read_version.py
+│   ├── reasoning_policy.py
 │   ├── report_spec_package.py
 │   ├── route_decision.py
 │   ├── route_spec_package.py
@@ -302,6 +305,7 @@ spec/
 │   ├── spec_context.py
 │   ├── spec_handoff.py
 │   ├── spec_package_support.py
+│   ├── worker_decision_guard.py
 │   ├── spec_verify.py
 │   ├── structure_contracts.py
 │   ├── sweep_chain_windows.py
@@ -343,6 +347,7 @@ spec/
         └── tests/
             ├── conftest.py
             ├── test_fanout_context_safety.py
+            ├── test_fanout_decision_guard.py
             ├── test_workflow_fanout.py
             ├── test_workflow_fanout_batch_safety.py
             ├── test_workflow_fanout_proc_race.py

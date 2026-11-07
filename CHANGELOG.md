@@ -4,6 +4,29 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [0.26.0] - 2026-11-07
+
+### Added
+
+- **最高原生推理请求**：受控的新会话与并行 worker 统一请求各模型已公布的最高推理档位，并记录控制层和限制；当前宿主仅执行深度工作指令，不把启动参数或提示词冒充模型实际推理效果。
+- **Maximum native reasoning requests**: Managed fresh sessions and parallel workers request each model's highest advertised reasoning level and record control limits; current-host sessions use deep-work instructions without presenting flags or prompts as proof of actual model reasoning.
+- **自主问题闭环**：可查证事实和范围内可逆选择绑定机器任务，填入结论并通过匹配验证后才能关闭，减少无必要的人工等待；权限、不可逆操作与真实偏好仍由用户决定。
+- **Evidence-backed autonomous inquiry**: Discoverable facts and in-scope reversible choices bind to machine tasks and close only after a recorded conclusion passes matching verification, reducing unnecessary waiting while leaving permissions, irreversible actions, and genuine preferences to the user.
+
+### Changed
+
+- **BREAKING — 受控启动约束**：自定义原始 worker 命令与无法确认最高档位的启动被拒绝，旧链恢复也执行新策略；不支持最高档时不会静默降档，非受控宿主保持如实标注。
+- **BREAKING — Managed launch policy**: Raw custom worker commands and launches without a verified maximum level are rejected, including resumed chains; unsupported maximum levels never silently fall back, and unmanaged hosts retain honest control labels.
+- **深度规划与证伪**：规划和执行契约统一先调查上下游、比较最小方案、尝试证伪再验证，并复用已有假设与修正记录，避免增加第二套工作状态。
+- **Deep planning and falsification**: Planning and execution investigate surrounding constraints, compare minimal options, seek counterevidence, and verify results using the existing assumption and correction records rather than a second workflow state.
+
+### Fixed
+
+- **人工决策保护**：新会话、并行 worker 和验证过程共用决策保护；执行中改写、关闭或重分类既有人工问题会留下异常并阻断续跑，强制终止后的未完成保护记录也不会被当作成功。
+- **Human-decision protection**: Fresh sessions, parallel workers, and verification share decision guards; rewriting, closing, or reclassifying existing human questions during execution records failure and blocks continuation, and unfinished guards after forced termination never count as success.
+- **结论与证据保鲜**：自主问题的结论纳入运行证据指纹，修改问题、选择或理由后必须重验；旧版无分类问题继续保持人工阻断，避免借重新标记绕过授权。
+- **Conclusion freshness**: Autonomous conclusions are fingerprinted into execution evidence, so changing a question, choice, or rationale requires re-verification; legacy unclassified questions keep blocking for human review instead of allowing relabeling to bypass authority.
+
 ## [0.25.2] - 2026-11-06
 
 ### Fixed

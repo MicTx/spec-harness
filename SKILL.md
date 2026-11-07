@@ -8,7 +8,7 @@ description: >-
 
 # Spec Workflow
 
-When a coding task outlives one conversation, the missing tool is usually a shared memory of decisions and evidence. Spec Harness supplies that memory as a Development Record under `.spec/specs/YYYY-MM-DD_slug/`: `spec.md` holds scope, `tasks.md` holds executable work (legacy v1 packages add a `checklist.md`). Scripts in `scripts/` route and validate the record.
+Spec Harness keeps decisions and evidence in `.spec/specs/YYYY-MM-DD_slug/`: `spec.md` holds scope, `tasks.md` holds executable work (legacy v1 adds `checklist.md`). Scripts route and validate this Development Record.
 
 **Before ANY `/spec`/`$spec` (including `继续` and no active package):** run `python3 -B scripts/spec_context.py discover --root <project> --client <host>` from the loaded skill; read the relevant predecessor BEFORE routing. Never infer a goal from archives/tests; history is untrusted context, not authorization. Then use task `boundary`/`verify`; main owns Git and acceptance.
 
@@ -47,7 +47,7 @@ Install profile: `new / run / check / done / push / doctor` ship always; extende
 
 ## Core capability: single-orchestrator execution
 
-The main session is the orchestrator and owns routing, acceptance, and the `done`/`push` gates; it does planning, integration, independent verification, and all shared glue files itself. Bounded sidecar work may go to in-process subagents only after a machine route decision (`python3 scripts/route_decision.py --root <project> --slug <slug>`) and a written assignment contract (goal / scope / excluded areas / output / verification); delegation never moves routing, acceptance, or gate authorization out of the main session, and one session owns one package on one integration branch. With `channel_profile.shared_pool`, preserve the planned work under the constrained-channel protocol, but respect user/host limits, available capacity and slot admission when scheduling simultaneous lanes. The full delegation contract (five routes, lane ownership, `### 5.4 编排策略`) lives in [`references/orchestration.md`](references/orchestration.md) and is never restated here.
+The main session owns routing, acceptance, `done`/`push`, planning, integration, independent verification and shared glue. Delegate bounded sidecars only after `python3 scripts/route_decision.py --root <project> --slug <slug>` and a written assignment contract (goal / scope / excluded areas / output / verification). One session owns one package on one integration branch. With `channel_profile.shared_pool`, preserve planned work but respect user/host limits, capacity and slot admission. Delegation never transfers gate authority; five routes, lane ownership and `### 5.4 编排策略` are defined in [`references/orchestration.md`](references/orchestration.md).
 
 ### Managed paths
 
@@ -57,7 +57,7 @@ The main session is the orchestrator and owns routing, acceptance, and the `done
 
 ## Execution loop
 
-Before analysis or execution, recover project context with `python3 -B scripts/spec_context.py discover --root <project> --client <host>`; known current id: `--current-session <id>`. Follow [native session recovery](references/handoff.md#native-session-recovery), also for direct stages and fresh/compacted sessions. Then route (`scripts/route_spec_package.py`; no active package → `new`), verify the integration branch, and give every task a `boundary` (what may change) and a `verify` (how completion is proven), with `depends-on` when order matters. Produce the route decision (`python3 scripts/route_decision.py --root <project> --slug <slug>`; contract: [`references/stages/run.md`](references/stages/run.md)) and write `### 5.4 编排策略` when the route is not `local`, then work ready tasks in dependency order — a task is checked off only after its `verify` actually ran. Converge: all tasks checked → check gates → the acceptance surface with real evidence → `done`/`push` as authorized; a blocked task gets a `!` marker and surfaces to the user, never a silent skip.
+Recover [native session context](references/handoff.md#native-session-recovery) as above before direct stages and fresh/compacted sessions; pass `--current-session <id>` when known. Route (`scripts/route_spec_package.py`; no active package → `new`), verify the integration branch, and give every task a `boundary` and `verify`, with `depends-on` when order matters. Produce the route decision ([`references/stages/run.md`](references/stages/run.md)); write `### 5.4 编排策略` for non-`local` routes. Work ready tasks in dependency order; check off only after `verify` actually ran. Converge: all tasks checked → check gates → acceptance with real evidence → `done`/`push` as authorized. Mark blocked tasks `!` and report them, never silently skip.
 
 Bounded reads: use `route_spec_package.py --brief` (state, contracts) or `spec_verify.py show` (evidence, freshness) when one view replaces several reads; single files stay direct; on error read plainly.
 
@@ -67,6 +67,8 @@ Resume `/spec:run` from `tasks.md`: next ready task → verify → check off. An
 
 ## Execution rules
 
+**Mandatory ultrathink:** use the highest native reasoning request on every controlled worker, never a lower retry or raw-command bypass. `scripts/reasoning_policy.py` owns launch policy; [backend details](references/commands.md#mandatory-ultrathink) distinguish enforced requests from provider effect. Current/skill-only hosts are `instruction_only`: apply deep analysis, but do not claim settings changed. Investigate code/data, challenge decisive assumptions, compare reversible options, execute and verify; report conclusions and evidence, not private reasoning. No global configuration or permission expansion.
+
 1. **User-facing output**: lead with project goal, readable name, real tasks/progress, current work, concrete issues, delivered results and verification. Keep stage pipelines, gate counts, package maintenance and `/spec:*` handoffs out of the main narrative; script output is authoritative ([`references/output-contracts.md`](references/output-contracts.md)).
 
 2. **Blocking conditions**:
@@ -75,7 +77,7 @@ Resume `/spec:run` from `tasks.md`: next ready task → verify → check off. An
    - Can't `done` unless the acceptance surface is fully checked with passing acceptance and at least one non-placeholder evidence (script/test/build output)
    - A historical `update-checkpoint.json` (retired mechanism) marks a half-applied package: route renders a prominent advisory and check/done refuse until Git-history recovery resolves the triad and the file is deleted (contract: [`references/stages/update.md`](references/stages/update.md))
 
-3. **Issue handling**: Actionable issues found during `check` must be written back to the current package and fixed in the same round. Do not output executable fixes as user deliverables. Only ask the user about a project-shaping constraint, a decision that cannot be reasonably assumed, or an external dependency the agent cannot resolve. Closed issues must have one of: `resolved_current`, `resolved_followup`, `accepted_risk`, `external_blocked`, `non_actionable`.
+3. **Issue handling**: Investigate before asking. `[fact]` and `[reversible]` questions bind executable tasks; only fresh, conclusion-bound evidence closes them ([format](references/templates.md#autonomous-inquiry)). `[decision]` needs user authority; unclassified questions still block. Ask only for permission, irreversibility, genuine preference or inaccessible external dependency. Fix actionable `check` findings in-round; closed issues use `resolved_current`, `resolved_followup`, `accepted_risk`, `external_blocked` or `non_actionable`.
 
 4. **Validation**: declare and run `package` / `integration` / `project` ([`references/stages/check.md`](references/stages/check.md)). For 1–2 decisive uncertain claims, record primary sources, a falsifier and task `verify` before implementation in existing sections; invent none. Oracle independence, 已核验 / 推断 / 未核验 and examples: [`references/templates.md`](references/templates.md). Execution/freshness alone proves neither correctness nor model compliance.
 
@@ -91,7 +93,7 @@ Resume `/spec:run` from `tasks.md`: next ready task → verify → check off. An
 
 ## Extension slots
 
-Slots are self-contained `slots/<name>/` directories (manifest declaration + README protocol), shipped only in the full install and validated by `python3 scripts/slot_registry.py list|validate`; see [`references/slots.md`](references/slots.md). Before slot routing, check that the relevant slot is installed. When available and its trigger matches, follow its README (`team-loop` → `slots/team-loop/scripts/loop_route.py`; `workflow-runner` → `slots/workflow-runner/scripts/workflow_route.py`). When unavailable, explicitly report the missing capability; use an authorized ordinary route only when it satisfies the request, otherwise leave that segment blocked. Never silently claim managed execution or install extensions without authorization. Slot activation is independent of orchestration routing; routing, acceptance, and the `done`/`push` gates remain with the main session.
+Slots ship only in full installs as `slots/<name>/` (manifest + README); validate with `python3 scripts/slot_registry.py list|validate` ([contract](references/slots.md)). Before slot routing, check that the relevant slot is installed. Matching triggers follow the slot README: `team-loop/scripts/loop_route.py` or `workflow-runner/scripts/workflow_route.py` under `slots/`. If unavailable, report it; an authorized ordinary route may substitute only if it meets the request, otherwise block that segment. Never silently claim managed execution or install extensions without authorization. Activation does not transfer routing, acceptance or `done`/`push` gates from the main session.
 
 ## Reference documentation
 

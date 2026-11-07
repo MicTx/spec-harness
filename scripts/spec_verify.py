@@ -47,6 +47,8 @@ from spec_package_support import (
     MAX_SPEC_FILE_BYTES,
     SpecControlError,
     add_specs_dir_arg,
+    autonomous_question_fingerprints,
+    decision_question_fingerprints,
     parse_task_records,
     read_regular_text,
     resolve_specs_child,
@@ -490,6 +492,36 @@ def evaluate_runs_gate(
     return ok, errors, detail
 
 
+def evaluate_question_evidence(
+    spec_content: str, tasks_content: str, package_dir: Path | None, root: Path | None
+) -> list[str]:
+    from spec_package_support import autonomous_question_contract
+
+    questions, _human, _errors = autonomous_question_contract(spec_content, tasks_content)
+    tasks = {record.id: record for record in parse_task_records(tasks_content)} if questions else {}
+    contract_errors = []
+    for question in questions:
+        task = tasks.get(question.task)
+        verification = classify_verify(task.verify) if task else None
+        if verification is None or verification.kind != "machine" or is_hollow_command(verification.command):
+            contract_errors.append(f"{question.text}：自主调查 task 必须提供非空洞机器 verify，不能以 manual 替代")
+    closed = [question for question in questions if question.closed]
+    if not closed:
+        return contract_errors
+    if package_dir is None or root is None:
+        return [*contract_errors, "自主问题关闭证据未评估；需在项目根目录运行 check"]
+    _ok, _gate_errors, _detail, states = _runs_gate_states(spec_content, tasks_content, package_dir, root)
+    latest = latest_record_by_task(read_runs_records(package_dir) or [])
+    errors: list[str] = list(contract_errors)
+    for question in closed:
+        record = latest.get(question.task, {})
+        if states.get(question.task) != "fresh" or type(record.get("exit")) is not int:
+            errors.append(f"{question.text}：{question.task} 无新鲜、匹配且 exit=0 的机器运行证据")
+        elif not isinstance(record.get("question_fps"), list) or question.fingerprint not in record["question_fps"]:
+            errors.append(f"{question.text}：运行证据未绑定当前问题与结论；填结论后重跑 verify，再勾选")
+    return errors
+
+
 def machine_verification_summary(tasks_content: str, package_dir: Path) -> str | None:
     """``通过/总数`` machine-verification rate for completion-summary.md.
 
@@ -553,6 +585,7 @@ def _record_run(
     tree_fp: str,
     package_fp: str,
     package_id: str,
+    question_fps: list[str] | None = None,
 ) -> dict:
     record = {
         "task": task_id,
@@ -565,6 +598,8 @@ def _record_run(
         "package_id": package_id,
         "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
+    if question_fps:
+        record["question_fps"] = question_fps
     if package_dir.resolve(strict=True) != package_dir.absolute():
         raise ValueError("package path contains a symlink")
     nofollow = getattr(os, "O_NOFOLLOW", None)
@@ -607,7 +642,13 @@ def _record_abnormal_attempt(
 
 
 def run_selected_tasks(args: argparse.Namespace) -> int:
+    from worker_decision_guard import DecisionGuard, decision_guard_errors
+
     root = Path(args.root).resolve()
+    decision_errors = decision_guard_errors(root)
+    if decision_errors:
+        print("; ".join(decision_errors), file=sys.stderr)
+        return 1
     try:
         specs_root = resolve_specs_root(root, args.specs_dir)
         package_dir = resolve_specs_child(specs_root, "specs", args.slug)
@@ -669,12 +710,23 @@ def run_selected_tasks(args: argparse.Namespace) -> int:
             continue
         try:
             package_fp_before, package_inputs_before = package_input_snapshot(package_dir)
-        except (OSError, UnicodeError, ValueError) as exc:
+            spec_path = package_dir / "spec.md"
+            spec_before = read_regular_text(spec_path) if spec_path.exists() else ""
+            question_fps_before = autonomous_question_fingerprints(spec_before, tasks_content, record.id)
+            decision_fps_before = decision_question_fingerprints(spec_before)
+        except (OSError, UnicodeError, ValueError, SpecControlError) as exc:
             print(rule_message("SPEC-EVID-003", f"包内辅助文件不可读：{exc}"), file=sys.stderr)
             failures += 1
             continue
         started = time.monotonic()
         timed_out = False
+        try:
+            guard = DecisionGuard(root, args.specs_dir or ".spec")
+        except (OSError, UnicodeError, ValueError, SpecControlError) as exc:
+            print(f"{record.id}：decision 运行保护不可验证：{exc}", file=sys.stderr)
+            failures += 1
+            continue
+        decision_error = None
         try:
             completed = subprocess.run(
                 command,
@@ -691,6 +743,11 @@ def run_selected_tasks(args: argparse.Namespace) -> int:
             exit_code = ABNORMAL_EXIT
             stdout_bytes = exc.stdout if isinstance(exc.stdout, bytes) else b""
             stderr_text = f"timeout after {args.timeout}s"
+        finally:
+            try:
+                guard.finish()
+            except (OSError, UnicodeError, ValueError, SpecControlError) as exc:
+                decision_error = str(exc)
         duration = time.monotonic() - started
         # Fingerprint after execution: the record binds to the tree the
         # verification leaves behind, so a command that legitimately formats
@@ -712,7 +769,10 @@ def run_selected_tasks(args: argparse.Namespace) -> int:
             continue
         try:
             package_fp, package_inputs_after = package_input_snapshot(package_dir)
-        except (OSError, UnicodeError, ValueError) as exc:
+            spec_after = read_regular_text(spec_path) if spec_path.exists() else ""
+            question_fps_after = autonomous_question_fingerprints(spec_after, read_regular_text(tasks_path), record.id)
+            decision_fps_after = decision_question_fingerprints(spec_after)
+        except (OSError, UnicodeError, ValueError, SpecControlError) as exc:
             _record_abnormal_attempt(
                 package_dir,
                 record.id,
@@ -754,6 +814,34 @@ def run_selected_tasks(args: argparse.Namespace) -> int:
             )
             failures += 1
             continue
+        if decision_error or decision_fps_before != decision_fps_after:
+            _record_abnormal_attempt(
+                package_dir,
+                record.id,
+                command,
+                duration,
+                stdout_bytes,
+                tree_fp,
+                package_fp,
+                package_identity(root, package_dir),
+            )
+            print(f"{record.id}：验证期间 decision 问题发生变化；授权决策必须在受控验证之外确认", file=sys.stderr)
+            failures += 1
+            continue
+        if question_fps_before != question_fps_after:
+            _record_abnormal_attempt(
+                package_dir,
+                record.id,
+                command,
+                duration,
+                stdout_bytes,
+                tree_fp,
+                package_fp,
+                package_identity(root, package_dir),
+            )
+            print(f"{record.id}：验证期间问题或结论发生变化；填结论后重跑 verify", file=sys.stderr)
+            failures += 1
+            continue
         try:
             _record_run(
                 package_dir,
@@ -765,6 +853,7 @@ def run_selected_tasks(args: argparse.Namespace) -> int:
                 tree_fp,
                 package_fp,
                 package_identity(root, package_dir),
+                question_fps_before,
             )
         except (OSError, ValueError) as exc:
             print(rule_message("SPEC-EVID-003", f"无法写入 runs.jsonl：{exc}"), file=sys.stderr)

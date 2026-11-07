@@ -4,6 +4,7 @@ import fcntl
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -39,7 +40,7 @@ from autorun_spawn import (  # noqa: E402  # type: ignore
 
 
 @pytest.fixture(autouse=True)
-def macos_terminal_contract(monkeypatch):
+def macos_terminal_contract(monkeypatch, codex_reasoning_catalog):
     """These legacy tests exercise Terminal.app even when CI runs on Linux."""
     monkeypatch.setattr(chain_support.platform, "system", lambda: "Darwin")
 
@@ -192,6 +193,8 @@ class TestSpawnCommand:
                 str(tmp_path),
                 "--host",
                 "codex",
+                "--model",
+                "test-model",
                 "--dry-run",
                 "--format",
                 "json",
@@ -384,7 +387,7 @@ class TestSpawnCommand:
             "run",
             lambda *a, **k: subprocess.CompletedProcess(a[0], 1, stdout="", stderr="not authorized"),
         )
-        code = main(["spawn", "--root", str(tmp_path)])
+        code = main(["spawn", "--root", str(tmp_path), "--host", "pi"])
         assert code == 1
         captured = capsys.readouterr()
         # matrix row "osascript 开窗失败（非零）": exit + stderr reason + refusal
@@ -463,7 +466,7 @@ class TestSpawnCommand:
         assert payload["host"] == "pi"
         assert payload["host_source"] == "session"
 
-    def test_command_override_skips_host_resolution(self, tmp_path, capsys, monkeypatch):
+    def test_command_override_refuses_before_host_resolution(self, tmp_path, capsys, monkeypatch):
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: None)
@@ -480,10 +483,10 @@ class TestSpawnCommand:
                 "json",
             ]
         )
-        assert code == 0
-        payload = json.loads(capsys.readouterr().out)
-        assert payload["host"] == "custom"
-        assert payload["shell_command"].endswith("echo hello > proof.txt")
+        assert code == 1
+        assert "mandatory ultrathink" in capsys.readouterr().err
+        assert not (tmp_path / "proof.txt").exists()
+        assert not (tmp_path / ".spec/autorun/chain.json").exists()
 
 
 class TestStatusCommand:
@@ -1084,12 +1087,12 @@ class TestCommandBuilders:
         assert plan_args_for_prompt("PLAN.md") == ["--plan PLAN.md"]
 
     def test_worker_commands(self, tmp_path):
-        codex = build_worker_command("codex", tmp_path, "PROMPT")
+        codex = build_worker_command("codex", tmp_path, "PROMPT", {"id": "test-model"})
         assert codex[0] == "codex" and "exec" not in codex
         assert "--cd" in codex and str(tmp_path) in codex
         assert codex[-1] == "PROMPT"
         pi = build_worker_command("pi", tmp_path, "PROMPT")
-        assert pi[:3] == ["pi", "--mode", "text"]
+        assert pi[:5] == ["pi", "--thinking", "max", "--mode", "text"]
         assert "-p" not in pi and "--no-session" not in pi
         claude = build_worker_command("claude", tmp_path, "PROMPT")
         assert claude[0] == "claude" and claude[-1] == "PROMPT"
@@ -1098,7 +1101,7 @@ class TestCommandBuilders:
     def test_codex_worker_carves_git_writable_root(self, tmp_path):
         # codex >=0.160 seatbelt denies .git writes under workspace-write; the
         # worker argv must carve the repo's .git back into the writable roots.
-        codex = build_worker_command("codex", tmp_path, "PROMPT")
+        codex = build_worker_command("codex", tmp_path, "PROMPT", {"id": "test-model"})
         carve = "sandbox_workspace_write.writable_roots=[{}]".format(json.dumps(str(tmp_path / ".git")))
         assert carve in codex
         assert "-c" in codex
@@ -1463,7 +1466,8 @@ class TestWindowRecycle:
         )
         script = argv[2]
         assert "for pid in 99 4321; do" in script
-        assert 'case "$cmd" in *"claude "*|*/claude)' in script
+        assert "from chain_spawn_support import worker_command_matches" in script
+        assert 'claude "$cmd"' in script
         assert 'kill -TERM -"$pgid"' in script
         assert 'kill -KILL -"$pgid"' in script
         # without a worker name the interlock withholds the escalation entirely
@@ -1902,7 +1906,8 @@ class TestRefusalClosesSpawnedWindow:
         assert '"round": 1' in script
         assert '"window_id": 77' in script
         assert '"prev_tty": "/dev/ttys042"' in script
-        assert 'case "$cmd" in *"claude "*|*/claude)' in script  # identity interlock carries
+        assert "from chain_spawn_support import worker_command_matches" in script
+        assert 'claude "$cmd"' in script
         events = (
             (tmp_path / ".git" / "spec-chain" / "autorun" / "events.jsonl").read_text(encoding="utf-8").splitlines()
         )
@@ -2064,7 +2069,7 @@ class TestChannelSplit:
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
-        assert main(["spawn", "--root", str(tmp_path), "--dry-run", "--format", "json"]) == 0
+        assert main(["spawn", "--root", str(tmp_path), "--host", "pi", "--dry-run", "--format", "json"]) == 0
         payload = json.loads(capsys.readouterr().out)
         assert payload["dry_run"] is True
 
@@ -2108,6 +2113,13 @@ AUDIT_FIELD_CONTRACT = {
             "updated_at",
             "shell_command",
             "model",
+            "reasoning_policy",
+            "reasoning_control",
+            "reasoning_request",
+            "reasoning_source",
+            "provider_effect",
+            "reasoning_cap",
+            "reasoning_upgraded",
         }
     ),
     # volatile.json after a real spawn: exactly the spawn-moment keys, never
@@ -2133,6 +2145,13 @@ AUDIT_FIELD_CONTRACT = {
             "window_recycle",
             "model",
             "model_injection",
+            "reasoning_policy",
+            "reasoning_control",
+            "reasoning_request",
+            "reasoning_source",
+            "provider_effect",
+            "reasoning_cap",
+            "reasoning_upgraded",
         }
     ),
     # F14: the per-spawn injection fact written on every spawns row; the
@@ -2561,7 +2580,7 @@ class TestAuditFieldContract:
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
-        assert main(["spawn", "--root", str(tmp_path), "--dry-run", "--format", "json"]) == 0
+        assert main(["spawn", "--root", str(tmp_path), "--host", "pi", "--dry-run", "--format", "json"]) == 0
         payload = json.loads(capsys.readouterr().out)
         assert set(payload["window_recycle"]) == contract["window_recycle_keys"]["planned"]
         assert payload["window_recycle"]["status"] == "planned"
@@ -2651,7 +2670,7 @@ class TestModelIdentity:
     host CLI flag rename stays a one-line fix in the mapping table.
     """
 
-    IDENTITY = {"id": "anthropic/opus-5.5", "reasoning": "high"}
+    IDENTITY = {"id": "anthropic/opus-5.5", "reasoning": "max"}
 
     # sentinel: the pre-F14 chain.json carries no model key at all
     NO_MODEL_KEY = object()
@@ -2721,7 +2740,7 @@ class TestModelIdentity:
             "--model",
             "anthropic/opus-5.5",
             "--reasoning",
-            "high",
+            "max",
         ]
         assert main(argv) == 0
         payload = json.loads(capsys.readouterr().out)
@@ -2763,23 +2782,24 @@ class TestModelIdentity:
     def test_no_flags_continuation_injects_the_locked_value(self, tmp_path, capsys, monkeypatch, host):
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
-        self.write_state(tmp_path, self.IDENTITY, host=host)
+        identity = {"id": "test-model", "reasoning": "max"} if host == "codex" else self.IDENTITY
+        self.write_state(tmp_path, identity, host=host)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         argv = ["spawn", "--root", str(tmp_path), "--host", host, "--format", "json", "--dry-run"]
         assert main(argv) == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["model"] == self.IDENTITY
+        assert payload["model"] == identity
         assert payload["model_injection"] == "full"
         shell = payload["shell_command"]
         # the id flag segment renders straight from the shared mapping table
-        assert self.model_flag_segment(host, "id", "anthropic/opus-5.5") in shell
+        assert self.model_flag_segment(host, "id", identity["id"]) in shell
         # every host maps the reasoning level through its own flag form
-        assert self.model_flag_segment(host, "reasoning", "high") in shell
+        assert self.model_flag_segment(host, "reasoning", "max") in shell
         # both segments sit between the worker binary and the prompt
         worker_at = shell.index(" ")
         prompt_at = shell.index("'$spec autorun") if host != "claude" else shell.index("/spec:autorun")
-        assert shell.index(self.model_flag_segment(host, "id", "anthropic/opus-5.5")) > worker_at
-        assert shell.index(self.model_flag_segment(host, "id", "anthropic/opus-5.5")) < prompt_at
+        assert shell.index(self.model_flag_segment(host, "id", identity["id"])) > worker_at
+        assert shell.index(self.model_flag_segment(host, "id", identity["id"])) < prompt_at
 
     def test_propagation_survives_a_real_second_round(self, tmp_path, capsys, monkeypatch):
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
@@ -2834,11 +2854,11 @@ class TestModelIdentity:
             "--model",
             "anthropic/opus-5.5",
             "--reasoning",
-            "max",
+            "high",
         ]
-        self.refused(tmp_path, capsys, argv, match="locked reasoning 'high' vs incoming reasoning 'max'")
+        self.refused(tmp_path, capsys, argv, match="ultrathink requires pi reasoning 'max'; requested 'high'")
 
-    def test_conflict_absent_vs_present_reasoning_refuses(self, tmp_path, capsys, monkeypatch):
+    def test_missing_reasoning_lock_upgrades_to_maximum(self, tmp_path, capsys, monkeypatch):
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         self.write_state(tmp_path, {"id": "anthropic/opus-5.5"})
@@ -2853,9 +2873,49 @@ class TestModelIdentity:
             "--model",
             "anthropic/opus-5.5",
             "--reasoning",
-            "high",
+            "max",
         ]
-        self.refused(tmp_path, capsys, argv, match="locked reasoning absent vs incoming reasoning 'high'")
+        assert main(argv + ["--format", "json"]) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["model"] == self.IDENTITY
+        assert payload["reasoning_upgraded"] is True
+
+    def test_codex_catalog_upgrade_is_recorded_without_changing_model(self, tmp_path, capsys, monkeypatch):
+        import reasoning_policy
+
+        write_plan(tmp_path / ".spec/plans/README.md", unchecked=1)
+        make_active_package(tmp_path)
+        state_file = self.write_state(tmp_path, {"id": "test-model", "reasoning": "high"}, host="codex")
+        state = json.loads(state_file.read_text())
+        state.update(
+            reasoning_policy=reasoning_policy.POLICY_VERSION,
+            reasoning_control="enforced",
+            reasoning_request="high",
+        )
+        state_file.write_text(json.dumps(state))
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout="4421 /dev/ttys042", stderr=""),
+        )
+        monkeypatch.setattr("autorun_spawn.worker_running_on_tty", lambda worker, tty: True)
+        assert main(["spawn", "--root", str(tmp_path), "--host", "codex", "--format", "json"]) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["model"] == {"id": "test-model", "reasoning": "max"}
+        assert payload["reasoning_upgraded"] is True
+        stored = json.loads(state_file.read_text())
+        row = json.loads((tmp_path / ".git/spec-chain/autorun/spawns.jsonl").read_text().splitlines()[-1])
+        for record in (stored, row):
+            assert record["reasoning_upgraded"] is True
+            assert record["reasoning_request"] == "max"
+            assert record["reasoning_source"]["version"] == "codex-cli test"
+        assert main(["status", "--root", str(tmp_path), "--format", "json"]) == 0
+        status = json.loads(capsys.readouterr().out)
+        assert status["reasoning_control"] == "enforced"
+        assert status["provider_effect"] == "unverified"
+        assert status["reasoning_cap"] == "unknown"
 
     def test_conflict_null_lock_then_value_refuses(self, tmp_path, capsys, monkeypatch):
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
@@ -2876,7 +2936,7 @@ class TestModelIdentity:
             tmp_path,
             capsys,
             argv,
-            match='locked model: null but this spawn carries {"id": "anthropic/opus-5.5"}',
+            match="locked model: null but incoming model is 'anthropic/opus-5.5'",
         )
 
     def test_conflict_resolved_host_change_with_identity_refuses(self, tmp_path, capsys, monkeypatch):
@@ -2907,11 +2967,11 @@ class TestModelIdentity:
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
-        argv = ["spawn", "--root", str(tmp_path), "--host", "pi", "--dry-run", "--reasoning", "high"]
+        argv = ["spawn", "--root", str(tmp_path), "--host", "codex", "--dry-run", "--reasoning", "max"]
         code = main(argv)
         captured = capsys.readouterr()
         assert code == 1
-        assert "--reasoning requires --model" in captured.err
+        assert "requires an explicit catalog model" in captured.err
 
     def test_empty_model_refuses_through_refusal_path(self, tmp_path, capsys, monkeypatch):
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
@@ -2945,7 +3005,7 @@ class TestModelIdentity:
             match="--reasoning must be a non-empty level when given",
         )
 
-    def test_padded_meaningful_values_pass_through_verbatim(self, tmp_path, capsys, monkeypatch):
+    def test_model_is_preserved_and_maximum_reasoning_normalized(self, tmp_path, capsys, monkeypatch):
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
@@ -2967,13 +3027,11 @@ class TestModelIdentity:
             "--model",
             " anthropic/opus-5.5 ",
             "--reasoning",
-            " high ",
+            " MAX ",
         ]
         assert main(argv) == 0
         payload = json.loads(capsys.readouterr().out)
-        # original passthrough: no trim, no normalization — the locked value
-        # keeps the caller's padding verbatim
-        assert payload["model"] == {"id": " anthropic/opus-5.5 ", "reasoning": " high "}
+        assert payload["model"] == {"id": " anthropic/opus-5.5 ", "reasoning": "max"}
 
     def test_malformed_lock_refuses(self, tmp_path, capsys, monkeypatch):
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
@@ -2985,22 +3043,28 @@ class TestModelIdentity:
 
     # --- the no-lock no-flags default stays byte-identical ----------------------
 
-    def test_no_lock_no_flags_default_argv_is_unchanged(self, tmp_path, capsys, monkeypatch):
+    def test_no_lock_no_flags_still_enforces_reasoning(self, tmp_path, capsys, monkeypatch):
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
         assert main(["spawn", "--root", str(tmp_path), "--host", "pi", "--format", "json", "--dry-run"]) == 0
         payload = json.loads(capsys.readouterr().out)
-        # the pre-F14 literal form keeps nothing between the worker binary and
-        # the prompt; F1 appends the effective cap to the prompt tail only
         assert payload["model"] is None
         assert payload["model_injection"] == "none"
-        assert payload["shell_command"] == f"cd {tmp_path} && pi --mode text -- '$spec autorun --max-rounds 5'"
+        assert payload["reasoning_request"] == "max"
+        assert shlex.split(payload["shell_command"]) == [
+            "cd",
+            str(tmp_path),
+            "&&",
+            *chain_support.worker_argv(
+                tmp_path, ["pi", "--thinking", "max", "--mode", "text", "--", "$spec autorun --max-rounds 5"]
+            ),
+        ]
 
     # --- the --command bypass ---------------------------------------------------
 
-    def test_bypass_records_identity_without_injecting(self, tmp_path, capsys, monkeypatch):
+    def test_bypass_refuses_even_with_identity(self, tmp_path, capsys, monkeypatch):
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
@@ -3013,19 +3077,16 @@ class TestModelIdentity:
             "--model",
             "anthropic/opus-5.5",
             "--reasoning",
-            "high",
+            "max",
             "--format",
             "json",
             "--dry-run",
         ]
-        assert main(argv) == 0
-        payload = json.loads(capsys.readouterr().out)
-        assert payload["host"] == "custom"
-        assert payload["model"] == self.IDENTITY
-        assert payload["model_injection"] == "custom"
-        assert payload["shell_command"] == f"cd {tmp_path} && sleep 8"
+        assert main(argv) == 1
+        assert "mandatory ultrathink" in capsys.readouterr().err
+        assert not (tmp_path / ".spec/autorun/chain.json").exists()
 
-    def test_bypass_first_lock_then_host_spawn_refuses(self, tmp_path, capsys, monkeypatch):
+    def test_legacy_custom_identity_cannot_change_host(self, tmp_path, capsys, monkeypatch):
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
@@ -3036,24 +3097,7 @@ class TestModelIdentity:
             lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="4421 /dev/ttys042", stderr=""),
         )
         monkeypatch.setattr("autorun_spawn.worker_running_on_tty", lambda worker, tty: True)
-        bypass_argv = [
-            "spawn",
-            "--root",
-            str(tmp_path),
-            "--command",
-            "sleep 8",
-            "--model",
-            "anthropic/opus-5.5",
-            "--format",
-            "json",
-        ]
-        assert main(bypass_argv) == 0
-        json.loads(capsys.readouterr().out)
-        state = json.loads((tmp_path / ".spec" / "autorun" / "chain.json").read_text(encoding="utf-8"))
-        assert state["host"] == "custom"
-        assert state["model"] == {"id": "anthropic/opus-5.5"}
-        # a later host spawn carrying the identity correctly refuses against
-        # the bypass's custom host (the identity is namespace-bound)
+        self.write_state(tmp_path, self.IDENTITY, host="custom")
         host_argv = [
             "spawn",
             "--root",
@@ -3068,7 +3112,7 @@ class TestModelIdentity:
 
     # --- partial injection ------------------------------------------------------
 
-    def test_partial_when_host_lacks_a_reasoning_flag(self, tmp_path, capsys, monkeypatch):
+    def test_missing_reasoning_flag_refuses_partial_injection(self, tmp_path, capsys, monkeypatch):
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
@@ -3088,14 +3132,9 @@ class TestModelIdentity:
             "json",
             "--dry-run",
         ]
-        assert main(argv) == 0
-        payload = json.loads(capsys.readouterr().out)
-        assert payload["model"] == {"id": "claude-opus-4-6", "reasoning": "max"}
-        assert payload["model_injection"] == "partial"
-        shell = payload["shell_command"]
-        assert self.model_flag_segment("claude", "id", "claude-opus-4-6") in shell
-        # the reasoning level never reaches the worker argv
-        assert " max" not in shell
+        assert main(argv) == 1
+        assert "refusing partial injection" in capsys.readouterr().err
+        assert not (tmp_path / ".spec/autorun/chain.json").exists()
 
     def test_none_injection_for_null_identity(self, tmp_path, capsys, monkeypatch):
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
@@ -3128,9 +3167,9 @@ class TestModelIdentity:
         )
         assert main(["status", "--root", str(tmp_path), "--format", "json"]) == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["model"] == {"id": "anthropic/opus-5.5", "reasoning": "high", "injection": "full"}
+        assert payload["model"] == {"id": "anthropic/opus-5.5", "reasoning": "max", "injection": "full"}
         assert main(["status", "--root", str(tmp_path)]) == 0
-        assert "model: anthropic/opus-5.5 [high] (injection: full)" in capsys.readouterr().out
+        assert "model: anthropic/opus-5.5 [max] (injection: full)" in capsys.readouterr().out
 
     def test_status_renders_worker_default_when_null(self, tmp_path, capsys):
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
@@ -3146,10 +3185,7 @@ class TestModelIdentity:
     def test_legacy_state_without_model_key_first_locks_on_flags(self, tmp_path, capsys, monkeypatch):
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
         make_active_package(tmp_path)
-        # the F1-era shape: no model key at all (pre-F14 chain)
-        state_file = tmp_path / ".spec" / "autorun" / "chain.json"
-        state_file.parent.mkdir(parents=True, exist_ok=True)
-        state_file.write_bytes(LEGACY_STATE_F1_BYTES)
+        state_file = self.write_state(tmp_path, self.NO_MODEL_KEY)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autorun_spawn.session_tty", lambda: "/dev/ttys012")
         monkeypatch.setattr(
@@ -3162,8 +3198,8 @@ class TestModelIdentity:
             "spawn",
             "--root",
             str(tmp_path),
-            "--command",
-            "sleep 8",
+            "--host",
+            "pi",
             "--model",
             "anthropic/opus-5.5",
             "--format",
@@ -3172,7 +3208,7 @@ class TestModelIdentity:
         assert main(argv) == 0
         json.loads(capsys.readouterr().out)
         state = json.loads(state_file.read_text(encoding="utf-8"))
-        assert state["model"] == {"id": "anthropic/opus-5.5"}
+        assert state["model"] == self.IDENTITY
 
     def test_legacy_state_without_model_key_reads_as_unlocked_status(self, tmp_path, capsys):
         write_plan(tmp_path / ".spec" / "plans" / "README.md", unchecked=1)
@@ -3511,7 +3547,8 @@ class TestChainPermissionMode:
         assert payload["permission_effective"] == "ask"
         joined = " ".join(payload["osascript"])
         assert "--dangerously-skip-permissions" not in joined
-        assert payload["shell_command"].endswith("claude '/spec:autorun --max-rounds 5'")
+        assert "claude --effort max" in payload["shell_command"]
+        assert payload["shell_command"].endswith("-- '/spec:autorun --max-rounds 5'")
 
     def test_explicit_bypass_renders_the_flag_and_records(self, tmp_path, capsys, monkeypatch):
         self.clear_markers(monkeypatch)
@@ -3542,7 +3579,17 @@ class TestChainPermissionMode:
         self.clear_markers(monkeypatch)
         payload = self.spawn_dry_run(tmp_path, capsys, monkeypatch, "--permission-mode", "bypass", "--host", "pi")
         assert payload["permission_effective"] == "bypass"
-        assert payload["shell_command"].startswith(f"cd {tmp_path} && pi --mode text")
+        command = shlex.split(payload["shell_command"])
+        assert command[:3] == ["cd", str(tmp_path), "&&"]
+        assert command[command.index("--") + 1 :] == [
+            "pi",
+            "--thinking",
+            "max",
+            "--mode",
+            "text",
+            "--",
+            "$spec autorun --max-rounds 5",
+        ]
 
     def test_render_permission_mode(self, tmp_path, capsys, monkeypatch):
         # status shows the recorded permission decision (F1 visibility): a
@@ -3677,7 +3724,8 @@ class TestSpawnEntryMigration:
             lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout="4421 /dev/ttys042", stderr=""),
         )
         monkeypatch.setattr("autorun_spawn.worker_running_on_tty", lambda worker, tty: True)
-        assert main(["spawn", "--root", str(tmp_path), "--command", "sleep 8", "--format", "json"]) == 0
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+        assert main(["spawn", "--root", str(tmp_path), "--host", "pi", "--format", "json"]) == 0
         capsys.readouterr()
         runtime = tmp_path / ".git" / "spec-chain" / "autorun"
         rows = [json.loads(line) for line in (runtime / "spawns.jsonl").read_text(encoding="utf-8").splitlines()]
@@ -3706,6 +3754,6 @@ def test_codex_worker_carves_common_git_dir_in_linked_worktree(tmp_path):
     run("-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "init")
     wt = tmp_path / "wt"
     run("worktree", "add", str(wt), "-b", "side")
-    codex = build_worker_command("codex", wt, "PROMPT")
+    codex = build_worker_command("codex", wt, "PROMPT", {"id": "test-model"})
     carve = "sandbox_workspace_write.writable_roots=[{}]".format(json.dumps(str((main / ".git").resolve())))
     assert carve in codex

@@ -894,6 +894,10 @@ def status_payload(root: Path, chain: str, owner: Optional[str] = None) -> Dict[
         "schema_version": SCHEMA_VERSION,
         "started": False,
         "source": view["source"],
+        "model_control": "host",
+        "reasoning_control": "instruction_only",
+        "provider_effect": "unverified",
+        "reasoning_cap": "unknown",
     }
     if view["legacy"] or view["summary_kind"] == "legacy":
         payload["legacy"] = True
@@ -992,7 +996,12 @@ def status_payload(root: Path, chain: str, owner: Optional[str] = None) -> Dict[
 
 
 def render_status(payload: Dict[str, object]) -> str:
-    lines = [f"project: {payload['project']}", f"chain: {payload['chain']}", "execution: current"]
+    lines = [
+        f"project: {payload['project']}",
+        f"chain: {payload['chain']}",
+        "execution: current",
+        "reasoning: instruction_only (host-controlled; provider_effect=unverified; reasoning_cap=unknown)",
+    ]
     if payload.get("legacy"):
         lines.append("note: a legacy fresh-session summary exists")
     if not payload.get("started"):
@@ -1812,6 +1821,9 @@ def _apply_begin(view: Dict[str, object], args, root: Path, chain: str):
             "updated_at": support.utc_now(),
             "model": None,
             "model_control": "host",
+            "reasoning_control": "instruction_only",
+            "provider_effect": "unverified",
+            "reasoning_cap": "unknown",
             "permission_effective": "host",
         }
         return doc, caller, {"step": step}

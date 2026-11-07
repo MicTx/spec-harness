@@ -10,6 +10,8 @@ seam wrappers (patch-point preservation) are covered by their own test files.
 import ast
 import json
 import os
+import selectors
+import shlex
 import subprocess
 import sys
 import threading
@@ -600,6 +602,68 @@ class TestOptInCaps:
 
 
 class TestWorkerPidsOnTty:
+    @pytest.mark.parametrize("worker", ["pi", "claude", "codex"])
+    @pytest.mark.parametrize("with_env", [False, True])
+    def test_guard_wrapped_workers_match_for_start_and_recycle(self, tmp_path, monkeypatch, worker, with_env):
+        command = [worker, "--", "inspect today's changes"]
+        if with_env:
+            command = ["env", "-u", "MAX_THINKING_TOKENS", "CLAUDE_CODE_EFFORT_LEVEL=max", *command]
+        command = shlex.join(support.worker_argv(tmp_path / "path with spaces", command))
+
+        def ps_output(argv, **_kwargs):
+            prefix = "ttys009 4321" if "pid=" in argv[-1] else "ttys009"
+            return subprocess.CompletedProcess(argv, 0, stdout=f"{prefix} {command}\n", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", ps_output)
+        assert support.worker_running_on_tty(worker, "/dev/ttys009")
+        assert support.worker_pids_on_tty(worker, "/dev/ttys009") == [4321]
+        assert not support.worker_running_on_tty("other-host", "/dev/ttys009")
+        assert support.worker_pids_on_tty(worker, "/dev/ttys010") == []
+
+    @pytest.mark.parametrize("prefix", [["tail", "-f"], ["python3", "-c"], ["/bin/sh", "-c"]])
+    def test_wrapper_name_in_command_data_is_not_a_worker(self, tmp_path, prefix):
+        command = shlex.join([*prefix, *support.worker_argv(tmp_path, ["pi"])[2:]])
+        assert not support.worker_command_matches("pi", command)
+
+    def test_wrapper_prompt_may_have_unbalanced_quotes(self, tmp_path):
+        command = " ".join(support.worker_argv(tmp_path, ["pi", "--", "user's request"]))
+        assert support.worker_command_matches("pi", command)
+
+    def test_macos_framework_python_wrapper_is_recognized(self, tmp_path):
+        command = support.worker_argv(tmp_path, ["pi", "--", "inspect"])
+        command[0] = "/Library/Frameworks/Python.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python"
+        assert support.worker_command_matches("pi", shlex.join(command))
+        assert not support.worker_command_matches("codex", shlex.join(command))
+
+    def test_live_ps_guard_wrapper_is_recognized(self, tmp_path):
+        worker = [sys.executable, "-B", "-c", "import signal; print('ready', flush=True); signal.pause()"]
+        process = subprocess.Popen(
+            support.worker_argv(tmp_path, worker), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ)
+                assert selector.select(timeout=10)
+                assert process.stdout.readline().strip() == "ready"
+            command = subprocess.check_output(
+                ["ps", "-p", str(process.pid), "-o", "command="], text=True, timeout=10
+            ).strip()
+            assert support.worker_command_matches(Path(sys.executable).name, command)
+            assert not support.worker_command_matches("other-host", command)
+        finally:
+            if process.poll() is None:
+                process.terminate()
+            try:
+                process.communicate(timeout=10)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate(timeout=5)
+
+    def test_wrapper_without_command_separator_fails_closed(self, tmp_path):
+        command = shlex.join(support.worker_argv(tmp_path, ["pi"])).replace(" -- pi", " pi")
+        assert not support.worker_command_matches("pi", command)
+
     def test_matches_native_and_interpreter_shapes_with_pids(self, monkeypatch):
         ps_output = (
             "ttys009   4321 node /opt/homebrew/bin/codex --cd /tmp -- PROMPT\n"
@@ -828,7 +892,8 @@ class TestSessionKillInterlock:
 
     def test_guard_matches_both_boundary_forms(self):
         script = self._script_for("claude")
-        assert 'case "$cmd" in *"claude "*|*/claude)' in script
+        assert "from chain_spawn_support import worker_command_matches" in script
+        assert 'claude "$cmd"' in script
         assert 'kill -TERM -"$pgid"' in script
         assert 'kill -KILL -"$pgid"' in script
 
@@ -842,9 +907,38 @@ class TestSessionKillInterlock:
 
     def test_boundary_forms_exclude_substrings(self):
         guarded = support._session_kill_lines([99], "TERM", "pi")
-        assert 'case "$cmd" in *"pi "*|*/pi)' in guarded
+        assert 'pi "$cmd"' in guarded
         # pip3-style substrings do not satisfy either boundary form
         assert "pip3" not in guarded
+
+    @pytest.mark.parametrize("worker", ["pi", "claude", "codex"])
+    @pytest.mark.parametrize("shape", ["native", "interpreter", "guard", "env-guard", "unrelated", "wrong-worker"])
+    def test_close_helper_rechecks_worker_identity_before_signaling(self, tmp_path, worker, shape):
+        command = [f"/opt/bin/{worker}", "--", "inspect"]
+        if shape == "interpreter":
+            command.insert(0, "node")
+        elif shape == "guard":
+            command = support.worker_argv(tmp_path, command)
+        elif shape == "env-guard":
+            command = support.worker_argv(tmp_path, ["env", "-u", "MAX_THINKING_TOKENS", "EFFORT=max", *command])
+        elif shape == "unrelated":
+            command = ["sh", "-c", "echo", *command]
+        elif shape == "wrong-worker":
+            command = support.worker_argv(tmp_path, ["other-host", "--", worker])
+        script = (
+            'ps() { if [ "$2" = "command=" ]; then printf "%s\\n" "$WORKER_COMMAND"; '
+            'else printf "12345\\n"; fi; }\n'
+            'kill() { printf "%s\\n" "$*"; }\n' + support._session_kill_lines([99], "TERM", worker)
+        )
+        result = subprocess.run(
+            ["/bin/sh", "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env={**os.environ, "WORKER_COMMAND": shlex.join(command)},
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == ("" if shape in ("unrelated", "wrong-worker") else "-TERM -12345")
 
     def test_generated_helper_script_parses_under_sh(self):
         """The helper runs under macOS /bin/sh (bash 3.2): the whole script
@@ -996,7 +1090,8 @@ class TestRefusalCloseHelpers:
         assert '"window_id": 77' in script
         assert '"prev_tty": "/dev/ttys042"' in script
         # the F19 identity interlock carries into the refusal close
-        assert 'case "$cmd" in *"claude "*|*/claude)' in script
+        assert "from chain_spawn_support import worker_command_matches" in script
+        assert 'claude "$cmd"' in script
         assert 'kill -TERM -"$pgid"' in script
 
     def test_close_without_a_worker_name_has_no_kill_segment(self):
@@ -1093,12 +1188,13 @@ class TestWorkerPermissionModes:
 
     def test_ask_default_renders_no_escalation_flag(self, tmp_path):
         argv = support.build_worker_command("claude", tmp_path, "PROMPT")
-        assert argv == ["claude", "PROMPT"]
+        assert argv == ["claude", "--effort", "max", "--settings", '{"alwaysThinkingEnabled":true}', "--", "PROMPT"]
         assert support.CLAUDE_BYPASS_FLAG not in argv
 
     def test_bypass_renders_the_claude_flag(self, tmp_path):
         argv = support.build_worker_command("claude", tmp_path, "PROMPT", permission_mode="bypass")
-        assert argv == ["claude", support.CLAUDE_BYPASS_FLAG, "PROMPT"]
+        assert argv[-3:] == [support.CLAUDE_BYPASS_FLAG, "--", "PROMPT"]
+        assert argv[1:3] == ["--effort", "max"]
 
     def test_inherit_is_resolved_before_rendering(self, tmp_path):
         # inherit is a spawn-script decision; the render surface only knows
@@ -1106,16 +1202,19 @@ class TestWorkerPermissionModes:
         with pytest.raises(ChainSpawnError, match="unknown worker permission mode: 'inherit'"):
             support.build_worker_command("claude", tmp_path, "PROMPT", permission_mode="inherit")
 
-    def test_other_hosts_accept_the_mode_without_rendering(self, tmp_path):
+    def test_other_hosts_accept_the_mode_without_rendering(self, tmp_path, codex_reasoning_catalog):
         for host in ("codex", "pi"):
-            argv = support.build_worker_command(host, tmp_path, "PROMPT", permission_mode="bypass")
+            argv = support.build_worker_command(
+                host, tmp_path, "PROMPT", {"id": "test-model"}, permission_mode="bypass"
+            )
             assert support.CLAUDE_BYPASS_FLAG not in argv
         with pytest.raises(ChainSpawnError, match="unknown worker permission mode: 'yolo'"):
             support.build_worker_command("pi", tmp_path, "PROMPT", permission_mode="yolo")
 
     def test_mode_does_not_disturb_the_model_identity_segment(self, tmp_path):
         argv = support.build_worker_command("claude", tmp_path, "PROMPT", {"id": "opus"}, permission_mode="bypass")
-        assert argv == ["claude", "--model", "opus", support.CLAUDE_BYPASS_FLAG, "PROMPT"]
+        assert argv[:5] == ["claude", "--model", "opus", "--effort", "max"]
+        assert argv[-3:] == [support.CLAUDE_BYPASS_FLAG, "--", "PROMPT"]
 
 
 class TestResolveEffectiveCap:

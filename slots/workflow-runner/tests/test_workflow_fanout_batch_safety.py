@@ -84,7 +84,7 @@ def test_killpg_permission_failure_stops_batch_and_blocks_unstarted(tmp_path, mo
     monkeypatch.setattr(
         wf,
         "build_command",
-        lambda backend, prompt, output: [sys.executable, "-c", "", prompt],
+        lambda backend, prompt, output, model=None: [sys.executable, "-c", "", prompt],
     )
 
     code = wf.main(["--backend", "pi", "--plan", str(plan), "--out", str(out), "--concurrency", "2"])

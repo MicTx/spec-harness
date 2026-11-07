@@ -15,6 +15,7 @@ and active-slug resolution bound to the integration branch.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -1617,6 +1618,131 @@ def extract_pending_questions(spec_content: str) -> list[str]:
     if spec_format_version(spec_content) >= 2:
         return _pending_questions_v2(items)
     return [item for item in items if not _is_no_pending_declaration(item) and not _is_closed_pending_question(item)]
+
+
+@dataclass(frozen=True)
+class AutonomousQuestion:
+    text: str
+    kind: str
+    closed: bool
+    task: str
+    fields: dict[str, str]
+
+    @property
+    def fingerprint(self) -> str:
+        content = [self.kind, self.text, {key: value for key, value in self.fields.items() if key != "evidence"}]
+        return hashlib.sha256(json.dumps(content, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+DECISION_ACTIONS = re.compile(
+    r"\b(?:commit|push|credential|credentials|upload|publish|deploy)\b"
+    r"|凭据|凭证|密钥|令牌|上传|外传|发布|部署|提交|推送|不可逆|全局配置|全局设置"
+    r"|(?:删除|清空|覆盖).{0,16}(?:边界外|生产|用户数据)|(?:global|user)[ -](?:config|settings)",
+    re.I,
+)
+
+
+def _question_placeholder(value: str) -> bool:
+    return is_placeholder_value(value) or value.strip().strip("`").casefold() in {"todo", "tbd", "pending", "unknown"}
+
+
+def autonomous_question_contract(
+    spec_content: str, tasks_content: str
+) -> tuple[list[AutonomousQuestion], list[str], list[str]]:
+    pending = extract_pending_questions(spec_content)
+    if spec_format_version(spec_content) < 2:
+        return [], pending, []
+    try:
+        records = {record.id: record for record in parse_task_records(tasks_content)}
+    except SpecControlError as exc:
+        return [], pending, [str(exc)]
+    autonomous: list[AutonomousQuestion] = []
+    human = list(pending)
+    errors: list[str] = []
+    for item in extract_section_bullets(spec_content, SECTION_OPEN_QUESTIONS):
+        match = re.fullmatch(r"\[([ xX])\]\s+\[(fact|reversible|decision)\]\s+(.+)", item)
+        if not match:
+            if re.search(r"\[(?:fact|reversible|decision)\]", item, re.I):
+                errors.append("分类问题格式非法：使用 - [ ] [fact|reversible|decision] 问题 | 字段: 值")
+            continue
+        checked, kind, body = match.groups()
+        parts = [part.strip() for part in body.split("|")]
+        text, fields = parts[0], {}
+        item_errors: list[str] = []
+        if _question_placeholder(text):
+            item_errors.append("分类问题必须包含有效问题文本")
+        for part in parts[1:]:
+            field_match = re.fullmatch(r"([a-z_-]+):\s*(.+)", part)
+            if not field_match or field_match.group(1) in fields:
+                item_errors.append(f"问题字段非法或重复：{part}")
+                continue
+            fields[field_match.group(1)] = field_match.group(2).strip()
+        closed = checked.lower() == "x"
+        question = AutonomousQuestion(text, kind, closed, fields.get("task", ""), fields)
+        if kind == "decision":
+            if fields.get("reason") not in {"permission", "irreversible", "preference", "external"}:
+                item_errors.append("decision 必须声明 reason: permission|irreversible|preference|external")
+            authority = fields.get("authority", "")
+            if closed and (
+                _question_placeholder(fields.get("answer", ""))
+                or not authority.startswith("user:")
+                or _question_placeholder(authority.removeprefix("user:"))
+            ):
+                item_errors.append("decision 关闭需要 answer 与 authority: user:<引用>；agent 自述不是授权")
+            errors.extend(f"{text}：{error}" for error in item_errors)
+            continue
+        task = records.get(question.task)
+        action_text = body + ("\n" + task.block_text if task else "")
+        if DECISION_ACTIONS.search(action_text):
+            item_errors.append("敏感动作必须标为 [decision]，自主标签不产生授权")
+        if task is None or not task.executable or task.blocked:
+            item_errors.append("自主问题必须关联存在且可执行、未阻塞的 task")
+        elif dependency_errors(list(records.values())):
+            item_errors.append("自主调查任务的依赖图非法；修复悬空或循环依赖")
+        elif not closed and task.checked:
+            item_errors.append("关联任务已完成；核对证据并关闭问题，不能继续伪装调查任务")
+        if "evidence: runs" not in spec_content:
+            item_errors.append("自主问题必须启用 evidence: runs")
+        if closed:
+            if task is not None and not task.checked:
+                item_errors.append("关闭前必须完成关联任务")
+            if fields.get("evidence") != f"runs:{question.task}":
+                item_errors.append("关闭必须引用 evidence: runs:<task-id>")
+            needed = ("answer",) if kind == "fact" else ("choice", "rationale", "rollback")
+            for key in needed:
+                if _question_placeholder(fields.get(key, "")):
+                    item_errors.append(f"关闭缺少有效 {key}")
+        if item_errors:
+            errors.extend(f"{text}：{error}" for error in item_errors)
+        else:
+            pending_text = f"[{kind}] {body}"
+            if pending_text in human:
+                human.remove(pending_text)
+        autonomous.append(question)
+    return autonomous, human, errors
+
+
+def autonomous_question_fingerprints(spec_content: str, tasks_content: str, task_id: str) -> list[str]:
+    questions, _human, _errors = autonomous_question_contract(spec_content, tasks_content)
+    return sorted(question.fingerprint for question in questions if question.task == task_id)
+
+
+def decision_question_fingerprints(spec_content: str, *, closed_only: bool = False) -> list[str]:
+    version = spec_format_version(spec_content)
+    items = normalize_items(
+        extract_section_bullets(spec_content, SECTION_OPEN_QUESTIONS),
+        ignored=SECTION_PLACEHOLDER_ITEMS[SECTION_OPEN_QUESTIONS],
+    )
+    fingerprints = []
+    for item in items:
+        if _is_no_pending_declaration(item):
+            continue
+        if version >= 2 and re.fullmatch(r"\[[ xX]\]\s+\[(?:fact|reversible)\]\s+.+", item):
+            continue
+        closed = bool(re.match(r"\[x\]\s", item, re.I)) if version >= 2 else _is_closed_pending_question(item)
+        if not closed_only or closed:
+            fingerprints.append(hashlib.sha256(f"{version}:{item}".encode("utf-8")).hexdigest())
+    return sorted(fingerprints)
 
 
 def extract_problem_definition_values(spec_content: str) -> dict[str, str]:

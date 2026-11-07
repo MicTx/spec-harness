@@ -4,6 +4,7 @@ import fcntl
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -31,7 +32,7 @@ from autorun_spawn import (  # noqa: E402  # type: ignore
 
 
 @pytest.fixture(autouse=True)
-def macos_terminal_contract(monkeypatch):
+def macos_terminal_contract(monkeypatch, codex_reasoning_catalog):
     """These legacy tests exercise Terminal.app even when CI runs on Linux."""
     monkeypatch.setattr(chain_support.platform, "system", lambda: "Darwin")
 
@@ -123,6 +124,8 @@ class TestSpawnCommand:
                 "framework",
                 "--host",
                 "codex",
+                "--model",
+                "test-model",
                 "--dry-run",
                 "--format",
                 "json",
@@ -166,6 +169,8 @@ class TestSpawnCommand:
                 "PLAN.md",
                 "--host",
                 "codex",
+                "--model",
+                "test-model",
                 "--dry-run",
                 "--format",
                 "json",
@@ -433,7 +438,7 @@ class TestSpawnCommand:
             "run",
             lambda *a, **k: subprocess.CompletedProcess(a[0], 1, stdout="", stderr="not authorized"),
         )
-        code = main(["spawn", "--root", str(tmp_path), "--next", "framework"])
+        code = main(["spawn", "--root", str(tmp_path), "--next", "framework", "--host", "pi"])
         assert code == 1
         captured = capsys.readouterr()
         # matrix row "osascript 开窗失败（非零）": refusal is audited, state is not
@@ -1137,6 +1142,13 @@ AUDIT_FIELD_CONTRACT = {
             "updated_at",
             "shell_command",
             "model",
+            "reasoning_policy",
+            "reasoning_control",
+            "reasoning_request",
+            "reasoning_source",
+            "provider_effect",
+            "reasoning_cap",
+            "reasoning_upgraded",
         }
     ),
     # volatile.json after a real pass spawn: exactly the spawn-moment keys,
@@ -1164,6 +1176,13 @@ AUDIT_FIELD_CONTRACT = {
             "window_recycle",
             "model",
             "model_injection",
+            "reasoning_policy",
+            "reasoning_control",
+            "reasoning_request",
+            "reasoning_source",
+            "provider_effect",
+            "reasoning_cap",
+            "reasoning_upgraded",
         }
     ),
     # F14: the per-spawn injection fact written on every spawns row; the
@@ -1724,7 +1743,8 @@ class TestRefusalClosesSpawnedWindow:
         assert '"pass": 1' in script
         assert '"window_id": 88' in script
         assert '"prev_tty": "/dev/ttys055"' in script
-        assert 'case "$cmd" in *"pi "*|*/pi)' in script
+        assert "from chain_spawn_support import worker_command_matches" in script
+        assert 'pi "$cmd"' in script
         events = (
             (tmp_path / ".git" / "spec-chain" / "autoplan" / "events.jsonl").read_text(encoding="utf-8").splitlines()
         )
@@ -1860,7 +1880,7 @@ class TestRefusalClosesSpawnedWindow:
         seed_master(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autoplan_spawn.session_tty", lambda: "/dev/ttys012")
-        argv = ["spawn", "--root", str(tmp_path), "--next", "review", "--dry-run", "--format", "json"]
+        argv = ["spawn", "--root", str(tmp_path), "--next", "review", "--host", "pi", "--dry-run", "--format", "json"]
         assert main(argv) == 0
         payload = json.loads(capsys.readouterr().out)
         assert set(payload["window_recycle"]) == contract["window_recycle_keys"]["planned"]
@@ -1942,7 +1962,7 @@ class TestModelIdentity:
     exists here, so every spawn resolves a worker host. Flag literals render
     through chain_support.HOST_MODEL_FLAGS, never hardcoded."""
 
-    IDENTITY = {"id": "anthropic/opus-5.5", "reasoning": "high"}
+    IDENTITY = {"id": "anthropic/opus-5.5", "reasoning": "max"}
 
     # sentinel: the pre-F14 chain.json carries no model key at all
     NO_MODEL_KEY = object()
@@ -2022,7 +2042,7 @@ class TestModelIdentity:
             "--model",
             "anthropic/opus-5.5",
             "--reasoning",
-            "high",
+            "max",
         ]
         assert main(argv) == 0
         payload = json.loads(capsys.readouterr().out)
@@ -2063,7 +2083,8 @@ class TestModelIdentity:
     @pytest.mark.parametrize("host", ["pi", "codex", "claude"])
     def test_no_flags_continuation_injects_the_locked_value(self, tmp_path, capsys, monkeypatch, host):
         seed_master(tmp_path)
-        self.write_state(tmp_path, self.IDENTITY, host=host)
+        identity = {"id": "test-model", "reasoning": "max"} if host == "codex" else self.IDENTITY
+        self.write_state(tmp_path, identity, host=host)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         argv = [
             "spawn",
@@ -2079,11 +2100,11 @@ class TestModelIdentity:
         ]
         assert main(argv) == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["model"] == self.IDENTITY
+        assert payload["model"] == identity
         assert payload["model_injection"] == "full"
         shell = payload["shell_command"]
-        assert self.model_flag_segment(host, "id", "anthropic/opus-5.5") in shell
-        assert self.model_flag_segment(host, "reasoning", "high") in shell
+        assert self.model_flag_segment(host, "id", identity["id"]) in shell
+        assert self.model_flag_segment(host, "reasoning", "max") in shell
 
     def test_propagation_survives_a_real_second_pass(self, tmp_path, capsys, monkeypatch):
         seed_master(tmp_path)
@@ -2149,11 +2170,11 @@ class TestModelIdentity:
             "--model",
             "anthropic/opus-5.5",
             "--reasoning",
-            "max",
+            "high",
         ]
-        self.refused(tmp_path, capsys, argv, match="locked reasoning 'high' vs incoming reasoning 'max'")
+        self.refused(tmp_path, capsys, argv, match="ultrathink requires pi reasoning 'max'; requested 'high'")
 
-    def test_conflict_absent_vs_present_reasoning_refuses(self, tmp_path, capsys, monkeypatch):
+    def test_missing_reasoning_lock_upgrades_to_maximum(self, tmp_path, capsys, monkeypatch):
         seed_master(tmp_path)
         self.write_state(tmp_path, {"id": "anthropic/opus-5.5"})
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
@@ -2169,9 +2190,49 @@ class TestModelIdentity:
             "--model",
             "anthropic/opus-5.5",
             "--reasoning",
-            "high",
+            "max",
         ]
-        self.refused(tmp_path, capsys, argv, match="locked reasoning absent vs incoming reasoning 'high'")
+        assert main(argv + ["--format", "json"]) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["model"] == self.IDENTITY
+        assert payload["reasoning_upgraded"] is True
+
+    def test_codex_catalog_upgrade_is_recorded_without_changing_model(self, tmp_path, capsys, monkeypatch):
+        import reasoning_policy
+
+        seed_master(tmp_path)
+        state_file = self.write_state(tmp_path, {"id": "test-model", "reasoning": "high"}, host="codex")
+        state = json.loads(state_file.read_text())
+        state.update(
+            reasoning_policy=reasoning_policy.POLICY_VERSION,
+            reasoning_control="enforced",
+            reasoning_request="high",
+        )
+        state_file.write_text(json.dumps(state))
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr("autoplan_spawn.session_tty", lambda: "/dev/ttys012")
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout="4421 /dev/ttys042", stderr=""),
+        )
+        monkeypatch.setattr("autoplan_spawn.worker_running_on_tty", lambda worker, tty: True)
+        argv = ["spawn", "--root", str(tmp_path), "--next", "review", "--host", "codex", "--format", "json"]
+        assert main(argv) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["model"] == {"id": "test-model", "reasoning": "max"}
+        assert payload["reasoning_upgraded"] is True
+        stored = json.loads(state_file.read_text())
+        row = json.loads((tmp_path / ".git/spec-chain/autoplan/spawns.jsonl").read_text().splitlines()[-1])
+        for record in (stored, row):
+            assert record["reasoning_upgraded"] is True
+            assert record["reasoning_request"] == "max"
+            assert record["reasoning_source"]["version"] == "codex-cli test"
+        assert main(["status", "--root", str(tmp_path), "--format", "json"]) == 0
+        status = json.loads(capsys.readouterr().out)
+        assert status["reasoning_control"] == "enforced"
+        assert status["provider_effect"] == "unverified"
+        assert status["reasoning_cap"] == "unknown"
 
     def test_conflict_null_lock_then_value_refuses(self, tmp_path, capsys, monkeypatch):
         seed_master(tmp_path)
@@ -2193,7 +2254,7 @@ class TestModelIdentity:
             tmp_path,
             capsys,
             argv,
-            match='locked model: null but this spawn carries {"id": "anthropic/opus-5.5"}',
+            match="locked model: null but incoming model is 'anthropic/opus-5.5'",
         )
 
     def test_conflict_resolved_host_change_with_identity_refuses(self, tmp_path, capsys, monkeypatch):
@@ -2231,15 +2292,15 @@ class TestModelIdentity:
             "--next",
             "review",
             "--host",
-            "pi",
+            "codex",
             "--dry-run",
             "--reasoning",
-            "high",
+            "max",
         ]
         code = main(argv)
         captured = capsys.readouterr()
         assert code == 1
-        assert "--reasoning requires --model" in captured.err
+        assert "requires an explicit catalog model" in captured.err
 
     def test_empty_model_refuses_through_refusal_path(self, tmp_path, capsys, monkeypatch):
         seed_master(tmp_path)
@@ -2284,7 +2345,7 @@ class TestModelIdentity:
             match="--reasoning must be a non-empty level when given",
         )
 
-    def test_padded_meaningful_values_pass_through_verbatim(self, tmp_path, capsys, monkeypatch):
+    def test_model_is_preserved_and_maximum_reasoning_normalized(self, tmp_path, capsys, monkeypatch):
         seed_master(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autoplan_spawn.session_tty", lambda: "/dev/ttys012")
@@ -2307,13 +2368,11 @@ class TestModelIdentity:
             "--model",
             " anthropic/opus-5.5 ",
             "--reasoning",
-            " high ",
+            " MAX ",
         ]
         assert main(argv) == 0
         payload = json.loads(capsys.readouterr().out)
-        # original passthrough: no trim, no normalization — the locked value
-        # keeps the caller's padding verbatim
-        assert payload["model"] == {"id": " anthropic/opus-5.5 ", "reasoning": " high "}
+        assert payload["model"] == {"id": " anthropic/opus-5.5 ", "reasoning": "max"}
 
     def test_malformed_lock_refuses(self, tmp_path, capsys, monkeypatch):
         seed_master(tmp_path)
@@ -2335,7 +2394,7 @@ class TestModelIdentity:
 
     # --- the no-lock no-flags default stays byte-identical ----------------------
 
-    def test_no_lock_no_flags_default_argv_is_unchanged(self, tmp_path, capsys, monkeypatch):
+    def test_no_lock_no_flags_still_enforces_reasoning(self, tmp_path, capsys, monkeypatch):
         seed_master(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         monkeypatch.setattr("autoplan_spawn.session_tty", lambda: "/dev/ttys012")
@@ -2344,11 +2403,19 @@ class TestModelIdentity:
         payload = json.loads(capsys.readouterr().out)
         assert payload["model"] is None
         assert payload["model_injection"] == "none"
-        assert payload["shell_command"] == f"cd {tmp_path} && pi --mode text -- '$spec autoplan continue'"
+        assert payload["reasoning_request"] == "max"
+        assert shlex.split(payload["shell_command"]) == [
+            "cd",
+            str(tmp_path),
+            "&&",
+            *chain_support.worker_argv(
+                tmp_path, ["pi", "--thinking", "max", "--mode", "text", "--", "$spec autoplan continue"]
+            ),
+        ]
 
     # --- partial injection ------------------------------------------------------
 
-    def test_partial_when_host_lacks_a_reasoning_flag(self, tmp_path, capsys, monkeypatch):
+    def test_missing_reasoning_flag_refuses_partial_injection(self, tmp_path, capsys, monkeypatch):
         seed_master(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
         # construct the host-lacking-reasoning-flag form straight in the table
@@ -2369,14 +2436,9 @@ class TestModelIdentity:
             "json",
             "--dry-run",
         ]
-        assert main(argv) == 0
-        payload = json.loads(capsys.readouterr().out)
-        assert payload["model"] == {"id": "claude-opus-4-6", "reasoning": "max"}
-        assert payload["model_injection"] == "partial"
-        shell = payload["shell_command"]
-        assert self.model_flag_segment("claude", "id", "claude-opus-4-6") in shell
-        # the reasoning level never reaches the worker argv
-        assert " max" not in shell
+        assert main(argv) == 1
+        assert "refusing partial injection" in capsys.readouterr().err
+        assert not (tmp_path / ".spec/autoplan/chain.json").exists()
 
     def test_none_injection_for_null_identity(self, tmp_path, capsys, monkeypatch):
         seed_master(tmp_path)
@@ -2421,9 +2483,9 @@ class TestModelIdentity:
         )
         assert main(["status", "--root", str(tmp_path), "--format", "json"]) == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["model"] == {"id": "anthropic/opus-5.5", "reasoning": "high", "injection": "full"}
+        assert payload["model"] == {"id": "anthropic/opus-5.5", "reasoning": "max", "injection": "full"}
         assert main(["status", "--root", str(tmp_path)]) == 0
-        assert "model: anthropic/opus-5.5 [high] (injection: full)" in capsys.readouterr().out
+        assert "model: anthropic/opus-5.5 [max] (injection: full)" in capsys.readouterr().out
 
     def test_status_renders_worker_default_when_null(self, tmp_path, capsys):
         seed_master(tmp_path)
@@ -2464,7 +2526,7 @@ class TestModelIdentity:
             "--model",
             "anthropic/opus-5.5",
             "--reasoning",
-            "high",
+            "max",
         ]
         assert main(argv) == 0
         json.loads(capsys.readouterr().out)

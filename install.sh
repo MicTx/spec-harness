@@ -144,6 +144,7 @@ CORE_EXCLUDED_SCRIPTS=(
   chain_recovery.py
   chain_lifecycle.py
   chain_session.py
+  reasoning_policy.py
   sweep_chain_windows.py
 )
 

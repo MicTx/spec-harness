@@ -35,6 +35,7 @@ from spec_package_support import (
     SECTION_STRUCTURE_CREDIBILITY,
     SpecControlError,
     add_specs_dir_arg,
+    autonomous_question_contract,
     checklist_passed,
     clarification_gaps,
     correction_log_errors,
@@ -75,8 +76,9 @@ from spec_package_support import (
     verification_scope_section_exists,
     workflow_ledger_errors,
 )
-from spec_verify import evaluate_runs_gate, runs_protocol_enabled
+from spec_verify import evaluate_question_evidence, evaluate_runs_gate, runs_protocol_enabled
 from update_checkpoint_support import detect_update_checkpoint
+from worker_decision_guard import decision_guard_errors
 
 
 def parse_args() -> argparse.Namespace:
@@ -215,6 +217,10 @@ class GateResults:
 
     # Assumptions & scope
     pending_questions: list[str] = field(default_factory=list)
+    human_questions: list[str] = field(default_factory=list)
+    autonomous_questions: list[str] = field(default_factory=list)
+    autonomous_task_ids: list[str] = field(default_factory=list)
+    question_errors: list[str] = field(default_factory=list)
     out_of_scope: list[str] = field(default_factory=list)
     minimal_path: list[str] = field(default_factory=list)
     task_contract_errors: list[str] = field(default_factory=list)
@@ -375,6 +381,14 @@ def compute_gate_results(
 
     # Assumptions & scope
     r.pending_questions = extract_pending_questions(spec_content)
+    questions, r.human_questions, r.question_errors = autonomous_question_contract(spec_content, tasks_content)
+    r.question_errors.extend(decision_guard_errors(root))
+    r.autonomous_questions = [question.text for question in questions if not question.closed]
+    r.autonomous_task_ids = [question.task for question in questions if not question.closed]
+    try:
+        r.question_errors.extend(evaluate_question_evidence(spec_content, tasks_content, package_dir, root))
+    except (OSError, UnicodeError, ValueError) as exc:
+        r.question_errors.append(f"自主问题证据不可读：{exc}")
     r.out_of_scope = normalize_items(
         extract_section_bullets(spec_content, SECTION_OUT_OF_SCOPE),
         ignored=SECTION_PLACEHOLDER_ITEMS[SECTION_OUT_OF_SCOPE],
@@ -546,7 +560,9 @@ def compute_gate_results(
 
     # Derived booleans
     r.development_record_ok = slug is None or is_development_record_slug(slug)
-    r.assumptions_ok = not r.spec_clarification_gaps and not r.pending_questions and bool(r.out_of_scope)
+    r.assumptions_ok = (
+        not r.spec_clarification_gaps and not r.pending_questions and not r.question_errors and bool(r.out_of_scope)
+    )
     r.simplicity_ok = len(r.minimal_path) >= 3
     r.boundary_ok = r.missing_boundary == 0 and r.missing_verify == 0
     r.function_ok = (
@@ -736,7 +752,8 @@ def gate_rows(r: GateResults, slug: str | None) -> list[tuple[str, bool | None, 
             "假设与范围",
             r.assumptions_ok,
             f"待确认 {len(r.pending_questions)}；范围外 {len(r.out_of_scope)}；"
-            f"澄清缺口 {len(r.spec_clarification_gaps)}",
+            f"澄清缺口 {len(r.spec_clarification_gaps)}"
+            + ("；" + "；".join(r.question_errors) if r.question_errors else ""),
         ),
         ("简洁性", r.simplicity_ok, f"最小实现路径 {len(r.minimal_path)} 条"),
         (

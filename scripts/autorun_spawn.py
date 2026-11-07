@@ -659,84 +659,12 @@ def close_refused_window(
 # value), and refusals write no state.
 
 
-def _format_model_identity(identity: Optional[Dict[str, str]]) -> str:
-    """Compact identity render for refusal texts: ``null`` or sorted JSON."""
-    if not identity:
-        return "null"
-    return json.dumps(identity, sort_keys=True)
-
-
-def _render_identity_component(value: object) -> str:
-    """One identity component for a refusal text; ``absent`` when missing."""
-    return "absent" if value is None else repr(value)
-
-
-def _identity_lock_guidance() -> str:
-    """The shared refusal tail: how to legitimately change identity."""
-    return (
-        "the chain model is immutable; finish this chain and start a new one "
-        "(or have the maintainer clear the chain state) to change identity"
-    )
-
-
-def _resolve_model_identity(args: argparse.Namespace, state: Dict[str, object]) -> Optional[Dict[str, str]]:
-    """F14: resolve ``--model``/``--reasoning`` against the chain identity lock.
-
-    Returns the identity this round carries (``None`` = worker default): the
-    incoming identity when flags are given, else the locked value. A chain
-    without a ``model`` key (pre-F14 or fresh) locks on this spawn. Any
-    component mismatch against an existing lock refuses the spawn — the id,
-    the reasoning, or null-then-value. The resolved-host form is judged at
-    the spawn site, where the worker host is known (a bypass has none).
-    """
-    incoming: Optional[Dict[str, str]] = None
-    if args.model is not None or args.reasoning is not None:
-        if args.model is None:
-            raise AutorunError("--reasoning requires --model: the model id is the identity's primary component")
-        if not args.model.strip():
-            raise AutorunError("--model must be a non-empty model id (whitespace-only given) — refusing the spawn")
-        if args.reasoning is not None and not args.reasoning.strip():
-            raise AutorunError(
-                "--reasoning must be a non-empty level when given (whitespace-only given) — refusing the spawn"
-            )
-        incoming = {"id": args.model}
-        if args.reasoning is not None:
-            incoming["reasoning"] = args.reasoning
-
-    if "model" not in state:
-        # No lock yet (pre-F14 chains and fresh chains): this spawn locks —
-        # the incoming identity, or null when no flags were given.
-        return incoming
-
-    locked = state.get("model")
-    if locked is not None and not isinstance(locked, dict):
-        raise AutorunError(
-            "chain state has a malformed model identity lock: {!r} "
-            "(expected {{id, reasoning?}} or null) — refusing the spawn".format(locked)
-        )
-    if incoming is not None:
-        if locked is None:
-            raise AutorunError(
-                "model identity conflict: the chain locked model: null but this spawn carries "
-                f"{_format_model_identity(incoming)} — {_identity_lock_guidance()}"
-            )
-        if incoming.get("id") != locked.get("id"):
-            raise AutorunError(
-                "model identity conflict: locked id {} vs incoming id {} — {}".format(
-                    _render_identity_component(locked.get("id")),
-                    _render_identity_component(incoming.get("id")),
-                    _identity_lock_guidance(),
-                )
-            )
-        if incoming.get("reasoning") != locked.get("reasoning"):
-            raise AutorunError(
-                "model identity conflict: locked reasoning {} vs incoming reasoning {} — {}".format(
-                    _render_identity_component(locked.get("reasoning")),
-                    _render_identity_component(incoming.get("reasoning")),
-                    _identity_lock_guidance(),
-                )
-            )
-    return locked if isinstance(locked, dict) else None
+def _resolve_model_identity(args: argparse.Namespace, state: Dict[str, object], host: str) -> Optional[Dict[str, str]]:
+    """Preserve model identity, upgrade missing effort, refuse lower locks."""
+    try:
+        return chain_support.resolve_chain_model_identity(host, args.model, args.reasoning, state)
+    except ChainSpawnError as exc:
+        raise AutorunError(str(exc)) from exc
 
 
 def _render_status_model(model: object) -> str:
@@ -759,8 +687,15 @@ def _render_status_model(model: object) -> str:
 def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
     """Run the spawn guards, open an interactive session, and record chain state."""
     from chain_session import refuse_current_spawn
+    from reasoning_policy import reasoning_record
+    from worker_decision_guard import decision_guard_errors
 
     refuse_current_spawn(root, "autorun")
+    decision_errors = decision_guard_errors(root)
+    if decision_errors:
+        raise AutorunError("; ".join(decision_errors))
+    if args.command is not None:
+        raise AutorunError("--command bypass is incompatible with mandatory ultrathink; select --host instead")
     backend = chain_support.resolve_terminal_backend(getattr(args, "terminal", "auto"))
     # F16 step 3: legacy runtime files (and summary volatile fields) migrate
     # to .git/spec-chain/ before any read or lock — the rename preserves the
@@ -826,47 +761,23 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
         # F14: flags -> lock -> injection. The effective identity doubles as
         # the post-spawn lock value: on every accepted spawn it equals the
         # existing lock (matched component-wise) or establishes it.
-        effective_identity = _resolve_model_identity(args, state)
+        host, host_source = resolve_worker_host(args.host)
+        effective_identity = _resolve_model_identity(args, state, host)
 
         # F1 (AUD-01): the permission decision is per-spawn (no lock): each
         # round's session decides for its child, ``inherit`` probes the
         # parent session, and both the requested and the effective mode are
-        # recorded for audit. Probing runs on every path — including the
-        # --command bypass, where nothing renders but the audit still shows
-        # what would have applied.
+        # recorded for audit.
         permission_mode = getattr(args, "permission_mode", "inherit") or "inherit"
         permission_effective = resolve_permission_mode(permission_mode)
 
-        if args.command:
-            host = "custom"
-            host_source = "custom"
-            worker_command: List[str] = []
-            worker_name = ""
-            # bypass: the caller owns the full command, so the identity is
-            # recorded but never injected (the custom level says exactly that)
-            injection_level = "custom"
-        else:
-            host, host_source = resolve_worker_host(args.host)
-            # F14: a non-null identity is namespace-bound to its recorded host
-            # (a pi "provider/model" id means nothing to codex), so a resolved
-            # host change refuses the spawn; a bypass has no resolved host and
-            # is exempt (its state host is "custom", which any later host
-            # spawn with an identity then correctly refuses against).
-            state_host = state.get("host")
-            if effective_identity and isinstance(state_host, str) and state_host != host:
-                raise AutorunError(
-                    f"model identity conflict: resolved host {host!r} differs from the chain "
-                    f"host {state_host!r} while the model identity "
-                    f"{_format_model_identity(effective_identity)} is non-null — model ids are "
-                    "host-namespace-specific; refusing the spawn"
-                )
-            plan_args = plan_args_for_prompt(args.plan)
-            prompt = build_prompt(host, plan_args, max_rounds, unbounded=bool(getattr(args, "unbounded", False)))
-            worker_command = build_worker_command(
-                host, root, prompt, effective_identity, permission_mode=permission_effective
-            )
-            worker_name = worker_command[0]
-            injection_level = model_injection_level(effective_identity, host)
+        plan_args = plan_args_for_prompt(args.plan)
+        prompt = build_prompt(host, plan_args, max_rounds, unbounded=bool(getattr(args, "unbounded", False)))
+        worker_command = build_worker_command(
+            host, root, prompt, effective_identity, permission_mode=permission_effective
+        )
+        worker_name = worker_command[0]
+        injection_level = model_injection_level(effective_identity, host)
         # F17 geometry: the new window inherits this session's window place
         parent_tty = session_tty() if backend == "terminal" else None
         osascript_argv, shell_command = (
@@ -884,6 +795,10 @@ def spawn_payload(root: Path, args: argparse.Namespace) -> Dict[str, object]:
             "permission_effective": permission_effective,
             "model": effective_identity,
             "model_injection": injection_level,
+            **reasoning_record(host, (effective_identity or {}).get("id"), args.reasoning),
+            "reasoning_upgraded": bool(state)
+            and (state.get("reasoning_request") or (state.get("model") or {}).get("reasoning"))
+            != (effective_identity or {}).get("reasoning", "max"),
             "spawned_at": utc_now(),
             "shell_command": shell_command,
             "prev_tty": parent_tty,
@@ -1263,7 +1178,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     spawn_parser.add_argument(
         "--command",
-        help="raw shell command override run in the window after cd <root> (host recorded as custom)",
+        help="retired: raw commands are refused by mandatory ultrathink; select --host instead",
     )
     spawn_parser.add_argument(
         "--model",
@@ -1275,10 +1190,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     spawn_parser.add_argument(
         "--reasoning",
-        help=(
-            "reasoning/thinking level of the model identity, passed through to the worker CLI "
-            "as-is (requires --model; no cross-host vocabulary normalization)"
-        ),
+        help=("must equal the verified maximum (default: maximum); Codex requires an explicit catalog --model"),
     )
     spawn_parser.add_argument(
         "--max-rounds",
