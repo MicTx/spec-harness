@@ -10,6 +10,7 @@ SCRIPT_BLACKLIST = frozenset(
         "export_skill_package.py",
         "lint_workflows.py",
         "export_public_repo.py",
+        "public_secret_scan.py",
         "build_release.py",
         "package_agent_plugin.py",
         "skill_watermark.py",

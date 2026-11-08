@@ -56,10 +56,7 @@ def _apply(root: Path, plan_path: Path) -> subprocess.CompletedProcess[str]:
 
 
 def _snapshot(package: Path) -> dict[str, bytes]:
-    return {
-        name: (package / name).read_bytes()
-        for name in ("spec.md", "tasks.md")
-    }
+    return {name: (package / name).read_bytes() for name in ("spec.md", "tasks.md")}
 
 
 def _seed_plan(root: Path, package: Path, gaps: list[str]) -> tuple[Path, dict]:
@@ -125,33 +122,29 @@ def test_apply_appends_and_gate_stays_unconverged(tmp_path: Path) -> None:
     assert gate["converged"] is False
 
 
-def test_apply_is_idempotent_for_unchecked_duplicate(tmp_path: Path) -> None:
+def test_reapplying_old_snapshot_is_refused_without_writes(tmp_path: Path) -> None:
     package = _make_package(tmp_path)
     plan_path, _ = _seed_plan(tmp_path, package, ["未勾任务 1 项"])
     assert _apply(tmp_path, plan_path).returncode == 0
     before = _snapshot(package)
     result = _apply(tmp_path, plan_path)
-    assert result.returncode == 0, result.stderr
-    payload = json.loads(result.stdout)
-    assert payload["tasks"] == [] and payload["skipped"]
+    assert result.returncode == 2
+    assert "stale" in result.stderr
     assert _snapshot(package) == before
 
 
-def test_stale_plan_with_existing_id_is_skipped(tmp_path: Path) -> None:
+def test_refreshed_plan_with_existing_unchecked_id_is_skipped(tmp_path: Path) -> None:
     package = _make_package(tmp_path)
     plan_path, first = _seed_plan(tmp_path, package, ["未勾任务 1 项"])
     assert _apply(tmp_path, plan_path).returncode == 0
-    stale = tmp_path / "stale.json"
-    stale.write_text(
-        json.dumps({"version": 1, "slug": SLUG, "gaps_source": "check.json", "tasks": [first["tasks"][0]]}),
-        encoding="utf-8",
-    )
+    refreshed_path, refreshed = _seed_plan(tmp_path, package, ["未勾任务 1 项"])
+    assert refreshed["next"] == "run" and refreshed["tasks"] == []
+    refreshed["tasks"] = [first["tasks"][0]]
+    refreshed_path.write_text(json.dumps(refreshed), encoding="utf-8")
     before = _snapshot(package)
-    result = _apply(tmp_path, stale)
+    result = _apply(tmp_path, refreshed_path)
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout)["skipped"] == [
-        {"id": first["tasks"][0]["id"], "gap": "未勾任务 1 项"}
-    ]
+    assert json.loads(result.stdout)["skipped"] == [{"id": first["tasks"][0]["id"], "gap": "未勾任务 1 项"}]
     assert _snapshot(package) == before
 
 
@@ -226,25 +219,10 @@ def test_round_cap_escalates(tmp_path: Path) -> None:
     assert plan_result.returncode == 3
     assert json.loads(plan_result.stdout)["next"] == "escalate"
     plan_path = tmp_path / "plan.json"
-    plan_path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "slug": SLUG,
-                "gaps_source": "check.json",
-                "tasks": [
-                    {
-                        "id": "task-checkfix-t-aaaaaaaa",
-                        "gap": "未勾任务 1 项",
-                        "disposition": "resolved_current",
-                        "boundary": "fixture",
-                        "verify": "manual: fixture",
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
+    capped_plan = json.loads(plan_result.stdout)
+    for task in capped_plan["tasks"]:
+        task["verify"] = "manual: fixture"
+    plan_path.write_text(json.dumps(capped_plan), encoding="utf-8")
     apply_result = _apply(tmp_path, plan_path)
     assert apply_result.returncode == 3
     assert json.loads(apply_result.stdout)["next"] == "escalate"
@@ -282,7 +260,7 @@ def test_apply_restores_files_when_postwrite_gate_converges(tmp_path: Path, monk
     sys.path.insert(0, str(SCRIPT.parent))
     import check_issue_writeback as module
 
-    monkeypatch.setattr(module, "_gate_converged", lambda root, slug: True)
+    monkeypatch.setattr(module, "_gate_converged", lambda root, slug, specs_dir=None: True)
     exit_code = module.main(["apply", "--slug", SLUG, "--root", str(tmp_path), "--plan", str(plan_path)])
     assert exit_code == 2
     assert _snapshot(package) == before
@@ -295,7 +273,7 @@ def test_apply_restores_files_when_gate_crashes(tmp_path: Path, monkeypatch: pyt
     sys.path.insert(0, str(SCRIPT.parent))
     import check_issue_writeback as module
 
-    def broken_gate(root: Path, slug: str) -> bool:
+    def broken_gate(root: Path, slug: str, specs_dir=None) -> bool:
         raise module.WritebackError("gate crashed")
 
     monkeypatch.setattr(module, "_gate_converged", broken_gate)
@@ -350,8 +328,9 @@ def test_empty_gaps_plan_is_check_green_and_apply_rejected(tmp_path: Path) -> No
     assert _snapshot(package) == before
 
 
-def test_dirty_git_tree_blocks_apply(tmp_path: Path) -> None:
-    package = _make_package(tmp_path)
+def test_snapshot_matched_dirty_git_tree_allows_apply(tmp_path: Path) -> None:
+    package = _make_package(tmp_path, spec=SPEC + f"\n- Git integration branch：spec/{SLUG}\n")
+
     def git(*args: str) -> None:
         subprocess.run(
             ["git", "-C", str(tmp_path), *args],
@@ -360,16 +339,16 @@ def test_dirty_git_tree_blocks_apply(tmp_path: Path) -> None:
             check=True,
         )
 
-    git("init", "-q")
+    git("init", "-q", "-b", f"spec/{SLUG}")
     git("add", ".")
     git("-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "init")
     (package / "tasks.md").write_text(TASKS + "\n<!-- dirty -->\n", encoding="utf-8")
     plan_path, _ = _seed_plan(tmp_path, package, ["未勾任务 1 项"])
     before = _snapshot(package)
     result = _apply(tmp_path, plan_path)
-    assert result.returncode == 2
-    assert "uncommitted" in result.stderr
-    assert _snapshot(package) == before
+    assert result.returncode == 0, result.stderr
+    assert (package / "tasks.md").read_bytes().startswith(before["tasks.md"])
+    assert "<!-- dirty -->" in (package / "tasks.md").read_text()
 
 
 def test_end_to_end_with_real_check_output(tmp_path: Path) -> None:
@@ -408,28 +387,8 @@ ROW_MARKER_TOKEN = "check 回写钩子"
 
 def test_missing_correction_section_errors(tmp_path: Path) -> None:
     package = _make_package(tmp_path, spec="# fixture - 项目范围\n")
-    plan_path = tmp_path / "plan.json"
-    plan_path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "slug": SLUG,
-                "gaps_source": "check.json",
-                "tasks": [
-                    {
-                        "id": "task-checkfix-t-aaaaaaaa",
-                        "gap": "未勾任务 1 项",
-                        "disposition": "resolved_current",
-                        "boundary": "fixture",
-                        "verify": "manual: fixture",
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
     before = _snapshot(package)
-    result = _apply(tmp_path, plan_path)
+    result = _plan(tmp_path, _write_gaps(tmp_path, ["missing correction log"]))
     assert result.returncode == 2
     assert "correction log" in result.stderr
     assert _snapshot(package) == before

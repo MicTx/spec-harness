@@ -1,6 +1,7 @@
 """Questions route to executable inquiry; closure requires bound, fresh proof."""
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -13,7 +14,7 @@ from check_spec_package import compute_gate_results
 from report_spec_package import package_status_summary, parse_tasks, render_multi_status, render_status
 from route_spec_package import route_for_package
 from spec_package_support import autonomous_question_contract, extract_pending_questions
-from spec_verify import evaluate_question_evidence
+from spec_verify import RUNS_FILENAME, evaluate_question_evidence, evaluate_runs_gate
 
 from tests.test_pending_question_closure import _make_checklist, _make_spec
 from tests.test_spec_verify import init_repo
@@ -364,3 +365,135 @@ def test_real_run_binds_question_and_conclusion_then_rejects_staleness(tmp_path)
     assert evaluate_question_evidence(spec.replace("version 2", "version 3"), tasks, package, tmp_path)
     (tmp_path / "format.txt").write_text("3")
     assert any("机器运行证据" in error for error in evaluate_question_evidence(spec, tasks, package, tmp_path))
+
+
+def _record_bound_run(tmp_path, package):
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/spec_verify.py"),
+            "run",
+            "--root",
+            str(tmp_path),
+            "--slug",
+            SLUG,
+            "--task",
+            "task-inspect",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    spec = make_spec("[x] " + QUESTION + " | evidence: runs:task-inspect")
+    tasks = TASKS.replace("[ ]", "[x]")
+    (package / "spec.md").write_text(spec, encoding="utf-8")
+    (package / "tasks.md").write_text(tasks, encoding="utf-8")
+    return spec, tasks
+
+
+def _archive(package, tmp_path, container=""):
+    archived = tmp_path / ".spec" / "specs" / "archive" / container / SLUG
+    archived.parent.mkdir(parents=True, exist_ok=True)
+    package.rename(archived)
+    return archived
+
+
+@pytest.mark.parametrize("container", ["", "retired/2026-10-12"])
+def test_archived_evidence_keeps_question_binding_without_live_freshness(tmp_path, container):
+    init_repo(tmp_path)
+    package = package_fixture(tmp_path)
+    spec, tasks = _record_bound_run(tmp_path, package)
+    assert evaluate_question_evidence(spec, tasks, package, tmp_path) == []
+
+    archived = _archive(package, tmp_path, container)
+    # Later work invalidates live freshness, not the archived answer's proof.
+    (tmp_path / "format.txt").write_text("9", encoding="utf-8")
+    assert evaluate_question_evidence(spec, tasks, archived, None, archived_root=tmp_path) == []
+    assert evaluate_question_evidence(spec, tasks, archived, tmp_path)
+    assert "未评估" in " ".join(evaluate_question_evidence(spec, tasks, archived, None))
+    assert evaluate_runs_gate(spec, tasks, archived, None)[0] is None
+    results = compute_gate_results(spec, tasks, _make_checklist(), package_dir=archived, archived_root=tmp_path)
+    assert results.question_errors == []
+    assert results.runs_gate_ok is None  # Historical run freshness stays frozen.
+    assert evaluate_question_evidence(
+        spec.replace("version 2", "version 3"), tasks, archived, None, archived_root=tmp_path
+    )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "exit-nonzero",
+        "exit-abnormal",
+        "exit-bool",
+        "exit-float",
+        "missing-run",
+        "malformed-runs",
+        "wrong-command",
+        "changed-helper",
+        "missing-identity",
+        "wrong-identity",
+        "unbound-answer",
+        "invalid-verify",
+        "duplicate-verify",
+    ],
+)
+def test_archived_question_rejects_unusable_or_unbound_records(tmp_path, change):
+    init_repo(tmp_path)
+    package = package_fixture(tmp_path)
+    spec, tasks = _record_bound_run(tmp_path, package)
+    archived = _archive(package, tmp_path)
+    runs = archived / RUNS_FILENAME
+    record = json.loads(runs.read_text(encoding="utf-8").splitlines()[-1])
+    if change.startswith("exit-"):
+        record["exit"] = {"exit-nonzero": 1, "exit-abnormal": -1, "exit-bool": False, "exit-float": 0.0}[change]
+    elif change == "missing-run":
+        record["task"] = "task-other"
+    elif change == "wrong-command":
+        record["cmd"] = "python3 -c 'print(42)'"
+    elif change == "changed-helper":
+        (archived / "helper.txt").write_text("new package input", encoding="utf-8")
+    elif change == "missing-identity":
+        record.pop("package_id")
+    elif change == "wrong-identity":
+        record["package_id"] = ".spec/specs/another-package"
+    elif change == "unbound-answer":
+        record.pop("question_fps")
+    elif change == "invalid-verify":
+        tasks = tasks.split("  - verify:")[0] + "  - verify: prose without a command\n"
+    elif change == "duplicate-verify":
+        tasks += "  - verify: `python3 -c 'assert True'`\n"
+    runs.write_text("{not-json}\n" if change == "malformed-runs" else json.dumps(record) + "\n", encoding="utf-8")
+    results = compute_gate_results(spec, tasks, _make_checklist(), package_dir=archived, archived_root=tmp_path)
+    assert results.question_errors, change
+    assert not results.assumptions_ok
+
+
+def test_archived_question_cannot_reuse_identity_from_another_specs_root(tmp_path):
+    init_repo(tmp_path)
+    package = package_fixture(tmp_path)
+    spec, tasks = _record_bound_run(tmp_path, package)
+    archived = _archive(package, tmp_path)
+    copied = tmp_path / "other" / "specs" / "archive" / SLUG
+    shutil.copytree(archived, copied)
+    assert evaluate_question_evidence(spec, tasks, copied, None, archived_root=tmp_path)
+
+
+def test_frozen_question_proof_never_accepts_a_live_package(tmp_path):
+    init_repo(tmp_path)
+    package = package_fixture(tmp_path)
+    spec, tasks = _record_bound_run(tmp_path, package)
+    assert evaluate_runs_gate(spec, tasks, package, None)[0] is None
+    assert evaluate_question_evidence(spec, tasks, package, None, archived_root=tmp_path)
+
+
+def test_archived_question_cannot_pass_without_per_task_states(tmp_path, monkeypatch):
+    import spec_verify
+
+    init_repo(tmp_path)
+    package = package_fixture(tmp_path)
+    spec, tasks = _record_bound_run(tmp_path, package)
+    archived = _archive(package, tmp_path)
+    monkeypatch.setattr(spec_verify, "_runs_gate_states", lambda *args, **kwargs: (None, [], "适用外", {}))
+    assert evaluate_question_evidence(spec, tasks, archived, None, archived_root=tmp_path)

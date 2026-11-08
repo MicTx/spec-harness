@@ -277,6 +277,7 @@ spec/
 │   ├── chain_session.py
 │   ├── chain_spawn_support.py
 │   ├── check_all_spec_packages.py
+│   ├── check_issue_writeback.py
 │   ├── check_spec_package.py
 │   ├── complete_spec_package.py
 │   ├── dashboard_support.py
@@ -346,6 +347,7 @@ spec/
         │   └── workflow_route.py
         └── tests/
             ├── conftest.py
+            ├── test_fanout_checkpoint.py
             ├── test_fanout_context_safety.py
             ├── test_fanout_decision_guard.py
             ├── test_workflow_fanout.py

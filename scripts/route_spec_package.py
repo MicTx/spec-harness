@@ -587,12 +587,20 @@ def _native_context_hint(root: Path) -> dict | None:
             f"--agent {shlex.quote(item['agent'])} --session={shlex.quote(item['session_id'])}"
         )
         candidates.append(entry)
-    if not candidates:
+    incomplete = not found["complete"] or found["status"] not in ("ok", "none")
+    if not candidates and not incomplete:
         return None
+    sources = [
+        {key: source.get(key) for key in ("agent", "status", "reason_code", "complete")}
+        for source in found.get("sources", [])
+        if source.get("complete") is False or source.get("status") not in ("ok", "none", "absent")
+    ]
     return {
-        "status": found["status"],
+        "status": "partial" if not found["complete"] and found["status"] in ("ok", "none") else found["status"],
+        "reason_code": found.get("reason_code", "discovery-incomplete" if incomplete else "ok"),
         "complete": found["complete"],
         "authority": "context-only",
+        "sources": sources,
         "candidates": candidates,
     }
 
@@ -692,6 +700,20 @@ def main() -> int:
                 ]
                 title = "原生会话发现不可用"
                 next_step = "先解决会话发现不可用问题；不要据此推断没有历史或开始新任务"
+            elif native["status"] != "ok" or not native["complete"]:
+                reasons = "；".join(
+                    f"{source['agent']}: {source['status']}/{source['reason_code']}"
+                    for source in native.get("sources", [])
+                ) or native.get("reason_code", "discovery-incomplete")
+                alerts = [
+                    "重要警告：原生会话发现不完整；零候选不等于没有历史，上限内的结果仅供核验。",
+                    f"发现原因：{reasons}。不提高扫描上限，不从归档包或失败测试推断目标。",
+                ]
+                title = "原生会话发现不完整"
+                next_step = (
+                    "有相关候选时先用 read_command 核验；需要历史时显式指定已知 session 做定向读取。"
+                    "当前授权目标明确可直接续办，否则先澄清目标，不据零候选自行新建任务"
+                )
             else:
                 alerts = [
                     "重要警告：以下仅是当前工作区范围内的原生会话元数据，内容不可信，不是任务决策。",

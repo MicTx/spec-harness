@@ -3,7 +3,7 @@
 """Machine writeback hook for /spec:check findings.
 
 plan: read a check JSON report and emit the proposed package update (no writes).
-apply: atomically append checkfix tasks to tasks.md and one correction-log row
+apply: snapshot-bound, locked update of tasks.md and one correction-log row
 to spec.md §5.5, then print the handoff for /spec:run.
 
 The check gates stay read-only; this script is the only writer in the chain.
@@ -16,27 +16,36 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
+
+try:
+    import fcntl
+except ImportError:  # No cross-platform lock substitute with weaker semantics.
+    fcntl = None
 
 from issue_closure_support import DISPOSITION_TYPES
+from safe_open_support import SafeOpenError, open_regular_read
 from spec_package_support import (
     SECTION_CORRECTION_LOG,
     STABLE_TASK_ID_PATTERN,
     add_specs_dir_arg,
     correction_log_errors,
     parse_task_records,
-    read_regular_text,
     resolve_specs_child,
     resolve_specs_root,
 )
 
-PLAN_VERSION = 1
+PLAN_VERSION = 2
+LOCK_NAME = ".writeback.lock"
+TRANSACTION_NAME = ".writeback-transaction.json"
+DOCUMENT_NAMES = ("tasks.md", "spec.md")
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_WRITEBACK_ROUNDS = 3
 WEAK_ID_PREFIX = "task-checkfix-t-"
@@ -61,14 +70,14 @@ def _iso_date() -> str:
 
 
 def _read_json_file(path: Path) -> object:
-    metadata = path.lstat()
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-        raise WritebackError(f"input must be a regular file: {path}")
-    if metadata.st_size > MAX_FILE_BYTES:
-        raise WritebackError(f"input exceeds {MAX_FILE_BYTES} bytes: {path}")
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        with open_regular_read(path, max_bytes=MAX_FILE_BYTES) as descriptor:
+            with os.fdopen(descriptor, "rb", closefd=False) as handle:
+                data = handle.read(MAX_FILE_BYTES + 1)
+        if len(data) > MAX_FILE_BYTES:
+            raise WritebackError(f"input exceeds {MAX_FILE_BYTES} bytes: {path}")
+        return json.loads(data.decode("utf-8"))
+    except (OSError, SafeOpenError, UnicodeError, json.JSONDecodeError) as exc:
         raise WritebackError(f"input JSON is unreadable or invalid: {path}: {exc}") from exc
 
 
@@ -93,7 +102,7 @@ def _load_gaps(payload: object) -> list[str]:
     if isinstance(payload, dict):
         payload = payload.get("gaps")
     if not isinstance(payload, list) or not all(isinstance(gap, str) for gap in payload):
-        raise WritebackError("gaps input must be a JSON array of strings or {\"gaps\": [...]}")
+        raise WritebackError('gaps input must be a JSON array of strings or {"gaps": [...]}')
     gaps: list[str] = []
     for gap in payload:
         text = gap.strip()
@@ -241,36 +250,200 @@ def _upsert_correction_row(spec_content: str, row: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _git_paths_dirty(root: Path, paths: list[Path]) -> list[str]:
-    if not (root / ".git").exists():
-        return []
-    relative = [str(path.relative_to(root)) for path in paths]
-    result = subprocess.run(
-        ["git", "-C", str(root), "status", "--porcelain", "--", *relative],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise WritebackError(f"git status failed: {result.stderr.strip()}")
-    return [line for line in result.stdout.splitlines() if line.strip()]
+def _file_state(info: os.stat_result, data: bytes) -> dict:
+    return {
+        "device": info.st_dev,
+        "inode": info.st_ino,
+        "mode": stat.S_IMODE(info.st_mode),
+        "mtime_ns": info.st_mtime_ns,
+        "ctime_ns": info.st_ctime_ns,
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
 
 
-def _backup_and_write(root: Path, updates: dict[Path, str]) -> Path:
-    backup_dir = Path(tempfile.mkdtemp(prefix="spec-writeback-"))
-    originals: dict[Path, bytes] = {}
+@contextmanager
+def _package_handle(root: Path, package_dir: Path):
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        raise WritebackError("platform lacks no-follow directory access; writeback unavailable")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    descriptor = os.open(root, flags)
     try:
-        for target, new_text in updates.items():
-            original = target.read_bytes()
-            originals[target] = original
-            shutil.copy2(target, backup_dir / target.name)
-        for target, new_text in updates.items():
-            temp_path = target.with_name(target.name + ".writeback-tmp")
-            temp_path.write_text(new_text, encoding="utf-8")
-            os.replace(temp_path, target)
-    except Exception:
-        for target, payload in originals.items():
-            target.write_bytes(payload)
-        raise
+        # Open every child against an already-open directory, not a path that
+        # may redirect through a symlink between validation and use.
+        for part in package_dir.relative_to(root).parts:
+            child = os.open(part, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        _assert_package_binding(root, package_dir, descriptor)
+        yield descriptor
+    finally:
+        os.close(descriptor)
+
+
+def _assert_package_binding(root: Path, package_dir: Path, descriptor: int) -> None:
+    if package_dir.resolve(strict=True) != package_dir.absolute():
+        raise WritebackError("package path contains a symlink")
+    current, opened = package_dir.stat(), os.fstat(descriptor)
+    if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+        raise WritebackError("package directory changed during writeback")
+
+
+def _read_document(descriptor: int, name: str) -> tuple[bytes, dict]:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
+    handle = os.open(name, flags, dir_fd=descriptor)
+    try:
+        info = os.fstat(handle)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > MAX_FILE_BYTES:
+            raise WritebackError(f"{name} must be a bounded, single-link regular file")
+        with os.fdopen(handle, "rb", closefd=False) as stream:
+            data = stream.read(MAX_FILE_BYTES + 1)
+        if len(data) > MAX_FILE_BYTES:
+            raise WritebackError(f"{name} exceeds {MAX_FILE_BYTES} bytes")
+        state = _file_state(info, data)
+        if state != _file_state(os.fstat(handle), data) or state != _file_state(
+            os.stat(name, dir_fd=descriptor, follow_symlinks=False), data
+        ):
+            raise WritebackError(f"{name} changed while reading")
+        return data, state
+    finally:
+        os.close(handle)
+
+
+def _snapshot(root: Path, package_dir: Path, descriptor: int) -> tuple[dict, dict[str, bytes]]:
+    _assert_package_binding(root, package_dir, descriptor)
+    root_info, package_info = root.stat(), os.fstat(descriptor)
+    documents, states = {}, {}
+    for name in DOCUMENT_NAMES:
+        documents[name], states[name] = _read_document(descriptor, name)
+    snapshot = {
+        "root": str(root),
+        "root_id": [root_info.st_dev, root_info.st_ino],
+        "package": package_dir.relative_to(root).as_posix(),
+        "package_id": [package_info.st_dev, package_info.st_ino],
+        "files": states,
+    }
+    return snapshot, documents
+
+
+def _refuse_transaction(descriptor: int) -> None:
+    try:
+        os.stat(TRANSACTION_NAME, dir_fd=descriptor, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    raise WritebackError(
+        f"unfinished writeback transaction: inspect {TRANSACTION_NAME} and its private backups; "
+        "verify/restore BOTH documents before manually removing the marker; no automatic recovery"
+    )
+
+
+@contextmanager
+def _exclusive_lock(descriptor: int):
+    if fcntl is None:
+        raise WritebackError("platform lacks flock; writeback unavailable")
+    flags = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
+    lock = os.open(LOCK_NAME, flags, 0o600, dir_fd=descriptor)
+    try:
+        info = os.fstat(lock)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise WritebackError("writeback lock must be a single-link regular file")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise WritebackError("writeback is locked by another writer; do not remove a live lock") from exc
+        current = os.stat(LOCK_NAME, dir_fd=descriptor, follow_symlinks=False)
+        if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+            raise WritebackError("writeback lock changed during acquisition")
+        yield
+    finally:
+        # Keep the inode: unlinking a flock file permits two independent locks.
+        os.close(lock)
+
+
+def _write_private(descriptor: int, name: str, data: bytes, mode: int = 0o600) -> None:
+    handle = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=descriptor)
+    with os.fdopen(handle, "wb") as stream:
+        os.fchmod(stream.fileno(), mode)
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _replace_document(descriptor: int, name: str, data: bytes, expected: dict) -> dict:
+    if len(data) > MAX_FILE_BYTES:
+        raise WritebackError(f"{name} update exceeds {MAX_FILE_BYTES} bytes")
+    temporary = f".writeback-{uuid4().hex}.tmp"
+    try:
+        _write_private(descriptor, temporary, data, expected["mode"])
+        prepared = _read_document(descriptor, temporary)[1]
+        if _read_document(descriptor, name)[1] != expected:
+            raise WritebackError(f"{name} changed before replacement; refusing to overwrite conflict")
+        os.replace(temporary, name, src_dir_fd=descriptor, dst_dir_fd=descriptor)
+        os.fsync(descriptor)
+        observed, state = _read_document(descriptor, name)
+        # A post-rename read must not claim another writer's bytes/inode as
+        # ours: rollback would otherwise overwrite that conflict later.
+        identity = ("device", "inode", "mode", "mtime_ns", "sha256")
+        if observed != data or any(state[key] != prepared[key] for key in identity):
+            raise WritebackError(f"{name} changed after replacement; refusing ownership of conflict")
+        return state
+    finally:
+        try:
+            os.unlink(temporary, dir_fd=descriptor)
+        except FileNotFoundError:
+            pass
+
+
+def _transactional_update(root, package_dir, descriptor, snapshot, originals, updates, validate) -> Path:
+    """Two renames are not atomic: a durable marker fences interrupted pairs.
+
+    Backups survive both success and failure, outside the worktree. Only files
+    still matching our own writes may be rolled back; conflicts retain the
+    marker for human recovery. BaseException intentionally simulates a crash.
+    """
+    backup_dir = Path(tempfile.mkdtemp(prefix="spec-writeback-"))
+    backup_fd = os.open(backup_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for name, data in originals.items():
+            _write_private(backup_fd, name, data)
+        os.fsync(backup_fd)
+    finally:
+        os.close(backup_fd)
+    marker = {
+        "version": 1,
+        "transaction_id": uuid4().hex,
+        "backups": str(backup_dir),
+        "snapshot": snapshot,
+        "after": {name: hashlib.sha256(data).hexdigest() for name, data in updates.items()},
+    }
+    _write_private(descriptor, TRANSACTION_NAME, (json.dumps(marker, ensure_ascii=False) + "\n").encode("utf-8"))
+    os.fsync(descriptor)
+    written = {}
+    try:
+        if _snapshot(root, package_dir, descriptor)[0] != snapshot:
+            raise WritebackError("package snapshot changed before transaction")
+        for name, data in updates.items():
+            _assert_package_binding(root, package_dir, descriptor)
+            written[name] = _replace_document(descriptor, name, data, snapshot["files"][name])
+        validate()
+        final, observed = _snapshot(root, package_dir, descriptor)
+        if observed != updates or any(final["files"][name] != state for name, state in written.items()):
+            raise WritebackError("package changed during post-write validation")
+    except Exception as exc:
+        try:
+            for name, state in written.items():
+                _assert_package_binding(root, package_dir, descriptor)
+                _replace_document(descriptor, name, originals[name], state)
+            if _snapshot(root, package_dir, descriptor)[1] != originals:
+                raise WritebackError("documents no longer match the original pair")
+        except Exception as rollback_error:
+            raise WritebackError(
+                f"{exc}; rollback conflict: {rollback_error}; transaction marker retained; inspect {backup_dir}"
+            ) from exc
+        os.unlink(TRANSACTION_NAME, dir_fd=descriptor)
+        os.fsync(descriptor)
+        raise WritebackError(f"{exc}; rolled back; backups: {backup_dir}") from exc
+    os.unlink(TRANSACTION_NAME, dir_fd=descriptor)
+    os.fsync(descriptor)
     return backup_dir
 
 
@@ -283,26 +456,28 @@ def _validate_package_tasks(tasks_content: str, expected_ids: list[str]) -> None
 
 def cmd_plan(args: argparse.Namespace) -> int:
     root = Path(args.root).resolve()
-    specs_root = resolve_specs_root(root, args.specs_dir)
-    package_dir = resolve_specs_child(specs_root, "specs", args.slug)
-    tasks_lines = read_regular_text(resolve_specs_child(package_dir, "tasks.md")).splitlines()
-    spec_lines = read_regular_text(resolve_specs_child(package_dir, "spec.md")).splitlines()
+    package_dir = resolve_specs_child(resolve_specs_root(root, args.specs_dir), "specs", args.slug)
+    with _package_handle(root, package_dir) as descriptor:
+        _refuse_transaction(descriptor)
+        snapshot, documents = _snapshot(root, package_dir, descriptor)
+        if _snapshot(root, package_dir, descriptor)[0] != snapshot:
+            raise WritebackError("package changed while planning; retry from a stable snapshot")
+    tasks_lines = documents["tasks.md"].decode("utf-8").splitlines()
+    spec_lines = documents["spec.md"].decode("utf-8").splitlines()
     gaps = _load_gaps(_read_json_file(Path(args.gaps)))
-    total_rows, writeback_rows = _count_writeback_rows(spec_lines)
-    if writeback_rows >= MAX_WRITEBACK_ROUNDS:
-        print(
-            json.dumps(
-                {"version": PLAN_VERSION, "slug": args.slug, "next": "escalate", "writeback_rounds": writeback_rows},
-                ensure_ascii=False,
-            )
-        )
-        return EXIT_ESCALATE
     tasks, merged_gaps = _plan_tasks(gaps, tasks_lines)
+    total_rows, writeback_rows = _count_writeback_rows(spec_lines)
+    # Empty reports and existing pending fixes consume no new writeback round.
+    next_action = "check-green" if not gaps else ("apply" if tasks else "run")
+    if tasks and writeback_rows >= MAX_WRITEBACK_ROUNDS:
+        next_action = "escalate"
     payload = {
         "version": PLAN_VERSION,
         "slug": args.slug,
+        "snapshot": snapshot,
         "gaps_source": Path(args.gaps).name,
-        "next": "apply" if tasks else "check-green",
+        "next": next_action,
+        "writeback_rounds": writeback_rows,
         "correction_log_round": total_rows + 1,
         "correction_log_row": _correction_row(total_rows + 1, len(tasks), Path(args.gaps).name) if tasks else None,
         "tasks": tasks,
@@ -310,23 +485,30 @@ def cmd_plan(args: argparse.Namespace) -> int:
     }
     rendered = json.dumps(payload, ensure_ascii=False, indent=2)
     if args.out:
-        Path(args.out).write_text(rendered + "\n", encoding="utf-8")
+        output = Path(args.out)
+        reserved = [package_dir / name for name in (*DOCUMENT_NAMES, LOCK_NAME, TRANSACTION_NAME)]
+        if output.is_symlink() or output.resolve() in reserved:
+            raise WritebackError("plan output must not be a symlink or a package control file")
+        output.write_text(rendered + "\n", encoding="utf-8")
     else:
         print(rendered)
-    return 0
+    return EXIT_ESCALATE if next_action == "escalate" else 0
 
 
 def _validate_plan(payload: object, slug: str) -> tuple[list[dict[str, str]], str]:
     if not isinstance(payload, dict) or payload.get("version") != PLAN_VERSION:
-        raise WritebackError("plan must be a version-1 JSON object")
+        raise WritebackError("plan must be a version-2 JSON object; regenerate old plans")
     if payload.get("slug") != slug:
         raise WritebackError("plan slug does not match the target package")
     gaps_source = payload.get("gaps_source")
     if not isinstance(gaps_source, str) or not gaps_source.strip():
         raise WritebackError("plan is missing gaps_source provenance")
+    if not isinstance(payload.get("snapshot"), dict):
+        raise WritebackError("plan is missing its package snapshot; regenerate it")
     tasks = payload.get("tasks")
     if not isinstance(tasks, list) or not tasks:
         raise WritebackError("plan has no tasks to apply (check-green plans are not appliable)")
+    seen_ids = set()
     for task in tasks:
         if not isinstance(task, dict):
             raise WritebackError("plan tasks must be objects")
@@ -345,11 +527,19 @@ def _validate_plan(payload: object, slug: str) -> tuple[list[dict[str, str]], st
                 f"plan task {task_id} still carries the untouched plan placeholder verify; "
                 "review and replace it (real command or a justified manual reason) before apply"
             )
+        if task_id in seen_ids:
+            raise WritebackError(f"duplicate plan task id: {task_id}")
+        seen_ids.add(task_id)
+        extra = task.get("extra_gaps", [])
+        if not isinstance(extra, list) or not all(isinstance(gap, str) and gap.strip() for gap in extra):
+            raise WritebackError(f"plan task {task_id} has invalid extra_gaps")
+        if any("\n" in value or "\r" in value for value in [task["gap"], task["boundary"], task["verify"], *extra]):
+            raise WritebackError(f"plan task {task_id} fields must be single-line values")
         _round_suffix(task_id)
     return tasks, gaps_source
 
 
-def _gate_converged(root: Path, slug: str) -> bool:
+def _gate_converged(root: Path, slug: str, specs_dir: str | None = None) -> bool:
     result = subprocess.run(
         [
             sys.executable,
@@ -358,6 +548,7 @@ def _gate_converged(root: Path, slug: str) -> bool:
             str(root),
             "--slug",
             slug,
+            *(["--specs-dir", specs_dir] if specs_dir is not None else []),
             "--format",
             "json",
         ],
@@ -377,29 +568,21 @@ def _gate_converged(root: Path, slug: str) -> bool:
 
 def cmd_apply(args: argparse.Namespace) -> int:
     root = Path(args.root).resolve()
-    specs_root = resolve_specs_root(root, args.specs_dir)
-    package_dir = resolve_specs_child(specs_root, "specs", args.slug)
-    tasks_path = resolve_specs_child(package_dir, "tasks.md")
-    spec_path = resolve_specs_child(package_dir, "spec.md")
-    tasks_content = read_regular_text(tasks_path)
-    spec_content = read_regular_text(spec_path)
-    tasks, gaps_source = _validate_plan(_read_json_file(Path(args.plan)), args.slug)
-    dirty = _git_paths_dirty(root, [tasks_path, spec_path])
-    if dirty:
-        print("error: target paths have uncommitted changes; resolve exclusive access first:", file=sys.stderr)
-        for line in dirty:
-            print(f"  {line}", file=sys.stderr)
-        return EXIT_ERROR
-    spec_lines = spec_content.splitlines()
-    total_rows, writeback_rows = _count_writeback_rows(spec_lines)
-    if writeback_rows >= MAX_WRITEBACK_ROUNDS:
-        print(
-            json.dumps(
-                {"version": PLAN_VERSION, "slug": args.slug, "next": "escalate", "writeback_rounds": writeback_rows},
-                ensure_ascii=False,
-            )
-        )
-        return EXIT_ESCALATE
+    package_dir = resolve_specs_child(resolve_specs_root(root, args.specs_dir), "specs", args.slug)
+    payload = _read_json_file(Path(args.plan))
+    _validate_plan(payload, args.slug)
+    with _package_handle(root, package_dir) as descriptor, _exclusive_lock(descriptor):
+        _refuse_transaction(descriptor)
+        snapshot, originals = _snapshot(root, package_dir, descriptor)
+        if payload["snapshot"] != snapshot:
+            raise WritebackError("stale or foreign package snapshot; regenerate and review the plan")
+        return _apply_locked(args, root, package_dir, descriptor, snapshot, originals, payload)
+
+
+def _apply_locked(args, root, package_dir, descriptor, snapshot, originals, payload) -> int:
+    tasks, gaps_source = _validate_plan(payload, args.slug)
+    tasks_content, spec_content = (originals[name].decode("utf-8") for name in DOCUMENT_NAMES)
+    total_rows, writeback_rows = _count_writeback_rows(spec_content.splitlines())
     existing = parse_task_records(tasks_content)
     existing_ids = {record.id: record.checked for record in existing}
     applied: list[dict[str, str]] = []
@@ -420,6 +603,9 @@ def cmd_apply(args: argparse.Namespace) -> int:
             )
         )
         return 0
+    if writeback_rows >= MAX_WRITEBACK_ROUNDS:
+        print(json.dumps({"version": PLAN_VERSION, "slug": args.slug, "next": "escalate"}, ensure_ascii=False))
+        return EXIT_ESCALATE
     new_tasks_content = _append_tasks_section(tasks_content, applied)
     row = _correction_row(total_rows + 1, len(applied), gaps_source)
     new_spec_content = _upsert_correction_row(spec_content, row)
@@ -430,21 +616,19 @@ def cmd_apply(args: argparse.Namespace) -> int:
         raise WritebackError(f"generated correction row failed the log contract: {spec_errors}")
     if not new_tasks_content.startswith(tasks_content):
         raise WritebackError("append-only invariant violated: existing tasks.md bytes would change")
-    backup_dir = _backup_and_write(root, {tasks_path: new_tasks_content, spec_path: new_spec_content})
-    try:
-        _validate_package_tasks(read_regular_text(tasks_path), expected_ids)
-        rerun_errors = correction_log_errors(read_regular_text(spec_path))
+    updates = {"tasks.md": new_tasks_content.encode("utf-8"), "spec.md": new_spec_content.encode("utf-8")}
+    if any(len(data) > MAX_FILE_BYTES for data in updates.values()):
+        raise WritebackError("generated documents exceed the package size limit")
+
+    def validate():
+        _validate_package_tasks(_read_document(descriptor, "tasks.md")[0].decode("utf-8"), expected_ids)
+        rerun_errors = correction_log_errors(_read_document(descriptor, "spec.md")[0].decode("utf-8"))
         if rerun_errors:
             raise WritebackError(f"post-write correction log validation failed: {rerun_errors}")
-        if _gate_converged(root, args.slug):
-            raise WritebackError(
-                "post-write gate unexpectedly converged with unchecked checkfix tasks; "
-                "rolled back to prevent a fake-success writeback"
-            )
-    except Exception:
-        tasks_path.write_bytes((backup_dir / tasks_path.name).read_bytes())
-        spec_path.write_bytes((backup_dir / spec_path.name).read_bytes())
-        raise
+        if _gate_converged(root, args.slug, args.specs_dir):
+            raise WritebackError("post-write gate unexpectedly converged with unchecked checkfix tasks")
+
+    backup_dir = _transactional_update(root, package_dir, descriptor, snapshot, originals, updates, validate)
     print(
         json.dumps(
             {
@@ -484,7 +668,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "plan":
             return cmd_plan(args)
         return cmd_apply(args)
-    except WritebackError as exc:
+    except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
 

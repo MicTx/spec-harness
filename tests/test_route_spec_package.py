@@ -1238,8 +1238,11 @@ def _route_cli(root, *args):
 
 
 @pytest.mark.parametrize("extra_args", [["--format", "json"], ["--format", "json", "--brief"]])
-def test_route_cli_json_covers_no_package_branch(tmp_path, extra_args):
+def test_route_cli_json_covers_no_package_branch(tmp_path, extra_args, monkeypatch):
     """D-1 regression: --format json used to fall back to markdown here."""
+    home = tmp_path / "empty-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
     completed = _route_cli(tmp_path, *extra_args)
     assert completed.returncode == 0, completed.stderr
     payload = json.loads(completed.stdout)

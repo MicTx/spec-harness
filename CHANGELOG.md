@@ -4,6 +4,22 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [0.27.0] - 2026-11-09
+
+### Added
+
+- **检查问题回写钩子**：`check_issue_writeback` 把 check 门禁差距按 plan/apply 事务写回任务与修正日志，带弱身份去重、占位结论拒绝与收敛回滚；失败留下持久化事务标记，不静默吞错。
+- **Check issue writeback hook**: `check_issue_writeback` plans and applies check-gate gaps back into tasks and the correction log as a guarded transaction, with weak-identity deduplication, placeholder rejection, and convergence rollback; failures leave a durable marker instead of silently swallowing errors.
+- **公开导出密钥扫描门禁**：共享有界扫描器统一覆盖公开导出源文件、路径、归档成员与常见编码；命中、不支持或畸形容器、检查预算耗尽均 fail closed。
+- **Public export secret-scan gate**: A shared bounded scanner now covers public export files, paths, archive members, and common encodings; findings, unsupported or malformed containers, and exhausted budgets all fail closed.
+
+### Fixed
+
+- **验证失败诊断安全可见**：失败与超时输出按字节上限与截断标记展示，控制字符与无效编码安全转义；成功保持静默，记录哈希协议不变。
+- **Bounded failure diagnostics**: Failed and timed-out verification now shows stdout/stderr with byte limits and truncation markers, escaping control characters and invalid encodings; successes stay silent and the record-hash protocol is unchanged.
+- **回写与恢复边界**：回写计划绑定 canonical 快照，异常或并发修改留下持久化拒绝标记供人工核验，不假称跨文件原子性；批处理逐项原子发布 checkpoint，显式缓存只在完整干净上下文复用；路由发现不完整时如实报告 partial，不把零候选伪称为无历史；大输入树指纹改为流式读取，普通静态树摘要与旧算法等价并拒绝特殊文件。
+- **Writeback and recovery boundaries**: Writeback plans bind canonical snapshots and interrupted or conflicting writes leave durable refusal markers for manual reconciliation; fanout publishes per-item checkpoints atomically and explicit caches reuse only a fully clean context; incomplete route discovery reports partial instead of pretending zero candidates means no history; the streaming tree fingerprint stays byte-equivalent on ordinary trees while rejecting special files.
+
 ## [0.26.0] - 2026-11-07
 
 ### Added

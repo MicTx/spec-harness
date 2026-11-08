@@ -355,6 +355,8 @@ def compute_gate_results(
     slug: str | None = None,
     root: Path | None = None,
     package_dir: Path | None = None,
+    *,
+    archived_root: Path | None = None,
 ) -> GateResults:
     """Compute all gate values exactly once.
 
@@ -373,7 +375,9 @@ def compute_gate_results(
     unevaluated; it never fails in those contexts. ``package_dir`` adds the
     executable-verify gate for packages declaring ``evidence: runs``: it is
     where ``runs.jsonl`` is read from, and ``root`` is where the worktree
-    fingerprint is computed against.
+    fingerprint is computed against. Archived review keeps ``root=None``
+    and supplies ``archived_root`` only to bind closed autonomous questions
+    to their frozen package evidence, never to re-grade live freshness.
     """
     r = GateResults()
     r.checklist_present = checklist_content is not None
@@ -386,7 +390,9 @@ def compute_gate_results(
     r.autonomous_questions = [question.text for question in questions if not question.closed]
     r.autonomous_task_ids = [question.task for question in questions if not question.closed]
     try:
-        r.question_errors.extend(evaluate_question_evidence(spec_content, tasks_content, package_dir, root))
+        r.question_errors.extend(
+            evaluate_question_evidence(spec_content, tasks_content, package_dir, root, archived_root=archived_root)
+        )
     except (OSError, UnicodeError, ValueError) as exc:
         r.question_errors.append(f"自主问题证据不可读：{exc}")
     r.out_of_scope = normalize_items(
@@ -662,6 +668,8 @@ def overall_check_passed(
     slug: str | None = None,
     root: Path | None = None,
     package_dir: Path | None = None,
+    *,
+    archived_root: Path | None = None,
 ) -> bool:
     """Return True when all required gates pass.
 
@@ -672,10 +680,17 @@ def overall_check_passed(
     ``checklist_content`` is the checklist text or ``None`` for checklist-free
     (v2) packages. ``root`` enables the evidence freshness anchor gate;
     ``package_dir`` additionally enables the executable-verify gate for
-    packages declaring ``evidence: runs``; see ``compute_gate_results``.
+    packages declaring ``evidence: runs``. ``archived_root`` provides only
+    the frozen question-evidence context; see ``compute_gate_results``.
     """
     return compute_gate_results(
-        spec_content, tasks_content, checklist_content, slug=slug, root=root, package_dir=package_dir
+        spec_content,
+        tasks_content,
+        checklist_content,
+        slug=slug,
+        root=root,
+        package_dir=package_dir,
+        archived_root=archived_root,
     ).overall_ok
 
 

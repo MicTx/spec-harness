@@ -10,6 +10,9 @@ R3 改判 `fix results and iterate until converge` 入 NEGATIVES，另钉弱收�
 
 from __future__ import annotations
 
+import pytest
+import workflow_route
+from workflow_fanout import _platform_support_error
 from workflow_route import route
 
 POSITIVES = [
@@ -114,8 +117,9 @@ def test_empty_text_never_raises():
     }
 
 
-def test_suggested_surface_is_repository_owned():
+def test_suggested_surface_is_repository_owned(monkeypatch):
     """推荐时只给仓库自有执行面；不推荐时为 None。"""
+    monkeypatch.setattr(workflow_route, "_platform_support_error", lambda: None)
     decision = route("批量处理这 12 个章节，每个都独立并行完成")
     surface = decision["suggestedSurface"]
     assert isinstance(surface, list) and len(surface) == 1
@@ -123,6 +127,9 @@ def test_suggested_surface_is_repository_owned():
         "surface": "subprocess-fanout",
         "owner": "spec-harness",
         "how": "slots/workflow-runner/scripts/workflow_fanout.py --backend <pi|codex>",
+        "available": True,
+        "unavailableReason": None,
+        "fallback": None,
     }
     assert "host" not in surface[0]
 
@@ -182,6 +189,45 @@ def test_bare_convergence_weak_signal_alone_never_recommends():
     assert decision["mode"] == "none"
     assert decision["suggestedConfig"] is None
     assert "裸收敛(弱)" in decision["reason"]
+
+
+@pytest.mark.parametrize("reason", ["verified cleanup requires Linux /proc", "required waitid capability unavailable"])
+def test_unavailable_driver_does_not_claim_equivalent_sidecar_or_change_shape(monkeypatch, reason):
+    monkeypatch.setattr(workflow_route, "_platform_support_error", lambda: None)
+    text = "批量处理这 12 个章节，每个都独立并行完成"
+    available = route(text)
+    monkeypatch.setattr(workflow_route, "_platform_support_error", lambda: reason)
+    unavailable = route(text)
+    assert {key: value for key, value in unavailable.items() if key != "suggestedSurface"} == {
+        key: value for key, value in available.items() if key != "suggestedSurface"
+    }
+    surface = unavailable["suggestedSurface"][0]
+    assert surface["available"] is False and surface["unavailableReason"] == reason
+    assert "主会话本地串行" in surface["fallback"]
+    assert "显式授权" in surface["fallback"] and "不提供 driver 等价清理保证" in surface["fallback"]
+    assert "不接管未知存活的 worker" in surface["fallback"]
+
+
+def test_availability_matches_real_driver_probe():
+    surface = route("批量处理这 12 个章节，每个都独立并行完成")["suggestedSurface"][0]
+    reason = _platform_support_error()
+    assert surface["available"] is (reason is None)
+    assert surface["unavailableReason"] == reason
+
+
+def test_probe_failure_is_an_explicit_unavailable_result(monkeypatch):
+    def failed():
+        raise OSError("probe unavailable")
+
+    monkeypatch.setattr(workflow_route, "_platform_support_error", failed)
+    surface = route("出 3 个独立方案对比评分")["suggestedSurface"][0]
+    assert surface["available"] is False and "could not be probed" in surface["unavailableReason"]
+
+
+def test_text_cli_also_displays_unavailability(monkeypatch, capsys):
+    monkeypatch.setattr(workflow_route, "_platform_support_error", lambda: "Linux-only cleanup")
+    assert workflow_route.main(["--text", "出 3 个独立方案对比评分"]) == 0
+    assert "执行面不可用：Linux-only cleanup" in capsys.readouterr().out
 
 
 def test_bare_convergence_with_strong_fanout_keeps_fanout_mode():

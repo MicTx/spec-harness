@@ -115,6 +115,8 @@ def test_is_historical_path_classifies_governance_text():
     assert is_historical_path("CHANGELOG.md", ".spec")
     assert is_historical_path(".spec/docs/history.md", ".spec")
     assert is_historical_path(".spec/specs/2026-01-01_x/spec.md", ".spec")
+    assert is_historical_path(".maintainer/incidents/2026-11-08_public-secret-leak/README.md", ".spec")
+    assert not is_historical_path(".maintainer/verify_release.py", ".spec")
     assert not is_historical_path("README.md", ".spec")
     assert not is_historical_path("scripts/tool.py", ".spec")
 

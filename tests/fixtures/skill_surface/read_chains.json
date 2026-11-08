@@ -10,7 +10,7 @@
     "references/output-contracts.md": "d1ef014ec16d0d73f9b314651f945d46c2d31ac4d3eaed2bfb94842a8ae056b4",
     "references/stages/autoplan.md": "b113d322beec27aa57d3a1bc5b10a100a98dd91a384ef187ece548b2719d1356",
     "references/stages/autorun.md": "4b53e25c60bed7c4b66f88ad5d6422e73c40cd372e4a723d6881e7b7b8393e1e",
-    "references/stages/check.md": "f534bef4eb5cadf28131540f55eefacd021aa54e11951ec6746890bedd6c1991",
+    "references/stages/check.md": "0c62966c773b36a73aec96835ea0cdf14130e079c2c17f852d1af5762a6dd693",
     "references/stages/doctor.md": "60a9240eab4af0418d8603adb67da795b727f3b54a9067cc3b5021e4bf3b23e7",
     "references/stages/done.md": "fa4224c59e471a0109a93aa3c99bb74d7325811c4b242f459191eca1456005ee",
     "references/stages/goal.md": "b1c2ca61d52e5cef406a5bf7bea979cc55334dba7d711d4b7d02a705d16169e6",
@@ -20,7 +20,7 @@
     "references/stages/run.md": "320f3fffaa838c18b7888b89eb22235a7506171e131b729126ffc96d8951b3bc",
     "references/stages/status.md": "bd0088a5dfa1cd4c2669090a3b5e39011c02e30c8a89875c9f28093232cf0dc3",
     "references/stages/update.md": "0f6c610a13d88898f4291bf7202171ac7c5d68347c6c94dbf4b50bffebd0cf6c",
-    "references/templates.md": "448e0959e248e9c3fb213bd240538fac926edc977f8152a1df22f2b38b78391e",
+    "references/templates.md": "f2b88749b42340f8178ccf4d13157c0f7894452b8202b75fb62b2897b7728250",
     "slots/team-loop/README.md": "e7fbd53f29294cd963b8879534c3e07e06aa70326751124ea6aa3baf0c8d0dec",
     "tests/fixtures/skill_surface/inputs/handoff-snapshot.md": "8b04243b0211414d1b0d15d328bfd6092b1d29c4154fc813f45f7e4790729f1a",
     "tests/fixtures/skill_surface/inputs/pkg-large/tasks.md": "5cd8c2f991948e35a64eb5c323494201edd7ae2860f66943ff5f4c9a01bfec4b",
@@ -361,7 +361,7 @@
       "package_format": "v2",
       "session_mode": "warm",
       "task_class": "failure-repair",
-      "preconditions": "SKILL.md in context; declared scope integration; a verify failed",
+      "preconditions": "SKILL.md in context; declared scope integration; a verify failed and requires structured machine writeback",
       "context_available": [
         {
           "source": "SKILL.md",
@@ -371,6 +371,7 @@
       "success_condition": "failure diagnosed, written back, fixed and fully re-verified in-round",
       "expected": [
         "check-stage-contract",
+        "machine-writeback-contract",
         "output-contract",
         "package-docs",
         "verify-evidence"
@@ -387,6 +388,28 @@
           "call_id": "read:stages/check",
           "expected_keys": [
             "check-stage-contract"
+          ]
+        },
+        {
+          "id": "e-machine-writeback",
+          "consumer": "model",
+          "load_class": "conditional",
+          "source": "references/templates.md",
+          "ranges": [
+            [
+              190,
+              194
+            ],
+            [
+              379,
+              393
+            ]
+          ],
+          "reason": "failed verify follows the extracted machine writeback procedure and its snapshot, cooperative lock and interrupted-transaction recovery details",
+          "contract_anchor": "templates.md structured failure writeback",
+          "call_id": "read:templates-machine-writeback",
+          "expected_keys": [
+            "machine-writeback-contract"
           ]
         },
         {

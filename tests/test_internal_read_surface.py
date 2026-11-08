@@ -34,6 +34,14 @@ from spec_verify import RUNS_FILENAME  # noqa: E402
 # --------------------------------------------------------------------------- #
 
 
+@pytest.fixture(autouse=True)
+def isolated_home(tmp_path, monkeypatch):
+    """Empty-store routing contracts must not inspect the operator's sessions."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+
+
 def command(root: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(list(args), cwd=root, capture_output=True, text=True)
 

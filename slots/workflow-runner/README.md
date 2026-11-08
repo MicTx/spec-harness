@@ -17,15 +17,19 @@ done/push gates never move out of the main session.
 ## Repository execution surface
 
 The routing decision (`slots/workflow-runner/scripts/workflow_route.py`) outputs one
-repository-owned `suggestedSurface`. The driver chooses a worker backend explicitly; the host
-identity and tool inventory do not change the orchestration contract:
+repository-owned `suggestedSurface`, with `available`, `unavailableReason` and `fallback`
+from the same capability probe used by the driver. Shape/score stay platform-independent:
+a recommendation is not a claim the driver can run. The driver chooses a worker backend
+explicitly; the host identity and tool inventory do not change the orchestration contract:
 
 | Owner | Execution surface | How | Notes |
 |---|---|---|---|
 | **spec-harness** | `subprocess-fanout` | `python3 slots/workflow-runner/scripts/workflow_fanout.py --backend <pi|codex> --model <id> --plan plan.json --out results.jsonl` — bounded concurrency, per-item worker deadline, JSONL convergence | The main session authors `plan.json`; caching is **off by default** unless a verifiable workspace and explicit external-context attestation are supplied (below); failures rerun |
 
-If the selected worker CLI is unavailable, use ordinary sidecar orchestration or `team-loop` under
-`references/orchestration.md`. Never fabricate a backend result or a host capability. Codex always
+If the selected worker CLI or verified cleanup capability is unavailable, the main session can
+continue locally/serially. Sidecar orchestration or `team-loop` under `references/orchestration.md`
+requires explicit host authorization/supervision and does not inherit the driver's cleanup guarantees;
+the router never launches or silently substitutes it. Never fabricate a backend result or a host capability. Codex always
 runs in its `read-only` sandbox: mark an item needing writes with `"requiresWrite": true` and the
 driver rejects it for Codex rather than silently escalating. Route such work to a separately
 authorized, suitably capable sidecar or do it on the main thread. An omitted declaration is not
@@ -71,7 +75,8 @@ claims to reap workers after its own abnormal death, and it cannot. Run the driv
 host-level supervisor (systemd, supervisord, a container/pod that reaps the whole cgroup), and/or
 arrange for workers to die with the driver via Linux `prctl(PR_SET_PDEATHSIG)`/`PDEATHSIG` or a
 parent-death signal in the worker wrapper. After any suspected abnormal exit, manually verify no
-orphaned worker process group remains before trusting the budget or the workspace.
+orphaned worker process group remains before trusting the budget or the workspace. A checkpoint
+is not a lease: never adopt, kill or redispatch work for an unknown still-live worker automatically.
 
 The driver does not read or write caches by default. `--cache-context <non-secret-id>` explicitly
 attests the **unchanged** worker/model/configuration and all external files, services and other
@@ -79,7 +84,8 @@ non-Git inputs affecting the task; never put credentials or their values in this
 driver additionally binds the cache to the current driver and worker executable digests and requires
 an accessible Git workspace with a clean HEAD and no untracked or ignored paths, tracked symlinks,
 submodules, sparse entries or assume-unchanged entries. An unavailable or unreadable worker disables
-the cache. It checks these identities and the workspace before and after the batch. If this cannot be established, it dispatches instead of
+the cache. It checks these identities and the workspace at batch admission, before saving each
+completed item and after the batch. If this cannot be established, it dispatches instead of
 using a cache; cached items already selected are failed if the workspace changes during execution.
 `--no-cache` always bypasses both cache reads and writes. An output directory inside the worktree
 usually makes it dirty; use an authorized external output location if caching is appropriate.
@@ -88,6 +94,24 @@ This is not an immutable filesystem snapshot or an authentication mechanism: an 
 only as complete as the caller’s knowledge, and concurrent change-and-revert or external changes
 cannot be detected automatically. If any input or worker identity is unknown, omit the flag and
 rerun. Successful worker output remains evidence to verify independently, not task completion.
+
+### Per-item checkpoints, not restart authorization
+
+Before dispatch the driver atomically clears prior JSONL observations; after every completed
+item it publishes the accumulated records in plan order and fsyncs the file and parent directory.
+Each record has `attemptId`, `inputKey`, `status` (`succeeded` / `failed` / `cached`),
+`outputSha256` (null when no artifact exists) and `batchComplete`; a reused result also has
+`sourceAttemptId`. The final publication sets `batchComplete=true`. During an incomplete batch,
+missing items are unknown, not successful, failed or safe to restart. A checkpoint write failure
+returns nonzero and cancels only this invocation's queued work; it does not take over other workers.
+
+A completed successful item is cached immediately ONLY through the unchanged strict cache gate
+above. On a later invocation, only validated cache entries may skip dispatch: JSONL rows or bare
+output files never authorize reuse. Default execution still writes checkpoints but never enables
+cache reuse. After an abnormal exit first resolve live-worker uncertainty under host supervision;
+then rerun with a verified cache context if appropriate, otherwise rerun explicitly without reuse.
+This is recoverable evidence, not guaranteed crash-atomic execution, immutable inputs or faster
+production performance; no trigger-rate/cost measurements are claimed.
 
 ## Hard preconditions (checked in this order, every time)
 
@@ -100,13 +124,15 @@ rerun. Successful worker output remains evidence to verify independently, not ta
    Linux `waitid(..., WNOWAIT)` and a readable `/proc`; on non-Linux (e.g. macOS/Windows), on a kernel
    or libc without `waitid(WNOWAIT)`/`killpg`, or where `/proc/self/stat` is unreadable, the driver
    fails **before spawning any worker**. There is no silent fallback: the main session must degrade
-   to ordinary sidecar orchestration or `team-loop` (below). Do not assume the driver runs on macOS.
+   to main-session serial work, or explicitly authorized/supervised sidecars or `team-loop` (below),
+   without driver-equivalent cleanup guarantees. Do not assume the driver runs on macOS.
 4. The selected worker CLI resolves on PATH; the driver records per-item spawn failures instead of
    fabricating a result.
 5. The main session records the output JSONL and runs the task's independent verification.
 
-If any precondition fails: **degrade gracefully** to ordinary sidecar orchestration or `team-loop`
-under `references/orchestration.md`. The spec main chain is unaffected.
+If any precondition fails: **degrade gracefully** to main-session serial execution, or explicitly
+authorized/supervised sidecars or `team-loop` under `references/orchestration.md`; no automatic
+substitution or equivalent cleanup claim. The spec main chain is unaffected.
 
 ## Relationship to scripts/route_decision.py and team-loop
 
@@ -151,8 +177,9 @@ shapes (`REVIEW_FIX_DEFER_PATTERNS` → `loopRecommended=false`) instead of reco
 4. **Bound the work** — one orchestration per well-scoped fan-out; default <10 items per execution
    segment unless the user explicitly raises it; the driver takes `--concurrency` (default 3). If coverage is capped (top-N,
    sampling), record what was dropped.
-5. **Collect evidence** — the driver writes `results.jsonl` (one record per item:
-   ok / error / durationSec / outputFile) plus per-item full-output files. Record both in the
+5. **Collect evidence** — the driver incrementally writes `results.jsonl` (one record per completed item:
+   ok / error / durationSec / outputFile plus attempt/input/status metadata) and per-item full-output files.
+   Require the final `batchComplete=true` record set before declaring the batch complete. Record both in the
    package's acceptance evidence (外部对标 for host-runtime facts).
 6. **Merge on the main thread** — sidecar/workflow/fan-out results are merged by the main session
    before any shared boundary is edited. Verification described by `verify` still runs before any

@@ -473,6 +473,13 @@ def is_historical_path(rel: str, specs_dir_name: str) -> bool:
         # the repository as it was; their paths are history, like ``.spec/``
         # records. The legacy prefix keeps pre-migration trees historical.
         return True
+    if rel.startswith(".maintainer/incidents/"):
+        # Incident records are frozen governance evidence; they quote paths
+        # and file names as the tree stood at the event. Reclassifying or
+        # rewriting those mentions would alter the evidence itself, so the
+        # whole incident tree reads as history. Other ``.maintainer/``
+        # tooling stays live.
+        return True
     top = rel.split("/", 1)[0]
     if top == specs_dir_name or top == ".spec":
         return True

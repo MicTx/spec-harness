@@ -16,7 +16,7 @@ mode 推导只看强信号（loop > panel > review > fanout），未推荐时 mo
 仅 WORKFLOW_EXPLICIT 命中时沿用 batch-fanout 兼容 mode，不新增 explicit mode。
 
 永不抛错，永远返回结构化结果。激活只是建议：最终执行仍由主会话依据
-仓库自有驱动与 team-loop 契约决定，后端不可用时显式降级为普通 sidecar 编排。
+仓库自有驱动与 team-loop 契约决定；能力不足只给降级提示，不自动替换为 sidecar。
 """
 
 from __future__ import annotations
@@ -25,7 +25,11 @@ import argparse
 import json
 import re
 import sys
+from pathlib import Path
 from typing import Any, Optional
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from workflow_fanout import _platform_support_error  # noqa: E402
 
 MODES = ("batch-fanout", "parallel-review", "perspective-panel", "review-fix-loop", "none")
 
@@ -151,13 +155,27 @@ def route(text: str) -> dict[str, Any]:
 
     # 唯一执行面由仓库拥有；pi/codex 只是可插拔 worker CLI 后端，不是宿主编排引擎。
     # 路由不枚举宿主身份，避免同一任务因宿主工具列表而改变编排语义。
-    surface: Optional[list[dict[str, str]]] = None
+    surface: Optional[list[dict[str, Any]]] = None
     if recommended:
+        # Shape recommendations remain platform-independent; execution
+        # availability uses the very same fail-closed probe as the driver.
+        try:
+            unavailable = _platform_support_error()
+        except OSError:
+            unavailable = "verified process-group cleanup capability could not be probed"
         surface = [
             {
                 "surface": "subprocess-fanout",
                 "owner": "spec-harness",
                 "how": "slots/workflow-runner/scripts/workflow_fanout.py --backend <pi|codex>",
+                "available": unavailable is None,
+                "unavailableReason": unavailable,
+                "fallback": (
+                    "主会话本地串行推进；如需 sidecar，由宿主显式授权与监督，"
+                    "不提供 driver 等价清理保证，不接管未知存活的 worker"
+                )
+                if unavailable
+                else None,
             },
         ]
 
@@ -214,6 +232,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"[workflow-route] {flag} mode={decision['mode']} score={decision['score']}（{decision['reason']}）")
         if decision["suggestedConfig"]:
             print(json.dumps(decision["suggestedConfig"], ensure_ascii=False))
+        for surface in decision["suggestedSurface"] or []:
+            if not surface["available"]:
+                print(f"[workflow-route] 执行面不可用：{surface['unavailableReason']}；{surface['fallback']}")
     return 0
 
 

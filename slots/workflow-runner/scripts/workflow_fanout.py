@@ -19,7 +19,7 @@
 
 结果缓存（断点续传）：
   默认未知执行上下文，不读写缓存。显式提供非敏感 --cache-context 后，只有
-  Git 工作区可验证完整干净时才按上下文/任务缓存成功项；每次运行前后再次
+  Git 工作区可验证完整干净时才按上下文/任务缓存成功项；每项完成及整批结束再次
   校验工作区，每次命中校验产物 SHA-256。外部环境由调用方负责确认；不可确认
   时不得提供该标识。--no-cache 始终跳过读写，强制全量派发。
 
@@ -332,6 +332,8 @@ def _write_results(path: Path, records: list[dict[str, Any]]) -> None:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             for record in records:
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
         try:
             existing = os.stat(path.name, dir_fd=directory, follow_symlinks=False)
         except FileNotFoundError:
@@ -342,6 +344,7 @@ def _write_results(path: Path, records: list[dict[str, Any]]) -> None:
         # the old inode; concurrent writers each publish a complete JSONL.
         os.replace(temporary, path.name, src_dir_fd=directory, dst_dir_fd=directory)
         created = False
+        os.fsync(directory)
     finally:
         if created:
             try:
@@ -642,7 +645,7 @@ def run_item(
     timeout: float,
     model: Optional[str] = None,
 ) -> dict[str, Any]:
-    """派发单个 item；缓存由 main 在整批结束且上下文未变化时写入。"""
+    """派发单个 item；main 逐项落进度，仅在严格上下文再验证通过时写缓存。"""
     item_id = item.get("id") if isinstance(item, dict) else "item"
     item_id = item_id if isinstance(item_id, str) else "item"
     prompt = item.get("prompt") if isinstance(item, dict) else ""
@@ -858,6 +861,61 @@ def main(argv: Optional[list[str]] = None) -> int:
         else:
             pending.append(item)
 
+    attempt_id = uuid.uuid4().hex
+    by_id = {item["id"]: item for item in items}
+    order = {item["id"]: index for index, item in enumerate(items)}
+
+    def publish(*, complete=False):
+        # A checkpoint is an observation of THIS attempt, never a restart
+        # authorization. Only read_cache + its strict context can skip work.
+        for record in records:
+            item = by_id[record["id"]]
+            if record.get("cached") and record.get("attemptId") != attempt_id:
+                record["sourceAttemptId"] = record.get("attemptId")
+            record["attemptId"] = attempt_id
+            record["batchComplete"] = complete
+            record["status"] = (
+                "cached" if record.get("cached") and record["ok"] else ("succeeded" if record["ok"] else "failed")
+            )
+            record["inputKey"] = hashlib.sha256(
+                json.dumps(
+                    [
+                        args.backend,
+                        item["id"],
+                        item["prompt"].strip(),
+                        item.get("requiresWrite", False),
+                        args.model,
+                        context,
+                    ],
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            ).hexdigest()
+            record.setdefault("outputSha256", None)
+        records.sort(key=lambda record: order[record["id"]])
+        _write_results(out_path, records)
+
+    def cache_completed(record):
+        if context is None or not record["ok"] or record.get("cached"):
+            return
+        if _workspace_context(args.cache_context, resolve_binary(args.backend)) != context:
+            return
+        item = by_id[record["id"]]
+        key = _cache_key(
+            args.backend, item["id"], item["prompt"].strip(), context, item.get("requiresWrite", False), args.model
+        )
+        try:
+            write_cache(out_dir, key, record)
+        except OSError:
+            record["cacheWriteError"] = "cache write failed"
+
+    # Clear a previous attempt before any new workers start. This is not a
+    # lease and must never be used to take over an unknown live worker.
+    try:
+        publish()
+    except (OSError, UnicodeError) as exc:
+        print(f"[fanout] checkpoint write failed: {exc}", file=sys.stderr)
+        return 2
+    checkpoint_error = False
     backend_missing = binary is None and bool(pending)
     batch_error: Optional[BatchStopError] = None
     if backend_missing:
@@ -915,6 +973,28 @@ def main(argv: Optional[list[str]] = None) -> int:
                                     }
                                 )
                 records.append(result)
+                try:
+                    publish()
+                    cache_completed(result)
+                except (OSError, UnicodeError) as exc:
+                    checkpoint_error = True
+                    print(f"[fanout] checkpoint write failed: {exc}", file=sys.stderr)
+                    # Cancel only queued work owned by this pool, never recover
+                    # or kill workers left over from a different invocation.
+                    for other, other_item in futures.items():
+                        if other not in cancelled and other.cancel():
+                            cancelled.add(other)
+                            records.append(
+                                {
+                                    "id": other_item["id"],
+                                    "backend": args.backend,
+                                    "ok": False,
+                                    "error": "not started: checkpoint write failed",
+                                    "durationSec": 0.0,
+                                    "outputFile": "",
+                                    "stdoutSummary": "",
+                                }
+                            )
     if batch_error is not None:
         print(f"[fanout] batch stopped: {batch_error}", file=sys.stderr)
 
@@ -928,31 +1008,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                     record["ok"] = False
                     record["error"] = "workspace context changed during execution; rerun"
             print("[fanout] workspace context changed; cached results are invalid", file=sys.stderr)
-        elif not backend_missing:
-            by_id = {item["id"]: item for item in items}
-            for record in records:
-                if not record["ok"] or record.get("cached"):
-                    continue
-                item = by_id[record["id"]]
-                key = _cache_key(
-                    args.backend,
-                    item["id"],
-                    item["prompt"].strip(),
-                    context,
-                    item.get("requiresWrite", False),
-                    args.model,
-                )
-                try:
-                    write_cache(out_dir, key, record)
-                except OSError:
-                    record["cacheWriteError"] = "cache write failed"
-
-    # 收敛顺序稳定：按 plan 顺序回填，便于对照
-    order = {str(it.get("id") or "item"): i for i, it in enumerate(items)}
-    records.sort(key=lambda r: order.get(r["id"], len(order)))
 
     try:
-        _write_results(out_path, records)
+        publish(complete=True)
     except (OSError, UnicodeError) as exc:
         print(f"[fanout] result write failed: {exc}", file=sys.stderr)
         return 2
@@ -964,7 +1022,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         f"ok={ok_count} fail={len(records) - ok_count} cached={cached_count}"
     )
     print(f"[fanout] results: {out_path}")
-    return 1 if backend_missing else (0 if ok_count == len(records) else 2)
+    return 1 if backend_missing else (0 if ok_count == len(records) and not checkpoint_error else 2)
 
 
 if __name__ == "__main__":

@@ -38,9 +38,11 @@ import stat
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import BinaryIO, Iterator
 
 from safe_open_support import SafeOpenError, open_regular_read
 from spec_package_support import (
@@ -62,6 +64,8 @@ MANUAL_VERIFY_PREFIX = "manual:"
 BACKTICK_SPAN = re.compile(r"`([^`]+)`")
 DEFAULT_TIMEOUT_S = 600
 STDOUT_TAIL_BYTES = 4096
+DIAGNOSTIC_TAIL_BYTES = 4096  # Per stream, measured before UTF-8 replacement/escaping.
+FINGERPRINT_CHUNK_BYTES = 64 * 1024
 FINGERPRINT_EXCLUDED_PREFIX = ".spec/"
 # Archive container between the specs root and the slug; archiving only moves the
 # directory, so records keep the identity they were written under.
@@ -78,6 +82,7 @@ PACKAGE_STATE_FILES = frozenset(
         "runs.jsonl.corrupt",
         "adoption.json",
         "update-checkpoint.json",
+        ".writeback.lock",
     }
 )
 #: Exit code for timeouts, spawn errors, or auxiliary inputs changed during verification.
@@ -158,6 +163,36 @@ def _git(root: Path, *args: str, text: bool) -> subprocess.CompletedProcess:
     return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=text)
 
 
+@contextmanager
+def _git_stream(root: Path, *args: str) -> Iterator[BinaryIO]:
+    # stderr is not digest input; avoid a second full pipe or a deadlock while
+    # hashing a large binary diff. Popen's context closes pipes and reaps git.
+    with subprocess.Popen(
+        ["git", "-C", str(root), *args], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+    ) as process:
+        assert process.stdout is not None
+        try:
+            yield process.stdout
+        finally:
+            process.stdout.close()
+        if process.wait() != 0:
+            raise OSError("git fingerprint input failed")
+
+
+def _stat_identity(info: os.stat_result) -> tuple[int, ...]:
+    return info.st_dev, info.st_ino, info.st_mode, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
+def _hash_untracked_file(hasher, path: Path) -> None:
+    # Fail closed on FIFO/symlink/mutating input, without whole-file allocation.
+    with open_regular_read(path, max_bytes=None) as descriptor:
+        before = _stat_identity(os.fstat(descriptor))
+        while chunk := os.read(descriptor, FINGERPRINT_CHUNK_BYTES):
+            hasher.update(chunk)
+        if before != _stat_identity(os.fstat(descriptor)) or before != _stat_identity(path.lstat()):
+            raise OSError("fingerprint input changed while reading")
+
+
 def compute_tree_fingerprint(root: Path, package_dir: Path | None = None) -> str | None:
     """Bind evidence to the exact worktree it ran against.
 
@@ -182,18 +217,21 @@ def compute_tree_fingerprint(root: Path, package_dir: Path | None = None) -> str
     head = _git(root, "rev-parse", "HEAD", text=True)
     if head.returncode == 0:
         head_text = head.stdout.strip()
-        diff = _git(root, "diff", "--binary", "HEAD", "--", ".", *exclusions, text=False)
+        diff_args = ("diff", "--binary", "HEAD", "--", ".", *exclusions)
     else:
         # No commits yet (fresh ``git init``): fingerprint the worktree
         # against the index so an initial tree still hashes deterministically.
         head_text = ""
-        diff = _git(root, "diff", "--binary", "--", ".", *exclusions, text=False)
-    if diff.returncode != 0:
-        return None
+        diff_args = ("diff", "--binary", "--", ".", *exclusions)
     hasher = hashlib.sha256()
     hasher.update(head_text.encode("utf-8"))
     hasher.update(b"\0")
-    hasher.update(diff.stdout)
+    try:
+        with _git_stream(root, *diff_args) as stream:
+            while chunk := stream.read(FINGERPRINT_CHUNK_BYTES):
+                hasher.update(chunk)
+    except OSError:
+        return None
     hasher.update(b"\0")
     untracked = _git(root, "ls-files", "--others", "--exclude-standard", "-z", text=False)
     if untracked.returncode != 0:
@@ -211,15 +249,14 @@ def compute_tree_fingerprint(root: Path, package_dir: Path | None = None) -> str
             # a non-default specs dir would stale itself by construction.
             continue
         file_path = root / Path(path)
-        if not file_path.is_file():
-            continue
-        try:
-            content = file_path.read_bytes()
-        except OSError:
-            return None
+        # Retain the old raw-path sort and framing exactly. Only content and
+        # binary-diff capture become streaming; the sorted name list remains.
         hasher.update(path.encode("utf-8", "surrogateescape"))
         hasher.update(b"\0")
-        hasher.update(content)
+        try:
+            _hash_untracked_file(hasher, file_path)
+        except (OSError, SafeOpenError):
+            return None
         hasher.update(b"\0")
     return hasher.hexdigest()
 
@@ -271,6 +308,29 @@ def package_identity(root: Path, package_dir: Path) -> str:
     return package_dir.relative_to(root).as_posix()
 
 
+def _archive_container_index(relative: str) -> int | None:
+    """Index of the ``<specs>/archive`` container inside a package identity.
+
+    The layout the archive step creates — an ``archive`` segment directly
+    below ``specs`` — is the anchor for every archive relaxation. Any other
+    directory that happens to be called ``archive`` stays strict.
+    """
+    parts = relative.split("/")
+    for index in range(len(parts) - 2, 0, -1):
+        if parts[index] == ARCHIVE_DIRNAME and parts[index - 1] == SPECS_CONTAINER:
+            return index
+    return None
+
+
+def is_frozen_package(root: Path, package_dir: Path) -> bool:
+    """Only a package below this project's specs/archive may use frozen proof."""
+    try:
+        relative = package_identity(root, package_dir)
+    except ValueError:
+        return False
+    return _archive_container_index(relative) is not None
+
+
 def package_identities(root: Path, package_dir: Path) -> frozenset[str]:
     """Identities a run record may carry and still describe this package.
 
@@ -288,10 +348,9 @@ def package_identities(root: Path, package_dir: Path) -> frozenset[str]:
     relative = package_identity(root, package_dir)
     identities = {relative}
     parts = relative.split("/")
-    for index in range(len(parts) - 2, 0, -1):
-        if parts[index] == ARCHIVE_DIRNAME and parts[index - 1] == SPECS_CONTAINER:
-            identities.add("/".join(parts[:index] + [parts[-1]]))
-            break
+    index = _archive_container_index(relative)
+    if index is not None:
+        identities.add("/".join(parts[:index] + [parts[-1]]))
     return frozenset(identities)
 
 
@@ -370,9 +429,13 @@ def duplicate_verify_error(task_id: str, block_text: str) -> str | None:
 
 
 def stale_record_reason(
-    record: dict, command: str, tree_fp: str, package_fp: str, package_ids: frozenset[str]
+    record: dict, command: str, tree_fp: str | None, package_fp: str, package_ids: frozenset[str]
 ) -> str | None:
-    """Use the same freshness contract for the runs gate and explicit claims."""
+    """Compare command, package bytes and identity; optionally compare a live tree.
+
+    ``tree_fp=None`` is reserved for frozen archive proof. Archiving retires
+    the worktree, not the record's command, package identity or answer binding.
+    """
     if record.get("cmd") != command:
         return "记录命令与当前 verify 不一致；需重跑 spec_verify.py"
     if record.get("package_fp") != package_fp:
@@ -380,6 +443,8 @@ def stale_record_reason(
     recorded_id = record.get("package_id")
     if not isinstance(recorded_id, str) or recorded_id not in package_ids:
         return "任务包身份不匹配或旧记录缺少身份；需重跑 spec_verify.py"
+    if tree_fp is None:
+        return None
     recorded_fp = record.get("tree_fp")
     if not isinstance(recorded_fp, str) or recorded_fp != tree_fp:
         shown = recorded_fp if isinstance(recorded_fp, str) else str(recorded_fp)
@@ -414,17 +479,23 @@ def _runs_gate_states(
     tasks_content: str,
     package_dir: Path | None,
     root: Path | None,
+    *,
+    frozen: bool = False,
 ) -> tuple[bool | None, list[str], str, dict[str, str]]:
-    """Single-pass runs-gate evaluation with per-task freshness states.
+    """Single comparison shared by gates, questions and the bounded show view.
 
-    The state comparison lives ONLY here: ``evaluate_runs_gate`` (gate
-    callers) and ``show`` (bounded read view) consume the same computation —
-    there is no second fingerprint-comparison truth.
+    Only explicit archive-question review uses ``frozen=True``. The caller
+    supplies the project root for identity binding, not for live freshness;
+    this mode still requires the archive layout, command, auxiliary package
+    bytes and identity to match. Missing live context never implies frozen.
     """
     if not runs_protocol_enabled(spec_content):
         return None, [], "", {}
     if package_dir is None or root is None:
         return None, [], "适用外：缺少 package_dir/root（路由与报告上下文不评估运行证据）", {}
+    if frozen and not is_frozen_package(root, package_dir):
+        message = "冻结运行证据仅适用于当前项目 specs/archive 下的归档任务包"
+        return False, [rule_message("SPEC-EVID-003", message)], message, {}
     try:
         machine, errors, manual_count = _machine_tasks(tasks_content)
     except SpecControlError as exc:
@@ -439,8 +510,8 @@ def _runs_gate_states(
     except (OSError, UnicodeError, ValueError) as exc:
         unverified = {task_id: "unverified" for task_id, _c, _v in machine}
         return False, [rule_message("SPEC-EVID-003", f"runs 证据不可读：{exc}")], "runs 证据不可读", unverified
-    fingerprint = compute_tree_fingerprint(root, package_dir)
-    if fingerprint is None:
+    fingerprint = None if frozen else compute_tree_fingerprint(root, package_dir)
+    if fingerprint is None and not frozen:
         return None, [], "适用外：非 Git 工作区或指纹不可计算，跳过 runs 比对", {}
     try:
         package_fingerprint = compute_package_fingerprint(package_dir)
@@ -458,7 +529,7 @@ def _runs_gate_states(
             states[task_id] = "unverified"
             continue
         exit_code = record.get("exit")
-        if exit_code != 0:
+        if type(exit_code) is not int or exit_code != 0:
             errors.append(rule_message("SPEC-EVID-001", f"{task_id}：未验证（最近记录 exit={exit_code}）"))
             states[task_id] = "unverified"
             continue
@@ -470,6 +541,11 @@ def _runs_gate_states(
         passed += 1
         states[task_id] = "fresh"
     detail = f"机器任务 {passed}/{len(machine)} 最近记录 exit==0 且命令、双指纹匹配；manual 任务 {manual_count} 项"
+    if frozen:
+        detail = (
+            f"归档问题证据：机器任务 {passed}/{len(machine)} 最近记录 exit==0 且命令、包内指纹、包身份匹配"
+            f"（不比当前工作树指纹）；manual 任务 {manual_count} 项"
+        )
     return not errors, errors, detail, states
 
 
@@ -485,16 +561,29 @@ def evaluate_runs_gate(
     not opted in, or routing/report context without ``root``/``package_dir``,
     or a non-Git root; the gate never blocks there (same contract as the
     evidence anchor). Machine tasks need a latest record with ``exit == 0``
-    and ``cmd`` equal to the current verify and ``tree_fp`` equal to the current fingerprint; anything else is named
-    precisely: 未验证 (no usable record) or 证据过期 (tree moved since).
+    and ``cmd`` equal to the current verify and ``tree_fp`` equal to the
+    current fingerprint; anything else is named precisely: 未验证 (no usable
+    record) or 证据过期 (tree moved since).
     """
     ok, errors, detail, _states = _runs_gate_states(spec_content, tasks_content, package_dir, root)
     return ok, errors, detail
 
 
 def evaluate_question_evidence(
-    spec_content: str, tasks_content: str, package_dir: Path | None, root: Path | None
+    spec_content: str,
+    tasks_content: str,
+    package_dir: Path | None,
+    root: Path | None,
+    *,
+    archived_root: Path | None = None,
 ) -> list[str]:
+    """Closed questions need a passing run bound to their current answer.
+
+    Archived review supplies ``archived_root`` for package identity while
+    leaving ``root=None``: command, auxiliary bytes, identity and question
+    fingerprints remain binding, but the retired worktree is not re-timed
+    against today's HEAD. No context or missing states still fails closed.
+    """
     from spec_package_support import autonomous_question_contract
 
     questions, _human, _errors = autonomous_question_contract(spec_content, tasks_content)
@@ -508,14 +597,17 @@ def evaluate_question_evidence(
     closed = [question for question in questions if question.closed]
     if not closed:
         return contract_errors
-    if package_dir is None or root is None:
+    evidence_root = root if root is not None else archived_root
+    if package_dir is None or evidence_root is None:
         return [*contract_errors, "自主问题关闭证据未评估；需在项目根目录运行 check"]
-    _ok, _gate_errors, _detail, states = _runs_gate_states(spec_content, tasks_content, package_dir, root)
+    _ok, _gate_errors, _detail, states = _runs_gate_states(
+        spec_content, tasks_content, package_dir, evidence_root, frozen=root is None
+    )
     latest = latest_record_by_task(read_runs_records(package_dir) or [])
     errors: list[str] = list(contract_errors)
     for question in closed:
         record = latest.get(question.task, {})
-        if states.get(question.task) != "fresh" or type(record.get("exit")) is not int:
+        if states.get(question.task) != "fresh" or type(record.get("exit")) is not int or record["exit"] != 0:
             errors.append(f"{question.text}：{question.task} 无新鲜、匹配且 exit=0 的机器运行证据")
         elif not isinstance(record.get("question_fps"), list) or question.fingerprint not in record["question_fps"]:
             errors.append(f"{question.text}：运行证据未绑定当前问题与结论；填结论后重跑 verify，再勾选")
@@ -641,6 +733,30 @@ def _record_abnormal_attempt(
         print(rule_message("SPEC-EVID-003", f"无法记录失败的验证尝试：{exc}"), file=sys.stderr)
 
 
+def _show_failure_output(task_id: str, stdout: bytes, stderr: bytes) -> None:
+    """Display bounded untrusted data, never terminal controls or persisted logs.
+
+    This caps the diagnostic *view*, not subprocess.run's capture buffer. The
+    raw stdout_tail_sha256 window remains independent of this escaped view.
+    """
+    for name, data in (("stdout", stdout), ("stderr", stderr)):
+        if not data:
+            continue
+        tail = data[-DIAGNOSTIC_TAIL_BYTES:]
+        decoded = tail.decode("utf-8", "replace")
+        safe = "".join(
+            char if char in "\n\t" or char.isprintable() else char.encode("unicode_escape").decode("ascii")
+            for char in decoded
+        )
+        truncated = "; truncated" if len(data) > len(tail) else ""
+        print(
+            f"--- {task_id} {name}: untrusted output, tail {len(tail)}/{len(data)} bytes{truncated} ---",
+            file=sys.stderr,
+        )
+        print(safe, file=sys.stderr)
+        print(f"--- end {name} ---", file=sys.stderr)
+
+
 def run_selected_tasks(args: argparse.Namespace) -> int:
     from worker_decision_guard import DecisionGuard, decision_guard_errors
 
@@ -737,18 +853,20 @@ def run_selected_tasks(args: argparse.Namespace) -> int:
             )
             exit_code = completed.returncode
             stdout_bytes = completed.stdout or b""
-            stderr_text = (completed.stderr or b"").decode("utf-8", "replace").strip()
+            stderr_bytes = completed.stderr or b""
         except subprocess.TimeoutExpired as exc:
             timed_out = True
             exit_code = ABNORMAL_EXIT
             stdout_bytes = exc.stdout if isinstance(exc.stdout, bytes) else b""
-            stderr_text = f"timeout after {args.timeout}s"
+            stderr_bytes = exc.stderr if isinstance(exc.stderr, bytes) else b""
         finally:
             try:
                 guard.finish()
             except (OSError, UnicodeError, ValueError, SpecControlError) as exc:
                 decision_error = str(exc)
         duration = time.monotonic() - started
+        if exit_code != 0:
+            _show_failure_output(record.id, stdout_bytes, stderr_bytes)
         # Fingerprint after execution: the record binds to the tree the
         # verification leaves behind, so a command that legitimately formats
         # files keeps its own evidence fresh.
@@ -863,8 +981,6 @@ def run_selected_tasks(args: argparse.Namespace) -> int:
         tail = f" exit={exit_code}"
         if timed_out:
             tail = " exit=timeout"
-        if stderr_text and exit_code != 0:
-            tail += f" stderr={stderr_text[:200]!r}"
         print(f"{record.id}: {verdict}{tail} ({duration:.2f}s) fp={tree_fp[:12]} -> {RUNS_FILENAME}")
         if exit_code != 0:
             failures += 1

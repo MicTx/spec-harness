@@ -136,6 +136,36 @@ def test_active_gate_receives_project_root_for_evidence_freshness(tmp_path, monk
     assert seen == [tmp_path]
 
 
+def test_archived_gate_receives_package_dir_and_no_live_root(tmp_path, monkeypatch):
+    """An archive keeps frozen evidence: no live root, but its own package dir.
+
+    Dropping ``package_dir`` too would make every archived ``evidence: runs``
+    question unevaluable ("需在项目根目录运行 check"), which is a permanent
+    failure rather than the intended "do not re-grade against later HEAD".
+    """
+    slug = "2026-07-13_fix-archived-root"
+    make_archived_package(tmp_path, slug)
+    seen = []
+
+    def fake_overall(*args, **kwargs):
+        seen.append((kwargs.get("root"), kwargs.get("package_dir"), kwargs.get("archived_root")))
+        return True
+
+    monkeypatch.setattr(check_all_module, "overall_check_passed", fake_overall)
+    assert check_all_packages(tmp_path, slugs=[slug]) == []
+    assert seen == [(None, tmp_path / ".spec" / "specs" / "archive" / slug, tmp_path)]
+
+
+def test_archived_runs_without_closed_questions_keep_historical_closeout(tmp_path):
+    slug = "2026-07-13_fix-historical-runs"
+    archived = make_archived_package(tmp_path, slug)
+    (archived / "spec.md").write_text(SPEC + "\n- evidence: runs\n", encoding="utf-8")
+    # Early records predate package_id/package_fp. An unrelated new question
+    # rule must not retroactively demand live freshness from these archives.
+    (archived / "runs.jsonl").write_text('{"task": "task_0001", "exit": 0}\n', encoding="utf-8")
+    assert check_all_packages(tmp_path, slugs=[slug]) == []
+
+
 def test_archive_is_validated_and_explicit_slug_must_exist(tmp_path):
     slug = "2026-07-13_fix-archived"
     archived = make_archived_package(tmp_path, slug)

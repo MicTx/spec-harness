@@ -296,6 +296,58 @@ def test_runtime_read_surface_stays_split_and_budgeted():
     ) == 1
 
 
+def test_check_machine_writeback_contract_remains_reachable_and_complete():
+    check = CHECK.read_text(encoding="utf-8")
+    templates = TEMPLATES.read_text(encoding="utf-8")
+    assert "../templates.md#structured-failure-writeback" in check
+    assert "check_issue_writeback.py" not in check
+    heading = "## Structured failure writeback\n"
+    assert templates.count(heading) == 1
+    contract = templates.split(heading, 1)[1].split("\n## ", 1)[0]
+    for requirement in (
+        "scripts/check_spec_package.py",
+        "scripts/check_issue_writeback.py plan",
+        "scripts/check_issue_writeback.py apply",
+        "task-checkfix-t-<hash8>",
+        "generated placeholder",
+        "model decisions made here, not script defaults",
+        "append-only, explicit ids",
+        "issue_closure_support.DISPOSITION_TYPES",
+        "rolls back if it converges with unchecked checkfix tasks",
+        "3 checkfix-source correction-log rounds with exit 3",
+        "human correction rounds do not consume the machine quota",
+        "keeps backups out of tree",
+        "plan v2",
+        "check-green",
+        "stale/v1/copied/edited-snapshot plans",
+        "matched uncommitted package documents are allowed",
+        "Two replacements are NOT pair-atomic",
+        ".writeback-transaction.json",
+        "Restore BOTH documents",
+        "#machine-check-writeback",
+        "converged: false",
+    ):
+        assert requirement in contract, requirement
+    assert "refuses a dirty worktree" not in contract
+    assert "Apply atomically:" not in contract
+
+    detail_heading = "### Machine check writeback\n"
+    assert templates.count(detail_heading) == 1
+    details = templates.split(detail_heading, 1)[1].split("\n## ", 1)[0]
+    for requirement in (
+        "canonical root/package directory identity",
+        "both documents' bytes/metadata",
+        "nonblocking cooperative flock",
+        "inode retained",
+        "single-link regular files opened without following symlinks",
+        "platforms lacking no-follow directory access/flock refuse",
+        "Each replacement is atomic, the pair is NOT",
+        "conflicting edits are never overwritten",
+        "No automatic recovery, lock deletion or adversarial-lock guarantee",
+    ):
+        assert requirement in details, requirement
+
+
 def test_non_micro_workflow_requires_complete_intent_and_real_flip_assumption():
     support = _support_module()
     valid = """\

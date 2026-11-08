@@ -20,6 +20,7 @@ import urllib.parse
 from pathlib import Path
 
 from lint_workflows import lint_workflow_text
+from public_secret_scan import SecretScanError, redact, scan_secrets
 from skill_watermark import strip as strip_watermark
 
 PUBLIC_ROOT_FILES = (
@@ -87,6 +88,7 @@ PRIVATE_TEST_FILES = {
     # Import bench/, which is development tooling outside PUBLIC_DIRS.
     "tests/test_activation_benchmark.py",
     "tests/test_activation_executor.py",
+    "tests/test_audit_public_secrets.py",
     "tests/test_benchmark_budget_regressions.py",
     "tests/test_benchmark_harness.py",
     "tests/test_host_evidence_notes.py",
@@ -170,12 +172,16 @@ def private_remote_patterns(source: Path) -> tuple[re.Pattern, ...]:
 
 
 def _scan(path: Path, data: bytes, private_patterns: tuple[re.Pattern, ...] = ()) -> None:
-    text = data.decode("utf-8", "replace")
-    if "\u2063" in text:
-        raise PublicExportError(f"public payload contains an unreviewed invisible attribution mark: {path}")
-    for pattern in (*PRIVATE_TEXT_PATTERNS, *private_patterns):
-        if pattern.search(text):
-            raise PublicExportError(f"public payload contains forbidden pattern {pattern.pattern!r}: {path}")
+    patterns = (*PRIVATE_TEXT_PATTERNS, *private_patterns, re.compile("\u2063"))
+    safe_path = redact(str(path), extra_patterns=patterns)
+    try:
+        findings = scan_secrets(data, str(path), extra_patterns=patterns)
+    except SecretScanError:
+        raise PublicExportError(f"public payload credential inspection incomplete: {safe_path}") from None
+    if findings:
+        # Dynamic patterns can contain private hosts. Neither patterns nor
+        # matching content belong in a publication error message.
+        raise PublicExportError(f"public payload contains forbidden pattern: {safe_path}")
 
 
 def build_public_tree(source: Path, output: Path) -> dict[str, str]:

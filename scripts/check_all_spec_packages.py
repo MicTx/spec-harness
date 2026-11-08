@@ -661,6 +661,9 @@ def _validate_package(
     # Evidence freshness is an active-package gate. Archived records retain
     # the evidence captured at their closeout; re-grading them against every
     # later HEAD would make a valid archive fail merely because new work landed.
+    # Closed autonomous questions still need bound proof. Pass a separate
+    # archive identity root so only those claims are re-checked; historical
+    # runs packages without closed questions retain the closeout contract.
     check_root = root if not archived else None
     if (
         not lint_only
@@ -671,11 +674,8 @@ def _validate_package(
             contents.get("checklist.md"),
             slug=slug,
             root=check_root,
-            # Executable-verify gate (evidence: runs) reads runs.jsonl from the
-            # package dir against the live worktree — an active-package gate,
-            # exactly like the anchor above; archived packages keep their frozen
-            # evidence.
-            package_dir=package if not archived else None,
+            package_dir=package,
+            archived_root=root if archived else None,
         )
     ):
         failures.append(CheckFailure(specs_root, slug, "check gates not passed"))
