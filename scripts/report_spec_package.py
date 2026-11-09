@@ -32,7 +32,6 @@ from spec_package_support import (
     extract_title_from_content,
     parse_task_records,
     read_regular_text,
-    ready_task_ids,
     resolve_specs_child,
     resolve_specs_root,
     task_title_signals_blocked,
@@ -210,7 +209,7 @@ def overall_state(
 
 def status_next_step(
     primary_task: Task | None,
-    blocked_tasks: list[Task],
+    blocked_tasks: list,
     pending_questions: list[str],
     all_completed: bool,
     checklist_content: str | None,
@@ -221,23 +220,19 @@ def status_next_step(
     orchestration_errors_list: list[str] | None = None,
     question_errors_list: list[str] | None = None,
     inquiry_next_step: str | None = None,
+    branch_error: str = "",
+    verify_errors: list[str] | None = None,
     checkpoint_pending: bool = False,
     gate_passed: bool = True,
     spec_content: str = "",
 ) -> str:
-    """Priority ordering mirrors route_spec_package: blocked > pending >
-    definition gaps (incl. dependency errors) > orchestration >
-    acceptance/execution. A historical checkpoint is advisory-only while
-    other work remains, but becomes the next step once otherwise converged;
-    check/done still refuse while the file exists."""
-    if blocked_tasks:
-        return f"Unblock task: {blocked_tasks[0].text}"
-    if standalone_blocked:
-        return "Resolve the standalone blocked status in tasks.md"
-    if question_errors_list:
-        return f"Fix the inquiry contract: {question_errors_list[0]}"
+    """Prioritize branch, authority and contract gaps before safe ready work."""
+    if branch_error:
+        return f"Switch to the package branch: {branch_error}"
     if pending_questions:
         return f"Confirm requirements: {pending_questions[0]}"
+    if question_errors_list:
+        return f"Fix the inquiry contract: {question_errors_list[0]}"
     if gate_gaps:
         first_gap = gate_gaps[0]
         if dependency_errors_list and first_gap in dependency_errors_list:
@@ -245,8 +240,16 @@ def status_next_step(
         return f"Complete the project definition: {project_gap_message(first_gap)}"
     if orchestration_errors_list:
         return f"Fix the orchestration strategy: {orchestration_errors_list[0]}"
-    if inquiry_next_step and not all_completed:
+    if standalone_blocked:
+        return f"Resolve blocked package: {standalone_blocked}"
+    if verify_errors and not inquiry_next_step:
+        return f"Fix invalid verify: {', '.join(verify_errors)}"
+    if inquiry_next_step:
         return inquiry_next_step
+    if blocked_tasks:
+        return f"Unblock task: {blocked_tasks[0].title}"
+    if not all_completed and not primary_task:
+        return "Fix incomplete task instructions before running"
     if primary_task and not all_completed:
         return primary_task.text
     if all_completed and not gate_passed:
@@ -296,29 +299,28 @@ def render_status(
     package_dir: Path | None = None,
 ) -> str:
     primary_task = find_primary_task(tasks)
-    blocked_tasks = [task for task in tasks if task.is_blocked]
     total_tasks, completed_tasks = count_tasks(tasks_content)
     r = compute_gate_results(
         spec_content, tasks_content, checklist_content, slug=slug, root=root, package_dir=package_dir
     )
     pending_questions = list(r.human_questions)
     inquiry_next_step = None
-    if r.autonomous_task_ids:
-        try:
-            records = parse_task_records(tasks_content)
-            ready = ready_task_ids(records)
-            inquiry = ready & set(r.autonomous_task_ids)
-            inquiry_task = next((record for record in records if record.id in inquiry), None)
-            ready_task = next((record for record in records if record.id in ready), None)
-            inquiry_next_step = (
-                f"Autonomous inquiry: {inquiry_task.title}"
-                if inquiry_task
-                else ready_task.title
-                if ready_task
-                else None
-            )
-        except SpecControlError:
-            pass
+    try:
+        records = parse_task_records(tasks_content)
+    except SpecControlError:
+        records = []
+    blocked_records = [record for record in records if record.blocked]
+    ready = r.ready_task_ids
+    inquiry_task = next(
+        (record for record in records if record.id in ready and record.id in r.autonomous_task_ids), None
+    )
+    ready_task = next((record for record in records if record.id in ready), None)
+    if inquiry_task:
+        inquiry_next_step = f"Investigate independently: {inquiry_task.title}"
+    elif ready_task:
+        inquiry_next_step = ready_task.title
+    elif r.autonomous_unbound_questions:
+        inquiry_next_step = f"Investigate independently: {r.autonomous_unbound_questions[0]}"
     checkpoint_pending = checkpoint_pending or bool(checkpoint_status and checkpoint_status.interrupted)
 
     orchestration_errors = list(r.orchestration_errors)
@@ -326,12 +328,7 @@ def render_status(
     # Same order as route_spec_package: definition gaps first, dependency
     # errors second; both outrank acceptance/execution steps.
     ordered_gate_gaps = [*r.spec_clarification_gaps, *dependency_errors_list]
-    standalone_blocked_text: str | None = None
-    if r.blocked_tasks and not blocked_tasks:
-        standalone_blocked_text = next(
-            (line.strip() for line in tasks_content.splitlines() if BLOCKED_LINE_RE.match(line)),
-            "blocked task marker in tasks.md",
-        )
+    standalone_blocked_text = r.package_blocked or None
 
     health = overall_state(tasks, pending_questions, bool(ordered_gate_gaps), gate_passed=r.overall_ok)
     if r.blocked_tasks:
@@ -339,15 +336,23 @@ def render_status(
     if checkpoint_pending:
         # Advisory-level attention mirroring route; gates still refuse.
         health = worst_health(health, HEALTH_RISK)
-    if orchestration_errors or r.question_errors or (r.all_tasks_done and not r.overall_ok):
+    if (
+        r.branch_error
+        or r.invalid_verify
+        or orchestration_errors
+        or r.question_errors
+        or (r.all_tasks_done and not r.overall_ok)
+    ):
         health = worst_health(health, HEALTH_RISK)
 
-    strip, strip_labels = task_strip_from_records(tasks)
+    strip, strip_labels = task_strip_from_records(records if records else tasks)
 
     alerts: list[str] = []
     if checkpoint_pending:
         alerts.append(checkpoint_alert(checkpoint_status))
-    alerts.extend(f"Task blocked: {task.text}" for task in blocked_tasks)
+    alerts.extend(f"Task blocked: {record.title}" for record in blocked_records)
+    if not records:
+        alerts.extend(f"Task blocked: {task.text}" for task in tasks if task.is_blocked)
     if standalone_blocked_text:
         alerts.append(f"Task blocked: {standalone_blocked_text}")
     alerts.extend(f"Requirements need confirmation: {question}" for question in pending_questions)
@@ -360,6 +365,8 @@ def render_status(
             alerts.append(f"Project definition incomplete: {project_gap_message(gap)}")
     alerts.extend(f"Orchestration requirements not met: {error}" for error in orchestration_errors)
     alerts.extend(f"Verification scope requirements not met: {error}" for error in r.verification_scope_errors)
+    if r.branch_error:
+        alerts.append(f"Branch binding: {r.branch_error}")
     if r.all_tasks_done and not r.overall_ok and not alerts:
         alerts.append("Project does not meet final acceptance requirements")
 
@@ -374,8 +381,8 @@ def render_status(
         active_stage = "run"
 
     next_step = status_next_step(
-        primary_task,
-        blocked_tasks,
+        primary_task if ready_task else None,
+        blocked_records,
         pending_questions,
         all_completed,
         checklist_content,
@@ -384,7 +391,9 @@ def render_status(
         dependency_errors_list=dependency_errors_list,
         orchestration_errors_list=orchestration_errors,
         question_errors_list=r.question_errors,
-        inquiry_next_step=inquiry_next_step,
+        inquiry_next_step=inquiry_next_step if not r.package_blocked else None,
+        branch_error=r.branch_error,
+        verify_errors=r.invalid_verify if not ready_task else [],
         checkpoint_pending=checkpoint_pending,
         gate_passed=r.overall_ok,
         spec_content=spec_content,

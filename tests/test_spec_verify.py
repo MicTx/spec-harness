@@ -159,7 +159,7 @@ class TestClassifyVerify:
         assert classification.kind == "manual"
         assert classification.reason == "只读复核 `check.py:141`"
 
-    @pytest.mark.parametrize("verify", ["", "manual:", "pytest passed"])
+    @pytest.mark.parametrize("verify", ["", "manual:", "pytest passed", "`   `", "`\t`"])
     def test_invalid_verify_is_not_classified(self, verify):
         assert classify_verify(verify) is None
 
@@ -319,6 +319,26 @@ class TestRunRecorder:
         assert "backtick" in result.stderr
         assert read_records(package) == []
         assert gate_for(root, package).runs_gate_ok is False
+
+    def test_blank_command_never_records_or_satisfies_runs_gate(self, tmp_path):
+        root = init_repo(tmp_path)
+        tasks = "- [x] Empty\n  - boundary: tests\n  - verify: `   `\n"
+        package = make_package(root, SLUG, runs_protocol=True, tasks_text=tasks)
+        result = run_recorder(root, SLUG, "--all", check=False)
+        assert result.returncode == 1
+        assert "backtick" in result.stderr
+        assert read_records(package) == []
+        gate = gate_for(root, package)
+        assert gate.runs_gate_ok is False and gate.overall_ok is False
+
+    def test_blank_command_cannot_reuse_existing_passing_record(self, tmp_path):
+        root = init_repo(tmp_path)
+        package = make_package(root, SLUG, runs_protocol=True, tasks_text=PASSING_TASKS)
+        run_recorder(root, SLUG, "--all")
+        tasks_path = package / "tasks.md"
+        tasks_path.write_text(tasks_path.read_text(encoding="utf-8").replace("python3 -c \"print('ok')\"", "   "))
+        assert gate_for(root, package).runs_gate_ok is False
+        assert any("backtick" in error for error in gate_for(root, package).runs_errors)
 
     def test_unknown_task_is_rejected(self, tmp_path):
         root = init_repo(tmp_path)

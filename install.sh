@@ -705,7 +705,7 @@ EOF_BODY
       cat <<EOF_BODY
 # /$command_name
 
-Run the one-shot goal workflow: plan the task package, execute every task in this session, self-verify each delivery at the package's declared verification level, and archive and commit scoped changes after gates pass. Default: stop at the local commit and print the spec:push command as the next step; run the safe spec:push flow only when the invocation carried --push or the user explicitly asks to push in this session. Stop at any failed gate.
+Run the one-shot goal workflow: plan the task package, execute every task in this session, self-verify each delivery at the package's declared verification level, and archive and commit scoped changes after gates pass. Default: stop at the local commit and print the spec:push command as the next step; run the safe spec:push flow only when the invocation carried --push or the user explicitly asks to push in this session. Recover verify and gate failures in-session via Recovery; stop only at authority, an external blocker, or a failed hook, commit or push preflight.
 EOF_BODY
       ;;
     autoplan)
@@ -719,7 +719,7 @@ EOF_BODY
       cat <<EOF_BODY
 # /$command_name
 
-Run the recursive autorun chain using the actual client and surface: desktop and IDE-plugin sessions continue in the current session; verified CLI adapters retain fresh interactive sessions. Finish each package through run/check/done, perform Git publication only when explicitly authorized, then plan the next unchecked feature. Preserve scope, verification and recovery gates; stop at the first failure or permission boundary. Safety rails: round cap on by default (5 rounds unless flagged; --unbounded explicitly removes it), transaction lock, owner/revision checks for current sessions. Do not launch another agent just because its CLI is on PATH. Read references/stages/autorun.md before execution.
+Run the recursive autorun chain using the actual client and surface: desktop and IDE-plugin sessions continue in the current session; verified CLI adapters retain fresh interactive sessions. Finish each package through run/check/done, perform Git publication only when explicitly authorized, then plan the next unchecked feature. Preserve scope, verification and recovery gates; recover in-session and stop only at a permission boundary, an unrepaired external blocker, or a failed hook, commit or push preflight. Safety rails: no round cap unless --max-rounds is set; follow the chain state and package gates. Do not launch another agent just because its CLI is on PATH. Read references/stages/autorun.md before execution.
 EOF_BODY
       ;;
     run)
@@ -728,14 +728,14 @@ EOF_BODY
 
 Execute the active spec to a concrete result in one shot when possible. If prior work was interrupted, recover state from the task package and continue from the next incomplete item.
 
-The main session is the orchestrator: work ready tasks in dependency order, run each task's verify before checking it off, and keep going until the package converges. Bounded sidecar work follows the orchestration contract in references/orchestration.md after a route_decision.py call; loop-shaped work follows a managed slot protocol. Stop at any failed gate or blocker and report it.
+The main session is the orchestrator: work ready tasks in dependency order, run each task's verify before checking it off, and keep going until the package converges. Bounded sidecar work follows the orchestration contract in references/orchestration.md after a route_decision.py call; loop-shaped work follows a managed slot protocol. Follow Recovery in-session; stop only at authority or an environment blocker you cannot repair.
 EOF_BODY
       ;;
     check)
       cat <<EOF_BODY
 # /$command_name
 
-Run an extra human-in-the-loop review pass: inspect implementation, evidence, gaps, and write required fixes back into the spec package. Read the package's declared verification level first: package (default focused checks), integration (focused checks plus directly affected paths), or project (full suite). Do not expand a package/integration review to the whole project without the recorded upgrade trigger. The machine gate is check_spec_package.py: tasks must be complete, checklist must be fully checked with a passing result, every task needs boundary/verify, and checklist evidence must include non-placeholder script/test/build proof plus any enabled consistency or structure gates.
+Run the machine check and review pass: inspect implementation, evidence and gaps, write genuinely new executable defects back into the spec package without duplicating aggregate gate counts, and follow Recovery in-session; ask for authority or report an unresolved blocker. Read the package's declared verification level first: package (default focused checks), integration (focused checks plus directly affected paths), or project (full suite). Do not expand a package/integration review to the whole project without the recorded upgrade trigger. The machine gate is check_spec_package.py: tasks must be complete, success criteria ticked with evidence, every task needs boundary/verify, and task runs evidence must include non-placeholder script/test/build proof plus any enabled consistency or structure gates.
 EOF_BODY
       ;;
     done)
@@ -756,7 +756,7 @@ EOF_BODY
       cat <<EOF_BODY
 # /$command_name
 
-Adjust the current spec during execution: add, remove, or reorder tasks and update scope or acceptance criteria when needed.
+Adjust the current spec during execution: append genuinely new tasks, update scope or acceptance criteria with evidence, and keep the worktree intact; do not commit or stash without a user request.
 EOF_BODY
       ;;
     status)

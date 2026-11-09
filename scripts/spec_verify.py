@@ -51,7 +51,8 @@ def classify_verify(verify: str) -> VerifyClassification | None:
         reason = value[len("manual:") :].strip()
         return VerifyClassification("manual", reason=reason) if reason else None
     match = re.search(r"`([^`]+)`", value)
-    return VerifyClassification("machine", command=match.group(1).strip()) if match else None
+    command = match.group(1).strip() if match else ""
+    return VerifyClassification("machine", command=command) if command else None
 
 
 def runs_protocol_enabled(spec_content: str) -> bool:

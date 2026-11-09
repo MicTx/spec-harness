@@ -23,6 +23,7 @@ from check_spec_package import (
     compute_gate_results,
     convergence_state,
     gate_failure_details,
+    gate_recovery_routes,
     gate_rows,
     has_blocked_tasks,
     is_likely_template,
@@ -259,6 +260,359 @@ def test_v1_checklist_pending_fails_success_gate():
     assert "Success criteria" in gate_failure_details(results)
 
 
+# -- recovery routing: check -> update/run/authority/environment --
+
+
+@pytest.mark.parametrize("marker", ["x", "X"])
+def test_resolved_task_detail_does_not_remain_a_blocker(marker):
+    tasks = f"## Phase\n- [{marker}] Done\n  - boundary: x\n  - verify: `true`\n  - blocked: historical, resolved\n"
+    results = _converged(tasks=tasks)
+    assert results.blocked_tasks is False
+    assert results.overall_ok
+
+
+@pytest.mark.parametrize(
+    "blocked_line", ["  blocked: approval required", "  - blocked: release freeze", "\t阻塞：等待审批"]
+)
+def test_unowned_indented_blocker_fails_completed_gate(blocked_line):
+    tasks = f"## Status\n{blocked_line}\n## Phase\n- [x] Done\n  - boundary: x\n  - verify: `true`\n"
+    results = _converged(tasks=tasks)
+    assert results.blocked_tasks
+    assert not results.overall_ok
+    assert gate_recovery_routes(results)["Tasks and boundaries"] == "environment"
+
+
+def test_indented_global_blocker_before_first_task_prevents_archive_after_parsing(tmp_path):
+    root = tmp_path
+    slug = "2026-11-09_indented-global-blocker"
+    spec = _make_spec()
+    tasks = "## Status\n  blocked: owner approval required\n## Phase\n- [x] Done\n  - boundary: x\n  - verify: `true`\n"
+    package = _write_package(root, slug, spec=spec, tasks=tasks)
+    check = _run_check("--root", str(root), "--slug", slug, "--format", "json")
+    payload = json.loads(check.stdout)
+    assert check.returncode == 1 and payload["overall"] is False
+    complete = subprocess.run(
+        [
+            sys.executable,
+            str(CHECK_SCRIPT.with_name("complete_spec_package.py")),
+            "--root",
+            str(root),
+            "--slug",
+            slug,
+            "--archive",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert complete.returncode != 0
+    assert package.is_dir()
+
+
+def test_unowned_blocker_after_completed_task_prevents_gate():
+    tasks = "## Phase\n- [x] Done\n  - boundary: x\n  - verify: `true`\n\n  blocked: approval required\n"
+    results = _converged(tasks=tasks)
+    assert results.package_blocked and not results.overall_ok
+
+
+def test_v2_empty_success_is_not_replaced_by_legacy_checklist():
+    spec = _make_spec(success="").replace("# Test - 项目范围", "# Test - 项目范围\n<!-- spec-format: 2 -->")
+    for checklist in ("# c\n**验收结果**：待修复\n", "# c\n**验收结果**：通过\n"):
+        results = _converged(spec=spec, checklist=checklist)
+        assert results.success_criteria_total == 0
+        assert gate_recovery_routes(results)["Success criteria"] == "update"
+
+
+def test_closed_fact_title_cannot_spoof_decision_authority_error():
+    spec = _make_spec().replace(
+        "### 2.3 待确认问题\n- 无\n",
+        "### 2.3 待确认问题\n- [x] [fact] Why does closing a decision requires approval?\n",
+    )
+    results = _converged(spec=spec)
+    assert results.authority_question_errors == []
+    assert gate_recovery_routes(results) == {"Open questions": "update"}
+
+
+def test_closed_decision_title_preserves_error_marker_text():
+    title = "What if closing a decision requires approval?"
+    spec = _make_spec().replace("### 2.3 待确认问题\n- 无\n", f"### 2.3 待确认问题\n- [x] [decision] {title}\n")
+    results = _converged(spec=spec)
+    assert all(title in error for error in results.authority_question_errors)
+    assert gate_recovery_routes(results) == {"Open questions": "authority"}
+
+
+def test_title_blocked_without_marker_gets_environment_recovery():
+    tasks = "## Phase\n- [ ] blocked: waiting for service\n  - boundary: local\n  - verify: `true`\n"
+    results = _converged(tasks=tasks)
+    assert "Tasks and boundaries" in gate_failure_details(results)
+    assert gate_recovery_routes(results)["Tasks and boundaries"] == "environment"
+
+
+def test_unreadable_runs_path_cannot_spoof_verify_error(tmp_path):
+    root = tmp_path / "SPEC-VERIFY-002"
+    package = root / ".spec" / "specs" / "2026-11-09_corrupt-evidence"
+    package.mkdir(parents=True)
+    (package / "runs.jsonl").mkdir()
+    spec = _make_spec() + "\nevidence: runs\n"
+    results = compute_gate_results(spec, "- [x] A\n  - boundary: x\n  - verify: `true`\n", None, None, root, package)
+    assert results.runs_errors[0].startswith("[SPEC-EVID-003]")
+    assert gate_recovery_routes(results)["Runs evidence"] == "environment"
+
+
+def test_unreadable_runs_path_ending_with_verify_error_stays_environment(tmp_path):
+    message = "verify requires a backtick command or a manual: reason"
+    package = tmp_path / message / ".spec" / "specs" / "2026-11-09_corrupt-evidence"
+    package.mkdir(parents=True)
+    (package / "runs.jsonl").mkdir()
+    spec = _make_spec() + "\nevidence: runs\n"
+    results = compute_gate_results(
+        spec, "- [x] A\n  - boundary: x\n  - verify: `true`\n", None, None, tmp_path, package
+    )
+    assert gate_recovery_routes(results)["Runs evidence"] == "environment"
+
+
+def test_invalid_only_ready_verify_maps_both_gates_to_update(tmp_path):
+    package = tmp_path / ".spec" / "specs" / "2026-11-09_invalid-only"
+    package.mkdir(parents=True)
+    spec = _make_spec() + "\nevidence: runs\n"
+    tasks = "## Phase\n- [ ] Invalid\n  - boundary: x\n  - verify: passes\n"
+    results = compute_gate_results(spec, tasks, None, None, tmp_path, package)
+    assert results.ready_tasks == 0
+    routes = gate_recovery_routes(results)
+    assert routes["Tasks and boundaries"] == "update"
+    assert routes["Runs evidence"] == "update"
+
+
+def test_wrong_branch_check_does_not_recommend_ready_task(tmp_path):
+    slug = "2026-11-09_branch-check"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)], check=True)
+    spec = _make_spec() + f"\n- Git integration branch: `spec/{slug}`\n"
+    tasks = "## Phase\n- [ ] Implement\n  - boundary: local\n  - verify: `true`\n"
+    _write_package(tmp_path, slug, spec=spec, tasks=tasks)
+    result = _run_check("--root", str(tmp_path), "--slug", slug, "--format", "json")
+    payload = json.loads(result.stdout)
+    assert payload["recovery"]["Branch binding"] == "environment"
+    assert all("run" not in value.split("+") for value in payload["recovery"].values())
+    markdown = _run_check("--root", str(tmp_path), "--slug", slug).stdout
+    assert "Switch to the package branch" in markdown.split("## Next")[-1]
+    assert "Implement" not in markdown.split("## Next")[-1]
+
+
+def test_invalid_legacy_task_ids_preserve_machine_evidence_failure(tmp_path):
+    package = tmp_path / ".spec" / "specs" / "2026-11-09_invalid-evidence"
+    package.mkdir(parents=True)
+    spec = _make_spec() + "\nevidence: runs\n"
+    tasks = (
+        "## Phase\n- [ ] A\n  - id: task-a\n  - boundary: x\n  - verify: `true`\n"
+        "- [ ] B\n  - id: task-a\n  - boundary: x\n  - verify: `true`\n"
+    )
+    results = compute_gate_results(spec, tasks, None, None, tmp_path, package)
+    assert results.runs_protocol and results.runs_gate_ok is False
+    assert results.overall_ok is False
+    assert gate_recovery_routes(results)["Tasks and boundaries"] == "update"
+    assert gate_recovery_routes(results)["Runs evidence"] == "update"
+
+
+def test_cli_duplicate_task_ids_return_structured_recovery(tmp_path):
+    slug = "2026-11-09_duplicate-tasks"
+    tasks = (
+        "## Phase\n- [ ] A\n  - id: task-a\n  - boundary: x\n  - verify: `true`\n"
+        "- [ ] B\n  - id: task-a\n  - boundary: x\n  - verify: `true`\n"
+    )
+    _write_package(tmp_path, slug, tasks=tasks)
+    result = _run_check("--root", str(tmp_path), "--slug", slug, "--format", "json")
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert "duplicate task id" in payload["gateFailures"]["Tasks and boundaries"]
+    assert payload["recovery"]["Tasks and boundaries"] == "update"
+    markdown = _run_check("--root", str(tmp_path), "--slug", slug)
+    assert markdown.returncode == 1
+    assert "- Recovery: Tasks and boundaries -> update" in markdown.stdout
+
+
+def test_recovery_routes_unchecked_tasks_to_run():
+    results = _converged(tasks=_make_tasks(done=False))
+    assert gate_recovery_routes(results) == {"Tasks and boundaries": "run"}
+
+
+def test_recovery_routes_contract_gaps_to_update():
+    results = _converged(tasks="## Phase\n- [ ] Task A\n")
+    assert gate_recovery_routes(results) == {"Tasks and boundaries": "update"}
+    assert "missing boundary" in gate_failure_details(results)["Tasks and boundaries"]
+
+
+def test_recovery_routes_open_decision_to_authority():
+    spec = _make_spec().replace(
+        "### 2.3 待确认问题\n- 无\n",
+        "### 2.3 待确认问题\n- [ ] [decision] 发布？\n",
+    )
+    results = _converged(spec=spec)
+    assert gate_recovery_routes(results) == {"Open questions": "authority"}
+
+
+def test_recovery_routes_autonomous_question_to_investigation():
+    spec = _make_spec().replace(
+        "### 2.3 待确认问题\n- 无\n",
+        "### 2.3 待确认问题\n- [ ] [fact] 本地格式是什么？\n",
+    )
+    results = _converged(spec=spec)
+    assert gate_recovery_routes(results) == {"Open questions": "run"}
+
+
+def test_recovery_routes_unmet_success_criteria_to_run_and_empty_to_update():
+    results = _converged(spec=_make_spec(success="- [x] 完成 A\n- [ ] 完成 B"))
+    assert gate_recovery_routes(results) == {"Success criteria": "run"}
+    empty = _converged(spec=_make_spec(success=""))
+    assert gate_recovery_routes(empty) == {"Success criteria": "update"}
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "[x] [decision] 发布？ | answer: 发布",
+        "[x] [decision] 发布？ | authority: user:boss",
+        "[x] [decision] 发布？ | answer: 发布 | authority: user:待补充",
+    ],
+)
+def test_recovery_routes_closed_decision_gaps_to_authority_only(question):
+    spec = _make_spec().replace("### 2.3 待确认问题\n- 无\n", f"### 2.3 待确认问题\n- {question}\n")
+    results = _converged(spec=spec)
+    assert results.question_errors
+    assert gate_recovery_routes(results) == {"Open questions": "authority"}
+
+
+def test_recovery_routes_closed_fact_missing_answer_to_update():
+    spec = _make_spec().replace(
+        "### 2.3 待确认问题\n- 无\n",
+        "### 2.3 待确认问题\n- [x] [fact] 本地格式？\n",
+    )
+    results = _converged(spec=spec)
+    assert results.question_errors
+    assert gate_recovery_routes(results) == {"Open questions": "update"}
+
+
+def test_recovery_routes_mixed_question_errors_keep_authority_and_update():
+    spec = _make_spec().replace(
+        "### 2.3 待确认问题\n- 无\n",
+        "### 2.3 待确认问题\n- [x] [fact] 本地格式？\n- [x] [decision] 发布？ | answer: 发布\n",
+    )
+    results = _converged(spec=spec)
+    assert gate_recovery_routes(results) == {"Open questions": "update+authority"}
+
+
+def test_recovery_routes_failed_evidence_to_run(tmp_path):
+    root = tmp_path
+    slug = "2026-11-09_fixture-recovery"
+    package = root / ".spec" / "specs" / slug
+    package.mkdir(parents=True)
+    spec = _make_spec().replace("## 6. 成功标准", "本包启用 evidence: runs 协议。\n## 6. 成功标准")
+    tasks = "## Phase\n- [ ] Task A\n  - boundary: x\n  - verify: `true`\n"
+    results = compute_gate_results(spec, tasks, None, slug, root, package)
+    routes = gate_recovery_routes(results)
+    assert routes["Runs evidence"] == "run"
+    assert routes["Tasks and boundaries"] == "run"
+
+
+def test_recovery_routes_malformed_verify_to_update(tmp_path):
+    root = tmp_path
+    slug = "2026-11-09_fixture-verify-contract"
+    package = root / ".spec" / "specs" / slug
+    package.mkdir(parents=True)
+    spec = _make_spec().replace("## 6. 成功标准", "本包启用 evidence: runs 协议。\n## 6. 成功标准")
+    tasks = "## Phase\n- [x] Task A\n  - boundary: x\n  - verify: passes\n"
+    results = compute_gate_results(spec, tasks, None, slug, root, package)
+    assert results.runs_gate_ok is False
+    assert any("requires a backtick" in error for error in results.runs_errors)
+    routes = gate_recovery_routes(results)
+    assert routes == {"Runs evidence": "update"}
+    assert set(routes) == set(gate_failure_details(results))
+
+
+def test_recovery_routes_blocked_and_ready_without_inferring_user_authority():
+    tasks = (
+        "## Phase\n"
+        "- [!] 等外部系统\n  - boundary: x\n  - verify: `true`\n"
+        "- [ ] 可立即执行的修复\n  - boundary: y\n  - verify: `true`\n"
+    )
+    results = _converged(tasks=tasks)
+    assert results.blocked_tasks is True
+    assert results.ready_tasks == 1
+    assert gate_recovery_routes(results) == {"Tasks and boundaries": "run+environment"}
+
+
+def test_recovery_routes_blocked_tasks_to_environment():
+    results = _converged(tasks="## Phase\n- [!] 等外部系统\n  - boundary: x\n  - verify: `true`\n")
+    assert gate_recovery_routes(results) == {"Tasks and boundaries": "environment"}
+
+
+def test_recovery_routes_contract_and_evidence_share_labels(tmp_path):
+    root = tmp_path
+    slug = "2026-11-09_fixture-mixed"
+    package = root / ".spec" / "specs" / slug
+    package.mkdir(parents=True)
+    spec = _make_spec().replace("## 6. 成功标准", "本包启用 evidence: runs 协议。\n## 6. 成功标准")
+    tasks = (
+        "## Phase\n"
+        "- [ ] Task A\n  - boundary: x\n  - verify: passes\n"
+        "- [ ] Task B\n  - boundary: y\n  - verify: `true`\n"
+    )
+    results = compute_gate_results(spec, tasks, None, slug, root, package)
+    routes = gate_recovery_routes(results)
+    assert routes["Tasks and boundaries"] == "run"
+    assert routes["Runs evidence"] == "update+run"
+    assert set(routes) == set(gate_failure_details(results))
+
+
+def test_recovery_routes_combined_failures():
+    spec = _make_spec(success="")
+    results = _converged(spec=spec, tasks=_make_tasks(done=False))
+    assert gate_recovery_routes(results) == {
+        "Tasks and boundaries": "run",
+        "Success criteria": "update",
+    }
+
+
+def test_empty_task_list_routes_to_update():
+    results = _converged(tasks="## Phase\n")
+    assert gate_failure_details(results)["Tasks and boundaries"] == "tasks complete 0/0"
+    assert gate_recovery_routes(results) == {"Tasks and boundaries": "update"}
+
+
+def test_mixed_open_questions_keep_both_autonomous_and_authority_routes():
+    spec = _make_spec().replace(
+        "### 2.3 待确认问题\n- 无\n",
+        "### 2.3 待确认问题\n- [ ] [fact] What format?\n- [ ] [decision] Publish?\n",
+    )
+    results = _converged(spec=spec)
+    assert gate_recovery_routes(results) == {"Open questions": "run+authority"}
+
+
+def test_falsy_evidence_does_not_invent_task_failure_from_io_error(tmp_path):
+    package = tmp_path / ".spec" / "specs" / "2026-11-09_fixture-unreadable"
+    package.mkdir(parents=True)
+    (package / "runs.jsonl").write_text("{broken\n", encoding="utf-8")
+    spec = _make_spec() + "\nevidence: runs\n"
+    tasks = "- [x] A\n  - boundary: x\n  - verify: `true`\n"
+    results = compute_gate_results(spec, tasks, None, None, tmp_path, package)
+    assert gate_recovery_routes(results) == {"Runs evidence": "environment"}
+    assert set(gate_recovery_routes(results)) == set(gate_failure_details(results))
+
+
+def test_duplicate_verify_is_an_update_not_a_run(tmp_path):
+    package = tmp_path / ".spec" / "specs" / "2026-11-09_fixture-duplicate"
+    package.mkdir(parents=True)
+    spec = _make_spec() + "\nevidence: runs\n"
+    tasks = "- [x] A\n  - boundary: x\n  - verify: `true`\n  - verify: `true`\n"
+    results = compute_gate_results(spec, tasks, None, None, tmp_path, package)
+    assert gate_recovery_routes(results) == {"Runs evidence": "update"}
+    assert set(gate_recovery_routes(results)) == set(gate_failure_details(results))
+
+
+def test_recovery_for_branch_mismatch_is_environment(monkeypatch, tmp_path):
+    monkeypatch.setattr("check_spec_package.validate_branch_bound_package", lambda *_args, **_kwargs: (False, "wrong"))
+    results = compute_gate_results(_make_spec(), _make_tasks(), None, "2026-11-09_fixture-branch", tmp_path)
+    assert gate_recovery_routes(results) == {"Branch binding": "environment"}
+
+
 def test_runs_protocol_without_records_fails_evidence_gate(tmp_path):
     spec = _make_spec() + "\nevidence: runs\n"
     tasks = "## Phase\n- [x] Task A\n  - boundary: only x\n  - verify: `true`\n"
@@ -429,9 +783,26 @@ def test_cli_json_contract():
         assert payload["converged"] is True
         assert payload["gaps"] == []
         assert payload["overallGaps"] == []
+        assert payload["gateFailures"] == {}
+        assert payload["recovery"] == {}
         assert payload["openDecisions"] == []
         assert payload["tasksDone"] is True
         assert payload["archived"] is False
+
+
+def test_cli_json_recovery_matches_markdown():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        slug = "2026-11-09_fixture-recovery"
+        _write_package(root, slug, tasks=_make_tasks(done=False))
+        json_result = _run_check("--root", str(root), "--slug", slug, "--format", "json")
+        assert json_result.returncode == 1
+        payload = json.loads(json_result.stdout)
+        assert payload["gateFailures"] == {"Tasks and boundaries": "tasks complete 0/1"}
+        assert payload["recovery"] == {"Tasks and boundaries": "run"}
+        markdown_result = _run_check("--root", str(root), "--slug", slug)
+        assert markdown_result.returncode == 1
+        assert "- Recovery: Tasks and boundaries -> run" in markdown_result.stdout
 
 
 def test_cli_archived_package_is_frozen():
@@ -443,7 +814,15 @@ def test_cli_archived_package_is_frozen():
         completed = _run_check("--root", str(root), "--slug", slug, "--format", "json")
         assert completed.returncode == 0
         payload = json.loads(completed.stdout)
-        assert payload == {"slug": slug, "overall": True, "converged": True, "gaps": [], "archived": True}
+        assert payload == {
+            "slug": slug,
+            "overall": True,
+            "converged": True,
+            "gaps": [],
+            "gateFailures": {},
+            "recovery": {},
+            "archived": True,
+        }
 
 
 def test_cli_missing_package_errors():

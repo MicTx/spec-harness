@@ -620,15 +620,10 @@ def extract_problem_definition_values(spec_content: str) -> dict[str, str]:
 
 
 ORCHESTRATION_ROUTES = ("local", "explore", "build", "review", "external")
-
 SECTION_ORCHESTRATION_HEADING = SECTION_ORCHESTRATION
-
 ORCHESTRATION_HEADING_PREFIX = SECTION_ORCHESTRATION.canonical
-
 TOP_LEVEL_BULLET_FIELD = re.compile("^-\\s*([^：:]+?)\\s*[：:]\\s*(.*)$")
-
 BULLET_LINE = re.compile("^-\\s?")
-
 TASK_MARKER = re.compile(r"(?m)^\s*-\s\[(.)\]\s+(.*)$")
 
 
@@ -703,20 +698,23 @@ def parse_task_records(tasks_content: str) -> list[TaskRecord]:
             next_task = re.match("^\\s*-\\s\\[(.)\\]\\s+", lines[index].rstrip())
             if next_task or lines[index].strip().startswith("#"):
                 break
-            if lines[index].strip():
-                block.append(lines[index].strip())
-                if lines[index][0].isspace():
-                    own_block.append(lines[index].strip())
+            if not lines[index].strip():
+                break
+            block.append(lines[index].strip())
+            if lines[index][0].isspace():
+                own_block.append(lines[index].strip())
             index += 1
         explicit = [line.removeprefix("- id:").strip() for line in block if line.startswith("- id:")]
         if len(explicit) > 1 or (explicit and (not STABLE_TASK_ID_PATTERN.fullmatch(explicit[0]))):
             raise SpecControlError(f"invalid or duplicate explicit task id in {title!r}")
+        detail_blocked = any(re.match(r"(?i)^(?:-\s*)?(?:blocked|阻塞)[：:]", line) for line in own_block[1:])
+        blocked = marker.lower() != "x" and (marker == "!" or detail_blocked or task_title_signals_blocked(title))
         records.append(
             TaskRecord(
                 id=explicit[0] if explicit else f"task_{len(records) + 1:04d}",
                 title=title,
                 checked=marker.lower() == "x",
-                blocked=marker == "!" or (task_title_signals_blocked(title) and marker.lower() != "x"),
+                blocked=blocked,
                 boundary=boundary,
                 verify=verify,
                 block_text="\n".join(own_block if explicit else block),
@@ -1106,13 +1104,16 @@ def autonomous_question_contract(
         match = re.match(r"\[(decision|fact|reversible)\]\s*(.*)", text)
         kind, title = match.groups() if match else ("fact", text)
         if closed and is_placeholder_value(fields.get("answer", "")):
-            errors.append(f"{title}: closing requires answer: <conclusion>")
+            prefix = "a decision " if kind == "decision" else ""
+            errors.append(f"{title}: closing {prefix}requires answer: <conclusion>")
         if kind == "decision":
-            if not closed:
-                human.append(title)
             authority = fields.get("authority", "")
+            if not closed or is_placeholder_value(fields.get("answer", "")):
+                human.append(title)
             if closed and (not authority.startswith("user:") or is_placeholder_value(authority[5:])):
                 errors.append(f"{title}: closing a decision requires authority: user:<reference>")
+                if title not in human:
+                    human.append(title)
         else:
             questions.append(AutonomousQuestion(title, kind, closed, fields.get("task", ""), fields))
     return questions, human, errors

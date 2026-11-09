@@ -1,13 +1,13 @@
 # `/spec:update`
 
-Goal: add, remove or adjust tasks and scope mid-flight without losing delivered work.
+Goal: adjust tasks and scope mid-flight without losing delivered work. `Recovery: ... -> update` arrives here; `run`/`environment` stay on their paths.
 
-1. Commit or stash the current state first; Git is the rollback (`git restore` / `git revert`).
-2. Read `spec.md` and `tasks.md`. State which assumptions were added, overturned or confirmed, and whether the minimal path changed.
-3. Append new tasks after the existing ones with unique ids; never delete, reorder or re-word a delivered (ticked) task, its `boundary` or its `verify`.
-4. Update scope, out-of-scope and §6 success criteria in the same change when they are affected. Never widen scope for imagined future needs.
-5. Re-run `scripts/check_spec_package.py`; delivered tasks must still be ticked.
+1. Preserve worktree: never commit, stash, reset or overwrite user changes unless asked.
+2. Read `spec.md` and `tasks.md`; record changed assumptions and the minimal path.
+3. Append new tasks with unique ids; never delete, reorder or re-word a delivered task, its `boundary` or `verify`. Exception: for an invalid completed `verify`, record old value and reason, reopen the task, correct it, and rerun evidence before ticking.
+4. Change scope and §6 only with evidence; never tick acceptance without a passing check or widen scope speculatively.
+5. Re-run `scripts/check_spec_package.py`; follow `Recovery:` without asking again, except `authority`, which waits for the user.
 
-A leftover `update-checkpoint.json` comes from the retired update mechanism: confirm with `git diff` that nothing needs restoring, then delete it.
+For a retired `update-checkpoint.json`, inspect via `git diff` before deleting.
 
 Output: [`../output-contracts.md`](../output-contracts.md).

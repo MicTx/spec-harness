@@ -21,7 +21,7 @@ Package tiers (`init_spec_package.py --workflow`): `lite` (default) records goal
 1. **Resume**: read the active package's `tasks.md` and `handoff.md` (if any), then `git log -5`. No active package → `new`.
 2. **Plan** (`new`): `python3 scripts/init_spec_package.py --root <project> --slug YYYY-MM-DD_<verb>-<object> --title "<title>"`, then fill the placeholders. Every task gets a `boundary` and a `verify` command; add `depends-on` when order matters.
 3. **Execute** (`run`): take ready tasks in dependency order; run each `verify` before ticking it. Mark a blocked task `!` and say why.
-4. **Check** (`check`): `python3 scripts/spec_verify.py run --root <project> --slug <slug> --all`, then `python3 scripts/check_spec_package.py --root <project> --slug <slug>`. Write each failure back as a task and fix it this round.
+4. **Check** (`check`): `python3 scripts/spec_verify.py run --root <project> --slug <slug> --all`, then `python3 scripts/check_spec_package.py --root <project> --slug <slug>`. Recover in-session: follow each gate's `Recovery:` route; write genuinely new defects back as tasks, reuse open tasks and never duplicate aggregate counts. Wait for authority, unrepaired blockers or interruption.
 5. **Close** (`done`, then `push` only when authorized): `complete_spec_package.py --archive` writes the summary and archives; commit with a `Spec: <slug>` footer.
 
 ## Hard rules
@@ -29,8 +29,8 @@ Package tiers (`init_spec_package.py --workflow`): `lite` (default) records goal
 1. Every task has a `boundary` and a `verify`; tick only after `verify` actually ran and passed.
 2. Only `done` commits; only `push` merges, pushes and deletes branches, and only after explicit user authorization.
 3. Never write to protected branches (`main`, `master`, `develop`, `release/*`, …; list in `scripts/spec_package_support.py`). One package binds one `spec/` branch.
-4. Never use `--no-verify`; never change files and commit in the same shell call.
-5. A `[decision]` question (permission, irreversible action, preference, external dependency) closes only with `authority: user:<reference>`. Investigate everything else yourself.
+4. Never use `--no-verify`; never change files and commit in the same shell call; never stash, reset or overwrite user changes to make a gate pass.
+5. Classify every question: `[fact]` inspects code/data or a read-only command; `[reversible]` picks the in-scope option by reversal cost and regret and records the choice; `[decision]` covers permission, irreversibility, preference or external dependency and closes only with `authority: user:<reference>`. Investigate the rest with read-only research or an installed skill. External queries disclose their contents: do not send project data, credentials or private paths without authorization. No label grants permission: host and user authorization still govern Git writes, credentials, global configuration, publication and destructive actions.
 6. Delegation is optional: give the helper a goal, scope, excluded areas and a `verify`; the main session merges and accepts. See [`references/orchestration.md`](references/orchestration.md).
 7. Report to the user in project terms — goal, progress, problems, results — not stage names or gate counts ([`references/output-contracts.md`](references/output-contracts.md)).
 

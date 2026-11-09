@@ -141,15 +141,15 @@ FULL adds, on top of LITE:
 
 ### Pending questions
 
-`2.3` has one markup: an open question is a plain `- [ ]` line; an answered one is `- [x]` plus `| answer: <conclusion>`.
+`2.3` has one markup: an open question is a plain `- [ ]` line; an answered one is `- [x]` plus `| answer: <conclusion>`. `[fact]` is read-only code/data investigation; `[reversible]` is an in-scope choice the model picks by comparing options, reversal cost and regret; `[decision]` is permission, irreversibility, genuine preference or an external dependency and needs `answer:` plus `| authority: user:<reference>`. Missing knowledge is resolved by read-only research or an installed skill, never by assuming access. No label grants permission: Git writes, credentials, global config, publication and destructive actions need user authority.
 
 ```text
-- [ ] Which local format should we use?
-- [x] Use the local parser | answer: keep the existing JSON parser
+- [x] [fact] Which local format is used? | answer: JSON
+- [x] [reversible] Choose the local parser | answer: keep the existing JSON parser
 - [ ] [decision] May we publish the results?
 ```
 
-`[decision]` marks the questions that require user authority (permission, irreversible actions, preferences, external dependencies): it closes only with both `answer:` and `| authority: user:<reference>`. A non-placeholder answer closes any other question; Git writes, credentials, global configuration, publication and destructive external actions are always `[decision]`. The single line `- none` means there are no pending questions.
+A non-placeholder answer closes an autonomous question; the single line `- none` means none are pending.
 
 ## `tasks.md`
 
@@ -159,7 +159,7 @@ FULL adds, on top of LITE:
 ## Usage Rules
 - Every task declares `boundary` (what may change) and `verify` (the first backticked value is the executable command; when machine verification is impossible, write `verify: manual: <reason>`)
 - Add `depends-on: task_0001` when order matters; tick a task only after its verify ran
-- Append newly discovered executable problems as new tasks and finish them this round
+- Append newly discovered defects; reuse open tasks; finish them this round
 
 ## Phase 1: Implementation
 - [ ] Deliver the smallest end-to-end slice of core feature A

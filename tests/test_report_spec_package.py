@@ -56,14 +56,12 @@ def test_task_pending():
 
 @pytest.mark.parametrize("marker", [" ", ">"])
 def test_task_blocked_by_text(marker):
-    """Display keeps the anchored title tag for task rows; the gate reads markers only."""
+    """An explicitly anchored blocked title is reflected in both views and the gate."""
     t = Task(section="S", text="阻塞：waiting", indent=0, marker=marker)
     assert not t.is_completed
     assert t.is_blocked
     assert not t.is_pending
-    # AUD-10: the gate no longer reads titles (structured markers only);
-    # only the status/task-view row tagging keeps the heuristic.
-    assert not has_blocked_tasks(f"- [{marker}] {t.text}")
+    assert has_blocked_tasks(f"- [{marker}] {t.text}")
 
 
 def test_status_reports_unchecked_checklist_as_risk_and_check_next_step():

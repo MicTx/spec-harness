@@ -4,6 +4,24 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [0.30.0] - 2026-11-09
+
+### Changed
+
+- **递归恢复闭环**：`check` 输出 `gateFailures`/`recovery`（update/run/environment/authority），阶段入口默认在同一会话内完成回写、修复与复验；只有真实用户授权或无法修复的外部阻塞等待用户。
+- **Recursive recovery loop**: `check` now reports `gateFailures`/`recovery` (update/run/environment/authority), and stage entry points continue in the same session through writeback, repair and re-verification; only genuine user authorization or an unrepaired external blocker waits for the user.
+- **自主调查与路由**：任务完成后仍待确认的 `[fact]`/`[reversible]` 问题继续调查；`[decision]` 缺 `authority` 时归入 authority；阻塞任务与独立就绪任务分开处理，包级阻塞仍停止执行。
+- **Autonomous inquiry routing**: open `[fact]`/`[reversible]` questions continue to investigation after tasks finish; `[decision]` gaps route to authority; blocked tasks stay separate from independent ready work while package-level blockers still stop execution.
+- **验证契约收紧**：空白机器验证命令被拒绝；已完成任务的无效 verify 契约可通过保留审计记录、重新打开并复验修复；v2 空成功标准不再由旧 checklist 掩盖。
+- **Verification contract hardening**: blank machine verify commands are rejected; an invalid completed-task verify can be repaired by retaining the audit record, reopening the task and re-verifying; an empty v2 success-criteria section is no longer masked by a legacy checklist.
+- **安装入口一致**：核心/完整安装的阶段命令、SKILL 与阶段文档统一为同会话恢复，不再要求先提交或暂存，只有 authority、外部阻塞或提交/推送门禁失败时停止。
+- **Installed entry points aligned**: core/full stage commands, SKILL and stage pages now describe in-session recovery, no longer require a commit or stash first, and stop only for authority, external blockers or commit/push gate failures.
+
+### Fixed
+
+- **恢复分类边界**：修复任务内阻塞被当成就绪、错误分支仍建议执行、重复任务 ID 缺少结构化恢复、问题文本伪造 authority、以及未归属阻塞遗漏恢复等问题。
+- **Recovery classification boundaries**: fixed ready selection over task-level blockers, execution advice on the wrong branch, missing structured recovery for duplicate task IDs, question text spoofing authority, and unowned blockers dropping recovery altogether.
+
 ## [0.29.0] - 2026-11-09
 
 ### Changed

@@ -252,6 +252,32 @@ def test_sandbox_full_profile_restores_complete_tree(tmp_path):
 
 
 @requires_bash
+@pytest.mark.parametrize("profile", ["core", "full"])
+def test_sandbox_stage_commands_continue_recoverable_failures(tmp_path, profile):
+    """Installed commands must not contradict the Recovery loop or ask for commits."""
+    home = tmp_path / "home"
+    home.mkdir()
+    result = run_installer(home, {"INSTALL_PROFILE": profile})
+    assert result.returncode == 0, result.stderr
+    commands = home / ".claude" / "commands" / "spec"
+    run_body = (commands / "run.md").read_text(encoding="utf-8")
+    check_body = (commands / "check.md").read_text(encoding="utf-8")
+    assert "Recovery" in run_body and "Stop at any failed gate" not in run_body
+    assert "Recovery" in check_body and "human-in-the-loop" not in check_body
+    assert "unresolved blocker" in check_body
+    assert "checklist must be fully checked" not in check_body
+    if profile == "full":
+        skill = home / ".claude" / "skills" / "spec"
+        goal_body = (commands / "goal.md").read_text(encoding="utf-8")
+        autorun_body = (commands / "autorun.md").read_text(encoding="utf-8")
+        update_page = (skill / "references" / "stages" / "update.md").read_text(encoding="utf-8")
+        assert "Recovery" in goal_body and "Stop at any failed gate" not in goal_body
+        assert "first failure" not in autorun_body and "5 rounds" not in autorun_body
+        assert "transaction lock" not in autorun_body and "owner/revision" not in autorun_body
+        assert "Commit or stash" not in update_page and "authority" in update_page
+
+
+@requires_bash
 def test_sandbox_invalid_profile_fails_loudly(tmp_path):
     home = tmp_path / "home"
     home.mkdir()

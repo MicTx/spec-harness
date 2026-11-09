@@ -29,7 +29,6 @@ from spec_package_support import (
     falsified_path_entries,
     parse_task_records,
     read_regular_text,
-    ready_task_ids,
     resolve_specs_child,
     resolve_specs_root,
     select_active_package,
@@ -40,6 +39,8 @@ from spec_package_support import (
 from spec_package_support import (
     active_package_slugs as active_packages,
 )
+
+UNREADABLE_HANDOFF = "handoff: unreadable (too large, non-UTF-8, or not a regular file); run spec_handoff.py validate"
 
 
 def parse_args() -> argparse.Namespace:
@@ -68,8 +69,8 @@ def _task_records(r, tasks_content: str) -> tuple[list, set[str], str | None, st
     """(records, ready, inquiry_task, current_task); contract errors keep an honest empty slice."""
     try:
         records = parse_task_records(tasks_content)
-        ready = ready_task_ids(records)
-        inquiry = next((t.title for t in records if t.id in ready & set(r.autonomous_task_ids)), None)
+        ready = set(r.ready_task_ids)
+        inquiry = next((t.title for t in records if t.id in ready and t.id in r.autonomous_task_ids), None)
         current = inquiry or next((t.title for t in records if t.id in ready), None)
     except SpecControlError:
         records, ready, inquiry, current = [], set(), None, None
@@ -82,12 +83,12 @@ def _decide(root: Path, slug: str, package_dir: Path, spec: str, tasks_content: 
     _, tasks = parse_tasks(tasks_content)
     checkpoint_pending = (package_dir / "update-checkpoint.json").exists()
 
-    blocked_texts = [task.text for task in tasks if task.is_blocked]
-    alerts = [f"Task blocked: {text}" for text in blocked_texts]
+    records, ready, inquiry_task, current_task = _task_records(r, tasks_content)
+    alerts = [f"Task blocked: {record.title}" for record in records if record.blocked]
+    if r.blocked_tasks and not alerts:
+        alerts.append("Tasks are blocked; see the task list for details")
     if checkpoint_pending:
         alerts.insert(0, "Retired update-checkpoint.json remains; confirm no recovery is needed, then delete it")
-    if r.blocked_tasks and not blocked_texts:
-        alerts.append("Tasks are blocked; see the task list for details")
     for prefix, items in (
         ("Requirements need confirmation", r.human_questions),
         ("Independent investigation", r.autonomous_questions),
@@ -98,30 +99,34 @@ def _decide(root: Path, slug: str, package_dir: Path, spec: str, tasks_content: 
     ):
         alerts.extend(f"{prefix}: {item}" for item in items)
 
-    scoping = bool(r.human_questions or r.question_errors or r.spec_clarification_gaps)
-    if r.blocked_tasks or scoping:
-        stage, pipe = "status", ("new" if scoping else "run")
-        health = HEALTH_BLOCKED if r.blocked_tasks else HEALTH_RISK
-    elif r.all_tasks_done:
-        if r.overall_ok:
-            stage, health, pipe = "done", HEALTH_OK, "done"
-        else:
-            stage, health, pipe = "check", HEALTH_RISK, "check"
-            if r.missing_boundary or r.missing_verify:
-                alerts.append(
-                    f"Task instructions incomplete: {r.missing_boundary} missing boundaries, "
-                    f"{r.missing_verify} missing verification methods"
-                )
-            if not r.success_criteria_ok:
-                alerts.append(f"{r.success_criteria_total - r.success_criteria_checked} success criteria remain unmet")
-            if not alerts:
-                alerts.append("Final acceptance requirements are not met")
+    if r.missing_boundary or r.missing_verify:
+        gap = f"{r.missing_boundary} missing boundaries, {r.missing_verify} missing verification methods"
+        alerts.append(f"Task instructions incomplete: {gap}")
+    if not r.success_criteria_ok and (r.all_tasks_done or r.autonomous_questions):
+        alerts.append(f"{r.success_criteria_total - r.success_criteria_checked} success criteria remain unmet")
+    if r.branch_error:
+        alerts.append(f"Branch binding: {r.branch_error}")
+    if r.branch_error or r.question_errors:
+        current_task, ready = None, set()
+    no_ready = not ready and not r.all_tasks_done
+    bad_tasks = r.invalid_verify or r.missing_boundary or r.missing_verify or r.task_contract_errors
+    attention = bool(r.package_blocked or (no_ready and bad_tasks))
+    if attention:
+        reason = r.package_blocked or "invalid or incomplete task instructions"
+        alerts.append(f"Recovery blocked: {reason}")
+    scoping = bool(r.human_questions or r.question_errors or r.spec_clarification_gaps or r.branch_error or attention)
+    if scoping:
+        stage, health, pipe = "status", HEALTH_BLOCKED if r.blocked_tasks else HEALTH_RISK, "new"
+    elif r.blocked_tasks:
+        stage, health, pipe = ("run" if ready or r.autonomous_unbound_questions else "status"), HEALTH_BLOCKED, "run"
+    elif r.all_tasks_done and r.overall_ok:
+        stage, health, pipe = "done", HEALTH_OK, "done"
+    elif r.all_tasks_done and r.autonomous_questions:
+        stage, health, pipe = "run", HEALTH_RISK, "run"
     else:
-        stage, health, pipe = "run", HEALTH_OK, "run"
+        stage, health, pipe = ("check", HEALTH_RISK, "check") if r.all_tasks_done else ("run", HEALTH_OK, "run")
     if checkpoint_pending:
         health = worst_health(health, HEALTH_RISK)
-
-    records, ready, inquiry_task, current_task = _task_records(r, tasks_content)
     return {
         "slug": slug,
         "title": extract_title_from_content(spec, slug),
@@ -139,20 +144,32 @@ def _decide(root: Path, slug: str, package_dir: Path, spec: str, tasks_content: 
 
 
 def _next_action(r, tasks, inquiry_task: str | None, current_task: str | None) -> str:
-    if r.blocked_tasks:
-        return next((f"Unblock task: {task.text}" for task in tasks if task.is_blocked), "Resolve blocked tasks")
     for errors, template, is_project_gap in (
+        ([r.branch_error] if r.branch_error else [], "Switch to the package branch: {}", False),
+        (r.authority_question_errors, "Confirm requirements: {}", False),
         (r.question_errors, "Fix investigation contract: {}", False),
         (r.human_questions, "Confirm requirements: {}", False),
         (r.spec_clarification_gaps, "Complete the project definition: {}", True),
         (r.task_contract_errors, "Fix task dependencies: {}", False),
+        ([r.package_blocked] if r.package_blocked else [], "Resolve blocked package: {}", False),
+        (r.invalid_verify if not r.ready_tasks else [], "Fix invalid verify: {}", False),
+        (
+            ["incomplete task instructions"] if not r.ready_tasks and (r.missing_boundary or r.missing_verify) else [],
+            "Fix {}",
+            False,
+        ),
     ):
         if errors:
             item = project_gap_message(errors[0]) if is_project_gap else errors[0]
             return template.format(item)
+    if current_task or r.autonomous_unbound_questions:
+        prefix = "" if current_task and not inquiry_task else "Investigate independently: "
+        return f"{prefix}{current_task or r.autonomous_unbound_questions[0]}"
+    if r.blocked_tasks:
+        return next((f"Unblock task: {task.text}" for task in tasks if task.is_blocked), "Resolve blocked tasks")
     if r.all_tasks_done:
         return "Prepare delivery and archive the record" if r.overall_ok else "Fix failed acceptance checks"
-    return (f"Investigate independently: {inquiry_task}" if inquiry_task else current_task) or "Continue project tasks"
+    return "Continue project tasks"
 
 
 def _brief_task(record, ready: set[str]) -> dict:
@@ -175,14 +192,10 @@ def _brief_task(record, ready: set[str]) -> dict:
 
 
 def _handoff_view(package_dir: Path, root: Path, tasks_content: str) -> dict:
-    """One-line handoff conclusion, plus a structured fresh/stale verdict for --brief."""
     try:
         content = read_handoff(package_dir)
     except (OSError, UnicodeError, ValueError):
-        return {
-            "line": "handoff: unreadable (too large, non-UTF-8, or not a regular file); run spec_handoff.py validate",
-            "fresh": "unreadable",
-        }
+        return {"line": UNREADABLE_HANDOFF, "fresh": "unreadable"}
     if content is None:
         return {"line": None, "fresh": "absent"}
     if validate_handoff(content):
@@ -227,6 +240,7 @@ def route_for_package(
             "humanQuestions": r.human_questions,
             "autonomousQuestions": r.autonomous_questions,
             "questionErrors": r.question_errors,
+            "branchError": r.branch_error,
             "nextAction": v["next_action"],
         }
         if brief:
@@ -244,13 +258,8 @@ def route_for_package(
         return json.dumps(payload, ensure_ascii=False)
 
     strip, strip_labels = task_strip_from_records(v["tasks"])
-    gate_gap_total = (
-        len(r.spec_clarification_gaps)
-        + r.missing_boundary
-        + r.missing_verify
-        + r.success_criteria_total
-        - r.success_criteria_checked
-    )
+    gate_gap_total = len(r.spec_clarification_gaps) + r.missing_boundary + r.missing_verify
+    gate_gap_total += r.success_criteria_total - r.success_criteria_checked
     return Dashboard(
         slug=slug,
         stage=v["stage"],
@@ -278,7 +287,6 @@ def route_for_package(
 
 
 def _aggregate(args: argparse.Namespace, stage: str, title: str, health: str, step: str, **extra) -> str:
-    """Aggregate state (no package bound): the JSON payload or the same dashboard."""
     alerts, metrics = extra.pop("alerts", []), extra.pop("metrics", {})
     if args.brief or args.format == "json":
         payload = {"slug": None, "stage": stage, "health": health, "alerts": alerts, "nextStep": step, **extra}
@@ -310,18 +318,10 @@ def main() -> int:
         if slug is None:
             packages = active_packages(specs_dir)
             if not packages:
-                print(
-                    _aggregate(
-                        args,
-                        "new",
-                        "No active project",
-                        HEALTH_OK,
-                        "Describe the goal; the skill will create tasks and begin work",
-                    )
-                )
+                message = "Describe the goal; the skill will create tasks and begin work"
+                print(_aggregate(args, "new", "No active project", HEALTH_OK, message))
                 return 0
-            selection = select_active_package(root, specs_root, packages)
-            slug = selection.slug
+            slug = (selection := select_active_package(root, specs_root, packages)).slug
             if not slug:
                 warning = selection.warning or f"Cannot select a unique active task package: {', '.join(packages)}"
                 print(

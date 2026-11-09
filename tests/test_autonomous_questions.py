@@ -62,6 +62,17 @@ def test_open_decision_is_user_facing():
     assert extract_pending_questions(spec) == ["[decision] Choose service tier"]
 
 
+def test_open_decision_cannot_mask_a_fact_error_with_the_same_title():
+    spec = make_spec(
+        "[ ] [decision] Review contract\n- [x] [fact] Review contract: closing a decision requires approval"
+    )
+    results = compute_gate_results(spec, TASKS, _make_checklist())
+    assert "Review contract" in results.human_questions
+    from check_spec_package import gate_recovery_routes
+
+    assert gate_recovery_routes(results)["Open questions"] == "update+authority"
+
+
 @pytest.mark.parametrize("kind", ["fact", "reversible"])
 @pytest.mark.parametrize("task_detail", ["", " | task: task-missing"])
 def test_closed_autonomous_question_does_not_require_machine_task(kind, task_detail):
@@ -127,6 +138,72 @@ def test_open_autonomous_question_routes_to_run_without_a_task_binding(tmp_path,
     assert not summary["pending"] and summary["inquiry"] == "Confirm format"
 
 
+@pytest.mark.parametrize("kind", ["fact", "reversible"])
+def test_done_with_autonomous_question_routes_to_inquiry(tmp_path, kind):
+    root = init_repo(tmp_path)
+    package_fixture(root, f"[ ] [{kind}] Confirm local format")
+    result = json.loads(route_for_package(root, SLUG, output_format="json"))
+    assert result["stage"] == "run"
+    assert result["humanQuestions"] == []
+    assert result["autonomousQuestions"] == ["Confirm local format"]
+    assert result["nextAction"] == "Investigate independently: Confirm local format"
+
+
+@pytest.mark.parametrize("kind", ["fact", "reversible"])
+def test_unbound_inquiry_runs_while_task_is_blocked(tmp_path, kind):
+    root = init_repo(tmp_path)
+    package_fixture(root, f"[ ] [{kind}] Confirm format", TASKS.replace("[x] Inspect", "[!] Inspect"))
+    result = json.loads(route_for_package(root, SLUG, output_format="json", brief=True))
+    assert result["stage"] == "run"
+    assert result["health"] == "阻塞"
+    assert result["nextAction"] == "Investigate independently: Confirm format"
+
+
+def test_done_with_question_bound_to_completed_task_still_investigates(tmp_path):
+    root = init_repo(tmp_path)
+    package_fixture(root, "[ ] [fact] Confirm format | task: task-inspect")
+    result = json.loads(route_for_package(root, SLUG, output_format="json", brief=True))
+    assert result["stage"] == "run"
+    assert result["nextAction"] == "Investigate independently: Confirm format"
+    spec = make_spec("[ ] [fact] Confirm format | task: task-inspect")
+    sections, tasks = parse_tasks(TASKS)
+    status = render_status(SLUG, "Fixture", TASKS, spec, None, sections, tasks)
+    assert "Investigate independently: Confirm format" in status.split("## Next")[-1]
+
+
+def test_bound_inquiry_waits_for_its_blocked_task(tmp_path):
+    root = init_repo(tmp_path)
+    package_fixture(root, "[ ] [fact] Confirm format | task: task-inspect", TASKS.replace("[x] Inspect", "[!] Inspect"))
+    result = json.loads(route_for_package(root, SLUG, output_format="json", brief=True))
+    assert result["stage"] == "status"
+    assert "Unblock" in result["nextAction"] or "blocked" in result["nextAction"].lower()
+
+
+def test_unresolved_binding_never_claims_an_unrelated_task_is_investigation(tmp_path):
+    root = init_repo(tmp_path)
+    tasks = TASKS.replace("[x] Inspect", "[ ] Inspect")
+    package_fixture(root, "[ ] [fact] Confirm format | task: task-missing", tasks)
+    result = json.loads(route_for_package(root, SLUG, output_format="json", brief=True))
+    assert result["stage"] == "status"
+    assert "task-missing" in result["nextAction"]
+    assert result["currentTask"] is None
+
+
+def test_inquiry_does_not_hide_missing_boundary_or_success_criteria(tmp_path):
+    root = init_repo(tmp_path)
+    package = package_fixture(
+        root, "[ ] [fact] Confirm format", TASKS.replace("  - boundary: local fixture only\n", "")
+    )
+    spec_path = package / "spec.md"
+    spec = spec_path.read_text(encoding="utf-8")
+    spec_path.write_text(spec.replace("- [x] 地图状态符合预期", "- [ ] 地图状态符合预期"), encoding="utf-8")
+    result = json.loads(route_for_package(root, SLUG, output_format="json", brief=True))
+    assert result["stage"] == "run"
+    assert result["health"] != "正常"
+    assert any("missing boundaries" in alert for alert in result["alerts"])
+    assert any("success criteria" in alert for alert in result["alerts"])
+
+
 def test_task_bound_inquiry_is_prioritized_over_unrelated_work(tmp_path):
     root = init_repo(tmp_path)
     other = TASKS.replace("task-inspect", "task-other").replace("Inspect format", "Other work")
@@ -149,15 +226,28 @@ def test_open_decision_routes_to_user_confirmation(tmp_path):
     assert "Choose tier" in result["nextAction"]
 
 
-@pytest.mark.parametrize("question", ["[x] [fact] Confirm format", "[x] [decision] Choose tier | answer: free"])
-def test_closed_question_without_required_fields_routes_to_repair(tmp_path, question):
+@pytest.mark.parametrize(
+    ("question", "action"),
+    [
+        ("[x] [fact] Confirm format", "Fix investigation contract"),
+        ("[x] [decision] Choose tier | answer: free", "Confirm requirements"),
+    ],
+)
+def test_closed_question_without_required_fields_routes_to_repair(tmp_path, question, action):
     root = init_repo(tmp_path)
     tasks = TASKS.replace("[x] Inspect", "[ ] Inspect")
     package_fixture(root, question, tasks)
     result = json.loads(route_for_package(root, SLUG, output_format="json"))
     assert result["stage"] == "status"
     assert result["questionErrors"]
-    assert "Fix investigation contract" in result["nextAction"]
+    assert action in result["nextAction"]
+
+
+def test_status_requires_confirmation_for_closed_decision_without_authority():
+    spec = make_spec("[x] [decision] Choose tier | answer: free")
+    sections, tasks = parse_tasks(TASKS)
+    status = render_status(SLUG, "Fixture", TASKS, spec, None, sections, tasks)
+    assert "Confirm requirements: Choose tier" in status.split("## Next")[-1]
 
 
 @pytest.mark.parametrize("kind", ["fact", "reversible"])

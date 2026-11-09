@@ -147,12 +147,8 @@ def test_completed_task_projection_agrees_across_route_and_report(tmp_path, asci
         assert "- [!]" not in task_list
 
 
-def test_title_block_word_is_display_only(tmp_path):
-    """AUD-10: a title about blocking is not a gate blocker anymore.
-
-    The gate and route health ignore the title; the report row keeps the
-    heuristic tag for human readers (route/progress display unchanged).
-    """
+def test_anchored_blocked_title_is_not_runnable(tmp_path):
+    """An anchored blocked title is not a literal marker, but it is not runnable."""
     slug = "2026-09-14_completed-projection"
     tasks_text = COMPLETED_PROJECTION_TASKS + "- [ ] 阻塞：等待外部依赖\n  - boundary: 依赖\n  - verify: pytest -q\n"
     _create_package(
@@ -163,9 +159,10 @@ def test_title_block_word_is_display_only(tmp_path):
         checklist_text=COMPLETE_CHECKLIST,
     )
     gate = compute_gate_results(COMPLETE_SPEC, tasks_text, COMPLETE_CHECKLIST, slug=slug)
-    assert gate.blocked_tasks is False
+    assert gate.blocked_tasks is True
     state = _route_state(tmp_path, slug)
-    assert state["health"] == "正常"
+    assert state["health"] == "阻塞"
+    assert state["stage"] == "status"
     sections, tasks = parse_tasks(tasks_text)
     summary = package_status_summary(slug, tasks_text, COMPLETE_SPEC, COMPLETE_CHECKLIST, sections, tasks)
     assert summary["blocked"] == "阻塞：等待外部依赖"
@@ -173,10 +170,202 @@ def test_title_block_word_is_display_only(tmp_path):
     task_list = render_tasks(slug, sections, tasks)
     route = route_for_package(tmp_path, slug, ascii_mode=False, compact=False)
     assert "Task blocked: 阻塞：等待外部依赖" in route
-    # Display keeps promoting the heuristic tag to a rendered "!" row, but the
-    # source stays "[ ]" and neither the gate nor the route health blocks.
+    # Display promotes the declared blocked title, while the source marker stays unchecked.
     assert "- [ ] 阻塞：等待外部依赖" in tasks_text
     assert "- [!] 阻塞：等待外部依赖" in task_list
+
+
+def test_ready_task_continues_with_independent_blocked_task(tmp_path):
+    slug = "2026-09-14_mixed-blocked-ready"
+    tasks_text = (
+        "## 实现\n"
+        "- [!] Waiting for external service\n  - id: task-blocked\n  - boundary: a\n  - verify: `true`\n"
+        "- [ ] Fix independent issue\n  - id: task-ready\n  - boundary: b\n  - verify: `true`\n"
+        "- [ ] Dependent task\n  - id: task-dependent\n  - depends-on: task-blocked\n"
+        "  - boundary: c\n  - verify: `true`\n"
+    )
+    _create_package(
+        tmp_path / ".spec" / "specs",
+        slug,
+        spec_text=COMPLETE_SPEC,
+        tasks_text=tasks_text,
+        checklist_text=COMPLETE_CHECKLIST,
+    )
+    state = _route_state(tmp_path, slug)
+    assert state["stage"] == "run"
+    assert state["health"] == "阻塞"
+    assert state["currentTask"] == "Fix independent issue"
+    assert state["nextAction"] == "Fix independent issue"
+    assert state["humanQuestions"] == []
+    route = route_for_package(tmp_path, slug)
+    assert "Task blocked: Waiting for external service" in route
+    sections, tasks = parse_tasks(tasks_text)
+    status = render_status(slug, "Test", tasks_text, COMPLETE_SPEC, COMPLETE_CHECKLIST, sections, tasks)
+    assert "Fix independent issue" in status.split("## Next")[-1]
+    assert "Unblock task" not in status.split("## Next")[-1]
+
+
+@pytest.mark.parametrize(
+    "blocked_line",
+    ["  - blocked: awaiting authorization", "  blocked: awaiting authorization", "  - 阻塞：等待授权"],
+)
+@pytest.mark.parametrize("explicit_id", [True, False])
+def test_ready_task_skips_explicit_task_detail_blocker(tmp_path, blocked_line, explicit_id):
+    slug = "2026-11-09_blocked-detail"
+    tasks_text = (
+        "## Implementation\n"
+        "- [ ] Await approval\n  - id: task-blocked\n  - boundary: external\n  - verify: `true`\n"
+        f"{blocked_line}\n"
+        "- [ ] Independent work\n  - id: task-ready\n  - boundary: local\n  - verify: `true`\n"
+        "- [ ] Dependent work\n  - id: task-dependent\n  - depends-on: task-blocked\n"
+        "  - boundary: local\n  - verify: `true`\n"
+    )
+    if not explicit_id:
+        tasks_text = (
+            tasks_text.replace("  - id: task-blocked\n", "")
+            .replace("  - id: task-ready\n", "")
+            .replace("  - id: task-dependent\n", "")
+            .replace("depends-on: task-blocked", "depends-on: task_0001")
+        )
+    _create_package(tmp_path / ".spec" / "specs", slug, COMPLETE_SPEC, tasks_text, COMPLETE_CHECKLIST)
+    state = json.loads(route_for_package(tmp_path, slug, output_format="json", brief=True))
+    assert state["stage"] == "run"
+    assert state["health"] == "阻塞"
+    assert state["currentTask"] == state["nextAction"] == "Independent work"
+    assert state["ready"] == ["task-ready" if explicit_id else "task_0002"]
+    assert next(task for task in state["tasks"] if task["title"] == "Await approval")["state"] == "blocked"
+    assert any("Await approval" in alert for alert in state["alerts"])
+    sections, tasks = parse_tasks(tasks_text)
+    status = render_status(slug, "Test", tasks_text, COMPLETE_SPEC, COMPLETE_CHECKLIST, sections, tasks)
+    assert "Task blocked: Await approval" in status
+    assert "Fix independent issue" not in status.split("## Next")[-1]
+    assert "Independent work" in status.split("## Next")[-1]
+
+
+def test_completed_task_detail_does_not_poison_an_independent_task(tmp_path):
+    slug = "2026-11-09_completed-detail"
+    tasks_text = (
+        "## Implementation\n- [x] Previously blocked\n  - id: task-done\n  - boundary: local\n"
+        "  - verify: `true`\n  - blocked: historical issue resolved\n"
+        "- [ ] Independent work\n  - id: task-ready\n  - boundary: local\n  - verify: `true`\n"
+    )
+    _create_package(tmp_path / ".spec" / "specs", slug, COMPLETE_SPEC, tasks_text, COMPLETE_CHECKLIST)
+    state = json.loads(route_for_package(tmp_path, slug, output_format="json", brief=True))
+    assert state["stage"] == "run"
+    assert state["currentTask"] == "Independent work"
+    assert state["ready"] == ["task-ready"]
+
+
+@pytest.mark.parametrize(
+    "tasks_text",
+    [
+        "## Implementation\n- [!] Blocked\n  - boundary: local\n  - verify: `true`\n"
+        "- [ ] Ready\n  - boundary: local\n  - verify: `true`\n",
+        "## Implementation\n- [x] Done\n  - boundary: local\n  - verify: `true`\n",
+    ],
+)
+def test_explicit_slug_on_wrong_branch_never_routes_to_execution(tmp_path, tasks_text):
+    slug = "2026-11-09_wrong-branch"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)], check=True)
+    spec = COMPLETE_SPEC + f"\n- Git integration branch: `spec/{slug}`\n"
+    spec = spec.replace("### 2.3 待确认问题\n- 无", "### 2.3 待确认问题\n- [ ] [fact] Investigate locally")
+    _create_package(tmp_path / ".spec" / "specs", slug, spec, tasks_text, COMPLETE_CHECKLIST)
+    state = _route_state(tmp_path, slug)
+    assert state["stage"] == "status"
+    assert state["currentTask"] is None
+    assert "branch" in state["nextAction"].lower()
+    assert "main" in state["branchError"] and f"spec/{slug}" in state["branchError"]
+    output = route_for_package(tmp_path, slug)
+    assert "main" in output and f"spec/{slug}" in output
+    sections, tasks = parse_tasks(tasks_text)
+    status = render_status(slug, "Test", tasks_text, spec, COMPLETE_CHECKLIST, sections, tasks, root=tmp_path)
+    assert "Switch to the package branch" in status.split("## Next")[-1]
+    assert "main" in status and f"spec/{slug}" in status
+
+
+def test_ready_selection_excludes_invalid_verify_contract(tmp_path):
+    slug = "2026-11-09_invalid-ready"
+    spec = COMPLETE_SPEC + "\nevidence: runs\n"
+    tasks_text = (
+        "## Implementation\n"
+        "- [!] Blocked\n  - id: task-blocked\n  - boundary: local\n  - verify: `true`\n"
+        "- [ ] Invalid\n  - id: task-invalid\n  - boundary: local\n  - verify: passes\n"
+        "- [ ] Runnable\n  - id: task-valid\n  - boundary: local\n  - verify: `true`\n"
+    )
+    _create_package(tmp_path / ".spec" / "specs", slug, spec, tasks_text, COMPLETE_CHECKLIST)
+    state = json.loads(route_for_package(tmp_path, slug, output_format="json", brief=True))
+    assert state["stage"] == "run"
+    assert state["currentTask"] == "Runnable"
+    assert state["ready"] == ["task-valid"]
+    assert next(task for task in state["tasks"] if task["id"] == "task-invalid")["state"] == "pending"
+    sections, tasks = parse_tasks(tasks_text)
+    status = render_status(slug, "Test", tasks_text, spec, COMPLETE_CHECKLIST, sections, tasks)
+    assert "Runnable" in status.split("## Next")[-1]
+    assert "Invalid" not in status.split("## Next")[-1]
+
+
+@pytest.mark.parametrize("blocked_line", ["  blocked: freeze", "- blocked: freeze", "  - 阻塞：维护"])
+def test_unowned_package_blocker_prevents_ready_work(tmp_path, blocked_line):
+    slug = "2026-11-09_package-blocker"
+    tasks_text = (
+        f"## Implementation\n{blocked_line}\n"
+        "- [ ] Independent-looking task\n  - id: task-ready\n  - boundary: local\n  - verify: `true`\n"
+    )
+    _create_package(tmp_path / ".spec" / "specs", slug, COMPLETE_SPEC, tasks_text, COMPLETE_CHECKLIST)
+    state = json.loads(route_for_package(tmp_path, slug, output_format="json", brief=True))
+    assert state["stage"] == "status"
+    assert state["health"] == "阻塞"
+    assert state["currentTask"] is None and state["ready"] == []
+    assert "blocked" in state["nextAction"].lower()
+    sections, tasks = parse_tasks(tasks_text)
+    status = render_status(slug, "Test", tasks_text, COMPLETE_SPEC, COMPLETE_CHECKLIST, sections, tasks)
+    assert "Independent-looking task" not in status.split("## Next")[-1]
+
+
+@pytest.mark.parametrize("malformed", ["passes", "`   `", "`true`\n  - verify: `true`"])
+def test_invalid_verify_without_ready_task_never_advises_execution(tmp_path, malformed):
+    slug = "2026-11-09_no-ready-verify"
+    spec = COMPLETE_SPEC + "\nevidence: runs\n"
+    tasks_text = f"## Implementation\n- [ ] Invalid\n  - boundary: local\n  - verify: {malformed}\n"
+    _create_package(tmp_path / ".spec" / "specs", slug, spec, tasks_text, COMPLETE_CHECKLIST)
+    state = json.loads(route_for_package(tmp_path, slug, output_format="json", brief=True))
+    assert state["stage"] != "run"
+    assert state["health"] != "正常"
+    assert state["ready"] == []
+    assert "verify" in state["nextAction"].lower()
+    sections, tasks = parse_tasks(tasks_text)
+    status = render_status(slug, "Test", tasks_text, spec, COMPLETE_CHECKLIST, sections, tasks)
+    assert "archive" not in status.split("## Next")[-1].lower()
+    assert "verify" in status.split("## Next")[-1].lower()
+
+
+def test_no_ready_missing_boundary_has_repair_action_in_all_views(tmp_path):
+    slug = "2026-11-09_missing-boundary"
+    tasks_text = "## Implementation\n- [ ] Incomplete\n  - verify: `true`\n"
+    _create_package(tmp_path / ".spec" / "specs", slug, COMPLETE_SPEC, tasks_text, COMPLETE_CHECKLIST)
+    state = json.loads(route_for_package(tmp_path, slug, output_format="json", brief=True))
+    assert state["stage"] == "status"
+    assert state["health"] == "风险"
+    assert state["ready"] == [] and state["currentTask"] is None
+    assert "task" in state["nextAction"].lower() and "fix" in state["nextAction"].lower()
+    sections, tasks = parse_tasks(tasks_text)
+    status = render_status(slug, "Test", tasks_text, COMPLETE_SPEC, COMPLETE_CHECKLIST, sections, tasks)
+    assert "archive" not in status.split("## Next")[-1].lower()
+
+
+def test_duplicate_ids_keep_title_blocker_visible_in_both_views(tmp_path):
+    slug = "2026-11-09_duplicate-blocked"
+    tasks_text = (
+        "## Implementation\n- [ ] blocked: Await approval\n  - id: task-dup\n  - boundary: local\n  - verify: `true`\n"
+        "- [ ] Other\n  - id: task-dup\n  - boundary: local\n  - verify: `true`\n"
+    )
+    _create_package(tmp_path / ".spec" / "specs", slug, COMPLETE_SPEC, tasks_text, COMPLETE_CHECKLIST)
+    state = json.loads(route_for_package(tmp_path, slug, output_format="json", brief=True))
+    assert state["stage"] == "status" and state["health"] == "阻塞"
+    assert any("blocked" in alert.lower() for alert in state["alerts"])
+    sections, tasks = parse_tasks(tasks_text)
+    status = render_status(slug, "Test", tasks_text, COMPLETE_SPEC, COMPLETE_CHECKLIST, sections, tasks)
+    assert "Task blocked: blocked: Await approval" in status
 
 
 def test_route_and_status_expose_declared_verification_scope(tmp_path):
@@ -256,7 +445,7 @@ def test_route_completed_tasks_do_not_override_standalone_blocked_gate(tmp_path,
     assert state["completed"] == state["total"] == 4
     output = route_for_package(tmp_path, slug, ascii_mode=ascii_mode, compact=compact)
     assert "Tasks are blocked; see the task list for details" in output
-    assert "Resolve blocked tasks" in output
+    assert "Resolve blocked package" in output
     assert "Task blocked: " not in output
     assert "Prepare delivery and archive the record" not in output
 
