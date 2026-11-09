@@ -58,7 +58,7 @@ def test_cancel_rejects_failed_exhausted_task(tmp_path, clock):
     store.task_spawn(1, "t1", "a", "s")
     assert store.task_result(1, "t1", "fail", "boom", confirmed_stopped=True) == "exhausted"
     assert store.state["rounds"][0]["tasks"]["t1"]["status"] == "failed"
-    with pytest.raises(LoopStateError, match="不可取消"):
+    with pytest.raises(LoopStateError, match="cannot be cancelled"):
         store.task_cancel(1, "t1", "give up", confirmed_stopped=True)
     assert store.state["rounds"][0]["tasks"]["t1"]["status"] == "failed"
 
@@ -69,13 +69,13 @@ def test_failed_task_cannot_be_masked_by_pass_after_cancel_attempt(tmp_path, clo
     store.task_add(1, "t1", "worker", "d")
     store.task_spawn(1, "t1", "a", "s")
     store.task_result(1, "t1", "fail", "boom", confirmed_stopped=True)
-    with pytest.raises(LoopStateError, match="不可取消"):
+    with pytest.raises(LoopStateError, match="cannot be cancelled"):
         store.task_cancel(1, "t1", "give up", confirmed_stopped=True)
     # round_end 拒绝非终态？failed 是终态，可以关轮；但 pass 决策不得掩盖 failed。
     store.round_end("pass")
     verdict = termination_check(store, clock())
     assert verdict["verdict"] != "converged"
-    with pytest.raises(LoopStateError, match="尚未满足"):
+    with pytest.raises(LoopStateError, match="convergence conditions are not yet met"):
         store.run_converged()
 
 

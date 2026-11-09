@@ -60,7 +60,7 @@ def active_slug_for_worktree(project_root: Path) -> tuple[str | None, str]:
         packages = active_package_slugs(specs_root / "specs")
         selection = select_active_package(project_root, specs_root, packages)
     except (OSError, UnicodeError, ValueError) as exc:
-        return None, f"无法绑定当前工作分支的任务包：{exc}"
+        return None, f"Cannot bind a task package to the current worktree branch: {exc}"
     if selection.slug:
         return selection.slug, ""
     return None, selection.warning
@@ -142,9 +142,9 @@ def main() -> int:
         # A Spec project whose convergence checker cannot run is treated as
         # not converged: block once with the failure so the agent surfaces it.
         emit_stop_block(
-            "Spec 收敛守卫无法运行收敛检查"
-            f"（slug {slug}）：{detail}。"
-            f"请修复检查环境或运行 python3 {CHECK_SCRIPT} --root {project_root} --slug {slug} --format json 排查。"
+            f"Spec convergence guard could not run the check (slug {slug}): {detail}. "
+            f"Fix the check environment or run python3 {CHECK_SCRIPT} --root {project_root} "
+            f"--slug {slug} --format json for details."
         )
         return 0
     if state["converged"] is True:
@@ -156,9 +156,9 @@ def main() -> int:
 
     gaps = state["gaps"]
     emit_stop_block(
-        f"Spec 收敛门禁未通过（slug {slug}）：差距：{'；'.join(gaps)}。"
-        f"请继续完成上述未收敛项后再次结束，或运行 "
-        f"python3 {CHECK_SCRIPT} --root {project_root} --slug {slug} 查看详情。"
+        f"Spec convergence gate failed (slug {slug}). Gaps: {'; '.join(gaps)}. "
+        "Resolve the unconverged items before stopping, or run "
+        f"python3 {CHECK_SCRIPT} --root {project_root} --slug {slug} for details."
     )
     return 0
 

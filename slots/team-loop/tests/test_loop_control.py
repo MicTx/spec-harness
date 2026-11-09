@@ -101,7 +101,7 @@ class TestAdmission:
         store = make_store(tmp_path, clock, concurrency=1)
         seeded_round(store, n_tasks=2)
         store.task_spawn(1, "t1", "a1", "s1")
-        with pytest.raises(LoopStateError, match="并发已满"):
+        with pytest.raises(LoopStateError, match="concurrency limit reached"):
             store.task_spawn(1, "t2", "a2", "s2")
 
 
@@ -193,7 +193,7 @@ class TestTermination:
         (store.run_dir / STOP_FILENAME).write_text("{}", encoding="utf-8")
         assert external_stop_requested(store.run_dir)
         v = termination_check(store, clock())
-        assert v["verdict"] == "stopped" and any("外部停止" in r for r in v["reasons"])
+        assert v["verdict"] == "stopped" and any("external stop" in r for r in v["reasons"])
 
     @pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlink unavailable")
     def test_stop_symlink_is_rejected(self, tmp_path, clock):

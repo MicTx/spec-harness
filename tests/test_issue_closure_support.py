@@ -337,8 +337,31 @@ def test_followup_spec_gate_is_injected_and_fails_closed_without_evaluator(tmp_p
 def test_issue_closure_markdown_round_trip():
     issues = [_issue("non_actionable", rationale="literal } ``` marker")]
     rendered = render_issue_closure(issues)
+    assert rendered.startswith("## Issue Disposition\n")
     payload = extract_issue_closure(rendered)
     assert payload == {"version": 1, "issues": issues}
+    legacy = rendered.replace("## Issue Disposition", "## 问题处置", 1)
+    assert extract_issue_closure(legacy) == payload
+
+
+def test_completion_summary_accepts_english_and_legacy_headings():
+    legacy = _complete_summary().replace("## Issue Disposition", "## 问题处置")
+    assert validate_completion_summary(legacy) == []
+    english = legacy
+    for old, new in (
+        ("## 交付结论", "## Delivery Outcome"),
+        ("## 假设回顾", "## Assumptions Review"),
+        ("## 交付范围", "## Delivery Scope"),
+        ("## 简化决策", "## Simplification Decisions"),
+        ("## 变更边界", "## Change Boundaries"),
+        ("## 验证证据", "## Verification Evidence"),
+        ("## 门禁证据", "## Gate Evidence"),
+        ("## 问题处置", "## Issue Disposition"),
+    ):
+        english = english.replace(old, new)
+    assert validate_completion_summary(english) == []
+    invalid = english.replace("## Verification Evidence", "## Other")
+    assert any("Verification Evidence" in failure for failure in validate_completion_summary(invalid))
 
 
 def test_parse_issue_disposition_accepts_inline_and_regular_file(tmp_path: Path):

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """
-Generate standardized Chinese changelog from Git commits.
+Generate standardized English changelog entries from Git commits.
 
-Converts commit messages to concise, standardized Chinese changelog entries.
+Converts commit messages to concise, standardized changelog entries.
 Designed for spec workflow integration during done/push stages.
 """
 
@@ -72,29 +72,29 @@ def parse_commit_message(message: str) -> dict[str, str]:
 
 
 def translate_type(commit_type: str) -> str:
-    """Translate commit type to Chinese."""
+    """Map a commit type to its English display label."""
     type_map = {
-        "feat": "新增",
-        "fix": "修复",
-        "docs": "文档",
-        "style": "样式",
-        "refactor": "重构",
-        "perf": "性能",
-        "test": "测试",
-        "build": "构建",
+        "feat": "Added",
+        "fix": "Fixed",
+        "docs": "Documentation",
+        "style": "Style",
+        "refactor": "Refactoring",
+        "perf": "Performance",
+        "test": "Tests",
+        "build": "Build",
         "ci": "CI",
-        "chore": "杂项",
-        "revert": "回退",
-        "change": "变更",
+        "chore": "Maintenance",
+        "revert": "Reverted",
+        "change": "Changed",
     }
-    return type_map.get(commit_type.lower(), "变更")
+    return type_map.get(commit_type.lower(), "Changed")
 
 
 def format_changelog_entry(commit_info: dict[str, str], show_spec: bool = True) -> str:
     """
-    Format a single changelog entry in Chinese.
+    Format a single changelog entry.
 
-    Format: - 【类型】作用域：描述 (spec_slug)
+    Format: - [Type] scope: description (spec_slug)
     """
     type_cn = translate_type(commit_info["type"])
     scope = commit_info["scope"]
@@ -103,9 +103,9 @@ def format_changelog_entry(commit_info: dict[str, str], show_spec: bool = True) 
 
     # Build entry
     if scope:
-        entry = f"- 【{type_cn}】{scope}：{description}"
+        entry = f"- [{type_cn}] {scope}: {description}"
     else:
-        entry = f"- 【{type_cn}】{description}"
+        entry = f"- [{type_cn}] {description}"
 
     # Add spec slug if present and requested
     if show_spec and spec_slug:
@@ -203,7 +203,7 @@ def generate_changelog(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Generate standardized Chinese changelog from Git commits")
+    parser = argparse.ArgumentParser(description="Generate a standardized changelog from Git commits")
     parser.add_argument(
         "--root",
         type=Path,

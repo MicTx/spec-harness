@@ -22,11 +22,11 @@ GLYPH_NA = "na"
 GLYPH_KINDS = (GLYPH_DONE, GLYPH_ACTIVE, GLYPH_BLOCKED, GLYPH_PENDING, GLYPH_NA)
 
 UNICODE_GLYPHS = {
-    GLYPH_DONE: "完成",
-    GLYPH_ACTIVE: "进行",
-    GLYPH_BLOCKED: "阻塞",
-    GLYPH_PENDING: "待办",
-    GLYPH_NA: "无",
+    GLYPH_DONE: "done",
+    GLYPH_ACTIVE: "in progress",
+    GLYPH_BLOCKED: "blocked",
+    GLYPH_PENDING: "todo",
+    GLYPH_NA: "n/a",
 }
 ASCII_GLYPHS = {
     GLYPH_DONE: "done",
@@ -36,28 +36,42 @@ ASCII_GLYPHS = {
     GLYPH_NA: "n/a",
 }
 
-METRIC_COLUMNS = ("进度", "任务带", "阻塞", "待确认", "门禁", "证据")
-METRIC_VALUE_COLUMNS = ("阻塞", "待确认", "门禁", "证据")
+METRIC_COLUMNS = ("Progress", "Tasks", "Blocked", "Pending decisions", "Gate", "Evidence")
+METRIC_VALUE_COLUMNS = ("Blocked", "Pending decisions", "Gate", "Evidence")
+_METRIC_ALIASES = {
+    "Blocked": "阻塞",
+    "Pending decisions": "待确认",
+    "Gate": "门禁",
+    "Evidence": "证据",
+    "Scope": "范围",
+}
 
 MAX_STRIP_ITEMS = 20
 MAX_DELTA_LINES = 3
 DEFAULT_MAX_ALERTS = 5
 
 _PROJECT_GAP_MESSAGES = {
-    "`spec.md` 缺少有效项目目标": "尚未明确项目目标",
-    "`spec.md` 缺少有效目标用户": "尚未明确目标用户",
-    "`spec.md` 缺少有效核心价值": "尚未明确项目价值",
-    "`spec.md` 缺少有效区块：### 2.1 已确认事实": "尚未记录已确认的需求事实",
-    "`spec.md` 缺少有效区块：### 2.2 关键假设": "尚未记录关键假设",
-    "`spec.md` 缺少有效区块：### 2.3 待确认问题": "尚未明确是否还有待确认问题",
-    "`spec.md` 缺少有效区块：### 3.3 不在范围内": "尚未明确本轮不做的内容",
-    "`spec.md` 缺少有效区块：## 4. 最小实现路径": "尚未确定最小实现路径",
+    "`spec.md` 缺少有效项目目标": "Project goal is not defined",
+    "`spec.md` is missing a valid goal": "Project goal is not defined",
+    "`spec.md` 缺少有效目标用户": "Target users are not defined",
+    "`spec.md` 缺少有效核心价值": "Project value is not defined",
+    "`spec.md` 缺少有效区块：### 2.1 已确认事实": "Confirmed requirements are not recorded",
+    "`spec.md` 缺少有效区块：### 2.2 关键假设": "Key assumptions are not recorded",
+    "`spec.md` is missing a valid section: ### 2.2 Key Assumptions": "Key assumptions are not recorded",
+    "`spec.md` 缺少有效区块：### 2.3 待确认问题": "Open questions are not identified",
+    "`spec.md` is missing a valid section: ### 2.3 Open Questions": "Open questions are not identified",
+    "`spec.md` 缺少有效区块：### 3.3 不在范围内": "Out-of-scope work is not defined",
+    "`spec.md` is missing a valid section: ### 3.3 Out of Scope": "Out-of-scope work is not defined",
+    "`spec.md` 缺少有效区块：## 4. 最小实现路径": "Minimal implementation path is not defined",
+    "`spec.md` is missing a valid section: ## 4. Minimal Implementation Path": (
+        "Minimal implementation path is not defined"
+    ),
 }
 
 
 def project_gap_message(gap: str) -> str:
     """Translate package diagnostics into project-facing language."""
-    return _PROJECT_GAP_MESSAGES.get(gap, gap.replace("`spec.md`", "项目定义").strip())
+    return _PROJECT_GAP_MESSAGES.get(gap, gap.replace("`spec.md`", "Project definition").strip())
 
 
 def worst_health(*healths: str) -> str:
@@ -156,8 +170,8 @@ class Dashboard:
     next_step: str = ""
     detail: list[str] = field(default_factory=list)
     max_alerts: int = DEFAULT_MAX_ALERTS
-    alerts_pointer: str = "项目记录"
-    detail_title: str = "交付信息"
+    alerts_pointer: str = "project record"
+    detail_title: str = "Delivery Details"
     ascii_mode: bool = False
     compact: bool = False
     current_items: list[str] = field(default_factory=list)
@@ -178,7 +192,7 @@ class Dashboard:
             return f"- {label}"
         if self._is_empty_value(value):
             return None
-        return f"- {label}：{value}"
+        return f"- {label}: {value}"
 
     def _section(self, title: str, items: list[str | None]) -> list[str]:
         visible = [item for item in items if item]
@@ -199,18 +213,21 @@ class Dashboard:
     def _progress_lines(self) -> list[str]:
         if self.total <= 0:
             return []
-        return self._section("项目进展", [self._item("已完成", f"{self.done}/{self.total}")])
+        return self._section("Project Progress", [self._item("Completed", f"{self.done}/{self.total}")])
+
+    def _metric(self, key: str, default: str = "") -> str:
+        return self.metrics.get(key, self.metrics.get(_METRIC_ALIASES.get(key, ""), default))
 
     def _verification_scope_lines(self) -> list[str]:
-        scope = self.metrics.get("范围", "")
-        if not scope or scope == "历史包未声明":
+        scope = self._metric("Scope")
+        if not scope or scope in {"历史包未声明", "not declared in legacy package"}:
             return []
-        return self._section("验证范围", [self._item("级别", scope)])
+        return self._section("Verification Scope", [self._item("Level", scope)])
 
     def _metric_value(self, column: str) -> str:
-        if column == "进度":
+        if column in {"Progress", "进度"}:
             return f"{self.done}/{self.total}"
-        return self.metrics.get(column, self._na())
+        return self._metric(column, self._na())
 
     @property
     def normalized_strip(self) -> list[str]:
@@ -221,11 +238,11 @@ class Dashboard:
         if self.alerts:
             return []
         items = []
-        for label in ("待确认", "阻塞"):
-            value = self.metrics.get(label)
-            if value and value not in {"0", "通过"}:
+        for label in ("Pending decisions", "Blocked"):
+            value = self._metric(label)
+            if value and value not in {"0", "通过", "Passed"}:
                 items.append(self._item(label, value))
-        return self._section("需要关注", items)
+        return self._section("Attention", items)
 
     def _strip_items(self) -> list[str]:
         kinds = self.normalized_strip
@@ -245,7 +262,7 @@ class Dashboard:
                 items.append(item)
         if len(items) > MAX_STRIP_ITEMS:
             extra = len(items) - MAX_STRIP_ITEMS
-            overflow = self._item(f"其余 {extra} 项见任务包")
+            overflow = self._item(f"See the task package for {extra} more items")
             return items[:MAX_STRIP_ITEMS] + ([overflow] if overflow else [])
         return items
 
@@ -255,10 +272,10 @@ class Dashboard:
             names = [item[2:] for item in items]
             if not names:
                 return []
-            summary = "；".join(names)
-            item = self._item("任务", summary)
+            summary = "; ".join(names)
+            item = self._item("Tasks", summary)
             return [item] if item else []
-        return self._section("任务", self._strip_items())
+        return self._section("Tasks", self._strip_items())
 
     def _labeled_items(self, title: str, values: list[str]) -> list[str]:
         if self.compact:
@@ -279,7 +296,7 @@ class Dashboard:
         return [self.current.strip()] if self.current and self.current.strip() else []
 
     def _current_lines(self) -> list[str]:
-        return self._section("正在处理", self._labeled_items("正在处理", self._current_items()))
+        return self._section("In Progress", self._labeled_items("In Progress", self._current_items()))
 
     def _alert_lines(self) -> list[str]:
         alerts = [line for line in self.alerts if line and line not in {"—", "无"}]
@@ -289,20 +306,20 @@ class Dashboard:
         shown = alerts[: self.max_alerts]
         values = list(shown)
         if hidden > 0:
-            values.append(f"其余 {hidden} 项见 {self.alerts_pointer}")
-        return self._section("需要关注", self._labeled_items("需要关注", values))
+            values.append(f"See {self.alerts_pointer} for {hidden} more items")
+        return self._section("Attention", self._labeled_items("Attention", values))
 
     def _delta_lines(self) -> list[str]:
         if not self.delta:
             return []
         shown = self.delta[:MAX_DELTA_LINES]
-        return self._section("本轮完成", self._labeled_items("本轮完成", shown))
+        return self._section("Completed This Round", self._labeled_items("Completed This Round", shown))
 
     def _next_lines(self) -> list[str]:
         next_step = self.next_step.strip()
         if not next_step or next_step in self._current_items():
             return []
-        return self._section("接下来", self._labeled_items("接下来", [next_step]))
+        return self._section("Next", self._labeled_items("Next", [next_step]))
 
     def _detail_lines(self) -> list[str]:
         items = []

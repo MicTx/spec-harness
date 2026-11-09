@@ -106,8 +106,8 @@ def test_completed_task_projection_agrees_across_route_and_report(tmp_path, asci
     assert state["dependencyErrors"] == []
     assert state["verificationScope"] is None
     assert summary["progress"] == ("4/5" if blocker else "4/4")
-    assert summary["blocked"] == (blocker[1] if blocker else "无")
-    assert summary["verification_scope"] == "历史包未声明"
+    assert summary["blocked"] == (blocker[1] if blocker else "")
+    assert summary["verification_scope"] == "not declared in legacy package"
 
     task_list = render_tasks(slug, sections, tasks)
     route = route_for_package(tmp_path, slug, ascii_mode=ascii_mode, compact=compact)
@@ -125,22 +125,22 @@ def test_completed_task_projection_agrees_across_route_and_report(tmp_path, asci
     for task in tasks[:4]:
         assert f"- [x] {task.text}" in task_list
         for output in (route, report):
-            assert f"{task.text}：{'done' if ascii_mode else '完成'}" in output
-            assert f"任务受阻：{task.text}" not in output
-            assert f"解除阻塞：{task.text}" not in output
+            assert f"{task.text}: done" in output
+            assert f"Task blocked: {task.text}" not in output
+            assert f"Unblock task: {task.text}" not in output
     for output in (route, report):
-        assert f"已完成：{summary['progress']}" in output
+        assert f"- Completed: {summary['progress']}" in output
         if blocker:
-            assert f"{blocker[1]}：{'blocked' if ascii_mode else '阻塞'}" in output
-            assert output.count("任务受阻：") == 1
-            assert f"任务受阻：{blocker[1]}" in output
-            assert f"解除阻塞：{blocker[1]}" in output
-            assert "整理交付结果并完成归档" not in output
+            assert f"{blocker[1]}: blocked" in output
+            assert output.count("Task blocked: ") == 1
+            assert f"Task blocked: {blocker[1]}" in output
+            assert f"Unblock task: {blocker[1]}" in output
+            assert "Prepare delivery and archive the record" not in output
         else:
-            assert "任务受阻：" not in output
-            assert "解除阻塞：" not in output
-            assert "需要关注" not in output
-            assert "整理交付结果并完成归档" in output
+            assert "Task blocked: " not in output
+            assert "Unblock task: " not in output
+            assert "## Attention" not in output
+            assert "Prepare delivery and archive the record" in output
     if blocker:
         assert f"- [!] {blocker[1]}" in task_list
     else:
@@ -151,7 +151,7 @@ def test_title_block_word_is_display_only(tmp_path):
     """AUD-10: a title about blocking is not a gate blocker anymore.
 
     The gate and route health ignore the title; the report row keeps the
-    heuristic tag for human readers (route/progress 展示不动).
+    heuristic tag for human readers (route/progress display unchanged).
     """
     slug = "2026-09-14_completed-projection"
     tasks_text = COMPLETED_PROJECTION_TASKS + "- [ ] 阻塞：等待外部依赖\n  - boundary: 依赖\n  - verify: pytest -q\n"
@@ -172,7 +172,7 @@ def test_title_block_word_is_display_only(tmp_path):
 
     task_list = render_tasks(slug, sections, tasks)
     route = route_for_package(tmp_path, slug, ascii_mode=False, compact=False)
-    assert "任务受阻：阻塞：等待外部依赖" in route
+    assert "Task blocked: 阻塞：等待外部依赖" in route
     # Display keeps promoting the heuristic tag to a rendered "!" row, but the
     # source stays "[ ]" and neither the gate nor the route health blocks.
     assert "- [ ] 阻塞：等待外部依赖" in tasks_text
@@ -211,8 +211,8 @@ def test_route_and_status_expose_declared_verification_scope(tmp_path):
     summary = package_status_summary(slug, COMPLETED_PROJECTION_TASKS, scoped_spec, scoped_checklist, sections, tasks)
     assert summary["verification_scope"] == "package"
     status = render_status(slug, "Test", COMPLETED_PROJECTION_TASKS, scoped_spec, scoped_checklist, sections, tasks)
-    assert "## 验证范围" in status
-    assert "级别：package" in status
+    assert "## Verification Scope" in status
+    assert "Level: package" in status
 
     invalid_spec = scoped_spec.replace("- 范围级别：package", "- 范围级别：invalid")
     _create_package(
@@ -223,7 +223,7 @@ def test_route_and_status_expose_declared_verification_scope(tmp_path):
         checklist_text=scoped_checklist,
     )
     invalid_route = route_for_package(tmp_path, "2026-10-03_fix-route-scope-invalid")
-    assert "验证范围尚未满足" in invalid_route
+    assert "Verification scope requirements not met" in invalid_route
     invalid_status = render_status(
         "2026-10-03_fix-route-scope-invalid",
         "Test",
@@ -233,7 +233,7 @@ def test_route_and_status_expose_declared_verification_scope(tmp_path):
         sections,
         tasks,
     )
-    assert "验证范围尚未满足" in invalid_status
+    assert "Verification scope requirements not met" in invalid_status
 
 
 @pytest.mark.parametrize("ascii_mode,compact", [(False, False), (True, False), (False, True), (True, True)])
@@ -255,10 +255,10 @@ def test_route_completed_tasks_do_not_override_standalone_blocked_gate(tmp_path,
     assert state["health"] == "阻塞"
     assert state["completed"] == state["total"] == 4
     output = route_for_package(tmp_path, slug, ascii_mode=ascii_mode, compact=compact)
-    assert "项目中存在受阻任务，具体原因已记录在任务清单" in output
-    assert "处理任务阻塞" in output
-    assert "任务受阻：" not in output
-    assert "整理交付结果并完成归档" not in output
+    assert "Tasks are blocked; see the task list for details" in output
+    assert "Resolve blocked tasks" in output
+    assert "Task blocked: " not in output
+    assert "Prepare delivery and archive the record" not in output
 
 
 def _route_state(root: Path, slug: str) -> dict:
@@ -398,12 +398,12 @@ def test_route_markdown_uses_project_language_not_process_commands():
         )
         output = route_for_package(root, "test-pkg")
         assert output.startswith("# Test\n")
-        assert "已完成：0/1" in output
-        assert "实现支付回调：待办" in output
-        assert "## 接下来" in output
+        assert "- Completed: 0/1" in output
+        assert "实现支付回调: todo" in output
+        assert "## Next" in output
         assert "/spec:" not in output
-        assert "## 流水线" not in output
-        assert "门禁" not in output
+        assert "## Pipeline" not in output
+        assert "Gate" not in output
 
 
 def test_route_markdown_translates_package_gaps_for_users():
@@ -417,12 +417,12 @@ def test_route_markdown_translates_package_gaps_for_users():
             checklist_text="# C\n",
         )
         output = route_for_package(root, "test-pkg")
-        assert "项目定义不完整：尚未明确项目目标" in output
-        assert "尚未记录关键假设" in output
-        assert "补齐项目定义：尚未明确项目目标" in output
+        assert "Project definition incomplete: Project goal is not defined" in output
+        assert "Key assumptions are not recorded" in output
+        assert "Complete the project definition: Project goal is not defined" in output
         assert "spec.md" not in output
         assert "任务包三件套" not in output
-        assert "尚未确定最小实现路径" in output
+        assert "Minimal implementation path is not defined" in output
 
 
 def test_route_markdown_describes_acceptance_gaps_as_project_facts():
@@ -436,8 +436,8 @@ def test_route_markdown_describes_acceptance_gaps_as_project_facts():
             checklist_text="# C\n- [ ] Item\n**验收结果**：通过\n",
         )
         output = route_for_package(root, "test-pkg")
-        assert "任务执行说明不完整" in output
-        assert "缺验证方式 1 项" in output
+        assert "Task instructions incomplete" in output
+        assert "1 missing verification methods" in output
         assert "checklist" not in output
         assert "boundary" not in output
         assert "/spec:" not in output
@@ -478,7 +478,7 @@ def test_route_cli_tolerates_missing_checklist_v2(tmp_path, output_format):
     )
     result = _run_route(tmp_path, slug, output_format, "--ascii", "--compact")
     assert result.returncode == 0, result.stderr
-    assert "已完成：未知" not in result.stdout
+    assert "Completed: unknown" not in result.stdout
     if output_format == "json":
         payload = json.loads(result.stdout)
         assert payload["slug"] == slug
@@ -533,7 +533,7 @@ def test_route_invalid_54_is_advisory(tmp_path):
     state = _route_state(tmp_path, slug)
     assert state["stage"] == "run"
     assert state["orchestrationErrors"] == []
-    assert "编排策略尚未满足" not in route_for_package(tmp_path, slug)
+    assert "Orchestration requirements not met" not in route_for_package(tmp_path, slug)
 
 
 def test_route_and_report_agree_on_invalid_54_with_completed_tasks(tmp_path):
@@ -555,8 +555,8 @@ def test_route_and_report_agree_on_invalid_54_with_completed_tasks(tmp_path):
     sections, tasks = parse_tasks(tasks_text)
     summary = package_status_summary(slug, tasks_text, ORCHESTRATION_BLOCK_SPEC, COMPLETE_CHECKLIST, sections, tasks)
     assert summary["state"] == "正常", "summary health must agree with route health"
-    assert summary["orchestration"] == "无"
-    assert summary["gate_failed"] == "否"
+    assert summary["orchestration"] == ""
+    assert summary["gate_failed"] == "no"
 
     report = render_status(
         slug,
@@ -567,11 +567,11 @@ def test_route_and_report_agree_on_invalid_54_with_completed_tasks(tmp_path):
         sections,
         tasks,
     )
-    assert "编排策略尚未满足" not in report
-    assert "整理交付结果并完成归档" in report
+    assert "Orchestration requirements not met" not in report
+    assert "Prepare delivery and archive the record" in report
 
     overview = render_multi_status(tmp_path, tmp_path / ".spec", [slug])
-    assert "编排策略尚未满足" not in overview
+    assert "Orchestration requirements not met" not in overview
 
 
 def test_route_valid_54_still_runs_and_absent_54_still_runs(tmp_path):
@@ -621,9 +621,9 @@ def test_report_overview_projects_empty_package_as_blocked(tmp_path):
         check=False,
     )
     assert proc.returncode == 0, proc.stderr
-    assert "需要关注" in proc.stdout
-    assert "读取失败" in proc.stdout or "尚未拆出可执行任务" in proc.stdout
-    assert "继续推进当前项目任务" not in proc.stdout
+    assert "## Attention" in proc.stdout
+    assert "no actionable tasks defined" in proc.stdout
+    assert "Continue current project tasks" not in proc.stdout
 
 
 def test_report_summary_projects_completed_package_with_legacy_checklist_evidence_as_done(tmp_path):
@@ -648,12 +648,12 @@ def test_report_summary_projects_completed_package_with_legacy_checklist_evidenc
     assert route_state["stage"] == "done"
     assert route_state["health"] == "正常"
     assert summary["state"] == "正常"
-    assert summary["needs_work"] == "否"
-    assert summary["gate_failed"] == "否"
+    assert summary["needs_work"] == "no"
+    assert summary["gate_failed"] == "no"
 
     overview = render_multi_status(tmp_path, tmp_path / ".spec", [slug])
-    assert "已完成 1/1" in overview
-    assert "验收未通过" not in overview
+    assert "completed 1/1" in overview
+    assert "acceptance failed" not in overview
 
 
 @pytest.mark.parametrize(
@@ -706,9 +706,9 @@ def test_report_next_step_matches_route_when_definition_gap_precedes_dependency_
         sections,
         tasks,
     )
-    assert "补齐项目定义" in route_output.split("## 接下来")[-1]
-    assert "补齐项目定义" in report_output.split("## 接下来")[-1]
-    assert "修正任务依赖" not in report_output.split("## 接下来")[-1]
+    assert "Complete the project definition" in route_output.split("## Next")[-1]
+    assert "Complete the project definition" in report_output.split("## Next")[-1]
+    assert "Fix task dependencies" not in report_output.split("## Next")[-1]
 
 
 def test_report_overview_prioritizes_dependency_before_orchestration(tmp_path):
@@ -723,9 +723,9 @@ def test_report_overview_prioritizes_dependency_before_orchestration(tmp_path):
     )
     route_output = route_for_package(tmp_path, slug)
     overview = render_multi_status(tmp_path, tmp_path / ".spec", [slug])
-    assert "task-ghost" in route_output.split("## 接下来")[-1]
-    assert "修正项目任务依赖" in overview.split("## 接下来")[-1]
-    assert "修正项目编排策略" not in overview.split("## 接下来")[-1]
+    assert "task-ghost" in route_output.split("## Next")[-1]
+    assert "Fix project task dependencies" in overview.split("## Next")[-1]
+    assert "Fix the project orchestration strategy" not in overview.split("## Next")[-1]
 
 
 # --------------------------------------------------------------------------- #

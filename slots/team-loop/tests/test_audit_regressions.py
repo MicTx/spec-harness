@@ -70,7 +70,7 @@ class TestRoundEndLiveTasks:
         store.round_start("r1")
         store.task_add(1, "t1", "worker", "d")
         store.task_spawn(1, "t1", "a", "s")
-        with pytest.raises(LoopStateError, match="非终态任务"):
+        with pytest.raises(LoopStateError, match="non-terminal tasks"):
             store.round_end("pass")
         assert store.state["rounds"][0]["status"] == "open"
 
@@ -78,7 +78,7 @@ class TestRoundEndLiveTasks:
         store = make_store(tmp_path)
         store.round_start("r1")
         store.task_add(1, "t1", "worker", "d")
-        with pytest.raises(LoopStateError, match="非终态任务"):
+        with pytest.raises(LoopStateError, match="non-terminal tasks"):
             store.round_end("pass")
 
     def test_round_end_allows_after_cancel_then_converges(self, tmp_path):
@@ -105,7 +105,7 @@ class TestRoundEndLiveTasks:
         legacy = LoopStore(store.run_dir).load()
         legacy.state["rounds"][0]["tasks"]["t2"]["status"] = "pending"
         legacy._persist()
-        with pytest.raises(LoopStateError, match="已关闭"):
+        with pytest.raises(LoopStateError, match="is closed"):
             legacy.task_spawn(1, "t2", "a3", "s3")
         legacy.state["rounds"][0]["tasks"]["t2"]["status"] = "in_flight"
         legacy._persist()
@@ -120,7 +120,7 @@ class TestSpawnFromFailed:
         store.task_add(1, "t1", "worker", "d")
         store.task_spawn(1, "t1", "a", "s")
         assert store.task_result(1, "t1", "fail", "boom", confirmed_stopped=True) == "exhausted"
-        with pytest.raises(LoopStateError, match="不可 spawn"):
+        with pytest.raises(LoopStateError, match="cannot be spawned"):
             store.task_spawn(1, "t1", "a2", "s2")
         task = store.state["rounds"][0]["tasks"]["t1"]
         assert task["status"] == "failed" and task["attempts"] == 1
@@ -300,7 +300,7 @@ class TestCliInputErrors:
     def test_route_file_missing_exits_2(self):
         for script in (SCRIPTS / "loop_route.py",):
             code, out, err = run_cli(script, "--file", "/nonexistent-audit.md")
-            assert code == 2 and "无法读取文件" in err and "Traceback" not in err
+            assert code == 2 and "cannot read file" in err and "Traceback" not in err
 
 
 class TestStopGuardSymlinkStop:
@@ -315,7 +315,7 @@ class TestStopGuardSymlinkStop:
         assert code == 0, err
         data = json.loads(out)
         assert data["decision"] == "block"
-        assert "无法安全评估" in data["reason"]
+        assert "cannot be evaluated safely" in data["reason"]
         assert "Traceback" not in err
 
 
@@ -362,4 +362,4 @@ class TestTeammateGateMatching:
             "loop_teammate_gate",
             {"hook_event_name": "TeammateIdle", "teammate_name": "review-worker", "cwd": str(tmp_path)},
         )
-        assert code == 2 and "损坏" in err, err
+        assert code == 2 and "corrupt" in err, err

@@ -334,7 +334,7 @@ def slug_verb_advisory(slug: str) -> str | None:
     first_token = suffix.split("-", 1)[0].split("_", 1)[0]
     if first_token in RECOMMENDED_SLUG_VERBS:
         return None
-    return "slug 推荐 verb-object 制式（如 add-/fix-/refactor-/update-），详见 references/naming-and-commits.md"
+    return "slug should use verb-object form (add-/fix-/refactor-/update-); see references/naming-and-commits.md"
 
 
 def extract_integration_branch(spec_content: str) -> str | None:
@@ -342,10 +342,10 @@ def extract_integration_branch(spec_content: str) -> str | None:
     if not match:
         return None
     value = match.group(1).strip()
-    if "适用外" in value.lower() or value.lower() in {"n/a", "na", "none"}:
+    if "适用外" in value.lower() or "not applicable" in value.lower() or value.lower() in {"n/a", "na", "none"}:
         return None
     quoted = BACKTICK_VALUE.findall(value)
-    candidate = (quoted[0] if quoted else value.split("；", 1)[0]).strip()
+    candidate = (quoted[0] if quoted else re.split("[；;]", value, maxsplit=1)[0]).strip()
     if not candidate or any((char.isspace() for char in candidate)):
         return None
     if candidate.startswith("-") or candidate.endswith(("/", ".", ".lock")) or ".." in candidate:
@@ -396,7 +396,7 @@ def select_active_package(
             branch,
             branch,
             candidates,
-            "多个活动任务包记录了同一 integration branch，已停止选择：" + "、".join(exact),
+            "multiple active task packages record the same integration branch; selection stopped: " + ", ".join(exact),
         )
     conventional = [slug for slug in available if branch == f"spec/{slug}" and slug not in bindings]
     if len(conventional) == 1:
@@ -407,10 +407,10 @@ def select_active_package(
         return ActivePackageSelection(slug, "single-non-git", branch, bindings.get(slug, ""), candidates)
     if not available:
         return ActivePackageSelection(None, "none", branch, "", candidates)
-    detail = f"当前分支 {branch}" if branch else "当前处于 detached HEAD" if inside_git else "当前非 Git 工作区"
-    warning = f"{detail} 无法唯一绑定活动任务包；已隐藏跨包数据，请切换到对应 integration branch 或显式传入 --slug"
+    detail = f"current branch {branch}" if branch else "detached HEAD" if inside_git else "not a Git worktree"
+    warning = f"{detail} cannot bind one active package; cross-package data is hidden; switch branch or pass --slug"
     if malformed:
-        warning += "；无法读取分支元数据：" + "、".join(malformed)
+        warning += "; unreadable branch metadata: " + ", ".join(malformed)
     return ActivePackageSelection(None, "unbound", branch, "", candidates, warning)
 
 
@@ -842,25 +842,29 @@ def extract_evidence_fields(checklist_content: str) -> dict[str, str]:
 
 
 def has_command_evidence(checklist_content: str) -> bool:
-    fields = extract_evidence_fields(checklist_content)
-    for key in ("脚本验证", "测试", "构建"):
-        value = fields.get(key, "")
-        if value and (not is_placeholder_value(value)):
-            return True
-    return False
+    fields = {key.lower(): value for key, value in extract_evidence_fields(checklist_content).items()}
+    keys = ("脚本验证", "测试", "构建", "script verification", "tests", "build")
+    return any(fields.get(key, "") and not is_placeholder_value(fields[key]) for key in keys)
 
 
-EVIDENCE_ANCHOR_KEY = "证据锚点"
+EVIDENCE_ANCHOR_KEYS = ("证据锚点", "Evidence anchor")
+
+EVIDENCE_ANCHOR_KEY = EVIDENCE_ANCHOR_KEYS[0]
 
 EVIDENCE_ANCHOR_VALUE_PATTERN = re.compile("^HEAD\\s+([0-9a-fA-F]{7,40})\\s+@\\s+(\\S.*)$")
 
 EVIDENCE_ANCHOR_FULL_SHA_PATTERN = re.compile("^[0-9a-f]{40}$")
 
-EVIDENCE_ANCHOR_FORMAT_GUIDANCE = "证据锚点须为完整 40 位 SHA"
+EVIDENCE_ANCHOR_FORMAT_GUIDANCE = "the evidence anchor must be the full 40-character SHA"
+
+
+def _evidence_anchor_value(fields: dict[str, str]) -> str:
+    lowered = {key.lower(): value for key, value in fields.items()}
+    return next((lowered[key.lower()] for key in EVIDENCE_ANCHOR_KEYS if lowered.get(key.lower())), "")
 
 
 def evidence_anchor_format_errors(checklist_content: str) -> list[str]:
-    value = extract_evidence_fields(checklist_content).get(EVIDENCE_ANCHOR_KEY, "")
+    value = _evidence_anchor_value(extract_evidence_fields(checklist_content))
     if not value:
         return []
     match = EVIDENCE_ANCHOR_VALUE_PATTERN.match(value)
@@ -869,15 +873,13 @@ def evidence_anchor_format_errors(checklist_content: str) -> list[str]:
     if EVIDENCE_ANCHOR_FULL_SHA_PATTERN.fullmatch(match.group(1).lower()):
         return []
     return [
-        "证据锚点格式不合规："
-        f"{EVIDENCE_ANCHOR_FORMAT_GUIDANCE}（须匹配 ^[0-9a-f]{{40}}$）；"
-        f"当前记录：HEAD {match.group(1)} @ {match.group(2)}；"
-        f"请以 git rev-parse HEAD 的完整 40 位输出更新 {EVIDENCE_ANCHOR_KEY}"
+        f"malformed evidence anchor: {EVIDENCE_ANCHOR_FORMAT_GUIDANCE} (matching ^[0-9a-f]{{40}}$); "
+        f"current record: HEAD {match.group(1)} @ {match.group(2)}; fix it from `git rev-parse HEAD`"
     ]
 
 
 def extract_evidence_anchor(checklist_content: str) -> tuple[str, str] | None:
-    value = extract_evidence_fields(checklist_content).get(EVIDENCE_ANCHOR_KEY, "")
+    value = _evidence_anchor_value(extract_evidence_fields(checklist_content))
     if not value:
         return None
     match = EVIDENCE_ANCHOR_VALUE_PATTERN.match(value)
@@ -1104,13 +1106,13 @@ def autonomous_question_contract(
         match = re.match(r"\[(decision|fact|reversible)\]\s*(.*)", text)
         kind, title = match.groups() if match else ("fact", text)
         if closed and is_placeholder_value(fields.get("answer", "")):
-            errors.append(f"{title}：关闭需要 answer: <结论>")
+            errors.append(f"{title}: closing requires answer: <conclusion>")
         if kind == "decision":
             if not closed:
                 human.append(title)
             authority = fields.get("authority", "")
             if closed and (not authority.startswith("user:") or is_placeholder_value(authority[5:])):
-                errors.append(f"{title}：decision 关闭需要 authority: user:<引用>")
+                errors.append(f"{title}: closing a decision requires authority: user:<reference>")
         else:
             questions.append(AutonomousQuestion(title, kind, closed, fields.get("task", ""), fields))
     return questions, human, errors
@@ -1122,9 +1124,9 @@ def workflow_ledger_errors(spec_content: str, tasks_content: str | None = None) 
     errors = []
     literal = re.search(r"(?m)^-\s*\*\*Literal ask\*\*\s*[：:]\s*(.+)", spec_content)
     if not literal or is_placeholder_value(literal.group(1)) or literal.group(1).startswith("<"):
-        errors.append("FULL 需要非空 Literal ask")
+        errors.append("FULL requires a non-empty Literal ask")
     if not re.search(r"(?m)^-\s*B[1-9]\d*\s*\|\s*\S", spec_content):
-        errors.append(rule_message("SPEC-OPT-001", "FULL 至少写一个 B1 备选方案"))
+        errors.append(rule_message("SPEC-OPT-001", "FULL requires at least one B1 alternative"))
     return errors
 
 
@@ -1171,10 +1173,10 @@ def verification_scope_errors(spec_content: str) -> list[str]:
     fields = verification_scope_fields(spec_content)
     errors = []
     if verification_scope(spec_content) not in VERIFICATION_SCOPE_LEVELS:
-        errors.append("范围级别必须为 package/integration/project")
+        errors.append("scope level must be package/integration/project")
     command = fields.get("快速检查", "")
     if is_placeholder_value(command) or command.startswith("<"):
-        errors.append(rule_message("SPEC-VERIFY-001", "快速检查需要真实命令"))
+        errors.append(rule_message("SPEC-VERIFY-001", "quick check requires a real command"))
     return errors
 
 
@@ -1183,15 +1185,15 @@ def clarification_gaps(spec_content: str) -> list[str]:
     values = extract_problem_definition_values(spec_content)
     goal = values.get("项目目标", "")
     if not goal or goal in PROJECT_DEFINITION_PLACEHOLDERS["项目目标"]:
-        errors.append("`spec.md` 缺少有效项目目标")
+        errors.append("`spec.md` is missing a valid goal")
     for section in (SECTION_KEY_ASSUMPTIONS, SECTION_OPEN_QUESTIONS, SECTION_OUT_OF_SCOPE, SECTION_MINIMAL_PATH):
         bullets = extract_section_bullets(spec_content, section)
         if not bullets or any(bullet in SECTION_PLACEHOLDER_ITEMS.get(section, ()) for bullet in bullets):
-            errors.append(f"`spec.md` 缺少有效区块：{section.canonical}")
+            errors.append(f"`spec.md` is missing a valid section: {section.aliases[-1]}")
     return errors
 
 
 def orchestration_strategy_errors(spec_content: str) -> list[str]:
     fields = extract_structured_section_fields(spec_content, SECTION_ORCHESTRATION)
     route = fields.get("route", "local").strip("`")
-    return [] if route in ORCHESTRATION_ROUTES else ["route 必须是 local/explore/build/review/external"]
+    return [] if route in ORCHESTRATION_ROUTES else ["route must be local/explore/build/review/external"]

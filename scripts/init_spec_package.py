@@ -99,11 +99,15 @@ def render_template(
     integration_branch: str | None = None,
     branch_note: str | None = None,
 ) -> str:
-    rendered = template.replace("[项目名称]", title)
+    rendered = template.replace("[Project Name]", title).replace("[项目名称]", title)
     if integration_branch:
-        replacement = f"Git integration branch：`{integration_branch}`"
+        replacement = f"Git integration branch: `{integration_branch}`"
         if branch_note:
-            replacement = f"{replacement}；{branch_note}"
+            replacement = f"{replacement}; {branch_note}"
+        rendered = rendered.replace(
+            "- Git integration branch: `spec/YYYY-MM-DD_<slug>` or not applicable",
+            f"- {replacement}",
+        )
         rendered = rendered.replace(
             "Git integration branch：`spec/YYYY-MM-DD_<slug>` 或适用外理由",
             replacement,
@@ -125,7 +129,10 @@ class BranchCreation(NamedTuple):
     note: str = ""
 
 
-LOCAL_BRANCH_NOTE = "本地模式：upstream fetch 传输失败，已从本地主分支创建；网络恢复后由 push 再同步远端"
+LOCAL_BRANCH_NOTE = (
+    "local mode: the upstream fetch failed, so the branch was created from local main; "
+    "push will sync the remote once the network recovers"
+)
 
 
 def ensure_safe_branch_name(root: Path, branch: str, label: str) -> None:
@@ -268,7 +275,10 @@ def adopt_in_flight_work(args: argparse.Namespace, slug: str, title: str, specs_
         "writers_paused": bool(args.writers_paused),
         "writers_paused_source": "operator-attested" if args.writers_paused else "none",
     }
-    note = f"接管在途工作：绑定当前分支，基线 {head[:12]}，不切换分支、不改动任何队友文件"
+    note = (
+        f"adopted in-flight work: bound to the current branch, baseline {head[:12]}; "
+        "no branch switch, no teammate files touched"
+    )
     package_dir.parent.mkdir(parents=True, exist_ok=True)
     try:
         package_dir.mkdir(exist_ok=force)

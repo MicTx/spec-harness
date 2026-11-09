@@ -13,8 +13,10 @@ The document is optional by construction: packages without it lose no gate, and 
 
 `handoff.md` lives inside the package directory (`.spec/specs/<slug>/handoff.md`) and archives wholesale with the package. It has two zones:
 
-- `## 快照` — a generated snapshot, rewritten by the CLI on every update. Never hand-write it: it records the branch, HEAD anchor, task progress, next ready tasks, blockers, and entry-log counters pulled from disk truth.
-- `## 条目` — an append-only entry log. Old entries are never edited or deleted; a successor's takeover is a new entry, not a rewrite of the predecessor's.
+- `## Snapshot` — a generated snapshot, rewritten by the CLI on every update. Never hand-write it: it records the branch, HEAD anchor, task progress, next ready tasks, blockers, and entry-log counters pulled from disk truth.
+- `## Entries` — an append-only entry log. Old entries are never edited or deleted; a successor's takeover is a new entry, not a rewrite of the predecessor's.
+
+Existing documents with legacy headings `## 快照` and `## 条目` remain readable and valid; appending preserves old entries.
 
 ## Commands
 
@@ -42,27 +44,27 @@ Each entry is one `###` block: a heading line `### [<ISO-8601 UTC>] event=<v> co
 - `event`: `pause` | `takeover` | `lane-end` | `escalation` | `close`
 - `status`: `in-progress` | `blocked-on-human` | `blocked-on-agent` | `done`
 
-Required slots adapt to the collaboration mode — the lattice `solo ⊂ {team, agent} ⊂ cluster`:
+Required slots adapt to the collaboration mode — the lattice `solo ⊂ {team, agent} ⊂ cluster`. Slot names are literal headings in the persisted handoff protocol:
 
 | Mode | Required slots |
 | --- | --- |
-| `solo` | 上下文、下一步 |
-| `team` | solo + 所有权、等待中 |
-| `agent` | solo + 恢复 |
-| `cluster` | team + agent + lanes |
+| `solo` | `Context`, `Next Steps` |
+| `team` | solo + `Ownership`, `Waiting On` |
+| `agent` | solo + `Resume` |
+| `cluster` | team + agent + `lanes` |
 
 Slot semantics:
 
-- 上下文 — what was done and why work stopped here (write conclusions, not transcripts).
-- 发现 — findings as `file:line` pointers, never copied passages.
-- 下一步 — the single next action: action + target + how to verify.
-- 风险与应急 — contingency: "if X breaks, do Y".
-- 所有权 / 等待中 — who owns what, and what the lane is waiting on (team coordination).
-- 恢复 — the machine-resume block: the resume command plus the next task's `boundary`/`verify` pointers.
-- lanes — the cluster lane table: id / status / ownership / pointer / merge order.
-- 回执 — the receiver's read-back slot, filled on takeover.
+- `Context` — what was done and why work stopped here (write conclusions, not transcripts).
+- `Findings` — findings as `file:line` pointers, never copied passages.
+- `Next Steps` — the single next action: action + target + how to verify.
+- `Risks and Contingencies` — contingency: "if X breaks, do Y".
+- `Ownership` / `Waiting On` — who owns what, and what the lane is waiting on (team coordination).
+- `Resume` — the machine-resume block: the resume command plus the next task's `boundary`/`verify` pointers.
+- `lanes` — the cluster lane table: id / status / ownership / pointer / merge order.
+- `Acknowledgment` — the receiver's read-back slot, filled on takeover.
 
-Optional slots (`发现`、`风险与应急`、`回执`) ship by generation but validation leaves them free.
+Optional slots (`Findings`, `Risks and Contingencies`, `Acknowledgment`) are generated but not required by validation. Legacy slot headings remain valid and are preserved without key normalization: `上下文`, `发现`, `下一步`, `风险与应急`, `所有权`, `等待中`, `恢复`, and `回执`.
 
 ## Freshness
 
@@ -72,7 +74,7 @@ The snapshot anchors `head` (git HEAD) and `progress` (task counts). `show` comp
 
 | Stage | Behavior |
 | --- | --- |
-| `/spec` route | Adds a 交接 detail line (`handoff：最新 <ts>（freshness，collab）`) and a JSON `handoff` field when the file exists |
+| `/spec` route | Adds a handoff detail line with the latest timestamp, freshness, and collaboration mode, and a JSON `handoff` field when the file exists |
 | `/spec:status` | Appends `handoff <collab>/<freshness>` to the package row |
 | `/spec:run` | On pause/interrupt/session end, the session runs `update --event pause` (or `takeover` / `escalation` / `lane-end` as appropriate) |
 | `/spec:check` | Reads the snapshot for context when present; it does not re-validate the document |
@@ -82,7 +84,7 @@ The snapshot anchors `head` (git HEAD) and `progress` (task counts). `show` comp
 
 - Append-only: correct an earlier entry by writing a newer entry, never by rewriting history.
 - One writer at a time: a single session owns the package while it works and writes the boundary entry before releasing it; the format assumes no concurrent writers — coordination is by the mode lattice's ownership slots, not by locking.
-- The departing side writes; the receiving side fills the 回执 slot on takeover.
+- The departing side writes; the receiving side fills the `Acknowledgment` slot on takeover.
 - Escalate early with full context rather than letting a stale session drift; a handoff nobody updates is worse than none — the snapshot and the check gate exist to keep that from happening silently.
 
 ## Adopting in-flight work

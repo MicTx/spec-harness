@@ -100,6 +100,6 @@ def test_explicit_rounds_config():
 
 def test_reason_is_explainable():
     decision = route("循环重试直至通过")
-    assert "循环" in decision["reason"]
+    assert "loop" in decision["reason"]
     decision = route("没什么特征的任务文本")
-    assert decision["reason"] == "无循环特征"
+    assert decision["reason"] == "no loop signals"

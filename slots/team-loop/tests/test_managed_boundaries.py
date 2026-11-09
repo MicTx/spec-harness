@@ -42,7 +42,7 @@ def test_last_round_and_budget_allow_active_work_and_close(tmp_path, clock):
     attach(store, token)
     assert admission(store, clock())["admit"] is False
     assert termination_check(store, clock())["verdict"] == "continue"
-    with pytest.raises(LoopStateError, match="尚未满足"):
+    with pytest.raises(LoopStateError, match="convergence conditions are not yet met"):
         store.run_converged()
     store.task_result(1, "t1", "ok", reservation=token, confirmed_stopped=True)
     assert termination_check(store, clock())["verdict"] == "continue"
@@ -98,7 +98,7 @@ def test_backoff_is_atomic_and_cannot_be_shortened(tmp_path, clock):
     clock.advance(5)
     token2 = store.task_reserve(1, "t1")
     attach(store, token2, submission="s2")
-    with pytest.raises(LoopStateError, match="过期"):
+    with pytest.raises(LoopStateError, match="stale"):
         store.task_result(1, "t1", "ok", reservation=token, submission="s1", confirmed_stopped=True)
     with pytest.raises(LoopStateError, match="submission"):
         store.task_result(1, "t1", "ok", reservation=token2, submission="s1", confirmed_stopped=True)
@@ -115,9 +115,9 @@ def test_reservation_survives_crash_and_attach_is_idempotent(tmp_path, clock):
     recovered = LoopStore(store.run_dir, now=clock).load()
     assert recovered.resume()["reserved"] == ["r1/a"]
     assert stale_tasks(recovered, clock()) == []
-    with pytest.raises(LoopStateError, match="并发"):
+    with pytest.raises(LoopStateError, match="concurrency"):
         recovered.task_reserve(1, "b")
-    with pytest.raises(LoopStateError, match="核实"):
+    with pytest.raises(LoopStateError, match="verify"):
         recovered.task_abandon(1, "a", token, confirmed_stopped=False)
     recovered.task_spawn(1, "a", "host-worker", "submission", reservation=token)
     LoopStore(store.run_dir, now=clock).load().task_spawn(1, "a", "host-worker", "submission", reservation=token)
@@ -132,6 +132,8 @@ def test_confirmed_reservation_abandon_consumes_attempt_and_budget(tmp_path, clo
     add(store)
     token = store.task_reserve(1, "t1")
     assert store.task_abandon(1, "t1", token, confirmed_stopped=True) == "retry"
+    assert store.state["rounds"][0]["tasks"]["t1"]["lastError"] == "reservation abandoned or unspecified failure"
+    assert store.events()[-1]["error"] == "reservation abandoned or unspecified failure"
     clock.advance(10)
     with pytest.raises(LoopStateError, match="budgetTasks"):
         store.task_reserve(1, "t1")
@@ -146,7 +148,7 @@ def test_slow_worker_is_not_reaped_on_coordinator_heartbeat_or_age_alone(tmp_pat
     clock.advance(11)
     store.task_heartbeat(1, "t1")  # only the coordinator is alive
     assert stale_tasks(store, clock()) == ["r1/t1"]
-    with pytest.raises(LoopStateError, match="确认"):
+    with pytest.raises(LoopStateError, match="confirm"):
         reap_stale_tasks(store, clock(), task_key="r1/t1")
     with pytest.raises(LoopStateError, match="submission"):
         store.task_heartbeat(1, "t1", source="host", submission="old", reservation=token)
@@ -155,7 +157,10 @@ def test_slow_worker_is_not_reaped_on_coordinator_heartbeat_or_age_alone(tmp_pat
     clock.advance(11)
     outcome = reap_stale_tasks(store, clock(), task_key="r1/t1", confirmed_stopped=True)
     assert outcome["reaped"][0]["outcome"] == "retry"
-    assert store.state["rounds"][0]["tasks"]["t1"]["backoffUntil"] == clock() + 5
+    task = store.state["rounds"][0]["tasks"]["t1"]
+    assert task["backoffUntil"] == clock() + 5
+    assert task["lastError"] == "host worker confirmed stopped; heartbeat timed out"
+    assert store.events()[-1]["error"] == "host worker confirmed stopped; heartbeat timed out"
 
 
 def test_interrupt_resume_does_not_free_worker_or_reset_attempts(tmp_path, clock):
@@ -183,7 +188,7 @@ def test_legacy_retry_requires_current_submission_and_unique_ids(tmp_path, clock
     store.task_spawn(1, "t1", "b", "s2")
     with pytest.raises(LoopStateError, match="submission"):
         store.task_result(1, "t1", "ok", confirmed_stopped=True)
-    with pytest.raises(LoopStateError, match="过期"):
+    with pytest.raises(LoopStateError, match="stale"):
         store.task_result(1, "t1", "ok", submission="s1", confirmed_stopped=True)
     store.task_result(1, "t1", "ok", submission="s2", confirmed_stopped=True)
 
@@ -236,7 +241,7 @@ def test_worker_report_keeps_attempt_live_and_capacity_occupied(tmp_path, clock)
     add(store)
     token = store.task_reserve(1, "t1")
     attach(store, token)
-    with pytest.raises(LoopStateError, match="非空"):
+    with pytest.raises(LoopStateError, match="non-empty"):
         store.task_report(1, "t1", {}, submission="s1")
     with pytest.raises(LoopStateError, match="submission"):
         store.task_report(1, "t1", {"evidence": "x"}, submission="old")
@@ -244,7 +249,7 @@ def test_worker_report_keeps_attempt_live_and_capacity_occupied(tmp_path, clock)
     task = store.state["rounds"][0]["tasks"]["t1"]
     assert task["status"] == "in_flight" and task["workerReport"] == {"evidence": "x"}
     add(store, "t2")
-    with pytest.raises(LoopStateError, match="并发"):
+    with pytest.raises(LoopStateError, match="concurrency"):
         store.task_reserve(1, "t2")
     store.task_result(1, "t1", "ok", reservation=token, confirmed_stopped=True)
     assert store.task_reserve(1, "t2")
@@ -270,7 +275,7 @@ def test_stale_snapshot_cannot_over_reserve(tmp_path, clock):
     add(store, "b")
     stale = LoopStore(store.run_dir, now=clock).load()
     store.task_reserve(1, "a")
-    with pytest.raises(LoopStateError, match="重新 load"):
+    with pytest.raises(LoopStateError, match="reload"):
         stale.task_reserve(1, "b")
     # 被拒后同一实例已回到磁盘真源：看不到虚假的第二个 in_flight/预算占用
     assert stale.state["rounds"][0]["tasks"]["b"]["status"] == "pending"
@@ -278,7 +283,7 @@ def test_stale_snapshot_cannot_over_reserve(tmp_path, clock):
     loaded = LoopStore(store.run_dir, now=clock).load()
     assert loaded.state["rounds"][0]["tasks"]["a"]["status"] == "in_flight"
     assert loaded.state["counters"]["tasksSpawned"] == 1
-    with pytest.raises(LoopStateError, match="并发"):
+    with pytest.raises(LoopStateError, match="concurrency"):
         loaded.task_reserve(1, "b")
 
 
@@ -324,7 +329,7 @@ def test_failed_persist_keeps_instance_on_disk_truth(tmp_path, clock, monkeypatc
         raise OSError("disk full")
 
     monkeypatch.setattr(loop_state, "_atomic_write_json", boom)
-    with pytest.raises(LoopStateError, match="无法写入"):
+    with pytest.raises(LoopStateError, match="cannot write"):
         store.task_reserve(1, "t1")
     assert store.state["rounds"][0]["tasks"]["t1"]["status"] == "pending"
     assert store.state["counters"]["tasksSpawned"] == 0
@@ -366,15 +371,15 @@ def test_retried_attempt_identity_required_for_report_and_heartbeat(tmp_path, cl
     store.task_result(1, "t1", "fail", reservation=first, confirmed_stopped=True)
     second = store.task_reserve(1, "t1")
     attach(store, second, submission="s2")
-    with pytest.raises(LoopStateError, match="预约"):
+    with pytest.raises(LoopStateError, match="reservation"):
         store.task_report(1, "t1", {"evidence": "old"}, reservation=first)
-    with pytest.raises(LoopStateError, match="预约"):
+    with pytest.raises(LoopStateError, match="reservation"):
         store.task_heartbeat(1, "t1", source="worker", reservation=first)
     with pytest.raises(LoopStateError, match="submission"):
         store.task_report(1, "t1", {"evidence": "old"}, submission="s1")
-    with pytest.raises(LoopStateError, match="重试报告"):
+    with pytest.raises(LoopStateError, match="retry report"):
         store.task_report(1, "t1", {"evidence": "anonymous"})
-    with pytest.raises(LoopStateError, match="重试心跳"):
+    with pytest.raises(LoopStateError, match="retry heartbeat"):
         store.task_heartbeat(1, "t1", source="worker")
     store.task_report(1, "t1", {"evidence": "current"}, reservation=second)
     task = store.state["rounds"][0]["tasks"]["t1"]
@@ -406,7 +411,7 @@ def test_cli_report_passes_reservation_identity(tmp_path, clock):
         "@" + str(report),
     ]
     stale = subprocess.run([*base, "--reservation", first], capture_output=True, text=True, timeout=30)
-    assert stale.returncode == 2 and "预约" in stale.stderr
+    assert stale.returncode == 2 and "reservation" in stale.stderr
     current = subprocess.run([*base, "--reservation", second], capture_output=True, text=True, timeout=30)
     assert current.returncode == 0, current.stderr
     task = LoopStore(store.run_dir).load().state["rounds"][0]["tasks"]["t1"]

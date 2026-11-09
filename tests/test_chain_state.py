@@ -42,6 +42,17 @@ def test_plan_counts_features_and_skips_archive(tmp_path):
     assert [doc["path"] for doc in payload["docs"]] == [".spec/plans/2026-11-08_add-demo.md"]
 
 
+def test_autorun_defaults_to_no_cap(tmp_path):
+    """Omitting the flag leaves the chain unbounded; the fifth and later steps still start."""
+    write_plan(tmp_path, "- [ ] one\n- [ ] two\n- [ ] three\n- [ ] four\n- [ ] five\n- [ ] six\n")
+    state = json.loads(run(tmp_path, "begin", "--chain", "autorun", "--step", "pkg-a").stdout)
+    assert state["max_rounds"] is None
+    for index in range(2, 8):
+        result = run(tmp_path, "begin", "--chain", "autorun", "--step", f"pkg-{index}")
+        assert result.returncode == 0, f"begin {index} must not hit a cap"
+        assert json.loads(result.stdout)["round"] == index
+
+
 def test_autorun_rounds_repeat_steps_and_cap(tmp_path):
     write_plan(tmp_path, "- [ ] one\n- [ ] two\n")
     first = json.loads(run(tmp_path, "begin", "--chain", "autorun", "--step", "pkg-a", "--max-rounds", "1").stdout)

@@ -75,7 +75,7 @@ def mark_checklist_passed(path: Path) -> None:
 def mark_success_criteria_passed(path: Path) -> None:
     """v2 acceptance surface: tick every §6 success-criterion checkbox."""
     content = path.read_text(encoding="utf-8")
-    section_start = content.index("## 6. 成功标准与验证方式")
+    section_start = content.index("## 6. Success Criteria And Verification")
     section_end = content.index("## 7.", section_start)
     section = content[section_start:section_end].replace("- [ ]", "- [x]")
     path.write_text(content[:section_start] + section + content[section_end:], encoding="utf-8")
@@ -83,7 +83,7 @@ def mark_success_criteria_passed(path: Path) -> None:
 
 def success_criteria_unchecked(path: Path) -> int:
     content = path.read_text(encoding="utf-8")
-    section_start = content.index("## 6. 成功标准与验证方式")
+    section_start = content.index("## 6. Success Criteria And Verification")
     section_end = content.index("## 7.", section_start)
     return content[section_start:section_end].count("- [ ]")
 
@@ -110,15 +110,15 @@ def populate_spec(path: Path) -> None:
     replace_all(
         path,
         {
-            "一句话描述项目要解决什么问题": "修复 spec helper scripts 的状态机与模板一致性",
-            "- 假设 A": "- 保持标准库实现，不引入第三方依赖",
-            # The smoke package has no open questions: fill the 无 declaration.
-            "- [ ] 问题 A": "- 无",
-            "- 明确列出本轮不做的内容": "- 不重写整个 spec workflow",
-            "- 最简单可行方案：xxx": "- 最简单可行方案：收敛模板源并修补状态机判断",
+            "one sentence describing the problem this project solves": "修复 spec helper scripts 的状态机与模板一致性",
+            "- Assumption A": "- 保持标准库实现，不引入第三方依赖",
+            # The smoke package has no open questions: fill the none declaration.
+            "- [ ] Question A": "- none",
+            "- explicitly list what this round will not do": "- 不重写整个 spec workflow",
+            "- simplest viable approach: xxx": "- simplest viable approach: 收敛模板源并修补状态机判断",
             (
-                "- 快速检查：<变更对象对应的局部测试/静态检查命令>"
-            ): "- 快速检查：python3 -m pytest -q tests/test_route_spec_package.py",
+                "- quick check: <local test or static check command for the changed area>"
+            ): "- quick check: python3 -m pytest -q tests/test_route_spec_package.py",
         },
     )
 
@@ -134,22 +134,36 @@ def populate_tasks(path: Path, slug: str, specs_dir: str = ".spec") -> None:
     replace_all(
         path,
         {
-            "- [ ] 实现核心功能 A 的最小闭环": "- [ ] 实现冒烟最小闭环",
-            "`python3 -m pytest -q tests/test_core_feature_a.py`（替换为本项目真实测试命令）": f"`{probe}`",
-            "`python3 -m pytest -q tests/test_critical_path.py`（替换为本项目真实集成验证命令）": f"`{probe}`",
+            "- [ ] Deliver the smallest end-to-end slice of core feature A": "- [ ] 实现冒烟最小闭环",
+            (
+                "`python3 -m pytest -q tests/test_core_feature_a.py` (replace with the real project test command)"
+            ): f"`{probe}`",
+            (
+                "`python3 -m pytest -q tests/test_critical_path.py` (replace with the real integration command)"
+            ): f"`{probe}`",
         },
     )
 
 
 def setup_git_repo(root: Path) -> Path:
     """Promote non-Git fixtures to distinct branch-bound packages for Git checks."""
-    branch_placeholder = "Git integration branch：`spec/YYYY-MM-DD_<slug>` 或适用外理由"
+    branch_placeholders = (
+        "- Git integration branch: `spec/YYYY-MM-DD_<slug>` or not applicable",
+        "- Git integration branch：`spec/YYYY-MM-DD_<slug>` 或适用外理由",
+    )
     for specs_dir in (".spec", "spec-state"):
         for spec_path in sorted((root / specs_dir / "specs").glob("*/spec.md")):
             branch = (
                 "spec/test" if spec_path.parent.name == "2026-06-12_smoke-test" else f"spec/{spec_path.parent.name}"
             )
-            replace_all(spec_path, {branch_placeholder: f"Git integration branch：`{branch}`"})
+            content = spec_path.read_text(encoding="utf-8")
+            target = f"- Git integration branch: `{branch}`"
+            for placeholder in branch_placeholders:
+                if placeholder in content:
+                    spec_path.write_text(content.replace(placeholder, target), encoding="utf-8")
+                    break
+            else:
+                raise AssertionError(f"branch placeholder not found in {spec_path}")
     subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
     subprocess.run(
         ["git", "symbolic-ref", "HEAD", "refs/heads/main"],
@@ -475,7 +489,7 @@ def run_core_gate_chain() -> None:
             raise AssertionError(
                 f"core check gate must pass:\n{passed_check_result.stdout}\n{passed_check_result.stderr}"
             )
-        assert_contains(passed_check_result.stdout, "收敛状态：已收敛")
+        assert_contains(passed_check_result.stdout, "- Convergence: converged")
         done_route_state = run(
             str(SCRIPTS_DIR / "route_spec_package.py"),
             "--root",
@@ -565,9 +579,9 @@ def main() -> int:
             "--view",
             "status",
         )
-        assert_contains(multi_status, "## 项目概览")
-        assert_contains(multi_status, "Smoke Test：已完成 0/2")
-        assert_contains(multi_status, "Second Pack：已完成 0/2")
+        assert_contains(multi_status, "## Project Overview")
+        assert_contains(multi_status, "Smoke Test: completed 0/2")
+        assert_contains(multi_status, "Second Pack: completed 0/2")
         log("multi-package status overview ok")
 
         fresh_route = run(
@@ -578,8 +592,8 @@ def main() -> int:
             "2026-06-12_smoke-test",
         )
         assert_contains(fresh_route, "# Smoke Test")
-        assert_contains(fresh_route, "## 项目进展")
-        assert_contains(fresh_route, "项目定义不完整")
+        assert_contains(fresh_route, "## Project Progress")
+        assert_contains(fresh_route, "Project definition incomplete")
         assert "spec.md" not in fresh_route
         assert "/spec:" not in fresh_route
         fresh_route_state = run(
@@ -603,10 +617,10 @@ def main() -> int:
             "status",
         )
         assert_contains(fresh_status, "# Smoke Test")
-        assert_contains(fresh_status, "## 项目进展")
-        assert_contains(fresh_status, "项目定义不完整")
+        assert_contains(fresh_status, "## Project Progress")
+        assert_contains(fresh_status, "Project definition incomplete")
         assert "spec.md" not in fresh_status
-        assert "## 流水线" not in fresh_status
+        assert "## Pipeline" not in fresh_status
 
         fresh_check_result = run_result(
             str(SCRIPTS_DIR / "check_spec_package.py"),
@@ -618,8 +632,8 @@ def main() -> int:
         if fresh_check_result.returncode == 0:
             raise AssertionError("failed spec check must return a non-zero exit status")
         assert_contains(fresh_check_result.stdout, "# Smoke Test")
-        assert_contains(fresh_check_result.stdout, "## 需要关注")
-        assert_contains(fresh_check_result.stdout, "任务完成 0/2")
+        assert_contains(fresh_check_result.stdout, "## Attention")
+        assert_contains(fresh_check_result.stdout, "tasks complete 0/2")
 
         all_check_result = run_result(
             str(SCRIPTS_DIR / "check_all_spec_packages.py"),
@@ -671,7 +685,7 @@ def main() -> int:
             "--slug",
             "2026-06-12_smoke-test",
         )
-        assert_contains(active_route, "实现冒烟最小闭环：待办")
+        assert_contains(active_route, "实现冒烟最小闭环: todo")
         assert "/spec:" not in active_route
         active_route_state = run(
             str(SCRIPTS_DIR / "route_spec_package.py"),
@@ -693,7 +707,7 @@ def main() -> int:
             "2026-06-12_smoke-test",
         )
         unchecked_criteria = success_criteria_unchecked(spec_path)
-        assert_contains(check_route, f"项目尚有 {unchecked_criteria} 项成功标准未达成")
+        assert_contains(check_route, f"{unchecked_criteria} success criteria remain unmet")
         check_route_state = run(
             str(SCRIPTS_DIR / "route_spec_package.py"),
             "--root",
@@ -742,8 +756,8 @@ def main() -> int:
             raise AssertionError(
                 f"passed spec check must return zero:\n{passed_check_result.stdout}\n{passed_check_result.stderr}"
             )
-        assert_contains(passed_check_result.stdout, "收敛状态：已收敛")
-        assert "## 需要关注" not in passed_check_result.stdout
+        assert_contains(passed_check_result.stdout, "- Convergence: converged")
+        assert "## Attention" not in passed_check_result.stdout
         passed_all_result = run_result(
             str(SCRIPTS_DIR / "check_all_spec_packages.py"),
             "--root",
@@ -763,8 +777,8 @@ def main() -> int:
             "--slug",
             "2026-06-12_smoke-test",
         )
-        assert_contains(done_route, "- 已完成：2/2")
-        assert_contains(done_route, "整理交付结果并完成归档")
+        assert_contains(done_route, "- Completed: 2/2")
+        assert_contains(done_route, "Prepare delivery and archive the record")
         done_route_state = run(
             str(SCRIPTS_DIR / "route_spec_package.py"),
             "--root",

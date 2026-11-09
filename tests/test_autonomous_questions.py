@@ -117,13 +117,25 @@ def test_open_autonomous_question_routes_to_run_without_a_task_binding(tmp_path,
     assert result["humanQuestions"] == []
     assert result["autonomousQuestions"] == ["Confirm format"]
     assert result["questionErrors"] == []
+    assert result["nextAction"] == "Inspect format"
     spec = (package / "spec.md").read_text(encoding="utf-8")
     sections, parsed = parse_tasks(tasks)
     status = render_status(SLUG, "Fixture", tasks, spec, None, sections, parsed)
     summary = package_status_summary(SLUG, tasks, spec, None, sections, parsed)
-    assert "自主调查：Confirm format" in status
-    assert "需要确认需求" not in status
-    assert summary["pending"] == "无" and summary["inquiry"] == "Confirm format"
+    assert "Autonomous inquiry: Confirm format" in status
+    assert "Confirm requirements" not in status
+    assert not summary["pending"] and summary["inquiry"] == "Confirm format"
+
+
+def test_task_bound_inquiry_is_prioritized_over_unrelated_work(tmp_path):
+    root = init_repo(tmp_path)
+    other = TASKS.replace("task-inspect", "task-other").replace("Inspect format", "Other work")
+    tasks = other + TASKS.replace("[x] Inspect", "[ ] Inspect")
+    package_fixture(root, "[ ] [fact] Confirm format | task: task-inspect", tasks)
+    result = json.loads(route_for_package(root, SLUG, output_format="json"))
+    assert result["stage"] == "run"
+    assert result["currentTask"] == "Inspect format"
+    assert result["nextAction"] == "Investigate independently: Inspect format"
 
 
 def test_open_decision_routes_to_user_confirmation(tmp_path):
@@ -145,7 +157,7 @@ def test_closed_question_without_required_fields_routes_to_repair(tmp_path, ques
     result = json.loads(route_for_package(root, SLUG, output_format="json"))
     assert result["stage"] == "status"
     assert result["questionErrors"]
-    assert "修复调查契约" in result["nextAction"]
+    assert "Fix investigation contract" in result["nextAction"]
 
 
 @pytest.mark.parametrize("kind", ["fact", "reversible"])

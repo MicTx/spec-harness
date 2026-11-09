@@ -579,12 +579,12 @@ def main() -> int:
             Dashboard(
                 slug="spec",
                 stage="push",
-                title="项目变更已发布",
+                title="Project changes published",
                 health=HEALTH_OK,
                 delta=[
-                    f"已合并到 {args.main_branch}",
-                    f"已同步到 {args.remote}/{args.main_branch}",
-                    f"已删除工作分支 {branch}",
+                    f"Merged into {args.main_branch}",
+                    f"Synced to {args.remote}/{args.main_branch}",
+                    f"Deleted working branch {branch}",
                 ],
                 detail=plan.splitlines(),
             ).render()

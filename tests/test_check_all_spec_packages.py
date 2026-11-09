@@ -72,6 +72,29 @@ def make_archive(root: Path, slug: str, specs_dir: str = ".spec", *, passed: boo
     return package
 
 
+@pytest.mark.parametrize("label", ["提交区间：", "Commit interval: "])
+def test_footer_interval_warnings_support_english_and_legacy_chinese(tmp_path: Path, label: str) -> None:
+    init_repo(tmp_path)
+    (tmp_path / "README.md").write_text("base\n", encoding="utf-8")
+    base = commit(tmp_path, "base")
+    archive = make_archive(tmp_path, "2026-07-13_fix-old")
+    (archive / "completion-summary.md").write_text(f"- {label}{base}..{base}\n", encoding="utf-8")
+    window = commit(tmp_path, "archive")
+    (tmp_path / "next.txt").write_text("next\n", encoding="utf-8")
+    head = commit(tmp_path, "next")
+
+    warnings = checker.footer_interval_warnings(tmp_path, [archive.name], revision=head, window_base=window)
+
+    assert len(warnings) == 1
+    assert (warnings[0].slug, warnings[0].base, warnings[0].head, warnings[0].window_base) == (
+        archive.name,
+        base,
+        base,
+        window,
+    )
+    assert checker.footer_interval_warnings(tmp_path, [archive.name], revision=head, window_base=base) == []
+
+
 def test_discovers_default_and_explicit_specs_roots(tmp_path: Path) -> None:
     make_package(tmp_path, "2026-07-13_fix-default")
     make_package(tmp_path, "2026-07-13_fix-custom", "spec-state", passed=False)

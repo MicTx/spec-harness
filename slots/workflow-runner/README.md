@@ -105,8 +105,8 @@ production performance; no trigger-rate/cost measurements are claimed.
 
 1. The task's shape matched `slots/workflow-runner/scripts/workflow_route.py` (score ≥ 2 and at
    least one strong shape signal): batch fan-out, parallel review, perspective panel, or
-   review-fix loop. Bare generic weak signals alone (bare 「批量」, bare convergence markers)
-   do not activate the slot.
+   review-fix loop. Generic batch terms alone and bare convergence markers are weak signals
+   that do not activate the slot.
 2. The package contains a valid `plan.json` with a self-contained assignment contract for every item.
 3. **Linux-only execution surface.** The fan-out driver’s verified process-group cleanup requires
    Linux `waitid(..., WNOWAIT)` and a readable `/proc`; on non-Linux (e.g. macOS/Windows), on a kernel
@@ -147,19 +147,21 @@ shapes (`REVIEW_FIX_DEFER_PATTERNS` → `loopRecommended=false`) instead of reco
    `workflowRecommended=false` → do not use this slot. A positive decision always points to the
    repository-owned `subprocess-fanout` surface.
 2. **Check driver preconditions** (see above). Degrade if unmet.
-3. **Author `plan.json`** — every item must carry a **self-contained delegation package（自包含委派包）**:
-   目标（goal）/ 范围（scope）/ 排除（excluded areas，含凭证卫生——真实凭证值不进 prompt，
-   经 env 文件/宿主侧注入）/ 输出（output 形状）/ 验证（verification）五字段齐全，因为
-   workflow lane 看不到会话里的任何其他上下文。Map the suggested mode:
+3. **Author `plan.json`** — every item must contain a self-contained delegation package with five
+   fields: goal, scope, excluded areas, output shape, and verification. Exclusions include credential
+   hygiene: never put actual credential values in prompts; inject them through an environment file or
+   the host. A workflow lane cannot see the rest of the session context. Map the suggested mode:
    - `batch-fanout` → `pipeline(items, stageA, stageB)` — no barrier between stages
    - `parallel-review` → dimensions → findings → adversarial verify → synthesize
    - `perspective-panel` → N independent attempts → parallel judges → synthesize from the winner
    - `review-fix-loop` → find → dedup vs seen → multi-lens verify → loop-until-dry
-   各模式验收点（执行段合并回主线程前必须可指认，缺失即证据不全）:
-   - `batch-fanout` 验收点：每个 item 落 ok/error 终态并留产物路径，无静默缺项
-   - `parallel-review` 验收点：每个维度的 findings 经对抗验证存活，或带理由剔除
-   - `perspective-panel` 验收点：judge 评分留痕，胜者综合引用次优想法
-   - `review-fix-loop` 验收点：以 dry pass 收敛（整轮无新发现），末轮结果留痕
+
+   Identify the acceptance evidence for each mode before merging into the main thread:
+   - `batch-fanout`: every item reaches an ok/error terminal state with an artifact path; no items are silently omitted
+   - `parallel-review`: findings for each dimension survive adversarial verification or are excluded with a reason
+   - `perspective-panel`: record judge scores and incorporate runner-up ideas into the winning synthesis
+   - `review-fix-loop`: converge on a dry pass with no new findings and record the final round
+
    Each item carries the full assignment (goal / scope / excluded areas / output / verification),
    then runs through `slots/workflow-runner/scripts/workflow_fanout.py`.
 4. **Bound the work** — one orchestration per well-scoped fan-out; default <10 items per execution
@@ -168,7 +170,7 @@ shapes (`REVIEW_FIX_DEFER_PATTERNS` → `loopRecommended=false`) instead of reco
 5. **Collect evidence** — the driver incrementally writes `results.jsonl` (one record per completed item:
    ok / error / durationSec / outputFile plus attempt/input/status metadata) and per-item full-output files.
    Require the final `batchComplete=true` record set before declaring the batch complete. Record both in the
-   package's acceptance evidence (外部对标 for host-runtime facts).
+   package's acceptance evidence (external comparison for host-runtime facts).
 6. **Merge on the main thread** — sidecar/workflow/fan-out results are merged by the main session
    before any shared boundary is edited. Verification described by `verify` still runs before any
    checkbox is checked.

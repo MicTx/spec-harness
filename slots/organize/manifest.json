@@ -1,9 +1,9 @@
 {
   "name": "organize",
   "version": "1.0.0",
-  "summary": "项目结构审计：清单、引用图、架构一致性和导入契约（仅 full 安装）",
-  "description": "对目标项目做结构审计；默认只读，--update-baseline 显式更新基线。",
-  "triggers": ["结构审计", "架构契约"],
+  "summary": "Project structure audit: inventory, reference graph, architecture consistency, and import contracts (full installation only)",
+  "description": "Audit a project's structure; read-only by default, with explicit baseline updates via --update-baseline.",
+  "triggers": ["structure audit", "architecture contract"],
   "scripts": [
     "scripts/organize_project_structure.py",
     "scripts/structure_contracts.py"

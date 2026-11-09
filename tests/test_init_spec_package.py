@@ -20,6 +20,12 @@ from spec_package_support import load_reference_templates, write_text
 
 
 def test_render_template():
+    result = render_template("# [Project Name] - Scope\ncontent", "My Project")
+    assert "My Project" in result
+    assert "[Project Name]" not in result
+
+
+def test_render_template_keeps_legacy_chinese_placeholder():
     result = render_template("# [项目名称] - 标题\ncontent", "My Project")
     assert "My Project" in result
     assert "[项目名称]" not in result
@@ -69,6 +75,16 @@ def test_init_rejects_integration_branch_already_bound_to_active_package(tmp_pat
 
 def test_render_template_records_integration_branch():
     result = render_template(
+        "- Git integration branch: `spec/YYYY-MM-DD_<slug>` or not applicable",
+        "My Project",
+        "spec/2026-08-07_add-public-example-04",
+    )
+    assert "`spec/2026-08-07_add-public-example-04`" in result
+    assert "spec/YYYY-MM-DD_<slug>" not in result
+
+
+def test_render_template_records_integration_branch_for_legacy_template():
+    result = render_template(
         "Git integration branch：`spec/YYYY-MM-DD_<slug>` 或适用外理由",
         "My Project",
         "spec/2026-08-07_add-public-example-04",
@@ -79,14 +95,14 @@ def test_render_template_records_integration_branch():
 
 def test_render_template_records_local_branch_note():
     result = render_template(
-        "Git integration branch：`spec/YYYY-MM-DD_<slug>` 或适用外理由",
+        "- Git integration branch: `spec/YYYY-MM-DD_<slug>` or not applicable",
         "My Project",
         "spec/2026-08-28_fix-public-example-06",
         LOCAL_BRANCH_NOTE,
     )
     assert "`spec/2026-08-28_fix-public-example-06`" in result
-    assert "本地模式" in result
-    assert "从本地主分支创建" in result
+    assert "local mode" in result
+    assert "created from local main" in result
 
 
 def test_render_template_no_placeholder():
@@ -115,11 +131,11 @@ def test_init_end_to_end():
 
         spec_content = (pkg_dir / "spec.md").read_text(encoding="utf-8")
         assert "E2E Test" in spec_content
-        assert "[项目名称]" not in spec_content
-        assert "### 5.1 验证策略" in spec_content
-        assert "范围级别：package" in spec_content
+        assert "[Project Name]" not in spec_content
+        assert "### 5.1 Verification Strategy" in spec_content
+        assert "scope level: package" in spec_content
         assert "evidence: runs" in spec_content
-        assert "- [ ] 标准 A 达成 -> verify: task_0001" in spec_content
+        assert "- [ ] Criterion A met -> verify: task_0001" in spec_content
 
 
 def test_workflow_selects_the_spec_template():
@@ -127,8 +143,8 @@ def test_workflow_selects_the_spec_template():
     lite = load_reference_templates(skill_root)
     full = load_reference_templates(skill_root, "full")
     assert set(lite) == set(full) == {"spec.md", "tasks.md"}
-    assert "- Workflow: LITE" in lite["spec.md"] and "### 4.1 方案阶梯" not in lite["spec.md"]
-    assert "- Workflow: FULL" in full["spec.md"] and "### 4.1 方案阶梯" in full["spec.md"]
+    assert "- Workflow: LITE" in lite["spec.md"] and "### 4.1 Option Ladder" not in lite["spec.md"]
+    assert "- Workflow: FULL" in full["spec.md"] and "### 4.1 Option Ladder" in full["spec.md"]
     assert lite["tasks.md"] == full["tasks.md"]
 
 
@@ -281,7 +297,7 @@ def test_new_preflight_uses_local_main_when_upstream_fetch_is_unreachable(tmp_pa
 
     assert creation.branch == "spec/2026-08-28_fix-public-example-06"
     assert creation.mode == "local"
-    assert "本地模式" in creation.note
+    assert "local mode" in creation.note
     assert git(repo, "branch", "--show-current") == creation.branch
     assert git(repo, "merge-base", "main", creation.branch) == git(repo, "rev-parse", "main")
 
@@ -393,7 +409,7 @@ def test_init_cli_records_local_mode_when_upstream_is_unreachable(tmp_path):
     assert git(repo, "branch", "--show-current") == "spec/2026-08-28_fix-public-example-06"
     spec_text = (repo / ".spec" / "specs" / "2026-08-28_fix-public-example-06" / "spec.md").read_text(encoding="utf-8")
     assert "`spec/2026-08-28_fix-public-example-06`" in spec_text
-    assert "本地模式" in spec_text
+    assert "local mode" in spec_text
 
 
 # --- AUD-07: clean-tree exclusion for active package documents ---

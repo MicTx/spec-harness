@@ -111,8 +111,8 @@ def test_show_renders_latest_and_json():
         _run(root, "update", "--root", str(root), "--slug", package.name, "--collab", "agent")
         markdown = _run(root, "show", "--root", str(root), "--slug", package.name)
         assert markdown.returncode == 0, markdown.stderr
-        assert "新鲜度" in markdown.stdout
-        assert "#### 恢复" in markdown.stdout
+        assert "Freshness" in markdown.stdout
+        assert "#### Resume" in markdown.stdout
         payload = _run(root, "show", "--root", str(root), "--slug", package.name, "--format", "json")
         assert payload.returncode == 0, payload.stderr
         data = json.loads(payload.stdout)
@@ -224,7 +224,11 @@ def test_check_gate_ignores_handoff_advisories():
         assert "handoff" not in intact.stderr
 
         content = (package / "handoff.md").read_text(encoding="utf-8")
-        (package / "handoff.md").write_text(content.replace("## 快照", "## 快照坏了", 1), encoding="utf-8")
+        assert "## Snapshot" in content
+        (package / "handoff.md").write_text(content.replace("## Snapshot", "## Snapshot broken", 1), encoding="utf-8")
+        invalid = _run(root, "validate", "--root", str(root), "--slug", package.name)
+        assert invalid.returncode == 1
+        assert "missing" in invalid.stderr
         broken = subprocess.run(
             [sys.executable, str(check_script), "--root", str(root), "--slug", package.name],
             capture_output=True,
@@ -267,7 +271,7 @@ def test_archive_closes_handoff_and_moves_it():
         assert "event: close" in content
         assert "status: done" in content
         assert "entry: 2" in content
-        assert "交接记录" in result.stdout
+        assert "Handoff record" in result.stdout
 
 
 # -- adversarial-review regressions --
@@ -340,7 +344,7 @@ def test_oversized_handoff_fails_clean_across_lifecycle():
             cwd=root,
         )
         assert routed.returncode == 0, routed.stderr
-        assert "结构非法" in json.loads(routed.stdout)["handoff"]
+        assert "invalid structure" in json.loads(routed.stdout)["handoff"]
 
         report_script = SCRIPTS / "report_spec_package.py"
         status = subprocess.run(
@@ -350,4 +354,4 @@ def test_oversized_handoff_fails_clean_across_lifecycle():
             cwd=root,
         )
         assert status.returncode == 0, status.stderr
-        assert "结构非法" in status.stdout
+        assert "structure invalid" in status.stdout

@@ -160,14 +160,14 @@ class Doctor:
     def check_python_runtime(self) -> None:
         version = ".".join(str(part) for part in sys.version_info[:3])
         if sys.version_info >= MINIMUM_PYTHON:
-            self.record("python.runtime", "Python 运行时", "ok", f"Python {version}")
+            self.record("python.runtime", "Python runtime", "ok", f"Python {version}")
         else:
             self.record(
                 "python.runtime",
-                "Python 运行时",
+                "Python runtime",
                 "fail",
-                f"Python {version} 低于最低要求 {'.'.join(str(p) for p in MINIMUM_PYTHON)}",
-                "安装 Python >= 3.9 并确保 python3 在 PATH 上",
+                f"Python {version} is below the minimum {'.'.join(str(p) for p in MINIMUM_PYTHON)}",
+                "Install Python >= 3.9 and ensure python3 is on PATH",
             )
 
     def check_git_available(self) -> None:
@@ -175,14 +175,14 @@ class Doctor:
 
         if shutil.which("git"):
             completed = subprocess.run(["git", "--version"], capture_output=True, text=True, env=self._clean_env())
-            self.record("git.available", "Git 可用性", "ok", completed.stdout.strip() or "git")
+            self.record("git.available", "Git availability", "ok", completed.stdout.strip() or "git")
         else:
             self.record(
                 "git.available",
-                "Git 可用性",
+                "Git availability",
                 "fail",
-                "PATH 上没有 git；done/push 与 Git hooks 门禁都依赖它",
-                "安装 Git 后重跑 doctor",
+                "git is not on PATH; done/push and Git hook gates depend on it",
+                "Install Git and rerun doctor",
             )
 
     @staticmethod
@@ -201,10 +201,10 @@ class Doctor:
         if missing:
             self.record(
                 "skill.layout",
-                "Skill 安装完整性",
+                "Skill installation integrity",
                 "fail",
-                "缺少运行时文件：" + "、".join(missing[:8]) + ("…" if len(missing) > 8 else ""),
-                "从源码检出重新执行 bash install.sh",
+                "Missing runtime files: " + ", ".join(missing[:8]) + ("..." if len(missing) > 8 else ""),
+                "Rerun bash install.sh from a source checkout",
             )
             return
         # Compile-check every shipped script in memory (no bytecode written).
@@ -217,17 +217,17 @@ class Doctor:
         if broken:
             self.record(
                 "skill.layout",
-                "Skill 安装完整性",
+                "Skill installation integrity",
                 "fail",
-                "脚本编译失败：" + "、".join(broken[:5]),
-                "安装可能被截断；重新执行 bash install.sh",
+                "Scripts failed to compile: " + ", ".join(broken[:5]),
+                "The installation may be incomplete; rerun bash install.sh",
             )
             return
         self.record(
             "skill.layout",
-            "Skill 安装完整性",
+            "Skill installation integrity",
             "ok",
-            f"{len(self.required_runtime_files())} 个运行时文件齐全，版本 {version}（profile={profile}）",
+            f"All {len(self.required_runtime_files())} runtime files present, version {version} (profile={profile})",
         )
 
     def _resolve_hooks_dir(self, toplevel: Path) -> Path:
@@ -256,9 +256,9 @@ class Doctor:
         if toplevel_run.returncode != 0:
             self.record(
                 "project.hooks",
-                "Git hooks 指针",
+                "Git hook pointers",
                 "info",
-                f"{self.project_root} 不是 Git 工作树，跳过（适用外）",
+                f"{self.project_root} is not a Git working tree; skipping (not applicable)",
             )
             return
         toplevel = Path(toplevel_run.stdout.strip())
@@ -276,29 +276,29 @@ class Doctor:
                 continue  # project-owned hook, not ours
             rendered = Path(match.group(1))
             if not rendered.is_file():
-                problems.append(f"{name}：指向不存在的 {rendered}")
+                problems.append(f"{name}: points to a missing file: {rendered}")
             elif not os.access(hook, os.X_OK):
-                problems.append(f"{name}：缺少执行权限")
+                problems.append(f"{name}: hook is not executable")
             elif rendered.resolve() != current_checker:
-                problems.append(f"{name}：指向另一份 skill 副本（{rendered}）")
+                problems.append(f"{name}: points to another skill copy ({rendered})")
             else:
                 managed.append(name)
         if problems:
             self.record(
                 "project.hooks",
-                "Git hooks 指针",
+                "Git hook pointers",
                 "fail",
-                "；".join(problems),
+                "; ".join(problems),
                 f"python3 {self.skill_root / 'scripts' / 'install_git_hooks.py'} --root {toplevel}",
             )
         elif managed:
-            self.record("project.hooks", "Git hooks 指针", "ok", "、".join(managed) + "：指向当前 skill")
+            self.record("project.hooks", "Git hook pointers", "ok", ", ".join(managed) + ": point to the current skill")
         else:
             self.record(
                 "project.hooks",
-                "Git hooks 指针",
+                "Git hook pointers",
                 "warn",
-                f"未安装磁盘真源 hooks（门禁不生效；hooks 目录 {hooks_dir}）",
+                f"managed Git hooks are not installed; gates are inactive (hooks directory: {hooks_dir})",
                 f"python3 {self.skill_root / 'scripts' / 'install_git_hooks.py'} --root {toplevel}",
             )
 
@@ -316,14 +316,14 @@ class Doctor:
             except OSError:
                 continue
         if wired:
-            self.record("hooks.stop", "Stop hook 接线", "ok", "已接线：" + "、".join(sorted(wired)))
+            self.record("hooks.stop", "Stop hook wiring", "ok", "Wired: " + ", ".join(sorted(wired)))
         else:
             self.record(
                 "hooks.stop",
-                "Stop hook 接线",
+                "Stop hook wiring",
                 "warn",
-                "Claude settings 未引用 claude_stop_guard；任务未完成时不会有停止守卫",
-                "在 Claude settings 的 Stop hook 中登记 hooks/claude_stop_guard.py",
+                "Claude settings do not reference claude_stop_guard; unfinished tasks have no Stop guard",
+                "Register hooks/claude_stop_guard.py as a Stop hook in Claude settings",
             )
 
     # ------------------------------------------------------------ advisories
@@ -334,10 +334,10 @@ class Doctor:
         if leftovers:
             self.record(
                 "advice.checkpoint",
-                "遗留 update-checkpoint",
+                "Legacy update-checkpoint",
                 "info",
-                "发现已退役的 update-checkpoint.json：" + "、".join(str(p) for p in leftovers[:3]),
-                "确认无需恢复后删除这些文件",
+                "Retired update-checkpoint.json found: " + ", ".join(str(p) for p in leftovers[:3]),
+                "Confirm recovery is unnecessary, then delete these files",
             )
 
     def check_activation_leftover(self) -> None:
@@ -356,10 +356,10 @@ class Doctor:
         if wired:
             self.record(
                 "advice.activation",
-                "已退役的启用守卫",
+                "Retired activation guard",
                 "info",
-                "Claude settings 仍引用 claude_activation_guard.py：" + "、".join(sorted(wired)),
-                "删除这些 settings 中引用该 hook 的条目",
+                "Claude settings still reference claude_activation_guard.py: " + ", ".join(sorted(wired)),
+                "Remove the entries that reference this hook from these settings",
             )
 
     # ------------------------------------------------------------------- run
@@ -378,17 +378,17 @@ class Doctor:
 
     STATUS_ORDER = ("fail", "warn", "fixed", "ok", "info")
     STATUS_TITLES = {
-        "fail": "需要修复",
-        "warn": "需要关注",
-        "fixed": "已自动修复",
-        "ok": "通过",
-        "info": "提示",
+        "fail": "Needs fixes",
+        "warn": "Needs attention",
+        "fixed": "Auto-fixed",
+        "ok": "Passed",
+        "info": "Notes",
     }
 
     def render_markdown(self) -> str:
-        lines: List[str] = ["# Spec 环境体检", ""]
-        lines.append(f"- skill 版本：{self._version(self.skill_root)}（{self.skill_root}）")
-        lines.append(f"- 项目根：{self.project_root}")
+        lines: List[str] = ["# Spec Environment Check", ""]
+        lines.append(f"- Skill version: {self._version(self.skill_root)} ({self.skill_root})")
+        lines.append(f"- Project root: {self.project_root}")
         lines.append("")
         for status in self.STATUS_ORDER:
             group = [check for check in self.checks if check.status == status]
@@ -397,9 +397,9 @@ class Doctor:
             lines.append(f"## {self.STATUS_TITLES[status]}")
             lines.append("")
             for check in group:
-                lines.append(f"- {check.id}：{check.detail}")
+                lines.append(f"- {check.id}: {check.detail}")
                 if check.fix_note:
-                    lines.append(f"  - 修复：{check.fix_note}")
+                    lines.append(f"  - Fix: {check.fix_note}")
             lines.append("")
         return "\n".join(lines).rstrip() + "\n"
 

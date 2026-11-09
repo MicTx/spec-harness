@@ -43,7 +43,7 @@ def test_exhaustion_waits_for_reserved_and_attached_work_and_allows_next_round(t
     assert store.state["rounds"][0]["tasks"]["reserved"]["lastHeartbeat"] is None
     store.task_spawn(1, "reserved", "b", "sub-reserved", reservation=reserved)
     assert termination_check(store, clock())["verdict"] == "continue"
-    with pytest.raises(LoopStateError, match="确认"):
+    with pytest.raises(LoopStateError, match="confirm"):
         store.task_result(1, "reserved", "ok", reservation=reserved)
     pending = reserve(store, "pending", "c")
     store.task_result(1, "reserved", "ok", reservation=reserved, confirmed_stopped=True)
@@ -69,7 +69,7 @@ def test_exhausted_task_cannot_make_a_passing_round_converge(tmp_path, clock, ma
     store.task_result(1, "failed", "fail", reservation=token, confirmed_stopped=True)
     store.round_end("pass")  # A recorded decision must not erase the actual failed task.
     assert termination_check(store, clock())["verdict"] == expected
-    with pytest.raises(LoopStateError, match="尚未满足"):
+    with pytest.raises(LoopStateError, match="convergence conditions are not yet met"):
         store.run_converged()
 
 
@@ -88,7 +88,7 @@ def test_real_hard_stop_wins_even_with_exhausted_and_live_work(tmp_path, clock, 
     verdict = termination_check(store, clock())
     assert verdict["verdict"] == "stopped"
     assert any(("STOP" if hard_stop == "STOP" else "runTimeout") in reason for reason in verdict["reasons"])
-    with pytest.raises(LoopStateError, match="核实"):
+    with pytest.raises(LoopStateError, match="verify"):
         store.run_failed("stop")
     assert store.state["rounds"][0]["tasks"]["live"]["status"] == "in_flight"
 
@@ -119,7 +119,7 @@ def test_stop_hook_waits_for_budgeted_work_after_exhaustion(tmp_path, attached):
     guard = call_hook("loop_stop_guard", "Stop", tmp_path)
     assert guard.returncode == 0
     reason = json.loads(guard.stdout)["reason"]
-    assert "r1/live" in reason and ("wait" if attached else "核对未登记") in reason
+    assert "r1/live" in reason and ("wait" if attached else "check unattached reservations") in reason
     assert "finish failed" not in reason and (run_dir / "run.json").read_bytes() == before
     if not attached:
         store.task_spawn(1, "live", "b", "sub-live", reservation=live)
@@ -156,9 +156,9 @@ def test_damaged_state_fails_closed_in_both_hooks(tmp_path, damage):
         LoopStore(run_dir).load()
     stop = call_hook("loop_stop_guard", "Stop", tmp_path)
     assert stop.returncode == 0 and json.loads(stop.stdout)["decision"] == "block"
-    assert "损坏" in json.loads(stop.stdout)["reason"] and "Traceback" not in stop.stderr
+    assert "corrupt" in json.loads(stop.stdout)["reason"] and "Traceback" not in stop.stderr
     teammate = call_hook("loop_teammate_gate", "TeammateIdle", tmp_path)
-    assert teammate.returncode == 2 and "损坏" in teammate.stderr and "Traceback" not in teammate.stderr
+    assert teammate.returncode == 2 and "corrupt" in teammate.stderr and "Traceback" not in teammate.stderr
 
 
 def test_stop_sentinel_written_and_seen_by_termination(tmp_path, clock):

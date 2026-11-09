@@ -354,7 +354,9 @@ def test_no_section_six_does_not_put_checklist_history_inside_acceptance(tmp_pat
 
     assert result.returncode == 0, result.stderr
     migrated = (package / "spec.md").read_text(encoding="utf-8")
-    assert migrated.index("## 6.") < migrated.index("## 7.") < migrated.index("## 迁移前 checklist.md 原文")
+    assert (
+        migrated.index("## 6.") < migrated.index("## 7.") < migrated.index("## Original checklist.md Before Migration")
+    )
 
 
 def test_later_referenced_heading_is_not_part_of_six_acceptance(tmp_path: Path) -> None:

@@ -130,6 +130,8 @@ def test_second_entry_appends_and_carries_forward():
 @pytest.mark.parametrize("collab", COLLAB_MODES)
 def test_mode_lattice_sections(collab):
     rendered = render_entry(1, utc_timestamp(), "pause", collab, "dev", "in-progress")
+    assert "#### Context" in rendered
+    assert "#### Next Steps" in rendered
     for name in MODE_REQUIRED_SECTIONS[collab]:
         assert f"#### {name}" in rendered
     # strictly weaker modes miss at least one stronger-mode section
@@ -192,6 +194,41 @@ def test_append_refuses_invalid_existing_document():
             )
 
 
+def test_legacy_handoff_parses_and_appends_without_rewriting_entries(tmp_path):
+    package = _package(tmp_path)
+    append_entry(
+        package, tmp_path, package.name, TASKS_TEXT, SPEC_TEXT, event="pause", collab="team", actor="dev", status=None
+    )
+    english = read_handoff(package)
+    replacements = (
+        ("## Snapshot", "## 快照"),
+        ("## Entries", "## 条目"),
+        ("#### Context", "#### 上下文"),
+        ("#### Next Steps", "#### 下一步"),
+        ("#### Ownership", "#### 所有权"),
+        ("#### Waiting On", "#### 等待中"),
+        ("#### Findings", "#### 发现"),
+        ("#### Risks and Contingencies", "#### 风险与应急"),
+        ("#### Acknowledgment", "#### 回执"),
+    )
+    legacy = english
+    for new, old in replacements:
+        legacy = legacy.replace(new, old)
+    old_entries = legacy.split("## 条目\n\n", 1)[1].rstrip("\n")
+    write_text(package / "handoff.md", legacy)
+    assert validate_handoff(legacy) == []
+    append_entry(
+        package, tmp_path, package.name, TASKS_TEXT, SPEC_TEXT, event="takeover", collab=None, actor=None, status=None
+    )
+    updated = read_handoff(package)
+    assert "## Snapshot" in updated
+    assert "## Entries" in updated
+    assert old_entries in updated
+    assert "#### Context" in updated
+    assert len(parse_handoff(updated).entries) == 2
+    assert validate_handoff(updated) == []
+
+
 # -- validation --
 
 
@@ -215,7 +252,9 @@ def test_validate_flags_missing_mode_section():
             status=None,
         )
         content = read_handoff(package)
-        stripped = content.replace("#### lanes\n（lane 表：id/状态/ownership/指针/汇合次序）\n\n", "")
+        original = "#### lanes\n(Lane table: id, status, ownership, references, and merge order.)\n\n"
+        assert original in content
+        stripped = content.replace(original, "")
         errors = validate_handoff(stripped)
         assert any("lanes" in error for error in errors)
 
@@ -240,7 +279,7 @@ def test_validate_flags_future_and_disordered_timestamps():
         )
         future = read_handoff(package).replace("2026-01-01T00:00:00Z", "2030-01-01T00:00:00Z")
         errors = validate_handoff(future)
-        assert any("晚于当前时刻" in error for error in errors)
+        assert any("timestamp is in the future" in error for error in errors)
 
         append_entry(
             package,
@@ -256,7 +295,7 @@ def test_validate_flags_future_and_disordered_timestamps():
         )
         disordered = read_handoff(package).replace("2026-01-03T00:00:00Z", "2025-12-31T00:00:00Z")
         errors = validate_handoff(disordered)
-        assert any("早于上一条目" in error for error in errors)
+        assert any("timestamp precedes the previous entry" in error for error in errors)
 
 
 def test_validate_flags_close_not_last():
@@ -295,7 +334,7 @@ def test_validate_flags_close_not_last():
             .replace("\nevent: pause", "\nevent: close", 1)
         )
         errors = validate_handoff(mutated)
-        assert any("close 必须是最后一条" in error for error in errors)
+        assert any("close must be the last entry" in error for error in errors)
 
 
 def test_validate_flags_snapshot_inconsistency():
@@ -307,7 +346,7 @@ def test_validate_flags_snapshot_inconsistency():
         )
         content = read_handoff(package).replace("entries: 1", "entries: 9")
         errors = validate_handoff(content)
-        assert any("entries 计数" in error for error in errors)
+        assert any("snapshot entries count" in error for error in errors)
 
 
 # -- close entry --
@@ -347,7 +386,7 @@ def test_freshness_detects_progress_drift(tmp_path):
     doc = parse_handoff(read_handoff(package))
     label, detail = freshness(doc, root, drifted)
     assert label == FRESH_STALE
-    assert "任务进度" in detail
+    assert "Task progress changed" in detail
 
 
 def test_freshness_unknown_without_head_anchor(tmp_path):
@@ -476,13 +515,15 @@ def test_fenced_heading_inside_section_does_not_split(tmp_path):
         package, root, package.name, TASKS_TEXT, SPEC_TEXT, event="pause", collab="solo", actor="dev", status=None
     )
     content = read_handoff(package)
+    original = "#### Risks and Contingencies\n(If X fails, do Y; use None if applicable.)"
+    assert original in content
     mutated = content.replace(
-        "#### 风险与应急\n（若 X 坏则做 Y；可写 无）",
-        "#### 风险与应急\n```\n#### phantom-section\n```\n应急内容",
+        original,
+        "#### Risks and Contingencies\n```\n#### phantom-section\n```\n应急内容",
     )
     doc = parse_handoff(mutated)
     assert "phantom-section" not in doc.latest.sections
-    assert "应急内容" in doc.latest.sections.get("风险与应急", "")
+    assert "应急内容" in doc.latest.sections.get("Risks and Contingencies", "")
     assert validate_handoff(mutated) == []
 
 
@@ -498,7 +539,7 @@ def test_duplicate_scalar_keys_first_wins(tmp_path):
     assert doc.latest.fields["status"] == "blocked-on-agent"
     # the duplicate itself is flagged instead of silently resolving
     errors = validate_handoff(mutated)
-    assert any("字段块存在重复键：status" in error for error in errors)
+    assert any("field block contains duplicate key: status" in error for error in errors)
 
 
 def test_snapshot_format_checks(tmp_path):

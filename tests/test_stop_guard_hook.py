@@ -89,7 +89,7 @@ def test_unconverged_package_blocks_with_gap_list(tmp_path):
     decision = json.loads(stdout)
     assert decision["decision"] == "block"
     assert UNCONVERGED_PACKAGE in decision["reason"]
-    assert "任务完成 1/2" in decision["reason"]
+    assert "tasks complete 1/2" in decision["reason"]
 
 
 def test_converged_package_allows_stop(tmp_path):
@@ -156,7 +156,7 @@ def test_non_git_multi_package_stop_guard_fails_closed(tmp_path):
     code, stdout = run_hook(stop_payload(tmp_path))
     decision = json.loads(stdout)
     assert decision["decision"] == "block"
-    assert "已隐藏跨包数据" in decision["reason"]
+    assert "cross-package data is hidden" in decision["reason"]
     assert UNCONVERGED_PACKAGE not in decision["reason"]
     assert "2026-08-01" not in decision["reason"]
 
@@ -196,7 +196,7 @@ def test_stop_hook_fails_closed_when_branch_does_not_bind_package(tmp_path):
     decision = json.loads(stdout)
     assert code == 0
     assert decision["decision"] == "block"
-    assert "已隐藏跨包数据" in decision["reason"]
+    assert "cross-package data is hidden" in decision["reason"]
     assert first not in decision["reason"] and second not in decision["reason"]
 
 

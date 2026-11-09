@@ -111,7 +111,7 @@ def test_empty_text_never_raises():
         "workflowRecommended": False,
         "mode": "none",
         "score": 0,
-        "reason": "空文本",
+        "reason": "empty text",
         "suggestedConfig": None,
         "suggestedSurface": None,
     }
@@ -140,7 +140,10 @@ def test_suggested_surface_is_repository_owned(monkeypatch):
 def test_config_carries_pattern_map():
     decision = route("批量处理这 12 个章节，每个都独立并行完成")
     config = decision["suggestedConfig"]
-    assert config["pattern"] == "pipeline(items, stageA, stageB) — 每条链独立推进，无阶段间屏障"
+    assert (
+        config["pattern"]
+        == "pipeline(items, stageA, stageB) — each chain progresses independently, with no stage barrier"
+    )
     assert config["defaultEffort"] == "low"
     assert config["verifyEffort"] == "high"
     assert "agentBudgetGuideline" in config
@@ -159,7 +162,7 @@ def test_weak_signal_alone_scores_one_and_never_recommends():
     assert decision["workflowRecommended"] is False
     assert decision["mode"] == "none"
     assert decision["suggestedConfig"] is None
-    assert "泛化批量(弱)" in decision["reason"]
+    assert "generic batch (weak)" in decision["reason"]
 
 
 def test_weak_and_strong_co_occurrence_still_recommends():
@@ -168,7 +171,7 @@ def test_weak_and_strong_co_occurrence_still_recommends():
     assert decision["workflowRecommended"] is True
     assert decision["mode"] == "parallel-review"
     assert decision["score"] == 5
-    assert "泛化批量(弱)" in decision["reason"]
+    assert "generic batch (weak)" in decision["reason"]
 
 
 def test_explicit_only_request_keeps_legacy_batch_fanout_compat():
@@ -176,7 +179,7 @@ def test_explicit_only_request_keeps_legacy_batch_fanout_compat():
     decision = route("用 workflow 编排跑这个任务")
     assert decision["workflowRecommended"] is True
     assert decision["mode"] == "batch-fanout"
-    assert "显式" in decision["reason"]
+    assert "explicit" in decision["reason"]
     assert decision["suggestedConfig"] is not None
     assert decision["suggestedConfig"]["mode"] == "batch-fanout"
 
@@ -188,7 +191,7 @@ def test_bare_convergence_weak_signal_alone_never_recommends():
     assert decision["workflowRecommended"] is False
     assert decision["mode"] == "none"
     assert decision["suggestedConfig"] is None
-    assert "裸收敛(弱)" in decision["reason"]
+    assert "bare convergence (weak)" in decision["reason"]
 
 
 @pytest.mark.parametrize("reason", ["verified cleanup requires Linux /proc", "required waitid capability unavailable"])
@@ -203,9 +206,12 @@ def test_unavailable_driver_does_not_claim_equivalent_sidecar_or_change_shape(mo
     }
     surface = unavailable["suggestedSurface"][0]
     assert surface["available"] is False and surface["unavailableReason"] == reason
-    assert "主会话本地串行" in surface["fallback"]
-    assert "显式授权" in surface["fallback"] and "不提供 driver 等价清理保证" in surface["fallback"]
-    assert "不接管未知存活的 worker" in surface["fallback"]
+    assert "main session locally and serially" in surface["fallback"]
+    assert (
+        "explicitly authorize" in surface["fallback"]
+        and "no driver-equivalent cleanup guarantee" in surface["fallback"]
+    )
+    assert "do not take over workers whose status is unknown" in surface["fallback"]
 
 
 def test_availability_matches_real_driver_probe():
@@ -227,7 +233,7 @@ def test_probe_failure_is_an_explicit_unavailable_result(monkeypatch):
 def test_text_cli_also_displays_unavailability(monkeypatch, capsys):
     monkeypatch.setattr(workflow_route, "_platform_support_error", lambda: "Linux-only cleanup")
     assert workflow_route.main(["--text", "出 3 个独立方案对比评分"]) == 0
-    assert "执行面不可用：Linux-only cleanup" in capsys.readouterr().out
+    assert "execution surface unavailable: Linux-only cleanup" in capsys.readouterr().out
 
 
 def test_bare_convergence_with_strong_fanout_keeps_fanout_mode():
@@ -236,6 +242,6 @@ def test_bare_convergence_with_strong_fanout_keeps_fanout_mode():
     assert decision["workflowRecommended"] is True
     assert decision["mode"] == "batch-fanout"
     assert decision["score"] >= 2
-    assert "裸收敛(弱)" in decision["reason"]
+    assert "bare convergence (weak)" in decision["reason"]
     assert decision["suggestedConfig"] is not None
     assert decision["suggestedConfig"]["mode"] == "batch-fanout"

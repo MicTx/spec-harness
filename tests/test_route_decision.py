@@ -101,7 +101,7 @@ def test_output_is_route_reason_risks_only(tmp_path):
     payload = _run_package(tmp_path, slug)
     assert set(payload) == {"route", "reason", "risks"}, "decision output must be route/reason/risks only"
     assert payload["route"] in ("local", "explore", "build", "review", "external")
-    assert isinstance(payload["reason"], str) and payload["reason"].startswith("依据=包结构")
+    assert isinstance(payload["reason"], str) and payload["reason"].startswith("based on package structure")
     assert isinstance(payload["risks"], list)
 
 
@@ -116,7 +116,7 @@ def test_cli_package_context_changes_decision_when_open_tasks_change(tmp_path):
     assert copy_payload != auth_payload, "open-task structure must change the decision"
     assert copy_payload["route"] == "local", "单任务小包零强结构信号应落 local"
     assert auth_payload["route"] == "review", "boundary 命中认证风险标签应落 review"
-    assert "认证 / 信任边界" in auth_payload["risks"]
+    assert "authentication / trust boundary" in auth_payload["risks"]
 
 
 def test_cli_package_explicit_54_route_overrides_heuristic(tmp_path):
@@ -126,7 +126,7 @@ def test_cli_package_explicit_54_route_overrides_heuristic(tmp_path):
     _write_package(tmp_path, slug, spec, tasks)
     payload = _run_package(tmp_path, slug)
     assert payload["route"] == "review"
-    assert "显式覆盖 route=review" in payload["reason"]
+    assert "explicit override route=review" in payload["reason"]
 
 
 # -- F12（AUD-11）：单一入口按包结构决策 --
@@ -157,7 +157,7 @@ def test_package_mode_multi_task_wide_boundary_routes_explore(tmp_path):
     _write_structure_package(tmp_path, slug, rows)
     payload = _run_package(tmp_path, slug)
     assert payload["route"] == "explore"
-    assert payload["reason"].startswith("依据=包结构")
+    assert payload["reason"].startswith("based on package structure")
 
 
 def test_package_mode_mid_size_clean_slices_route_build(tmp_path):
@@ -172,7 +172,7 @@ def test_package_mode_mid_size_clean_slices_route_build(tmp_path):
     _write_structure_package(tmp_path, slug, rows)
     payload = _run_package(tmp_path, slug)
     assert payload["route"] == "build"
-    assert payload["reason"].startswith("依据=包结构")
+    assert payload["reason"].startswith("based on package structure")
 
 
 def test_package_mode_dep_tangle_routes_explore(tmp_path):
@@ -187,7 +187,7 @@ def test_package_mode_dep_tangle_routes_explore(tmp_path):
     _write_structure_package(tmp_path, slug, rows)
     payload = _run_package(tmp_path, slug)
     assert payload["route"] == "explore"
-    assert "纠缠" in payload["reason"]
+    assert "tangled" in payload["reason"]
 
 
 def test_package_mode_small_package_routes_local(tmp_path):
@@ -196,7 +196,7 @@ def test_package_mode_small_package_routes_local(tmp_path):
     _write_structure_package(tmp_path, slug, rows)
     payload = _run_package(tmp_path, slug)
     assert payload["route"] == "local"
-    assert "无强结构信号" in payload["reason"]
+    assert "no strong structural signals" in payload["reason"]
 
 
 def test_package_mode_counts_only_open_tasks(tmp_path):
@@ -261,7 +261,7 @@ def test_package_mode_54_local_override_beats_structure(tmp_path):
     (pkg / "spec.md").write_text(spec, encoding="utf-8")
     payload = _run_package(tmp_path, slug)
     assert payload["route"] == "local"
-    assert "显式覆盖 route=local" in payload["reason"]
+    assert "explicit override route=local" in payload["reason"]
 
 
 def test_package_mode_54_optout_declarations_do_not_override_or_crash(tmp_path):

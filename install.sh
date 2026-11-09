@@ -491,7 +491,7 @@ export_runtime() {
     return 0
   fi
 
-  # 发行包不含导出器，直接复制其运行时载荷。
+  # Release packages omit the exporter; copy their runtime payload directly.
   mkdir -p "$output_dir"
   cp -R "$source_dir/." "$output_dir/"
   # Release trees ship no exporter (SCRIPT_BLACKLIST), so core filtering on
@@ -1260,8 +1260,8 @@ main() {
     log "  $(host_label_for "$host"): $(host_trigger_hint "$host"), then use $(format_stage_aliases 'spec:' ' / ')"
   done
 
-  # AGENTS.md 兼读提示：AGENTS.md 是 Codex/OpenCode/Gemini CLI 等 agent 的
-  # 指令入口，与 SKILL.md 同层生效。仅提示，不改安装逻辑。
+  # AGENTS.md is also read by Codex, OpenCode, Gemini CLI, and other hosts at
+  # the same instruction layer as SKILL.md. This is advisory only.
   if [ -f "$PWD/AGENTS.md" ]; then
     log ""
     log "Note: AGENTS.md detected in $PWD. Hosts that read AGENTS.md (Codex,"

@@ -167,28 +167,29 @@ def compute_gate_results(
 def gate_rows(r: GateResults, slug: str | None = None) -> list[tuple[str, bool | None, str]]:
     task_errors = [*r.task_contract_errors]
     if not r.all_tasks_done:
-        task_errors.append(f"任务完成 {r.completed_tasks}/{r.total_tasks}")
+        task_errors.append(f"tasks complete {r.completed_tasks}/{r.total_tasks}")
     if r.missing_boundary or r.missing_verify:
-        task_errors.append(f"缺 boundary {r.missing_boundary} 项，缺 verify {r.missing_verify} 项")
+        task_errors.append(f"missing boundary: {r.missing_boundary}; missing verify: {r.missing_verify}")
     return [
         (
-            "项目定义",
+            "Project definition",
             not r.spec_clarification_gaps and not r.template_warning,
-            "；".join(r.spec_clarification_gaps) or ("任务仍是初始化模板" if r.template_warning else "已填写"),
+            "; ".join(r.spec_clarification_gaps)
+            or ("tasks are still the initialization template" if r.template_warning else "filled"),
         ),
-        ("任务与边界", not task_errors, "；".join(task_errors) or "已完成"),
+        ("Tasks and boundaries", not task_errors, "; ".join(task_errors) or "complete"),
         (
-            "待确认问题",
+            "Open questions",
             not r.pending_questions and not r.question_errors,
-            "；".join([*r.pending_questions, *r.question_errors]) or "已关闭",
+            "; ".join([*r.pending_questions, *r.question_errors]) or "closed",
         ),
         (
-            "成功标准",
+            "Success criteria",
             r.success_criteria_ok,
-            f"[SPEC-SUCCESS-001] 成功标准 {r.success_criteria_checked}/{r.success_criteria_total}",
+            f"[SPEC-SUCCESS-001] success criteria {r.success_criteria_checked}/{r.success_criteria_total}",
         ),
-        ("运行证据", r.runs_gate_ok, "；".join(r.runs_errors) or r.runs_detail),
-        ("分支绑定", not r.branch_error, r.branch_error or "已绑定或非 Git 项目"),
+        ("Runs evidence", r.runs_gate_ok, "; ".join(r.runs_errors) or r.runs_detail),
+        ("Branch binding", not r.branch_error, r.branch_error or "bound, or not a Git project"),
     ]
 
 
@@ -202,7 +203,10 @@ def convergence_state(results: GateResults) -> tuple[bool, list[str]]:
 
 
 def convergence_lines(converged: bool, gaps: list[str], *, compact: bool = False) -> list[str]:
-    return [f"- 收敛状态：{'已收敛' if converged else '未收敛'}", *(f"- 差距：{gap}" for gap in gaps)]
+    return [
+        f"- Convergence: {'converged' if converged else 'not converged'}",
+        *(f"- Gap: {gap}" for gap in gaps),
+    ]
 
 
 def overall_check_passed(
@@ -223,7 +227,7 @@ def package_physical_state_errors(package_dir: Path) -> list[str]:
 
 
 def result_label(passed: bool, partial: bool = False) -> str:
-    return "通过" if passed else "部分通过" if partial else "待修复"
+    return "pass" if passed else "partial pass" if partial else "needs fixes"
 
 
 def render(
@@ -254,10 +258,11 @@ def render(
         health=HEALTH_BLOCKED if r.blocked_tasks else HEALTH_OK if r.overall_ok else HEALTH_RISK,
         strip=strip,
         strip_labels=strip_labels,
-        metrics={"范围": r.verification_scope or "", "证据": str(r.evidence_filled_count)},
-        alerts=[f"{label}：{detail}" for label, detail in failures.items()],
-        next_step=ready or ("整理交付结果并完成归档" if r.overall_ok else "修复未通过的验收项"),
-        detail=["包状态：已归档（冻结）"] if archived else [],
+        metrics={"Scope": r.verification_scope or "", "Evidence": str(r.evidence_filled_count)},
+        alerts=[f"{label}: {detail}" for label, detail in failures.items()],
+        next_step=ready
+        or ("Finalize the delivery record and archive" if r.overall_ok else "Fix the failing acceptance items"),
+        detail=["Package state: archived (frozen)"] if archived else [],
         compact=compact,
         ascii_mode=ascii_mode,
     )
@@ -275,7 +280,9 @@ def main() -> int:
             archived = resolve_specs_child(specs, "specs", "archive", slug)
             if archived.is_dir():
                 payload = {"slug": slug, "overall": True, "converged": True, "gaps": [], "archived": True}
-                print(json.dumps(payload, ensure_ascii=False) if args.format == "json" else f"{slug}：已归档（冻结）")
+                print(
+                    json.dumps(payload, ensure_ascii=False) if args.format == "json" else f"{slug}: archived (frozen)"
+                )
                 return 0
         spec = (package / "spec.md").read_text(encoding="utf-8")
         tasks = (package / "tasks.md").read_text(encoding="utf-8")

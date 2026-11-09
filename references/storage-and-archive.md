@@ -66,5 +66,5 @@ One development loop, directory named `YYYY-MM-DD_slug`. The date lives in the s
 
 - `--archive` re-runs the package gates in-process before anything moves; a failing gate aborts the archive.
 - Archiving appends the terminal handoff entry, writes `completion-summary.md`, then moves the package into `specs/archive/` with `git mv`; a failed move keeps the active package and the generated summary (`--force` regenerates it).
-- A new archive carries the `## 问题处置` (issue dispositions) JSON; frozen archives are never regraded.
+- A new archive carries the `## Issue Disposition` JSON. The legacy `## 问题处置` heading remains accepted for compatibility; frozen archives are never regraded.
 - `done` produces the archive and finishes this round's commit; merging/pushing/branch deletion is left to `push`.

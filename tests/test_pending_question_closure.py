@@ -96,7 +96,7 @@ def test_open_questions_remain_pending_and_block_delivery(question):
     assert len(extract_pending_questions(spec)) == 1
     assert results.pending_questions == extract_pending_questions(spec)
     assert not results.overall_ok
-    assert "待确认问题" in gate_failure_details(results)
+    assert "Open questions" in gate_failure_details(results)
 
 
 @pytest.mark.parametrize("kind", ["fact", "reversible", "decision", "unclassified"])
@@ -109,7 +109,7 @@ def test_closed_question_requires_non_placeholder_answer(kind, answer):
     assert results.pending_questions == []
     assert any("answer:" in error for error in results.question_errors)
     assert not results.overall_ok
-    assert "待确认问题" in gate_failure_details(results)
+    assert "Open questions" in gate_failure_details(results)
 
 
 @pytest.mark.parametrize("kind", ["fact", "reversible", "unclassified"])

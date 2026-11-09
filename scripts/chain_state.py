@@ -32,7 +32,10 @@ EXIT_FAILURE = 1
 EXIT_STOP = 3
 
 CHAINS = ("autoplan", "autorun")
-DEFAULT_MAX_ROUNDS = {"autoplan": None, "autorun": 5}
+# Both chains default to no cap: an omitted flag keeps the chain running until
+# a real stop condition (plan complete, pause, close). ``--max-rounds`` and
+# ``--unbounded`` still bound a chain explicitly.
+DEFAULT_MAX_ROUNDS = {"autoplan": None, "autorun": None}
 STATE_FILE = "chain.json"
 STATE_FORMAT = "chain-state/1"
 
@@ -260,8 +263,8 @@ COMMANDS = {
 
 def render_text(payload: dict[str, object]) -> str:
     if "docs" in payload:
-        lines = [f"{doc['path']}: {doc['checked']}/{doc['total']} 已完成" for doc in payload["docs"]]  # type: ignore[union-attr]
-        return "\n".join([*lines, f"合计 {payload['checked']}/{payload['total']}"])
+        lines = [f"{doc['path']}: {doc['checked']}/{doc['total']} complete" for doc in payload["docs"]]  # type: ignore[union-attr]
+        return "\n".join([*lines, f"Total {payload['checked']}/{payload['total']}"])
     keys = ("chain", "status", "step", "round", "max_rounds", "reason", "scope_changed", "closed_to", "plan_error")
     return "\n".join(f"{key}: {payload[key]}" for key in keys if payload.get(key) is not None)
 

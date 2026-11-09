@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-"""agents-team-loop 控制原语：重试退避、并发上限、心跳 staleness、可组合终止、中断。
+"""agents-team-loop controls for retry backoff, concurrency, staleness, termination, and interruption.
 
-缺口3 的答案。设计对齐（见 references/prior-art.md）：
-- 指数退避 + 抖动：业界标准（AWS Architecture Blog "Exponential Backoff and Jitter"）。
-- 并发上限：admit 仅为快照，实际磁盘预约由 loop_state 的 reserve 完成。
-- 心跳 staleness：只识别疑似失联；须先确认宿主已停止才能回收。
-- 可组合终止：直接采纳 AutoGen TerminationCondition 的组合思想
-  （AND 组合：maxRounds / runTimeout / budgetTasks / external STOP / allDone）。
-- ExternalTermination：run 目录下的 STOP 哨兵文件。
+Design references are in references/prior-art.md:
+- Exponential backoff with jitter follows AWS's established pattern.
+- Admission is only a concurrency snapshot; loop_state reserves capacity on disk.
+- A stale heartbeat only suggests loss of contact; confirm host termination before reaping.
+- Termination conditions combine maxRounds, runTimeout, budgetTasks, external STOP, and allDone.
+- External termination uses a STOP sentinel in the run directory.
 """
 
 from __future__ import annotations
@@ -20,7 +19,7 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-# 同目录导入（脚本直接运行场景）
+# Import from the same directory when running this script directly.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from loop_state import (  # noqa: E402
@@ -36,7 +35,7 @@ from loop_state import (  # noqa: E402
 )
 
 # ---------------------------------------------------------------------------
-# 重试退避
+# Retry backoff
 # ---------------------------------------------------------------------------
 
 
@@ -50,14 +49,14 @@ def retry_ready(task: dict[str, Any], now: float) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# 并发上限
+# Concurrency limit
 # ---------------------------------------------------------------------------
 
 
 def admission(store: LoopStore, now: float) -> dict[str, Any]:
-    """返回一般性配额快照；不预约容量，也不检查指定任务的 backoff。
+    """Return an advisory quota snapshot without reserving or checking task backoff.
 
-    真正宿主 dispatch 前必须成功 task reserve。
+    A task reservation must succeed before dispatch to the host.
     """
     cfg = store.state["config"]
     cap = int(cfg["concurrency"])
@@ -70,22 +69,22 @@ def admission(store: LoopStore, now: float) -> dict[str, Any]:
                 if _is_stale(task, cfg, now):
                     stale.append(f"r{rnd['index']}/{tid}")
     if store.state["status"] != "active":
-        return {"admit": False, "reason": "run 非 active", "inFlight": in_flight, "cap": cap, "stale": stale}
+        return {"admit": False, "reason": "run is not active", "inFlight": in_flight, "cap": cap, "stale": stale}
     if int(store.state["counters"]["tasksSpawned"]) >= int(cfg["budgetTasks"]):
-        return {"admit": False, "reason": "budgetTasks 已用尽", "inFlight": in_flight, "cap": cap, "stale": stale}
+        return {"admit": False, "reason": "budgetTasks exhausted", "inFlight": in_flight, "cap": cap, "stale": stale}
     if now - float(store.state["createdAt"]) > float(cfg["timeoutSec"]) or external_stop_requested(store.run_dir):
-        return {"admit": False, "reason": "runTimeout 或 STOP", "inFlight": in_flight, "cap": cap, "stale": stale}
+        return {"admit": False, "reason": "runTimeout or STOP", "inFlight": in_flight, "cap": cap, "stale": stale}
     if in_flight >= cap:
         return {
             "admit": False,
-            "reason": f"并发已满 inFlight={in_flight} cap={cap}：先 wait 再 spawn",
+            "reason": f"concurrency limit reached inFlight={in_flight} cap={cap}: wait before spawning",
             "inFlight": in_flight,
             "cap": cap,
             "stale": stale,
         }
     return {
         "admit": True,
-        "reason": "仅供参考；须对指定任务先 reserve",
+        "reason": "advisory only; reserve the specific task first",
         "inFlight": in_flight,
         "cap": cap,
         "stale": stale,
@@ -119,7 +118,7 @@ def reap_stale_tasks(
 ) -> dict[str, Any]:
     """Reap only one explicitly confirmed host-stopped worker, never on age alone."""
     if not task_key or not confirmed_stopped:
-        raise LoopStateError("回收须指定 --task rN/id，并由调用者确认宿主已停止 --confirmed-stopped")
+        raise LoopStateError("reaping requires --task rN/id and caller confirmation with --confirmed-stopped")
     for rnd in store.state["rounds"]:
         for tid, task in rnd.get("tasks", {}).items():
             if f"r{rnd['index']}/{tid}" != task_key:
@@ -129,8 +128,8 @@ def reap_stale_tasks(
                 or task.get("dispatchPhase") == "reserved"
                 or not _is_stale(task, store.state["config"], now)
             ):
-                raise LoopStateError("指定任务不是可回收的 stale 已登记 worker")
-            detail = reason or "调用者确认宿主 worker 已停止；心跳超时"
+                raise LoopStateError("the specified task is not a stale attached worker eligible for reaping")
+            detail = reason or "host worker confirmed stopped; heartbeat timed out"
             outcome = store.task_result(
                 rnd["index"],
                 tid,
@@ -141,11 +140,11 @@ def reap_stale_tasks(
                 confirmed_stopped=True,
             )
             return {"reaped": [{"task": task_key, "outcome": outcome}]}
-    raise LoopStateError(f"任务不存在: {task_key}")
+    raise LoopStateError(f"task does not exist: {task_key}")
 
 
 # ---------------------------------------------------------------------------
-# 可组合终止条件（AutoGen 风格 AND 组合）
+# Composable termination conditions (AutoGen-style AND composition)
 # ---------------------------------------------------------------------------
 
 
@@ -154,7 +153,7 @@ def external_stop_requested(run_dir: Path) -> bool:
     if not target.exists() and not target.is_symlink():
         return False
     if target.is_symlink() or not target.is_file():
-        raise LoopStateError(f"STOP 哨兵必须是普通文件: {target}")
+        raise LoopStateError(f"STOP sentinel must be a regular file, not a symlink: {target}")
     return True
 
 
@@ -175,55 +174,54 @@ def termination_check(store: LoopStore, now: float) -> dict[str, Any]:
     reasons: list[str] = []
 
     if len(rounds) > int(cfg["maxRounds"]):
-        reasons.append(f"maxRounds={cfg['maxRounds']} 超限（当前 {len(rounds)} 轮）")
+        reasons.append(f"maxRounds={cfg['maxRounds']} exceeded (current rounds: {len(rounds)})")
     elif len(rounds) == int(cfg["maxRounds"]) and not open_rounds and latest and not latest_passed:
-        reasons.append(f"maxRounds={cfg['maxRounds']} 已用尽且最后一轮未通过")
+        reasons.append(f"maxRounds={cfg['maxRounds']} exhausted and the last round did not pass")
     if now - float(st["createdAt"]) > float(cfg["timeoutSec"]):
-        reasons.append(f"runTimeout={cfg['timeoutSec']}s 超时")
+        reasons.append(f"runTimeout={cfg['timeoutSec']}s exceeded")
     spawned = int(st["counters"]["tasksSpawned"])
     budget = int(cfg["budgetTasks"])
     if spawned > budget:
-        reasons.append(f"budgetTasks={budget} 超支（已 spawn {spawned}）")
+        reasons.append(f"budgetTasks={budget} exceeded (spawned {spawned})")
     elif spawned >= budget and not live and (pending or (latest and not open_rounds and not latest_passed)):
-        reasons.append(f"budgetTasks={budget} 预算已用尽且仍需派发任务或新一轮")
+        reasons.append(f"budgetTasks={budget} exhausted with tasks or a new round still needed")
     if external_stop_requested(store.run_dir):
-        reasons.append("外部停止：STOP 哨兵文件存在")
+        reasons.append("external stop: STOP sentinel exists")
     if reasons:
         if failed:
-            reasons.append("存在重试耗尽的 failed 任务: " + ", ".join(failed))
+            reasons.append("failed tasks exhausted retries: " + ", ".join(failed))
         return {"stop": True, "verdict": "stopped", "reasons": reasons}
     if latest and latest["status"] == "closed" and latest_passed and not open_rounds and not live and not pending:
-        return {"stop": True, "verdict": "converged", "reasons": ["最后一轮 pass 关闭且全部任务终态"]}
+        return {"stop": True, "verdict": "converged", "reasons": ["last round closed with pass and all tasks terminal"]}
     return {"stop": False, "verdict": "continue", "reasons": []}
 
 
 # ---------------------------------------------------------------------------
-# 中断（协作式）
+# Cooperative interruption
 # ---------------------------------------------------------------------------
 
 
 def interrupt_run(store: LoopStore, reason: str) -> dict[str, Any]:
-    """协作中断并返回在途或未登记预约；是否停止须向宿主核实。"""
+    """Interrupt cooperatively and return in-flight or unattached reservations; verify host termination separately."""
     affected = store.run_interrupted(reason)
     return {
         "status": "interrupted",
         "inFlight": affected,
-        "hint": "向宿主核对并停止已登记 worker；未知预约先核对。resume 不自动释放在途任务",
+        "hint": "verify and stop attached workers with the host; investigate unknown reservations first. "
+        "resume does not automatically release in-flight tasks",
     }
 
 
 # ---------------------------------------------------------------------------
-# run 发现（供 Stop hook / status 使用）
+# Run discovery for Stop hooks and status
 # ---------------------------------------------------------------------------
 
 
 def find_active_runs(root: Path) -> tuple[list[Path], list[Path]]:
-    """返回 (活跃 run 目录, 损坏 run 目录)。
+    """Return (active run directories, corrupt run directories).
 
-    损坏的 run 不静默跳过：交由调用方 fail-closed 地给出修复指引，
-    避免状态损坏时任务被静默丢弃（对齐 spec 守卫的 fail-closed 哲学）。
-    有 events.jsonl/.lock 等痕迹却缺 run.json 的目录同样 fail-closed，
-    不会被守卫当「无 run」放行。
+    Corrupt runs are reported to callers for fail-closed repair guidance. A directory
+    with activity traces such as events.jsonl or .lock but no run.json is also corrupt.
     """
     active: list[Path] = []
     corrupt: list[Path] = []
@@ -235,7 +233,7 @@ def find_active_runs(root: Path) -> tuple[list[Path], list[Path]]:
             continue
         if store.state["status"] == "active":
             active.append(run_dir)
-    # 缺 run.json 但有活动痕迹的目录：不是无 run，fail-closed 归入损坏。
+    # Missing run.json with activity traces is corrupt, not an absent run.
     corrupt.extend(list_orphan_run_dirs(root))
     return (
         sorted(active, key=lambda p: p.stat().st_mtime, reverse=True),
@@ -253,35 +251,35 @@ def _emit_json(payload: Any) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="loop_control.py", description="agents-team-loop 控制原语 CLI")
+    parser = argparse.ArgumentParser(prog="loop_control.py", description="agents-team-loop control CLI")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("admit", help="并发准入判定")
+    p = sub.add_parser("admit", help="check concurrency admission")
     p.add_argument("--run-dir", required=True)
 
-    p = sub.add_parser("stale", help="staleness 检测（--reap 时按失败回收进重试路径）")
+    p = sub.add_parser("stale", help="detect stale workers (--reap records failure for retry)")
     p.add_argument("--run-dir", required=True)
-    p.add_argument("--reap", action="store_true", help="回收一个已由宿主确认停止的 stale worker")
-    p.add_argument("--task", help="目标任务 rN/id")
-    p.add_argument("--confirmed-stopped", action="store_true", help="调用者确认该宿主 worker 已停止")
-    p.add_argument("--reason", default="", help="reap 时写入 lastError 的原因")
+    p.add_argument("--reap", action="store_true", help="reap one stale worker confirmed stopped by the host")
+    p.add_argument("--task", help="target task rN/id")
+    p.add_argument("--confirmed-stopped", action="store_true", help="confirm that the host worker has stopped")
+    p.add_argument("--reason", default="", help="reason written to lastError when reaping")
 
-    p = sub.add_parser("terminate", help="终止条件族评估")
+    p = sub.add_parser("terminate", help="evaluate termination conditions")
     p.add_argument("--run-dir", required=True)
 
-    p = sub.add_parser("interrupt", help="协作中断")
+    p = sub.add_parser("interrupt", help="interrupt cooperatively")
     p.add_argument("--run-dir", required=True)
     p.add_argument("--reason", default="manual interrupt")
 
-    p = sub.add_parser("backoff", help="计算第 N 次失败后的退避秒数")
+    p = sub.add_parser("backoff", help="calculate backoff seconds after attempt N")
     p.add_argument("--attempt", type=int, required=True)
-    p.add_argument("--run-dir", default=None, help="可选：用该 run 的 retry 配置计算（缺省用默认配置）")
-    p.add_argument("--seed", type=int, default=None, help="可选随机种子（可复现）")
+    p.add_argument("--run-dir", default=None, help="optionally use this run's retry config; defaults otherwise")
+    p.add_argument("--seed", type=int, default=None, help="optional random seed for reproducibility")
 
-    p = sub.add_parser("stop", help="外部停止：写 STOP 哨兵")
+    p = sub.add_parser("stop", help="request an external stop by writing the STOP sentinel")
     p.add_argument("--run-dir", required=True)
 
-    p = sub.add_parser("active", help="列出 root 下活跃 run")
+    p = sub.add_parser("active", help="list active runs under root")
     p.add_argument("--root", default=".")
 
     return parser
@@ -299,7 +297,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             if args.run_dir:
                 store = LoopStore(Path(args.run_dir))
                 if not store.state_path.is_file():
-                    raise LoopStateError(f"run 不存在: {args.run_dir}")
+                    raise LoopStateError(f"run does not exist: {args.run_dir}")
                 store.load()
                 retry_cfg = store.state["config"]["retry"]
                 config_source = str(store.run_dir)
@@ -317,7 +315,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         else:
             store = LoopStore(Path(args.run_dir))
             if not store.state_path.is_file():
-                raise LoopStateError(f"run 不存在: {args.run_dir}")
+                raise LoopStateError(f"run does not exist: {args.run_dir}")
             store.load()
             now = utc_now()
             if args.command == "admit":

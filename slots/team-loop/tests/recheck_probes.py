@@ -90,14 +90,14 @@ def main() -> int:
         rc, _, err = cli(STATE, "status")
         check(
             "status: 缺 --run-dir 非零退出且显式报错",
-            rc != 0 and ("required" in err or "run 不存在" in err),
+            rc != 0 and ("required" in err or "run does not exist" in err),
             f"rc={rc} {err}",
         )
 
         # B3: 事件日志损坏 -> resume 必须显式报错，不静默
         (rd / "events.jsonl").write_text('{"ts":1,"type":"task_spawn","round":1,"task":"ghost"}\n', encoding="utf-8")
         rc, out, err = cli(STATE, "resume", "--run-dir", str(rd))
-        check("resume: 引用不存在任务的日志 -> 显式报错", rc != 0 and "不一致" in err, f"rc={rc} {out} {err}")
+        check("resume: 引用不存在任务的日志 -> 显式报错", rc != 0 and "inconsistent" in err, f"rc={rc} {out} {err}")
 
         # B4: run.json 损坏（隔离场景：唯一 run）-> stop guard fail-closed block
         probe_root = root / "iso"
@@ -108,7 +108,7 @@ def main() -> int:
         d = json.loads(out) if out.strip() else {}
         check(
             "stop guard: 唯一 run 状态损坏 -> block + 修复指引",
-            d.get("decision") == "block" and "损坏" in d.get("reason", ""),
+            d.get("decision") == "block" and "corrupt" in d.get("reason", ""),
             out,
         )
 

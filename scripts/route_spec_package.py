@@ -83,20 +83,20 @@ def _decide(root: Path, slug: str, package_dir: Path, spec: str, tasks_content: 
     checkpoint_pending = (package_dir / "update-checkpoint.json").exists()
 
     blocked_texts = [task.text for task in tasks if task.is_blocked]
-    alerts = [f"任务受阻：{text}" for text in blocked_texts]
+    alerts = [f"Task blocked: {text}" for text in blocked_texts]
     if checkpoint_pending:
-        alerts.insert(0, "遗留 update-checkpoint.json（机制已退役）：用 git 确认无需恢复后删除该文件")
+        alerts.insert(0, "Retired update-checkpoint.json remains; confirm no recovery is needed, then delete it")
     if r.blocked_tasks and not blocked_texts:
-        alerts.append("项目中存在受阻任务，具体原因已记录在任务清单")
+        alerts.append("Tasks are blocked; see the task list for details")
     for prefix, items in (
-        ("需要确认需求", r.human_questions),
-        ("自主调查", r.autonomous_questions),
-        ("调查契约尚未满足", r.question_errors),
-        ("项目定义不完整", [project_gap_message(g) for g in r.spec_clarification_gaps]),
-        ("任务依赖尚未满足", r.task_contract_errors),
-        ("验证范围尚未满足", r.verification_scope_errors),
+        ("Requirements need confirmation", r.human_questions),
+        ("Independent investigation", r.autonomous_questions),
+        ("Investigation contract not satisfied", r.question_errors),
+        ("Project definition incomplete", [project_gap_message(g) for g in r.spec_clarification_gaps]),
+        ("Task dependencies not satisfied", r.task_contract_errors),
+        ("Verification scope requirements not met", r.verification_scope_errors),
     ):
-        alerts.extend(f"{prefix}：{item}" for item in items)
+        alerts.extend(f"{prefix}: {item}" for item in items)
 
     scoping = bool(r.human_questions or r.question_errors or r.spec_clarification_gaps)
     if r.blocked_tasks or scoping:
@@ -109,12 +109,13 @@ def _decide(root: Path, slug: str, package_dir: Path, spec: str, tasks_content: 
             stage, health, pipe = "check", HEALTH_RISK, "check"
             if r.missing_boundary or r.missing_verify:
                 alerts.append(
-                    f"任务执行说明不完整：缺影响范围 {r.missing_boundary} 项，缺验证方式 {r.missing_verify} 项"
+                    f"Task instructions incomplete: {r.missing_boundary} missing boundaries, "
+                    f"{r.missing_verify} missing verification methods"
                 )
             if not r.success_criteria_ok:
-                alerts.append(f"项目尚有 {r.success_criteria_total - r.success_criteria_checked} 项成功标准未达成")
+                alerts.append(f"{r.success_criteria_total - r.success_criteria_checked} success criteria remain unmet")
             if not alerts:
-                alerts.append("项目尚未满足最终验收要求")
+                alerts.append("Final acceptance requirements are not met")
     else:
         stage, health, pipe = "run", HEALTH_OK, "run"
     if checkpoint_pending:
@@ -139,19 +140,19 @@ def _decide(root: Path, slug: str, package_dir: Path, spec: str, tasks_content: 
 
 def _next_action(r, tasks, inquiry_task: str | None, current_task: str | None) -> str:
     if r.blocked_tasks:
-        return next((f"解除阻塞：{task.text}" for task in tasks if task.is_blocked), "处理任务阻塞")
-    for errors, template in (
-        (r.question_errors, "修复调查契约：{}"),
-        (r.human_questions, "确认需求：{}"),
-        (r.spec_clarification_gaps, "补齐项目定义：{}"),
-        (r.task_contract_errors, "修正任务依赖：{}"),
+        return next((f"Unblock task: {task.text}" for task in tasks if task.is_blocked), "Resolve blocked tasks")
+    for errors, template, is_project_gap in (
+        (r.question_errors, "Fix investigation contract: {}", False),
+        (r.human_questions, "Confirm requirements: {}", False),
+        (r.spec_clarification_gaps, "Complete the project definition: {}", True),
+        (r.task_contract_errors, "Fix task dependencies: {}", False),
     ):
         if errors:
-            item = errors[0] if "项目定义" not in template else project_gap_message(errors[0])
+            item = project_gap_message(errors[0]) if is_project_gap else errors[0]
             return template.format(item)
     if r.all_tasks_done:
-        return "整理交付结果并完成归档" if r.overall_ok else "修复验收未通过项"
-    return (f"自主调查：{inquiry_task}" if inquiry_task else current_task) or "继续实现项目任务"
+        return "Prepare delivery and archive the record" if r.overall_ok else "Fix failed acceptance checks"
+    return (f"Investigate independently: {inquiry_task}" if inquiry_task else current_task) or "Continue project tasks"
 
 
 def _brief_task(record, ready: set[str]) -> dict:
@@ -179,18 +180,18 @@ def _handoff_view(package_dir: Path, root: Path, tasks_content: str) -> dict:
         content = read_handoff(package_dir)
     except (OSError, UnicodeError, ValueError):
         return {
-            "line": "handoff：不可读（超大/非 UTF-8/非常规文件），运行 spec_handoff.py validate 诊断",
+            "line": "handoff: unreadable (too large, non-UTF-8, or not a regular file); run spec_handoff.py validate",
             "fresh": "unreadable",
         }
     if content is None:
         return {"line": None, "fresh": "absent"}
     if validate_handoff(content):
-        return {"line": "handoff：结构非法，运行 spec_handoff.py validate 诊断", "fresh": "unknown"}
+        return {"line": "handoff: invalid structure; run spec_handoff.py validate", "fresh": "unknown"}
     doc = parse_handoff(content)
     if doc.latest is None:
-        return {"line": "handoff：无条目，运行 spec_handoff.py validate 诊断", "fresh": "unknown"}
+        return {"line": "handoff: no entries; run spec_handoff.py validate", "fresh": "unknown"}
     label, detail = freshness(doc, root, tasks_content)
-    view = {"line": f"handoff：最新 {doc.latest.timestamp}（{label}，{doc.latest.collab}）", "fresh": label}
+    view = {"line": f"handoff: latest {doc.latest.timestamp} ({label}, {doc.latest.collab})", "fresh": label}
     if label != "fresh":
         view["stale_reason"] = detail
     return view
@@ -261,16 +262,16 @@ def route_for_package(
         strip=strip,
         strip_labels=strip_labels,
         metrics={
-            "阻塞": "1" if r.blocked_tasks else "0",
-            "待确认": str(len(r.human_questions)),
-            "门禁": "通过" if r.overall_ok else f"缺口 {gate_gap_total}",
-            "证据": str(r.evidence_filled_count),
-            "范围": r.verification_scope or "",
+            "Blocked": "1" if r.blocked_tasks else "0",
+            "Pending decisions": str(len(r.human_questions)),
+            "Gate": "passed" if r.overall_ok else f"{gate_gap_total} gaps",
+            "Evidence": str(r.evidence_filled_count),
+            "Scope": r.verification_scope or "",
         },
         alerts=v["alerts"],
         next_step=v["next_action"],
         detail=[handoff["line"]] if handoff["line"] else [],
-        detail_title="交接" if handoff["line"] else "交付信息",
+        detail_title="Handoff" if handoff["line"] else "Delivery Details",
         ascii_mode=ascii_mode,
         compact=compact,
     ).render()
@@ -299,7 +300,7 @@ def main() -> int:
     args = parse_args()
     root = Path(args.root).resolve()
     if args.brief and args.format == "markdown":
-        print("error: --brief 隐含 JSON 输出，不能与 --format markdown 同时使用", file=sys.stderr)
+        print("error: --brief implies JSON output and cannot be combined with --format markdown", file=sys.stderr)
         return 1
     args.format = args.format or ("json" if args.brief else "markdown")
     try:
@@ -313,25 +314,25 @@ def main() -> int:
                     _aggregate(
                         args,
                         "new",
-                        "当前没有进行中的项目",
+                        "No active project",
                         HEALTH_OK,
-                        "描述要完成的目标，skill 会直接建立任务并开始推进",
+                        "Describe the goal; the skill will create tasks and begin work",
                     )
                 )
                 return 0
             selection = select_active_package(root, specs_root, packages)
             slug = selection.slug
             if not slug:
-                warning = selection.warning or f"无法唯一选择活动任务包：{'、'.join(packages)}"
+                warning = selection.warning or f"Cannot select a unique active task package: {', '.join(packages)}"
                 print(
                     _aggregate(
                         args,
                         "status",
-                        "任务包分支未绑定",
+                        "Task package branch is not bound",
                         HEALTH_RISK,
-                        "切换到任务包记录的 integration branch，或显式指定 --slug 只读查看",
+                        "Switch to the package's integration branch, or pass --slug for read-only inspection",
                         alerts=[warning],
-                        metrics={"门禁": "分支绑定"},
+                        metrics={"Gate": "branch binding"},
                         branch=selection.current_branch,
                         candidates=list(packages),
                     )

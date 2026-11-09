@@ -22,7 +22,7 @@ from dashboard_support import (
 from report_spec_package import parse_tasks, render_status
 from route_spec_package import route_for_package
 
-FORBIDDEN_PROCESS_TEXT = ("## 流水线", "## 指标", "## 告警", "## 下一步", "门禁：", "/spec:")
+FORBIDDEN_PROCESS_TEXT = ("## Pipeline", "## Metrics", "## Alerts", "## Next Step", "Gate:", "/spec:")
 
 COMPLETE_SPEC = """\
 # Test - 项目范围
@@ -69,6 +69,17 @@ def _package(specs_dir, slug, spec=COMPLETE_SPEC, tasks=TASKS, checklist=CHECKLI
     return pkg
 
 
+def test_dashboard_accepts_legacy_and_english_metric_keys():
+    for metrics in (
+        {"阻塞": "1", "待确认": "2", "范围": "project"},
+        {"Blocked": "1", "Pending decisions": "2", "Scope": "project"},
+    ):
+        text = Dashboard(slug="s", stage="check", metrics=metrics).render()
+        assert "## Verification Scope\n\n- Level: project" in text
+        assert "- Pending decisions: 2" in text
+        assert "- Blocked: 1" in text
+
+
 def test_dashboard_starts_with_project_and_actual_progress():
     dash = Dashboard(
         slug="2026-06-12_add-payment-callback",
@@ -81,9 +92,9 @@ def test_dashboard_starts_with_project_and_actual_progress():
     )
     text = dash.render()
     assert text.startswith("# 支付回调\n")
-    assert "## 项目进展" in text
-    assert "- 已完成：1/2" in text
-    assert "## 接下来" in text
+    assert "## Project Progress" in text
+    assert "- Completed: 1/2" in text
+    assert "## Next" in text
     assert "- 补齐失败重试测试" in text
     assert "2026-06-12_add-payment-callback" not in text
     assert " run " not in text
@@ -94,24 +105,24 @@ def test_dashboard_empty_sections_are_omitted():
     text = Dashboard(slug="s", stage="run", title="项目").render()
     assert text == "# 项目"
     assert "- 无" not in text
-    assert "## 项目进展" not in text
-    assert "## 任务" not in text
-    assert "## 正在处理" not in text
-    assert "## 需要关注" not in text
+    assert "## Project Progress" not in text
+    assert "## Tasks" not in text
+    assert "## In Progress" not in text
+    assert "## Attention" not in text
 
 
 def test_dashboard_tasks_keep_project_order_and_all_active_items():
     strip = [GLYPH_DONE, GLYPH_ACTIVE, GLYPH_ACTIVE, GLYPH_BLOCKED, GLYPH_PENDING]
     labels = ["固化需求", "实现校验", "补测试", "接入依赖", "写总结"]
     text = Dashboard(slug="s", stage="run", title="项目", strip=strip, strip_labels=labels).render()
-    assert "- 固化需求：完成" in text
-    assert "- 实现校验：进行" in text
-    assert "- 补测试：进行" in text
-    assert "- 接入依赖：阻塞" in text
-    assert "- 写总结：待办" in text
-    task_section = text.split("## 任务", 1)[1].split("## 正在处理", 1)[0]
-    assert task_section.count("：进行") == 2
-    current_section = text.split("## 正在处理", 1)[1]
+    assert "- 固化需求: done" in text
+    assert "- 实现校验: in progress" in text
+    assert "- 补测试: in progress" in text
+    assert "- 接入依赖: blocked" in text
+    assert "- 写总结: todo" in text
+    task_section = text.split("## Tasks", 1)[1].split("## In Progress", 1)[0]
+    assert task_section.count(": in progress") == 2
+    current_section = text.split("## In Progress", 1)[1]
     assert "- 实现校验" in current_section
     assert "- 补测试" in current_section
     positions = [text.index(label) for label in labels]
@@ -127,11 +138,11 @@ def test_dashboard_alerts_only_show_real_attention_items_and_pointer():
         alerts=[f"验收问题 {index}" for index in range(8)],
         alerts_pointer="checklist.md",
     ).render()
-    assert "## 需要关注" in text
+    assert "## Attention" in text
     assert "验收问题 0" in text
     assert "验收问题 7" not in text
-    assert "其余 3 项见 checklist.md" in text
-    assert "## 告警" not in text
+    assert "See checklist.md for 3 more items" in text
+    assert "## Alerts" not in text
 
 
 def test_dashboard_delta_and_delivery_information_follow_project_language():
@@ -143,13 +154,13 @@ def test_dashboard_delta_and_delivery_information_follow_project_language():
         next_step="观察生产指标",
         detail=["完成总结：/tmp/summary.md"],
     ).render()
-    assert "## 本轮完成" in text
+    assert "## Completed This Round" in text
     assert "- 支付回调已上线" in text
-    assert "## 接下来" in text
+    assert "## Next" in text
     assert "- 观察生产指标" in text
-    assert "## 交付信息" in text
+    assert "## Delivery Details" in text
     assert "完成总结：/tmp/summary.md" in text
-    assert text.index("## 本轮完成") < text.index("## 接下来") < text.index("## 交付信息")
+    assert text.index("## Completed This Round") < text.index("## Next") < text.index("## Delivery Details")
 
 
 def test_dashboard_compact_mode_keeps_project_content_without_headings():
@@ -166,9 +177,9 @@ def test_dashboard_compact_mode_keeps_project_content_without_headings():
     )
     text = dash.render()
     assert text.startswith("项目\n")
-    assert "- 已完成：1/2" in text
+    assert "- Completed: 1/2" in text
     assert ASCII_GLYPHS[GLYPH_DONE] in text
-    task_line = next(line for line in text.splitlines() if line.startswith("- 任务："))
+    task_line = next(line for line in text.splitlines() if line.startswith("- Tasks: "))
     assert "固化范围" in task_line
     assert "实现校验" in task_line
     assert "## " not in text
@@ -177,7 +188,7 @@ def test_dashboard_compact_mode_keeps_project_content_without_headings():
 
 def test_dashboard_strip_folds_beyond_twenty():
     kinds = [GLYPH_DONE] * 12 + [GLYPH_ACTIVE] + [GLYPH_BLOCKED] + [GLYPH_PENDING] * 7
-    assert fold_strip(kinds) == "完成x12 进行 阻塞 待办x7"
+    assert fold_strip(kinds) == "donex12 in progress blocked todox7"
 
 
 def test_scripted_outputs_share_project_progress_contract():
@@ -200,18 +211,18 @@ def test_scripted_outputs_share_project_progress_contract():
 
         for output in (route, status, check):
             assert output.startswith("# Test\n")
-            assert "## 项目进展" in output
-            assert "- 已完成：0/2" in output
-            assert "## 任务" in output
-            assert "Task A：待办" in output
-            assert "Task B：待办" in output
-            assert "## 正在处理" not in output
-            assert "## 流水线" not in output
-            assert "## 指标" not in output
+            assert "## Project Progress" in output
+            assert "- Completed: 0/2" in output
+            assert "## Tasks" in output
+            assert "Task A: todo" in output
+            assert "Task B: todo" in output
+            assert "## In Progress" not in output
+            assert "## Pipeline" not in output
+            assert "## Metrics" not in output
             assert "/spec:" not in output
-        assert "## 接下来" in route
-        assert "## 接下来" in status
-        assert "## 接下来" in check
+        assert "## Next" in route
+        assert "## Next" in status
+        assert "## Next" in check
 
 
 def _parse_tasks(content):
@@ -259,16 +270,18 @@ NO_ACTIVE_TASKS = """\
 
 def _task_area(text, compact):
     if compact:
-        return next(line for line in text.splitlines() if line.startswith("- 任务："))
-    return text.split("## 任务\n", 1)[1].split("\n## ", 1)[0]
+        return next(line for line in text.splitlines() if line.startswith("- Tasks: "))
+    return text.split("## Tasks\n", 1)[1].split("\n## ", 1)[0]
 
 
 def _current_area(text, compact):
     if compact:
-        return [line.removeprefix("- 正在处理：") for line in text.splitlines() if line.startswith("- 正在处理：")]
-    if "## 正在处理\n" not in text:
+        return [
+            line.removeprefix("- In Progress: ") for line in text.splitlines() if line.startswith("- In Progress: ")
+        ]
+    if "## In Progress\n" not in text:
         return []
-    section = text.split("## 正在处理\n", 1)[1].split("\n## ", 1)[0]
+    section = text.split("## In Progress\n", 1)[1].split("\n## ", 1)[0]
     return [line[2:] for line in section.splitlines() if line.startswith("- ")]
 
 
@@ -307,10 +320,10 @@ def test_route_status_check_project_the_same_explicit_task_states(
         ),
         render_check(slug, "Test", COMPLETE_SPEC, content, CHECKLIST, ascii_mode=ascii_mode, compact=compact),
     ]
-    labels = {"done": "完成", "active": "进行", "blocked": "阻塞", "pending": "待办"}
+    labels = {"done": "done", "active": "in progress", "blocked": "blocked", "pending": "todo"}
     for text in outputs:
         task_area = _task_area(text, compact)
-        rows = [f"{name}：{ASCII_GLYPHS[kind] if ascii_mode else labels[kind]}" for name, kind in expected_rows]
+        rows = [f"{name}: {ASCII_GLYPHS[kind] if ascii_mode else labels[kind]}" for name, kind in expected_rows]
         assert all(row in task_area for row in rows), text
         assert [task_area.index(row) for row in rows] == sorted(task_area.index(row) for row in rows)
         assert _current_area(text, compact) == expected_current, text
@@ -322,15 +335,15 @@ def test_ready_json_candidate_does_not_imply_human_active_state(tmp_path):
     payload = json.loads(route_for_package(tmp_path, slug, output_format="json"))
     text = route_for_package(tmp_path, slug)
     assert payload["currentTask"] == "Task A"  # legacy field means next ready candidate
-    assert "Task A：待办" in text
-    assert "## 正在处理" not in text
-    assert "## 接下来\n\n- Task A" in text
+    assert "Task A: todo" in text
+    assert "## In Progress" not in text
+    assert "## Next\n\n- Task A" in text
 
 
 def test_dashboard_current_fallback_and_strip_precedence():
     text = Dashboard(slug="s", stage="run", current="实际工作", next_step="实际工作").render()
-    assert "## 正在处理\n\n- 实际工作" in text
-    assert "## 接下来" not in text
+    assert "## In Progress\n\n- 实际工作" in text
+    assert "## Next" not in text
     text = Dashboard(
         slug="s",
         stage="check",
@@ -339,17 +352,17 @@ def test_dashboard_current_fallback_and_strip_precedence():
         current="排队",
         next_step="排队",
     ).render()
-    assert "## 正在处理" not in text
-    assert "## 接下来\n\n- 排队" in text
+    assert "## In Progress" not in text
+    assert "## Next\n\n- 排队" in text
     text = Dashboard(
         slug="s", stage="run", strip=[GLYPH_ACTIVE, GLYPH_ACTIVE], strip_labels=["甲", "乙"], next_step="乙"
     ).render()
     assert _current_area(text, False) == ["甲", "乙"]
-    assert "## 接下来" not in text
+    assert "## Next" not in text
 
 
 def test_dashboard_preserves_active_tasks_beyond_the_task_list_limit():
     labels = [f"任务 {i:02}" for i in range(23)]
     text = Dashboard(slug="s", stage="run", strip=[GLYPH_ACTIVE] * len(labels), strip_labels=labels).render()
-    assert "其余 3 项见任务包" in text
+    assert "See the task package for 3 more items" in text
     assert _current_area(text, False) == labels

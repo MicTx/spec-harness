@@ -169,14 +169,14 @@ def _add_criteria(spec: str, criteria: list[Criterion]) -> str:
     position = section_seven.start() if section_seven else len(spec)
     prefix = spec[:position].rstrip("\r\n")
     suffix = spec[position:]
-    return prefix + "\n\n## 6. 成功标准与验证方式\n" + lines + "\n" + suffix
+    return prefix + "\n\n## 6. Success Criteria and Verification\n" + lines + "\n" + suffix
 
 
 def _append_checklist_history(spec: str, checklist: str) -> str:
     # A block quote preserves all checklist evidence without creating new §6 items
     # or making headings inside the historical text active package sections.
     quoted = "\n".join("> " + line if line else ">" for line in checklist.splitlines())
-    return spec.rstrip("\r\n") + "\n\n## 迁移前 checklist.md 原文\n\n" + quoted + "\n"
+    return spec.rstrip("\r\n") + "\n\n## Original checklist.md Before Migration\n\n" + quoted + "\n"
 
 
 def _check_owned_files(package: Path) -> None:

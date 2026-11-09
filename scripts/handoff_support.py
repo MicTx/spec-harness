@@ -6,10 +6,10 @@ A handoff document makes session boundaries cheap: the departing collaborator
 structured entry, and any successor resumes from generated disk truth instead
 of re-deriving the repository. The file has two zones:
 
-- ``## 快照`` — a machine-readable snapshot rewritten by the CLI on every
+- ``## Snapshot`` — a machine-readable snapshot rewritten by the CLI on every
   update (branch, HEAD anchor, task progress, next ready tasks, freshness
   inputs). Generated, never hand-written.
-- ``## 条目`` — an append-only entry log. Each entry carries a fenced scalar
+- ``## Entries`` — an append-only entry log. Each entry carries a fenced scalar
   field block (event/collab/actor/status) plus narrative slots; required slots
   adapt to the collaboration mode.
 
@@ -50,16 +50,26 @@ ENTRY_STATUSES = ("in-progress", "blocked-on-human", "blocked-on-agent", "done")
 
 # Mode lattice: cluster requires everything solo/team/agent require.
 MODE_REQUIRED_SECTIONS: dict[str, tuple[str, ...]] = {
-    "solo": ("上下文", "下一步"),
-    "team": ("上下文", "下一步", "所有权", "等待中"),
-    "agent": ("上下文", "下一步", "恢复"),
-    "cluster": ("上下文", "下一步", "所有权", "等待中", "恢复", "lanes"),
+    "solo": ("Context", "Next Steps"),
+    "team": ("Context", "Next Steps", "Ownership", "Waiting On"),
+    "agent": ("Context", "Next Steps", "Resume"),
+    "cluster": ("Context", "Next Steps", "Ownership", "Waiting On", "Resume", "lanes"),
+}
+# Legacy headings remain valid when reading existing handoffs.
+SECTION_ALIASES = {
+    "Context": "上下文",
+    "Next Steps": "下一步",
+    "Ownership": "所有权",
+    "Waiting On": "等待中",
+    "Resume": "恢复",
 }
 # Generated entries always include these; validation leaves them optional.
-OPTIONAL_SECTIONS = ("发现", "风险与应急", "回执")
+OPTIONAL_SECTIONS = ("Findings", "Risks and Contingencies", "Acknowledgment")
 
-SNAPSHOT_HEADING = "## 快照"
-ENTRIES_HEADING = "## 条目"
+SNAPSHOT_HEADING = "## Snapshot"
+ENTRIES_HEADING = "## Entries"
+LEGACY_SNAPSHOT_HEADING = "## 快照"
+LEGACY_ENTRIES_HEADING = "## 条目"
 SNAPSHOT_KEYS = (
     "schema",
     "package",
@@ -87,11 +97,11 @@ FRESH_STALE = "stale"
 FRESH_UNKNOWN = "unknown"
 
 DEFAULT_ACTOR = "main"
-ENTRY_NOTE_PLACEHOLDER = "（由接手会话补充：做了什么、为什么在这里停）"
+ENTRY_NOTE_PLACEHOLDER = "(Incoming session: describe what was done and why work paused here.)"
 
 CONTRACT_NOTE = (
-    "> 维护契约：快照区由 `python3 scripts/spec_handoff.py update` 重写；"
-    "条目区 append-only，不删不改旧条目；`validate` 校验结构。"
+    "> Maintenance contract: `python3 scripts/spec_handoff.py update` rewrites the snapshot; "
+    "entries are append-only and must not be deleted or edited; `validate` checks the structure."
 )
 
 
@@ -250,16 +260,21 @@ def _extract_top_section(content: str, heading: str) -> str | None:
     return "\n".join(body) if body is not None else None
 
 
+def _extract_compatible_section(content: str, heading: str, legacy_heading: str) -> str | None:
+    body = _extract_top_section(content, heading)
+    return body if body is not None else _extract_top_section(content, legacy_heading)
+
+
 def parse_handoff(content: str) -> HandoffDoc:
     """Parse a handoff document into snapshot fields and ordered entries."""
     doc = HandoffDoc()
-    snapshot_body = _extract_top_section(content, SNAPSHOT_HEADING)
+    snapshot_body = _extract_compatible_section(content, SNAPSHOT_HEADING, LEGACY_SNAPSHOT_HEADING)
     if snapshot_body is not None:
         fence = re.search(r"^```[a-zA-Z0-9_-]*\s*\n(.*?)\n```", snapshot_body, re.DOTALL | re.MULTILINE)
         if fence:
             doc.snapshot = parse_scalar_block(fence.group(1))
             doc.snapshot_duplicate_keys = _duplicate_keys(fence.group(1))
-    entries_body = _extract_top_section(content, ENTRIES_HEADING)
+    entries_body = _extract_compatible_section(content, ENTRIES_HEADING, LEGACY_ENTRIES_HEADING)
     if entries_body is not None:
         blocks = re.split(r"(?m)^(?=###\s)", entries_body)
         for block in blocks:
@@ -353,22 +368,22 @@ def render_entry(
     heading = f"### [{timestamp}] event={event} collab={collab} actor={actor}"
     block = "\n".join(f"{key}: {fields[key]}" for key in ENTRY_KEYS)
     sections: list[tuple[str, str]] = [
-        ("上下文", sanitize_narrative(note.strip()) or ENTRY_NOTE_PLACEHOLDER),
-        ("发现", "（指针式结论 file:line，不整段誊抄；可写 无）"),
-        ("下一步", "（动作 + 目标 + 怎么验证）"),
-        ("风险与应急", "（若 X 坏则做 Y；可写 无）"),
+        ("Context", sanitize_narrative(note.strip()) or ENTRY_NOTE_PLACEHOLDER),
+        ("Findings", "(Summarize findings with file:line references; use None if applicable.)"),
+        ("Next Steps", "(Action, target, and verification.)"),
+        ("Risks and Contingencies", "(If X fails, do Y; use None if applicable.)"),
     ]
     sections.extend(
         (name, default)
         for name, default in (
-            ("所有权", "（谁拥有什么）"),
-            ("等待中", "（waiting-on 清单或 无）"),
-            ("恢复", "（resume 命令 + 下一任务 boundary/verify 指针）"),
-            ("lanes", "（lane 表：id/状态/ownership/指针/汇合次序）"),
+            ("Ownership", "(Who owns what.)"),
+            ("Waiting On", "(List dependencies or use None.)"),
+            ("Resume", "(Resume command and next task boundary/verify references.)"),
+            ("lanes", "(Lane table: id, status, ownership, references, and merge order.)"),
         )
         if name in MODE_REQUIRED_SECTIONS[collab]
     )
-    sections.append(("回执", "—（接手方填写）"))
+    sections.append(("Acknowledgment", "(To be filled by the incoming session.)"))
     body = "\n\n".join(f"#### {name}\n{content}" for name, content in sections)
     return f"{heading}\n\n```yaml\n{block}\n```\n\n{body}"
 
@@ -497,7 +512,7 @@ def _append_entry_impl(
     entry_markdown = render_entry(number, stamp, event, resolved_collab, resolved_actor, resolved_status, note)
     previous_entries = ""
     if existing:
-        entries_body = _extract_top_section(existing, ENTRIES_HEADING)
+        entries_body = _extract_compatible_section(existing, ENTRIES_HEADING, LEGACY_ENTRIES_HEADING)
         if entries_body is not None:
             previous_entries = entries_body.strip("\n")
     combined = (previous_entries + "\n\n" + entry_markdown) if previous_entries else entry_markdown
@@ -541,7 +556,7 @@ def append_close_entry(package_dir: Path, root: Path, slug: str, tasks_content: 
         collab=None,
         actor=DEFAULT_ACTOR,
         status="done",
-        note="Development Record 收口：done 归档，交接冻结为只读历史。",
+        note="Development Record closed: done archived the package; the handoff is frozen as read-only history.",
     )
     written = read_handoff(package_dir)
     if written is not None:
@@ -571,36 +586,36 @@ def _ensure_vocabulary(
 def validate_handoff(content: str) -> list[str]:
     """Validate structure and vocabulary; every finding is a user-facing error."""
     errors: list[str] = []
-    snapshot_body = _extract_top_section(content, SNAPSHOT_HEADING)
+    snapshot_body = _extract_compatible_section(content, SNAPSHOT_HEADING, LEGACY_SNAPSHOT_HEADING)
     if snapshot_body is None:
-        return [f"handoff 缺少 `{SNAPSHOT_HEADING}` 区块"]
+        return [f"handoff is missing the `{SNAPSHOT_HEADING}` section"]
     doc = parse_handoff(content)
     if not doc.snapshot:
-        errors.append("handoff 快照缺少 fenced 字段块")
+        errors.append("handoff snapshot is missing a fenced field block")
     else:
         for key in doc.snapshot_duplicate_keys:
-            errors.append(f"handoff 快照字段块存在重复键：{key}")
+            errors.append(f"handoff snapshot field block contains duplicate key: {key}")
         for key in SNAPSHOT_KEYS:
             if key not in doc.snapshot:
-                errors.append(f"handoff 快照缺少字段：{key}")
+                errors.append(f"handoff snapshot is missing field: {key}")
         if doc.snapshot.get("schema") != str(SCHEMA_VERSION):
-            errors.append(f"handoff 快照 schema 必须为 {SCHEMA_VERSION}")
+            errors.append(f"handoff snapshot schema must be {SCHEMA_VERSION}")
         if not doc.snapshot.get("package", "").strip():
-            errors.append("handoff 快照 package 不能为空")
+            errors.append("handoff snapshot package must not be empty")
         if parse_utc_timestamp(doc.snapshot.get("recorded-at", "")) is None:
-            errors.append("handoff 快照 recorded-at 必须为 YYYY-MM-DDTHH:MM:SSZ")
+            errors.append("handoff snapshot recorded-at must be YYYY-MM-DDTHH:MM:SSZ")
         head = doc.snapshot.get("head", "")
         if head != "unknown" and not re.fullmatch(r"[0-9a-f]{12}", head):
-            errors.append("handoff 快照 head 必须为 12 位小写十六进制或 unknown")
+            errors.append("handoff snapshot head must be 12 lowercase hexadecimal digits or unknown")
         if not re.fullmatch(r"\d+/\d+", doc.snapshot.get("progress", "")):
-            errors.append("handoff 快照 progress 必须为 done/total 形式")
+            errors.append("handoff snapshot progress must use the done/total format")
 
-    entries_body = _extract_top_section(content, ENTRIES_HEADING)
+    entries_body = _extract_compatible_section(content, ENTRIES_HEADING, LEGACY_ENTRIES_HEADING)
     if entries_body is None:
-        errors.append(f"handoff 缺少 `{ENTRIES_HEADING}` 区块")
+        errors.append(f"handoff is missing the `{ENTRIES_HEADING}` section")
         return errors
     if not doc.entries:
-        errors.append("handoff 条目区为空")
+        errors.append("handoff entries section is empty")
         return errors
 
     now = datetime.now(timezone.utc)
@@ -610,65 +625,71 @@ def validate_handoff(content: str) -> list[str]:
         parsed = ENTRY_HEADING_PATTERN.match(entry.heading)
         if not parsed:
             expected_heading = "`### [<ISO-8601 UTC>] event=<v> collab=<v> actor=<v>`"
-            errors.append(f"条目 {expected_number} 标题行格式非法（应为 {expected_heading}）")
+            errors.append(f"entry {expected_number} has an invalid heading (expected {expected_heading})")
         else:
             if parsed.group("event") != entry.fields.get("event"):
-                errors.append(f"条目 {expected_number} 标题与字段块的 event 不一致")
+                errors.append(f"entry {expected_number} event differs between heading and field block")
             if parsed.group("collab") != entry.fields.get("collab"):
-                errors.append(f"条目 {expected_number} 标题与字段块的 collab 不一致")
+                errors.append(f"entry {expected_number} collab differs between heading and field block")
             if parsed.group("actor").strip() != entry.fields.get("actor", "").strip():
-                errors.append(f"条目 {expected_number} 标题与字段块的 actor 不一致")
+                errors.append(f"entry {expected_number} actor differs between heading and field block")
         moment = parse_utc_timestamp(entry.timestamp)
         if moment is None:
-            errors.append(f"条目 {expected_number} 时间戳非法（应为 YYYY-MM-DDTHH:MM:SSZ）")
+            errors.append(f"entry {expected_number} has an invalid timestamp (expected YYYY-MM-DDTHH:MM:SSZ)")
         else:
             if moment > now:
-                errors.append(f"条目 {expected_number} 时间戳晚于当前时刻")
+                errors.append(f"entry {expected_number} timestamp is in the future")
             if previous_timestamp is not None and moment < previous_timestamp:
-                errors.append(f"条目 {expected_number} 时间戳早于上一条目（append-only 日志必须单调不减）")
+                errors.append(f"entry {expected_number} timestamp precedes the previous entry (append-only log)")
             previous_timestamp = moment
         if not entry.fields:
-            errors.append(f"条目 {expected_number} 缺少 fenced 字段块")
+            errors.append(f"entry {expected_number} is missing a fenced field block")
         else:
             for key in entry.duplicate_keys:
-                errors.append(f"条目 {expected_number} 字段块存在重复键：{key}")
+                errors.append(f"entry {expected_number} field block contains duplicate key: {key}")
             for key in ENTRY_KEYS:
                 if key not in entry.fields:
-                    errors.append(f"条目 {expected_number} 缺少字段：{key}")
+                    errors.append(f"entry {expected_number} is missing field: {key}")
         if entry.fields.get("event") not in ENTRY_EVENTS:
-            errors.append(f"条目 {expected_number} event 非法：{entry.fields.get('event', '')}")
+            errors.append(f"entry {expected_number} has an invalid event: {entry.fields.get('event', '')}")
         if entry.fields.get("collab") not in COLLAB_MODES:
-            errors.append(f"条目 {expected_number} collab 非法：{entry.fields.get('collab', '')}")
+            errors.append(f"entry {expected_number} has an invalid collab: {entry.fields.get('collab', '')}")
         if entry.fields.get("status") not in ENTRY_STATUSES:
-            errors.append(f"条目 {expected_number} status 非法：{entry.fields.get('status', '')}")
+            errors.append(f"entry {expected_number} has an invalid status: {entry.fields.get('status', '')}")
         if not entry.fields.get("actor", "").strip():
-            errors.append(f"条目 {expected_number} actor 不能为空")
+            errors.append(f"entry {expected_number} actor must not be empty")
         if entry.number != expected_number:
-            errors.append(f"条目序号不连续：期望 {expected_number}，实得 {entry.number or '缺失'}")
+            errors.append(
+                f"entry number is not consecutive: expected {expected_number}, got {entry.number or 'missing'}"
+            )
         for name in MODE_REQUIRED_SECTIONS.get(entry.fields.get("collab", ""), ()):
-            if name not in entry.sections:
-                errors.append(f"条目 {expected_number} 缺少 {entry.fields.get('collab')} 模式必填小节：#### {name}")
+            if name not in entry.sections and SECTION_ALIASES.get(name, name) not in entry.sections:
+                errors.append(
+                    f"entry {expected_number} is missing required {entry.fields.get('collab')} section: #### {name}"
+                )
         expected_number += 1
 
     close_positions = [index for index, entry in enumerate(doc.entries) if entry.fields.get("event") == "close"]
     last_index = len(doc.entries) - 1
     for index in close_positions:
         if index != last_index:
-            errors.append(f"条目 {index + 1} 的 close 必须是最后一条（append-only 日志不允许 close 后续写）")
+            errors.append(
+                f"entry {index + 1}: close must be the last entry (append-only logs cannot continue after close)"
+            )
     latest = doc.latest
     if latest is not None and doc.snapshot:
         if latest.fields.get("event") == "close" and latest.fields.get("status") != "done":
-            errors.append("close 条目 status 必须为 done")
+            errors.append("close entry status must be done")
         try:
             declared = int(doc.snapshot.get("entries", "0"))
         except ValueError:
             declared = -1
         if declared != len(doc.entries):
-            errors.append(f"快照 entries 计数与条目数不一致：{declared} vs {len(doc.entries)}")
+            errors.append(f"snapshot entries count does not match the log: {declared} vs {len(doc.entries)}")
         if doc.snapshot.get("latest-entry", "") != latest.timestamp:
-            errors.append("快照 latest-entry 与最后一条目时间戳不一致")
+            errors.append("snapshot latest-entry does not match the last entry timestamp")
         if doc.snapshot.get("collab", "") != latest.fields.get("collab", ""):
-            errors.append("快照 collab 与最后一条目 collab 不一致")
+            errors.append("snapshot collab does not match the last entry collab")
     return errors
 
 
@@ -680,7 +701,7 @@ def freshness(doc: HandoffDoc, root: Path, tasks_content: str) -> tuple[str, str
     ``unknown`` covers non-Git roots and unreadable anchors; it never blocks.
     """
     if not doc.snapshot:
-        return FRESH_UNKNOWN, "快照缺失，无法判定新鲜度"
+        return FRESH_UNKNOWN, "Snapshot missing; freshness cannot be determined"
     recorded_head = doc.snapshot.get("head", "")
     current_head = git_head_sha(root)
     if recorded_head == "unknown":
@@ -688,16 +709,16 @@ def freshness(doc: HandoffDoc, root: Path, tasks_content: str) -> tuple[str, str
         # record time); claiming "fresh" in a repo that now resolves would be
         # a false assurance, so the comparison stays honestly unresolved.
         if current_head:
-            return FRESH_UNKNOWN, "快照未锚定 HEAD，无法比对"
+            return FRESH_UNKNOWN, "Snapshot has no HEAD anchor for comparison"
     else:
         if not current_head:
-            return FRESH_UNKNOWN, "当前无法解析 git HEAD"
+            return FRESH_UNKNOWN, "Cannot resolve current git HEAD"
         if current_head[:12] != recorded_head:
-            return FRESH_STALE, f"HEAD 已移动（快照 {recorded_head}）"
+            return FRESH_STALE, f"HEAD moved (snapshot {recorded_head})"
     total, completed = count_tasks(tasks_content)
     if doc.snapshot.get("progress", "") != f"{completed}/{total}":
-        return FRESH_STALE, f"任务进度已变化（快照 {doc.snapshot.get('progress', '?')}）"
-    return FRESH_FRESH, "与磁盘真源一致"
+        return FRESH_STALE, f"Task progress changed (snapshot {doc.snapshot.get('progress', '?')})"
+    return FRESH_FRESH, "Matches current disk state"
 
 
 def handoff_brief(package_dir: Path, root: Path, tasks_content: str) -> str | None:
@@ -709,14 +730,14 @@ def handoff_brief(package_dir: Path, root: Path, tasks_content: str) -> str | No
     try:
         content = read_handoff(package_dir)
     except (OSError, UnicodeError, ValueError):
-        return "handoff 不可读（超大/非 UTF-8/非常规文件），运行 validate 诊断"
+        return "handoff unreadable (oversized, non-UTF-8, or not a regular file); run validate for details"
     if content is None:
         return None
     if validate_handoff(content):
-        return "handoff 结构非法，运行 validate 诊断"
+        return "handoff structure invalid; run validate for details"
     doc = parse_handoff(content)
     latest = doc.latest
     if latest is None:
-        return "handoff 存在但无条目"
+        return "handoff exists but has no entries"
     label, _detail = freshness(doc, root, tasks_content)
-    return f"handoff {latest.collab}/{label}（最新 {latest.timestamp}，event={latest.event}）"
+    return f"handoff {latest.collab}/{label} (latest {latest.timestamp}, event={latest.event})"

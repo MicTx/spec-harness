@@ -116,7 +116,7 @@ def test_heartbeat_updates(tmp_path, clock):
 
 def test_finish_states_and_guards(tmp_path, clock):
     store = make_store(tmp_path, clock)
-    with pytest.raises(LoopStateError, match="尚未满足"):
+    with pytest.raises(LoopStateError, match="convergence conditions are not yet met"):
         store.run_converged("空 run 不能收敛")
     store.round_start("r")
     store.task_add(1, "t1", "worker", "任务")
@@ -133,7 +133,7 @@ def test_terminal_run_rejects_all_task_mutations(tmp_path, clock):
     store.round_start("r")
     store.task_add(1, "t1", "worker", "任务")
     store.task_spawn(1, "t1", "a", "s")
-    with pytest.raises(LoopStateError, match="尚未满足"):
+    with pytest.raises(LoopStateError, match="convergence conditions are not yet met"):
         store.run_converged("在途不能收敛")
     store.run_failed("abort", confirmed_stopped=True)
     for operation in (
@@ -274,7 +274,7 @@ def test_resume_rejects_event_for_unknown_task(tmp_path, clock):
     ghost = {"ts": clock(), "type": "task_spawn", "round": 1, "task": "ghost"}
     with (store.run_dir / EVENTS_FILENAME).open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(ghost) + "\n")
-    with pytest.raises(LoopStateError, match="不一致"):
+    with pytest.raises(LoopStateError, match="inconsistent"):
         store.resume()
     # 一致性检查必须先于 interrupted -> active 迁移
     assert json.loads((store.run_dir / RUN_FILENAME).read_text(encoding="utf-8"))["status"] == "interrupted"
@@ -325,7 +325,7 @@ def test_protocol_files_reject_hardlinks(tmp_path, clock):
     events = store.run_dir / EVENTS_FILENAME
     events.unlink()
     os.link(outside_events, events)
-    with pytest.raises(LoopStateError, match="硬链接"):
+    with pytest.raises(LoopStateError, match="hard link"):
         store.round_start("r")
     assert outside_events.read_text(encoding="utf-8") == ""
 
@@ -334,7 +334,7 @@ def test_protocol_files_reject_hardlinks(tmp_path, clock):
     lock = store.run_dir / LOCK_FILENAME
     lock.unlink()
     os.link(outside_lock, lock)
-    with pytest.raises(LoopStateError, match="硬链接"):
+    with pytest.raises(LoopStateError, match="hard link"):
         store._persist()
     assert outside_lock.read_text(encoding="utf-8") == "sentinel"
 

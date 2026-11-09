@@ -45,6 +45,7 @@ IN_PROGRESS_TOKEN = ">"
 BLOCKED_TOKEN = "!"
 # tasks.md meta/rule block, bilingual: only task checkboxes outside it count.
 META_SECTION_TITLES = ("使用规则", "Usage Rules")
+BLOCKED_LINE_RE = re.compile(r"^\s*(?:-\s*)?(?:阻塞|blocked)[：:]")
 
 
 @dataclass
@@ -230,50 +231,50 @@ def status_next_step(
     other work remains, but becomes the next step once otherwise converged;
     check/done still refuse while the file exists."""
     if blocked_tasks:
-        return f"解除阻塞：{blocked_tasks[0].text}"
+        return f"Unblock task: {blocked_tasks[0].text}"
     if standalone_blocked:
-        return "处理任务阻塞：解决 tasks.md 中的独立阻塞状态行"
+        return "Resolve the standalone blocked status in tasks.md"
     if question_errors_list:
-        return f"修复调查契约：{question_errors_list[0]}"
+        return f"Fix the inquiry contract: {question_errors_list[0]}"
     if pending_questions:
-        return f"确认需求：{pending_questions[0]}"
+        return f"Confirm requirements: {pending_questions[0]}"
     if gate_gaps:
         first_gap = gate_gaps[0]
         if dependency_errors_list and first_gap in dependency_errors_list:
-            return f"修正任务依赖：{first_gap}"
-        return f"补齐项目定义：{project_gap_message(first_gap)}"
+            return f"Fix task dependencies: {first_gap}"
+        return f"Complete the project definition: {project_gap_message(first_gap)}"
     if orchestration_errors_list:
-        return f"修正编排策略：{orchestration_errors_list[0]}"
+        return f"Fix the orchestration strategy: {orchestration_errors_list[0]}"
     if inquiry_next_step and not all_completed:
         return inquiry_next_step
     if primary_task and not all_completed:
         return primary_task.text
     if all_completed and not gate_passed:
-        return "修复验收未通过项"
+        return "Fix failed acceptance checks"
     if checkpoint_pending:
         # Converged except for the historical checkpoint: resolving it is the
         # only step left (check/done refuse while the file exists).
-        return f"处理历史遗留 update checkpoint：{checkpoint_recovery_guidance()}"
-    return "整理交付结果并完成归档"
+        return f"Resolve the legacy update checkpoint: {checkpoint_recovery_guidance()}"
+    return "Prepare delivery and archive the record"
 
 
 def checkpoint_recovery_guidance() -> str:
-    return "用 git 确认无需恢复后删除 update-checkpoint.json，再重跑门禁"
+    return "Use git to confirm recovery is unnecessary, remove update-checkpoint.json, then rerun the gates"
 
 
 def checkpoint_alert(status: CheckpointStatus | None) -> str:
-    return f"遗留 update-checkpoint.json（机制已退役）：{checkpoint_recovery_guidance()}"
+    return f"Legacy update-checkpoint.json (mechanism retired): {checkpoint_recovery_guidance()}"
 
 
 def render_unreadable_checkpoint(slug: str, status: CheckpointStatus) -> str:
     alert = checkpoint_alert(status)
-    next_step = f"处理未完成 update checkpoint（历史遗留）：{checkpoint_recovery_guidance()}；再重跑 status"
+    next_step = f"Resolve the unfinished legacy update checkpoint: {checkpoint_recovery_guidance()}; then rerun status"
     return (
         f"# {slug}\n\n"
-        f"状态：{HEALTH_BLOCKED}（status）\n\n"
-        "已完成：未知（任务记录缺失或不可读）\n\n"
-        f"## 需要关注\n\n- {alert}\n- 任务记录缺失或不可读，任务进度未知\n\n"
-        f"## 接下来\n\n- {next_step}\n"
+        "Status: blocked (status)\n\n"
+        "Completed: unknown (task record missing or unreadable)\n\n"
+        f"## Attention\n\n- {alert}\n- Task record missing or unreadable; progress unknown\n\n"
+        f"## Next\n\n- {next_step}\n"
     )
 
 
@@ -310,7 +311,11 @@ def render_status(
             inquiry_task = next((record for record in records if record.id in inquiry), None)
             ready_task = next((record for record in records if record.id in ready), None)
             inquiry_next_step = (
-                f"自主调查：{inquiry_task.title}" if inquiry_task else ready_task.title if ready_task else None
+                f"Autonomous inquiry: {inquiry_task.title}"
+                if inquiry_task
+                else ready_task.title
+                if ready_task
+                else None
             )
         except SpecControlError:
             pass
@@ -324,8 +329,8 @@ def render_status(
     standalone_blocked_text: str | None = None
     if r.blocked_tasks and not blocked_tasks:
         standalone_blocked_text = next(
-            (line.strip() for line in tasks_content.splitlines() if re.match(r"^\s*(?:-\s*)?阻塞[：:]", line)),
-            "阻塞",
+            (line.strip() for line in tasks_content.splitlines() if BLOCKED_LINE_RE.match(line)),
+            "blocked task marker in tasks.md",
         )
 
     health = overall_state(tasks, pending_questions, bool(ordered_gate_gaps), gate_passed=r.overall_ok)
@@ -342,21 +347,21 @@ def render_status(
     alerts: list[str] = []
     if checkpoint_pending:
         alerts.append(checkpoint_alert(checkpoint_status))
-    alerts.extend(f"任务受阻：{task.text}" for task in blocked_tasks)
+    alerts.extend(f"Task blocked: {task.text}" for task in blocked_tasks)
     if standalone_blocked_text:
-        alerts.append(f"任务受阻：{standalone_blocked_text}")
-    alerts.extend(f"需要确认需求：{question}" for question in pending_questions)
-    alerts.extend(f"自主调查：{question}" for question in r.autonomous_questions)
-    alerts.extend(f"调查契约尚未满足：{error}" for error in r.question_errors)
+        alerts.append(f"Task blocked: {standalone_blocked_text}")
+    alerts.extend(f"Requirements need confirmation: {question}" for question in pending_questions)
+    alerts.extend(f"Autonomous inquiry: {question}" for question in r.autonomous_questions)
+    alerts.extend(f"Inquiry contract requirements not met: {error}" for error in r.question_errors)
     for gap in ordered_gate_gaps:
         if gap in dependency_errors_list:
-            alerts.append(f"修正任务依赖：{gap}")
+            alerts.append(f"Fix task dependencies: {gap}")
         else:
-            alerts.append(f"项目定义不完整：{project_gap_message(gap)}")
-    alerts.extend(f"编排策略尚未满足：{error}" for error in orchestration_errors)
-    alerts.extend(f"验证范围尚未满足：{error}" for error in r.verification_scope_errors)
+            alerts.append(f"Project definition incomplete: {project_gap_message(gap)}")
+    alerts.extend(f"Orchestration requirements not met: {error}" for error in orchestration_errors)
+    alerts.extend(f"Verification scope requirements not met: {error}" for error in r.verification_scope_errors)
     if r.all_tasks_done and not r.overall_ok and not alerts:
-        alerts.append("项目尚未满足最终验收要求")
+        alerts.append("Project does not meet final acceptance requirements")
 
     all_completed = r.all_tasks_done
     if r.blocked_tasks:
@@ -396,16 +401,16 @@ def render_status(
         strip=strip,
         strip_labels=strip_labels,
         metrics={
-            "阻塞": "1" if (checkpoint_pending or r.blocked_tasks) else "0",
-            "待确认": str(len(pending_questions)),
-            "门禁": "通过" if r.overall_ok else "未过",
-            "证据": str(r.evidence_filled_count),
-            "范围": r.verification_scope or "",
+            "Blocked": "1" if (checkpoint_pending or r.blocked_tasks) else "0",
+            "Pending decisions": str(len(pending_questions)),
+            "Gate": "Passed" if r.overall_ok else "Failed",
+            "Evidence": str(r.evidence_filled_count),
+            "Scope": r.verification_scope or "",
         },
         alerts=alerts,
         next_step=next_step,
         detail=[handoff_line] if handoff_line else [],
-        detail_title="交接" if handoff_line else "交付信息",
+        detail_title="Handoff" if handoff_line else "Delivery Details",
         ascii_mode=ascii_mode,
         compact=compact,
     )
@@ -426,12 +431,12 @@ def display_marker(task: Task, primary_task: Task | None = None) -> str:
 def render_tasks(slug: str, sections: list[str], tasks: list[Task]) -> str:
     grouped = tasks_by_section(tasks, sections)
     missing_verify_tasks = [task for task in tasks if not task.verify]
-    lines = [f"# {slug} - 任务列表", ""]
+    lines = [f"# {slug} - Task List", ""]
 
     for index, section in enumerate(sections):
         section_tasks = grouped.get(section, [])
         completed, total = section_progress(section_tasks)
-        lines.append(f"## {section}（{completed} / {total}）")
+        lines.append(f"## {section} ({completed} / {total})")
         for task in section_tasks:
             marker = display_marker(task)
             lines.append(f"- [{marker}] {task.text}")
@@ -446,8 +451,9 @@ def render_tasks(slug: str, sections: list[str], tasks: list[Task]) -> str:
         lines.extend(
             [
                 "",
-                "## 风险提示",
-                f"- 验证说明缺失任务：{len(missing_verify_tasks)} 个（请先补齐再执行）",
+                "## Attention",
+                f"- Tasks missing verification instructions: {len(missing_verify_tasks)} "
+                "(fill them in before execution)",
             ]
         )
 
@@ -489,12 +495,15 @@ def package_status_summary(
     if r.orchestration_errors or r.question_errors or (r.all_tasks_done and not r.overall_ok):
         state = worst_health(state, HEALTH_RISK)
 
-    first_error = r.orchestration_errors[0] if r.orchestration_errors else "无"
-    blocked_label = (
-        blocked_tasks[0].text if blocked_tasks else ("tasks.md 存在独立阻塞状态行" if standalone_blocked else "无")
-    )
-    dependency_label = dependency_errors_list[0] if dependency_errors_list else "无"
-    checkpoint_label = checkpoint_alert(checkpoint_status) if checkpoint_pending else "无"
+    first_error = r.orchestration_errors[0] if r.orchestration_errors else ""
+    if blocked_tasks:
+        blocked_label = blocked_tasks[0].text
+    elif standalone_blocked:
+        blocked_label = "tasks.md contains a standalone blocked status"
+    else:
+        blocked_label = ""
+    dependency_label = dependency_errors_list[0] if dependency_errors_list else ""
+    checkpoint_label = checkpoint_alert(checkpoint_status) if checkpoint_pending else ""
     definition_gaps = [gap for gap in ordered_gate_gaps if gap not in dependency_errors_list]
     acceptance_failed = (
         r.all_tasks_done
@@ -513,18 +522,18 @@ def package_status_summary(
         "title": extract_title_from_content(spec_content, slug),
         "progress": f"{completed_tasks}/{total_tasks}",
         "state": state,
-        "primary": "、".join(active_tasks) if active_tasks else "无",
+        "primary": ", ".join(active_tasks) if active_tasks else "",
         "blocked": blocked_label,
-        "pending": pending_questions[0] if pending_questions else "无",
-        "inquiry": r.autonomous_questions[0] if r.autonomous_questions else "无",
-        "question_error": r.question_errors[0] if r.question_errors else "无",
+        "pending": pending_questions[0] if pending_questions else "",
+        "inquiry": r.autonomous_questions[0] if r.autonomous_questions else "",
+        "question_error": r.question_errors[0] if r.question_errors else "",
         "dependency": dependency_label,
-        "needs_work": "是" if (definition_gaps or acceptance_failed) else "否",
-        "gate_failed": "是" if not r.overall_ok else "否",
+        "needs_work": "yes" if (definition_gaps or acceptance_failed) else "no",
+        "gate_failed": "yes" if not r.overall_ok else "no",
         "orchestration": first_error,
-        "verification_scope": r.verification_scope or "历史包未声明",
+        "verification_scope": r.verification_scope or "not declared in legacy package",
         "checkpoint": checkpoint_label,
-        "acceptance": "验收未通过" if acceptance_failed else "无",
+        "acceptance": "acceptance failed" if acceptance_failed else "",
     }
 
 
@@ -540,9 +549,9 @@ def render_multi_status(
         dash = Dashboard(
             slug="spec",
             stage="status",
-            title="当前没有进行中的项目",
+            title="No active projects",
             health=HEALTH_OK,
-            next_step="描述要完成的目标，skill 会直接建立任务并开始推进",
+            next_step="Describe the goal so the skill can create tasks and start work",
             ascii_mode=ascii_mode,
             compact=compact,
         )
@@ -568,7 +577,7 @@ def render_multi_status(
             package_dir = resolve_specs_child(specs_root, "specs", slug)
             checkpoint_status = detect_update_checkpoint(package_dir)
         except (OSError, UnicodeError, ValueError) as exc:
-            rows.append(f"- {slug}：状态读取失败（{exc}）")
+            rows.append(f"- {slug}: failed to read status ({exc})")
             read_failure_packages += 1
             blocked_packages += 1
             worst = worst_health(worst, HEALTH_BLOCKED)
@@ -581,12 +590,13 @@ def render_multi_status(
             checklist_content: str | None = read_regular_text(checklist_path) if checklist_path.exists() else None
         except (OSError, UnicodeError, ValueError) as exc:
             if checkpoint_status.interrupted:
-                rows.append(f"- {slug}：已完成 未知；阻塞 {checkpoint_alert(checkpoint_status)}；任务记录不可读")
+                alert = checkpoint_alert(checkpoint_status)
+                rows.append(f"- {slug}: completed unknown; blocked: {alert}; task record unreadable")
                 checkpoint_packages += 1
                 blocked_packages += 1
                 worst = worst_health(worst, HEALTH_BLOCKED)
                 continue
-            rows.append(f"- {slug}：状态读取失败（{exc}）")
+            rows.append(f"- {slug}: failed to read status ({exc})")
             read_failure_packages += 1
             blocked_packages += 1
             worst = worst_health(worst, HEALTH_BLOCKED)
@@ -594,9 +604,9 @@ def render_multi_status(
         sections, tasks = parse_tasks(tasks_content)
         title = extract_title_from_content(spec_content, slug)
         if not tasks:
-            row = f"- {title}：尚未拆出可执行任务"
+            row = f"- {title}: no actionable tasks defined"
             if checkpoint_status.interrupted:
-                row += f"；历史遗留 {checkpoint_alert(checkpoint_status)}"
+                row += f"; legacy: {checkpoint_alert(checkpoint_status)}"
                 checkpoint_packages += 1
                 blocked_packages += 1
             else:
@@ -618,50 +628,55 @@ def render_multi_status(
         )
         state = summary["state"]
         worst = worst_health(worst, state)
+        # Join the user-supplied titles directly: replacing punctuation in the
+        # summary would rewrite titles that legitimately contain it.
+        active_titles = [task.text for task in tasks if task.is_explicit_in_progress and not task.is_blocked]
+        active_display = ", ".join(active_titles) if active_titles else ""
         total_tasks, completed_tasks = count_tasks(tasks_content)
         done_sum += completed_tasks
         total_sum += total_tasks
-        if summary["blocked"] != "无" or summary["checkpoint"] != "无":
+        if summary["blocked"] or summary["checkpoint"]:
             blocked_packages += 1
-        if summary["blocked"] != "无":
+        if summary["blocked"]:
             task_blocked_packages += 1
-        if summary["checkpoint"] != "无":
+        if summary["checkpoint"]:
             checkpoint_packages += 1
-        if summary["pending"] != "无":
+        if summary["pending"]:
             pending_packages += 1
-        if summary["question_error"] != "无":
+        if summary["question_error"]:
             question_error_packages += 1
-        if summary["needs_work"] == "是":
+        if summary["needs_work"] == "yes":
             gate_packages += 1
-        if summary["gate_failed"] == "是":
+        if summary["gate_failed"] == "yes":
             failed_gate_packages += 1
-        if summary["primary"] != "无":
-            primary_lines.append(f"{summary['title']}：{summary['primary']}")
-        row = f"- {summary['title']}：已完成 {summary['progress']}"
-        if summary["primary"] != "无":
-            row += f"；当前 {summary['primary']}"
-        if summary["checkpoint"] != "无":
-            row += f"；历史遗留 {summary['checkpoint']}"
-        if summary["blocked"] != "无":
-            row += f"；阻塞 {summary['blocked']}"
-        if summary["pending"] != "无":
-            row += f"；待确认 {summary['pending']}"
-        if summary["inquiry"] != "无":
-            row += f"；自主调查 {summary['inquiry']}"
-        if summary["question_error"] != "无":
-            row += f"；调查契约尚未满足：{summary['question_error']}"
-        if summary["dependency"] != "无":
-            row += f"；任务依赖错误 {summary['dependency']}"
+        if summary["primary"]:
+            primary_lines.append(f"{summary['title']}: {active_display}")
+        row = f"- {summary['title']}: completed {summary['progress']}"
+        if summary["primary"]:
+            row += f"; current: {active_display}"
+        if summary["checkpoint"]:
+            row += f"; legacy: {summary['checkpoint']}"
+        if summary["blocked"]:
+            row += f"; blocked: {summary['blocked']}"
+        if summary["pending"]:
+            row += f"; pending confirmation: {summary['pending']}"
+        if summary["inquiry"]:
+            row += f"; autonomous inquiry: {summary['inquiry']}"
+        if summary["question_error"]:
+            row += f"; inquiry contract requirements not met: {summary['question_error']}"
+        if summary["dependency"]:
+            row += f"; task dependency error: {summary['dependency']}"
             dependency_packages += 1
-        if summary["orchestration"] != "无":
-            row += f"；编排策略尚未满足：{summary['orchestration']}"
+        if summary["orchestration"]:
+            row += f"; orchestration requirements not met: {summary['orchestration']}"
             orchestration_packages += 1
-        if summary["acceptance"] != "无":
-            row += f"；{summary['acceptance']}"
-        row += f"；范围 {summary['verification_scope']}"
+        if summary["acceptance"]:
+            row += "; acceptance failed"
+        scope = summary["verification_scope"]
+        row += f"; scope: {scope}"
         brief = handoff_brief(package_dir, root, tasks_content)
         if brief:
-            row += f"；{brief}"
+            row += f"; {brief}"
         rows.append(row)
 
     detail = rows
@@ -669,61 +684,61 @@ def render_multi_status(
     alerts = []
     if checkpoint_packages:
         alerts.append(
-            f"{checkpoint_packages} 个项目存在历史遗留 update checkpoint（机制已退役）："
+            f"{checkpoint_packages} projects have legacy update checkpoints (mechanism retired): "
             f"{checkpoint_recovery_guidance()}"
         )
     if read_failure_packages:
-        alerts.append(f"{read_failure_packages} 个项目状态读取失败或尚无可执行任务")
+        alerts.append(f"{read_failure_packages} projects have unreadable status or no actionable tasks")
     if task_blocked_packages:
-        alerts.append(f"{task_blocked_packages} 个项目有任务阻塞")
+        alerts.append(f"{task_blocked_packages} projects have blocked tasks")
     if pending_packages:
-        alerts.append(f"{pending_packages} 个项目需要确认需求")
+        alerts.append(f"{pending_packages} projects need requirements confirmation")
     if question_error_packages:
-        alerts.append(f"{question_error_packages} 个项目调查契约尚未满足")
+        alerts.append(f"{question_error_packages} projects do not meet the inquiry contract")
     if gate_packages:
-        alerts.append(f"{gate_packages} 个项目定义或验收尚未完整")
+        alerts.append(f"{gate_packages} projects have definition or acceptance gaps")
     if orchestration_packages:
-        alerts.append(f"{orchestration_packages} 个项目编排策略尚未满足")
+        alerts.append(f"{orchestration_packages} projects do not meet orchestration requirements")
     if dependency_packages:
-        alerts.append(f"{dependency_packages} 个项目任务依赖存在错误")
+        alerts.append(f"{dependency_packages} projects have task dependency errors")
 
     if checkpoint_packages:
-        next_step = f"处理历史遗留 update checkpoint：{checkpoint_recovery_guidance()}"
+        next_step = f"Resolve the legacy update checkpoint: {checkpoint_recovery_guidance()}"
     elif read_failure_packages:
-        next_step = "修复项目记录读取失败或补齐可执行任务"
+        next_step = "Fix unreadable project records or add actionable tasks"
     elif task_blocked_packages:
-        next_step = "处理项目任务阻塞"
+        next_step = "Resolve blocked project tasks"
     elif question_error_packages:
-        next_step = "修复调查契约"
+        next_step = "Fix the inquiry contract"
     elif pending_packages:
-        next_step = "确认项目需求"
+        next_step = "Confirm project requirements"
     elif dependency_packages:
-        next_step = "修正项目任务依赖"
+        next_step = "Fix project task dependencies"
     elif gate_packages:
-        next_step = "修复项目定义或验收缺口"
+        next_step = "Fix project definition or acceptance gaps"
     elif orchestration_packages:
-        next_step = "修正项目编排策略"
+        next_step = "Fix the project orchestration strategy"
     else:
-        next_step = "继续推进当前项目任务"
+        next_step = "Continue current project tasks"
 
     dash = Dashboard(
         slug="spec",
         stage="status",
-        title="进行中的项目",
+        title="Active Projects",
         done=done_sum,
         total=total_sum,
         health=worst,
         metrics={
-            "阻塞": str(blocked_packages),
-            "待确认": str(pending_packages),
-            "门禁": f"待补 {failed_gate_packages}" if failed_gate_packages else "通过",
-            "证据": "无",
+            "Blocked": str(blocked_packages),
+            "Pending decisions": str(pending_packages),
+            "Gate": f"Pending {failed_gate_packages}" if failed_gate_packages else "Passed",
+            "Evidence": "n/a",
         },
         current_items=primary_lines,
         alerts=alerts,
         next_step=next_step,
         detail=detail,
-        detail_title="项目概览",
+        detail_title="Project Overview",
         ascii_mode=ascii_mode,
         compact=compact,
     )

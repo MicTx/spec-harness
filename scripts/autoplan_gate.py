@@ -239,7 +239,7 @@ def gate_payload(root: Path, explicit: Optional[str]) -> Dict[str, object]:
                 "detail": (
                     "a qualifying document declares a non-empty goal"
                     if has_goal
-                    else "no qualifying document has a non-empty Goal/目标 section"
+                    else "no qualifying document has a non-empty goal section"
                 ),
             }
         )

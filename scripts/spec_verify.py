@@ -113,9 +113,9 @@ def read_runs_records(package_dir: Path) -> list[dict] | None:
         try:
             value = json.loads(line)
         except ValueError as exc:
-            raise ValueError(f"{RUNS_FILENAME} 第 {number} 行不是合法 JSON") from exc
+            raise ValueError(f"{RUNS_FILENAME} line {number} is not valid JSON") from exc
         if not isinstance(value, dict):
-            raise ValueError(f"{RUNS_FILENAME} 第 {number} 行不是 JSON 对象")
+            raise ValueError(f"{RUNS_FILENAME} line {number} is not a JSON object")
         records.append(value)
     return records
 
@@ -126,7 +126,7 @@ def latest_record_by_task(records: list[dict]) -> dict[str, dict]:
 
 def duplicate_verify_error(task_id: str, block_text: str) -> str | None:
     if len(re.findall(r"(?m)^-\s+verify:", block_text)) > 1:
-        return rule_message("SPEC-VERIFY-002", f"{task_id}：verify 必须唯一；合并命令或拆分任务")
+        return rule_message("SPEC-VERIFY-002", f"{task_id}: verify must be unique; combine commands or split the task")
     return None
 
 
@@ -138,7 +138,7 @@ def _machine_tasks(tasks_content: str) -> tuple[list[tuple[str, str]], list[str]
         if error:
             errors.append(error)
         elif classification is None:
-            errors.append(f"{task.id}：verify 需要反引号命令或 manual: 理由")
+            errors.append(f"{task.id}: verify requires a backtick command or a manual: reason")
         elif classification.kind == "manual":
             manual += 1
         else:
@@ -153,9 +153,9 @@ def evaluate_runs_gate(
     root: Path | None,
 ) -> tuple[bool | None, list[str], str]:
     if not runs_protocol_enabled(spec_content) or package_dir is None or root is None:
-        return None, [], "未评估运行证据"
+        return None, [], "Run evidence not evaluated"
     if package_dir.relative_to(root).parts[-3:-1] == ("specs", "archive"):
-        return None, [], "已归档（冻结）"
+        return None, [], "Archived (frozen)"
     try:
         machine, errors, manual = _machine_tasks(tasks_content)
         latest = latest_record_by_task(read_runs_records(package_dir) or [])
@@ -164,22 +164,29 @@ def evaluate_runs_gate(
         for task_id, command in machine:
             record = latest.get(task_id, {})
             if type(record.get("exit")) is not int or record.get("exit") != 0:
-                errors.append(rule_message("SPEC-EVID-001", f"{task_id}：未验证（最近记录 exit={record.get('exit')}）"))
+                errors.append(
+                    rule_message("SPEC-EVID-001", f"{task_id}: not verified (latest exit={record.get('exit')})")
+                )
             elif fingerprint is None or record.get("cmd") != command or record.get("tree_fp") != fingerprint:
-                errors.append(rule_message("SPEC-EVID-002", f"{task_id}：证据过期，命令或工作树变化，需重跑 --all"))
+                errors.append(
+                    rule_message("SPEC-EVID-002", f"{task_id}: stale evidence; command or tree changed, rerun --all")
+                )
             else:
                 passed += 1
-        detail = f"机器任务 {passed}/{len(machine)} exit=0，命令与最终工作树匹配；manual {manual} 项"
+        detail = (
+            f"Machine tasks {passed}/{len(machine)} exit=0 with command and final tree matching; "
+            f"{manual} manual task(s)"
+        )
         return not errors, errors, detail
     except (OSError, ValueError, SpecControlError) as exc:
-        return False, [rule_message("SPEC-EVID-003", str(exc))], "运行证据不可读"
+        return False, [rule_message("SPEC-EVID-003", str(exc))], "Run evidence is unreadable"
 
 
 def machine_verification_summary(tasks_content: str, package_dir: Path) -> str | None:
     machine, _errors, manual = _machine_tasks(tasks_content)
     latest = latest_record_by_task(read_runs_records(package_dir) or [])
     passed = sum(latest.get(task, {}).get("exit") == 0 for task, _command in machine)
-    return f"{passed}/{len(machine)}；manual 任务 {manual} 项不计入分母" if machine else None
+    return f"{passed}/{len(machine)}; {manual} manual task(s) excluded from the denominator" if machine else None
 
 
 def fresh_machine_evidence(spec_content: str, tasks_content: str, package_dir: Path, root: Path) -> list[str]:
@@ -225,12 +232,12 @@ def run_selected_tasks(args: argparse.Namespace) -> int:
             raise ValueError(detail)
         machine, errors, _manual = _machine_tasks(tasks)
         if not args.all and not args.task:
-            raise ValueError("选择 --all 或 --task")
+            raise ValueError("choose --all or --task")
         selected = machine if args.all else [(task, command) for task, command in machine if task in args.task]
         records = parse_task_records(tasks)
         known = {record.id for record in records}
         if set(args.task or ()) - known:
-            raise ValueError("未知 task id")
+            raise ValueError("unknown task id")
         manual_ids = {
             record.id
             for record in records
@@ -238,10 +245,10 @@ def run_selected_tasks(args: argparse.Namespace) -> int:
         }
         for task_id in args.task or ():
             if task_id in manual_ids:
-                print(f"{task_id}: 跳过（manual：由会话按理由人工复核，不写运行记录）")
+                print(f"{task_id}: skipped (manual: review in session; no run record written)")
         fingerprint = compute_tree_fingerprint(root, package)
         if selected and fingerprint is None:
-            errors.append("机器运行证据需要可计算的 Git 工作树指纹；未写 runs.jsonl")
+            errors.append("Machine evidence requires a computable Git working tree fingerprint; runs.jsonl not written")
             for error in errors:
                 print(error, file=sys.stderr)
             return 1
@@ -272,14 +279,14 @@ def run_selected_tasks(args: argparse.Namespace) -> int:
             print(f"{task}: {'OK' if code == 0 else 'FAIL'} exit={'timeout' if code == -1 else code} ({duration:.2f}s)")
         final = compute_tree_fingerprint(root, package)
         if final != fingerprint:
-            errors.append("verify 改变工作树；请在最终树上重跑 --all")
+            errors.append("verify changed the working tree; rerun --all on the final tree")
             results = [{**record, "exit": ABNORMAL_EXIT} for record in results]
         with (package / RUNS_FILENAME).open("a", encoding="utf-8") as stream:
             for record in results:
                 stream.write(json.dumps(record, ensure_ascii=False) + "\n")
         for error in errors:
             print(error, file=sys.stderr)
-        print(f"记录 {RUNS_FILENAME}：{package / RUNS_FILENAME}")
+        print(f"Recorded {RUNS_FILENAME}: {package / RUNS_FILENAME}")
         return int(bool(errors) or any(record["exit"] != 0 for record in results))
     except (OSError, ValueError, SpecControlError) as exc:
         print(rule_message("SPEC-EVID-003", str(exc)), file=sys.stderr)

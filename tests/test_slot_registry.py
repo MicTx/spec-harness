@@ -55,26 +55,26 @@ def test_missing_manifest(tmp_path):
 def test_missing_declared_file_rejected(tmp_path):
     slot_dir = make_slot(tmp_path, files=("README.md",))  # 缺 scripts/tool.py 与 hooks/guard.py
     problems = slot_registry.validate_slot(slot_dir)
-    assert any("script 不存在" in p for p in problems)
-    assert any("hook 不存在" in p for p in problems)
+    assert any("script does not exist" in p for p in problems)
+    assert any("hook does not exist" in p for p in problems)
 
 
 def test_path_escape_rejected(tmp_path):
     bad = dict(VALID_MANIFEST, scripts=["../escape.py"])
     slot_dir = make_slot(tmp_path, manifest=bad)
-    assert any("逃逸" in p for p in slot_registry.validate_slot(slot_dir))
+    assert any("escapes the slot directory" in p for p in slot_registry.validate_slot(slot_dir))
 
 
 def test_unknown_hook_event_rejected(tmp_path):
     bad = dict(VALID_MANIFEST, hooks={"NotAnEvent": ["hooks/guard.py"]})
     slot_dir = make_slot(tmp_path, manifest=bad)
-    assert any("未知 hook 事件" in p for p in slot_registry.validate_slot(slot_dir))
+    assert any("unknown hook event" in p for p in slot_registry.validate_slot(slot_dir))
 
 
 def test_name_dir_mismatch_rejected(tmp_path):
     bad = dict(VALID_MANIFEST, name="other-name")
     slot_dir = make_slot(tmp_path, manifest=bad)
-    assert any("不一致" in p for p in slot_registry.validate_slot(slot_dir))
+    assert any("does not match" in p for p in slot_registry.validate_slot(slot_dir))
 
 
 def test_missing_required_field_rejected(tmp_path):
@@ -105,7 +105,7 @@ def test_non_string_asset_path_is_rejected(tmp_path):
     bad = dict(VALID_MANIFEST, scripts=["scripts/tool.py", 42])
     slot_dir = make_slot(tmp_path, manifest=bad)
     problems = slot_registry.validate_slot(slot_dir)
-    assert any("必须是字符串" in problem for problem in problems)
+    assert any("must be a string" in problem for problem in problems)
 
 
 def test_slot_symlink_is_rejected(tmp_path):
@@ -116,7 +116,7 @@ def test_slot_symlink_is_rejected(tmp_path):
     except (OSError, NotImplementedError):
         return
     problems = slot_registry.validate_slot(link)
-    assert any("不能是符号链接" in problem for problem in problems)
+    assert any("must not be a symlink" in problem for problem in problems)
 
 
 def test_external_asset_symlink_is_rejected(tmp_path):
@@ -132,7 +132,7 @@ def test_external_asset_symlink_is_rejected(tmp_path):
     manifest = dict(VALID_MANIFEST, scripts=["scripts/external.py"])
     (slot_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     problems = slot_registry.validate_slot(slot_dir)
-    assert any("符号链接" in problem or "逃逸" in problem for problem in problems)
+    assert any("symlink" in problem or "escapes the slot directory" in problem for problem in problems)
 
 
 MANIFEST_FENCE = re.compile(r"```json\n(.*?)```", re.DOTALL)

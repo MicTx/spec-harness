@@ -1,16 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-"""Claude Code TeammateIdle / TaskCompleted hook：teammate 质量门禁。
+"""Claude Code TeammateIdle / TaskCompleted hook for teammate handoff quality.
 
-协议（官方 hooks 文档）：
-- TeammateIdle：teammate 即将空闲。exit 2 + stderr -> 反馈送回 teammate，令其继续工作；
-  JSON {"continue": false, "stopReason": ...} -> 彻底停止 teammate。
-- TaskCompleted：任务被标记完成时触发，可在关闭前强制验收。
-
-行为：在活跃 run 中定位 teammate 对应的 in_flight 任务；
-- 未交接时要求 worker 仅提交非终态报告并通知主会话；
-- 已交接后放行，以免阻止 worker 结束；该报告不会释放并发额度。
-- 主会话须从宿主核实执行结束后才记录终态；无活跃 run 或无对应任务则放行。
+The hook can return exit 2 and stderr to request further work. It locates the
+teammate's in_flight task in active runs and asks for a non-terminal report and
+handoff to the main session. Once reported, the worker may exit, but its report
+does not release capacity. The main session must confirm termination with the host
+before recording a terminal result. No active run or matching task allows exit.
 """
 
 from __future__ import annotations
@@ -33,10 +29,9 @@ def fail_closed(message: str) -> int:
 
 
 def _agent_matches(teammate: str, agent: str) -> bool:
-    """teammate 与 agentId 的对应判定：等值优先，其次前缀+分隔符。
+    """Match teammate and agentId by equality or a prefix followed by a separator.
 
-    无锚点子串匹配会把名为 worker 的 teammate 错配到 review-worker 的
-    任务上，并诱导它替别人的任务记 result。
+    Unanchored substring matching could assign review-worker's task to worker.
     """
     if not teammate or not agent:
         return False
@@ -58,7 +53,7 @@ def main() -> int:
         return 0
     event = payload.get("hook_event_name")
     if event not in ("TeammateIdle", "TaskCompleted", "SubagentStop"):
-        # 事件字段缺失时无法确认本门禁被触发，放行（守卫事件面由注册方约束）。
+        # Without a recognized event, this guard cannot confirm it was invoked.
         return 0
 
     teammate = payload.get("teammate_name") or payload.get("agent_id") or ""
@@ -71,13 +66,13 @@ def main() -> int:
     try:
         active, corrupt = find_active_runs(root)
     except (OSError, LoopStateError) as exc:
-        return fail_closed(f"spec team-loop 门禁：无法安全读取 run 状态：{exc}")
+        return fail_closed(f"spec team-loop gate: cannot safely read run state: {exc}")
     if corrupt:
-        # 与 stop 守卫同哲学：损坏的 run 不静默跳过，fail-closed 列出修复入口。
-        names = "；".join(p.name for p in corrupt[:5])
+        # As with the Stop guard, fail closed and provide a repair entrypoint.
+        names = "; ".join(p.name for p in corrupt[:5])
         return fail_closed(
-            f"spec team-loop 门禁：存在状态损坏的 run（{names}），无法核验 in_flight 任务。"
-            f"请修复：python3 {SKILL_DIR}/scripts/loop_state.py status --run-dir <run目录>"
+            f"spec team-loop gate: corrupt run state detected ({names}); in_flight tasks cannot be verified. "
+            f"Repair it with python3 {SKILL_DIR}/scripts/loop_state.py status --run-dir <run-dir>"
         )
     if not active:
         return 0
@@ -100,18 +95,19 @@ def main() -> int:
 
     if load_failed:
         return fail_closed(
-            "spec team-loop 门禁：以下活跃 run 状态无法读取，in_flight 任务未核验：" + "；".join(load_failed)
+            "spec team-loop gate: cannot read these active runs; in_flight tasks are unverified: "
+            + "; ".join(load_failed)
         )
 
     if not matches:
         return 0
 
     if len(matches) > 1:
-        # 多匹配不静默取首个：列出全部，避免指示 teammate 替别人的任务记 result。
-        listed = "；".join(f"r{r}/{tid}@{rd.name}" for rd, r, tid, _ in matches)
+        # Report every match instead of assigning another teammate's task by mistake.
+        listed = "; ".join(f"r{r}/{tid}@{rd.name}" for rd, r, tid, _ in matches)
         return fail_closed(
-            f"spec team-loop 门禁：teammate {teammate} 命中多个 in_flight 任务（{listed}），"
-            "身份歧义需先收敛（agentId 命名加区分度）再放行。"
+            f"spec team-loop gate: teammate {teammate} matches multiple in_flight tasks ({listed}). "
+            "Resolve the identity ambiguity, for example by using distinct agentId names, before proceeding."
         )
 
     run_dir, round_index, tid, task = matches[0]
@@ -125,13 +121,16 @@ def main() -> int:
     elif task.get("attempts", 0) > 1:
         fence = " --submission " + shlex.quote(task.get("submissionId") or "")
     return fail_closed(
-        f"spec team-loop 门禁：run {run_dir.name} 的任务 r{round_index}/{tid} 仍是 in_flight。"
-        "请将真实工作与验证记录写入 JSON 对象文件 worker-report.json（若文件已存在则另选文件名并调整命令），"
-        "仅提交非终态交接并通知主会话，不要自行记录 task result 或取消任务：\n"
+        f"spec team-loop gate: task r{round_index}/{tid} in run {run_dir.name} is still in_flight. "
+        "Write the actual work and verification to a JSON object file worker-report.json "
+        "(if it exists, choose another filename and adjust the command). "
+        "Submit only a non-terminal handoff and notify the main session; "
+        "do not record the task result or cancel it yourself:\n"
         f"python3 {shlex.quote(str(SKILL_DIR / 'scripts' / 'loop_state.py'))} task report "
         f"--run-dir {shlex.quote(str(run_dir))} "
         f"--round {round_index} --id {shlex.quote(tid)} --result @worker-report.json{fence}\n"
-        "交接不释放额度；主会话须向宿主核实该 worker 已结束后才记录终态。"
+        "The handoff does not release capacity; the main session must verify with the host "
+        "that the worker has stopped before recording a terminal result."
     )
 
 

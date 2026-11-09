@@ -391,9 +391,9 @@ def test_problem_definition_english_labels_and_placeholders():
     # Current definition gate: goal + assumptions/open questions/out-of-scope/
     # minimal path (confirmed-facts inventory is no longer gated).
     assert len(gaps) == 1 + 4
-    assert "`spec.md` 缺少有效项目目标" in gaps
-    assert "`spec.md` 缺少有效区块：### 2.1 已确认事实" not in gaps
-    assert "`spec.md` 缺少有效区块：## 4. 最小实现路径" in gaps
+    assert "`spec.md` is missing a valid goal" in gaps
+    assert "`spec.md` is missing a valid section: ### 2.1 Confirmed Facts" not in gaps
+    assert "`spec.md` is missing a valid section: ## 4. Minimal Implementation Path" in gaps
 
 
 def test_spec_title_suffix_bilingual():
@@ -593,7 +593,7 @@ def test_full_gate_failures_are_identical_across_localizations():
     english = _gate_summary(broken_en, FIXTURE_TASKS_EN)
     assert chinese["overall_ok"] is False
     assert chinese == english
-    assert "`spec.md` 缺少有效项目目标" in chinese["gaps"]
+    assert "`spec.md` is missing a valid goal" in chinese["gaps"]
 
 
 def test_checklist_headings_do_not_change_the_gate_verdict():

@@ -183,7 +183,7 @@ def test_project_hooks_warn_when_not_installed(tmp_path):
     doctor.check_project_hooks()
     check = check_by_id(doctor, "project.hooks")
     assert check.status == "warn"
-    assert "未安装磁盘真源 hooks" in check.detail
+    assert "managed Git hooks are not installed" in check.detail
 
 
 @requires_git
@@ -199,7 +199,7 @@ def test_project_hooks_ok_when_rendered_gate_points_at_this_skill(tmp_path):
     doctor.check_project_hooks()
     check = check_by_id(doctor, "project.hooks")
     assert check.status == "ok"
-    assert "指向当前 skill" in check.detail
+    assert "point to the current skill" in check.detail
 
 
 @requires_git
@@ -214,7 +214,7 @@ def test_project_hooks_fail_on_stale_pointer(tmp_path):
     doctor.check_project_hooks()
     check = check_by_id(doctor, "project.hooks")
     assert check.status == "fail"
-    assert "指向不存在" in check.detail
+    assert "points to a missing" in check.detail
     assert "install_git_hooks.py" in check.fix_note
 
 
@@ -230,7 +230,7 @@ def test_project_hooks_fail_on_missing_exec_bit(tmp_path):
     doctor.check_project_hooks()
     check = check_by_id(doctor, "project.hooks")
     assert check.status == "fail"
-    assert "执行权限" in check.detail
+    assert "not executable" in check.detail
 
 
 @requires_git
@@ -251,7 +251,7 @@ def test_project_hooks_info_outside_a_work_tree(tmp_path):
     doctor.check_project_hooks()
     check = check_by_id(doctor, "project.hooks")
     assert check.status == "info"
-    assert "不是 Git 工作树" in check.detail
+    assert "is not a Git working tree" in check.detail
 
 
 def test_stop_hook_ok_when_settings_reference_the_guard(isolated_home, tmp_path):

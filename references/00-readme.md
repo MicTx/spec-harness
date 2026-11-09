@@ -14,7 +14,7 @@ Start with the smallest page that can unblock the current action:
 
 Open these only when the task shape calls for them:
 
-- [`orchestration.md`](orchestration.md) — before delegating sidecar work or writing `### 5.4 编排策略`
+- [`orchestration.md`](orchestration.md) — before delegating sidecar work or writing `### 5.4 Orchestration Strategy`
 - [`handoff.md`](handoff.md) — before pausing a session, taking over a package, or joining an agent cluster's lanes
 - [`engineering-philosophy.md`](engineering-philosophy.md) — on principle conflicts
 - [`changelog-guide.md`](changelog-guide.md) — before generating release notes from Git history
@@ -31,7 +31,7 @@ Open these only when the task shape calls for them:
 - Handoff document: [`handoff.md`](handoff.md) + `scripts/spec_handoff.py`
 - Slot contract: [`slots.md`](slots.md) + `scripts/slot_registry.py validate`
 - Structure-audit facts: `slots/organize/scripts/organize_project_structure.py` (`--check` is the hard architecture-consistency gate)
-- Chain state and plan discovery: `scripts/chain_state.py` (`.spec/<chain>/chain.json`, default autorun cap 5)
+- Chain state and plan discovery: `scripts/chain_state.py` (`.spec/<chain>/chain.json`; no default round cap; `--max-rounds <n>` bounds a chain explicitly; `--unbounded` remains accepted)
 - Autoplan cluster facts: `scripts/autoplan_gate.py` (planning-document discovery, structural readiness gate for the cluster)
 
 Other carriers should point here instead of copying gate lists. The public guides explain the ideas; `.spec/` records project state; neither replaces the runtime contracts above.

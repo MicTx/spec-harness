@@ -1045,7 +1045,7 @@ def mentioned_paths(doc_rel: str, content: str, root: Optional[Path] = None) -> 
 
 # Mentions in clearly illustrative prose are candidates and examples, not broken
 # references: a path-with-spaces inside a quoted run (`docs/plan v2.md`), a
-# parenthesized enumeration of candidate locations (two or more path-shaped tokens plus 等/etc.), or a
+# parenthesized enumeration of candidate locations (two or more path-shaped tokens plus etc.), or a
 # mention carrying an explicit example marker next to it. Classification is
 # reported (``example-doc-path``), never silently dropped, so a misclassification
 # stays visible in the audit output.

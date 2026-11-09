@@ -95,7 +95,7 @@ class TestStopGuard:
         code, out, _ = run_hook("loop_stop_guard", {"hook_event_name": "Stop", "cwd": str(tmp_path)})
         data = json.loads(out)
         assert data["decision"] == "block"
-        assert "多个活跃 run" in data["reason"]
+        assert "multiple active runs" in data["reason"]
 
     def test_external_stop_blocks_with_finish_instruction(self, tmp_path):
         store = make_run(tmp_path)
@@ -103,7 +103,7 @@ class TestStopGuard:
         code, out, _ = run_hook("loop_stop_guard", {"hook_event_name": "Stop", "cwd": str(tmp_path)})
         data = json.loads(out)
         assert data["decision"] == "block"
-        assert "外部停止" in data["reason"]
+        assert "external stop" in data["reason"]
 
     def test_corrupt_run_fail_closed_then_recovers(self, tmp_path):
         # check 轮回归：损坏 run 不得静默放行（fail-closed），排查后放行
@@ -112,7 +112,7 @@ class TestStopGuard:
         code, out, _ = run_hook("loop_stop_guard", {"hook_event_name": "Stop", "cwd": str(tmp_path)})
         data = json.loads(out)
         assert data["decision"] == "block"
-        assert "损坏" in data["reason"]
+        assert "corrupt" in data["reason"]
         # 修复（这里用删除废弃目录模拟处置）后放行
         import shutil
 

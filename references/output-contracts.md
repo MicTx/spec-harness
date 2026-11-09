@@ -7,48 +7,53 @@ Users read project facts; scripts read stage names. Reply with the goal, real pr
 Section names are emitted by `scripts/dashboard_support.py`; keep them verbatim.
 
 ```markdown
-# <可读项目名称>
+# <Readable project name>
 
-## 项目进展
+## Project Progress
 
-- 已完成：3/9
+- Completed: 2/4
 
-## 任务
+## Verification Scope
 
-- 固化需求边界：完成
-- 实现支付回调：完成
-- 补齐失败重试：进行
-- 验证生产配置：待办
+- Level: package
 
-## 正在处理
+## Tasks
 
-- 补齐失败重试
+- Define the requirements boundary: done
+- Implement the payment callback: done
+- Add failure retries: in progress
+- Verify the production configuration: todo
 
-## 需要关注
+## In Progress
 
-- 测试环境缺少支付平台回调密钥，当前只影响真实回调验证
+- Add failure retries
 
-## 本轮完成
+## Attention
 
-- 支付回调主链路和签名校验已实现
+- The test environment lacks the payment provider's callback secret; only live callback verification is affected.
 
-## 接下来
+## Completed This Round
 
-- 补齐失败重试并运行回归测试
+- Implemented the main payment callback flow and signature verification.
 
-## 交付信息
+## Next
 
-- 测试：支付模块 18 项全部通过
-- 完成总结：<path>
+- Add failure retries and run regression tests.
+
+## Delivery Details
+
+- Tests: all 18 payment module tests passed.
+- Completion summary: <path>
 ```
 
-Only the title always appears; omit empty sections. Order is fixed as above; multi-project status uses `项目概览` instead of `交付信息`.
+Only the title always appears; omit empty sections. Order is fixed as above; multi-project status uses `Project Overview` instead of `Delivery Details`.
 
-- 项目进展 / 任务: real counts and tasks from `tasks.md`, in order; status is one of 完成 / 进行 / 阻塞 / 待办.
-- 正在处理: only work actually in progress. 接下来: the next action the agent will take — never a `/spec:*` command or user homework the agent can do.
-- 需要关注: only facts that affect scope, delivery, quality or an external dependency, with their impact.
-- 本轮完成 / 交付信息: verified results, commit or publication state, paths. Never write unverified work as done, a preflight as published, or a local commit as pushed.
-- Keep at most 20 tasks and 5 attention items, then point to the package. Mark decisive conclusions 已核验 / 推断 / 未核验.
+- Project Progress / Tasks: real counts and tasks from `tasks.md`, in order; normal status labels are `done`, `in progress`, `blocked`, and `todo` (`n/a` when not applicable). In `--ascii` mode they are `done`, `now`, `blocked`, and `todo` (`n/a` when not applicable).
+- Verification Scope: the declared level, when present.
+- In Progress: only work actually in progress. Next: the next action the agent will take — never a `/spec:*` command or user homework the agent can do.
+- Attention: only facts that affect scope, delivery, quality or an external dependency, with their impact.
+- Completed This Round / Delivery Details: verified results, commit or publication state, paths. Never write unverified work as done, a preflight as published, or a local commit as pushed.
+- Keep at most 20 tasks and 5 attention items, then point to the package. Mark decisive conclusions verified / inferred / unverified.
 
 ## Per command
 

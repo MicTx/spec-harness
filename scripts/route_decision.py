@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-"""spec 编排路由决策：按包结构判定五路由之一（AUD-11 单一入口）。
+"""Choose one of five orchestration routes from package structure (AUD-11).
 
-路由输入是包结构（未完成任务数、boundary 模块、依赖宽度、风险标签），不是目标
-文本：零信号 local；风险标签 review；宽边界或依赖纠缠 explore；中等可切分
-build；external 只由显式 5.4 route / --route 覆盖到达。委派前运行：
+Inputs are open tasks, boundary modules, dependency width, and risk labels,
+not goal text. No signal routes local; risks route review; wide boundaries or
+tangled dependencies route explore; separable work routes build. External is
+available only through the explicit 5.4 route or --route override. Before delegation:
 
     python3 scripts/route_decision.py --root <project> --slug <slug>
 
-输出单个 JSON 对象 {"route", "reason", "risks"}；契约见 references/orchestration.md。
+Outputs one JSON object with route, reason, and risks; see references/orchestration.md.
 """
 
 from __future__ import annotations
@@ -28,14 +29,14 @@ import spec_package_support as _sps  # noqa: E402
 ROUTES = _sps.ORCHESTRATION_ROUTES
 
 _RISK_LABELS = (
-    ("认证 / 信任边界", r"认证|auth|login|session"),
-    ("计费 / 支付", r"计费|billing|支付|payment"),
-    ("密钥 / 令牌", r"密钥|secret|token|credential"),
-    ("数据迁移", r"迁移|migration|schema"),
-    ("破坏性操作", r"删(库|除)|破坏性|destructive|drop\b"),
+    ("authentication / trust boundary", r"认证|auth|login|session"),
+    ("billing / payment", r"计费|billing|支付|payment"),
+    ("secrets / tokens", r"密钥|secret|token|credential"),
+    ("data migration", r"迁移|migration|schema"),
+    ("destructive operations", r"删(库|除)|破坏性|destructive|drop\b"),
 )
 
-# 固定阈值（无使用证据不做配置化；调整须随测试与试点实录一起评审）。
+# Fixed thresholds: review adjustments against tests and pilot evidence.
 EXPLORE_MIN_TASKS = 6
 EXPLORE_MIN_MODULES = 4
 EXPLORE_TANGLE_DEP_WIDTH = 3
@@ -43,13 +44,13 @@ BUILD_MIN_TASKS = 4
 BUILD_MIN_MODULES = 3
 BUILD_MAX_DEP_WIDTH = 2
 
-# boundary 里提及但不计入代码面的簿记树（包文档/链状态/loop 运行时状态）。
+# Bookkeeping trees mentioned in boundaries do not count as code modules.
 _NON_CODE_MODULE_ROOTS = frozenset({".spec", ".agents"})
 _PATH_TOKEN_RE = re.compile(r"[A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.\-]+)+")
 
 
 def _risks(text: str) -> list[str]:
-    """命中的信任边界/破坏性信号；非空时必须加安全评审 lane。"""
+    """Return matched trust-boundary and destructive-operation risks."""
     return [label for label, pat in _RISK_LABELS if re.search(pat, text, re.IGNORECASE)]
 
 
@@ -76,7 +77,7 @@ def _explicit_route_from_spec(spec_content: str) -> str | None:
 
 
 def _boundary_modules(boundary: str) -> set[str]:
-    """boundary 路径 token 归一到首段（slots 归到 slot 目录）；.spec/.agents 与裸文件名不计。"""
+    """Normalize boundary paths to modules; ignore bookkeeping trees and bare filenames."""
     modules: set[str] = set()
     for token in _PATH_TOKEN_RE.findall(boundary or ""):
         parts = [part for part in token.split("/") if part]
@@ -87,10 +88,10 @@ def _boundary_modules(boundary: str) -> set[str]:
 
 
 def collect_package_structure(root: Path, slug: str) -> dict:
-    """读未完成任务结构：任务数、boundary 模块、依赖宽度、风险标签、5.4 route。
+    """Read open-task structure, risk labels, and the explicit 5.4 route.
 
-    tasks 解析失败按空任务集（路由不抛错）；包文档缺失/不可读向外抛，
-    不在这里兜底猜文本。
+    Treat task parse failures as an empty task set; propagate missing or
+    unreadable package files rather than guessing from text.
     """
     specs_root = _sps.resolve_specs_root(root, None)
     package_dir = _sps.resolve_specs_child(specs_root, "specs", slug)
@@ -121,37 +122,39 @@ def collect_package_structure(root: Path, slug: str) -> dict:
 
 
 def _structural_route(structure: dict) -> tuple[str, str]:
-    """(route, 依据)：risk→review，宽边界/依赖纠缠→explore，可切分→build，否则 local。"""
+    """Return the structural route and its rationale."""
     tasks = int(structure.get("task_count") or 0)
     modules = int(structure.get("module_count") or 0)
     dep_width = int(structure.get("dep_width") or 0)
     risks = list(structure.get("risk_labels") or [])
     if risks:
-        return "review", f"风险标签 {risks}"
+        return "review", f"risk labels: {risks}"
     if tasks >= EXPLORE_MIN_TASKS and modules >= EXPLORE_MIN_MODULES:
-        return "explore", f"任务数 {tasks}≥{EXPLORE_MIN_TASKS} × 模块数 {modules}≥{EXPLORE_MIN_MODULES}"
+        return "explore", f"tasks {tasks}>={EXPLORE_MIN_TASKS}; modules {modules}>={EXPLORE_MIN_MODULES}"
     if dep_width >= EXPLORE_TANGLE_DEP_WIDTH:
-        return "explore", f"依赖宽度 {dep_width}≥{EXPLORE_TANGLE_DEP_WIDTH}（纠缠，理解先行）"
+        return "explore", f"dependency width {dep_width}>={EXPLORE_TANGLE_DEP_WIDTH} (tangled; investigate first)"
     if tasks >= BUILD_MIN_TASKS and modules >= BUILD_MIN_MODULES and dep_width <= BUILD_MAX_DEP_WIDTH:
         return (
             "build",
-            f"任务数 {tasks}≥{BUILD_MIN_TASKS} × 模块数 {modules}≥{BUILD_MIN_MODULES}"
-            f" × 依赖宽度 {dep_width}≤{BUILD_MAX_DEP_WIDTH}",
+            f"tasks {tasks}>={BUILD_MIN_TASKS}; modules {modules}>={BUILD_MIN_MODULES}"
+            f"; dependency width {dep_width}<={BUILD_MAX_DEP_WIDTH}",
         )
-    return "local", "无强结构信号，一律 local"
+    return "local", "no strong structural signals; use local"
 
 
 def decide_by_structure(structure: dict) -> str:
-    """按包结构做路由判定：risk→review，宽边界/依赖纠缠→explore，可切分→build，否则 local。"""
+    """Select a route from the package structure."""
     return _structural_route(structure)[0]
 
 
 def _reason(structure: dict, route: str, override: bool) -> str:
-    reason = "依据=包结构：" + _structural_route(structure)[1]
+    reason = "based on package structure: " + _structural_route(structure)[1]
     if override:
-        reason += f"；显式覆盖 route={route}"
+        reason += f"; explicit override route={route}"
         if route == "external":
-            reason += "（升级条件：隔离/长时运行由显式声明到达，结构路由不自动给出）"
+            reason += (
+                " (isolation or long-running work requires an explicit route; structural routing never selects it)"
+            )
     return reason
 
 
@@ -177,8 +180,7 @@ def main(argv: list[str] | None = None) -> int:
         return _err(f"invalid --route {args.route!r}; expected one of: " + " / ".join(ROUTES), 2)
     if not (args.root and args.slug):
         return _err("pass --root and --slug", 2)
-    # 包不可读时 fail closed——路由结果必须可由包结构解释，不许退回猜文本
-    # （那正是 AUD-11 要消除的非确定语义）。
+    # Fail closed: never guess a route from text when package structure is unavailable.
     try:
         structure = collect_package_structure(Path(args.root), args.slug)
     except Exception as exc:  # noqa: BLE001 - never guess from text

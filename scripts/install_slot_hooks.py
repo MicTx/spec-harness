@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-"""spec 插槽 hook 安装器：按插槽 manifest 注册 Claude Code hooks。
+"""Register Claude Code hooks from a slot manifest.
 
-- 身份判定用相对标记 `slots/<name>/hooks/<脚本名>`：与安装根无关，
-  重装/迁移后旧条目仍可被 `--remove` 识别回收。
-- 幂等：重复安装只更新不重复；他人条目（官方组与旧版裸条目）原样保留不动；
-  写前备份；损坏 settings 拒绝写。
-- 官方 hooks schema：事件值是 matcher 组数组，组内 `hooks` 才是条目数组。
-  旧版本安装器曾把本插槽条目直接写在事件数组下（缺 hooks 包装，Claude Code
-  会整组忽略、hook 不生效）；重装时这些旧条目按标记识别回收，统一改写为官方组。
-- 需要与 slot_registry.py 同目录放置，复用其 manifest 装载与校验。
+- Relative `slots/<name>/hooks/<script>` markers identify old entries across
+  reinstalls and migrations so --remove can reclaim them.
+- Repeated installs update rather than duplicate entries. Foreign matcher groups
+  and legacy bare entries are preserved; settings are backed up before writing,
+  and corrupt settings are rejected.
+- The hook schema stores matcher groups under events and entries inside `hooks`.
+  Reinstallation reclaims this slot's old bare entries, which Claude Code ignored,
+  and rewrites them as valid groups.
+- Keep this script beside slot_registry.py for manifest loading and validation.
 
-用法：
+Usage:
   python3 scripts/install_slot_hooks.py --slot team-loop [--scope user|project]
   python3 scripts/install_slot_hooks.py --slot team-loop --remove
   python3 scripts/install_slot_hooks.py --slot team-loop --dry-run
@@ -69,10 +70,10 @@ class InstallError(Exception):
 def slot_dir_for(root: Path, slot_name: str) -> Path:
     target = root / "slots" / slot_name
     if not target.is_dir():
-        raise InstallError(f"插槽不存在: {slot_name}（{target}）")
+        raise InstallError(f"slot not found: {slot_name} ({target})")
     problems = validate_slot(target)
     if problems:
-        raise InstallError(f"插槽 manifest 无效，拒绝安装: {slot_name}: " + "；".join(problems))
+        raise InstallError(f"invalid slot manifest; refusing installation: {slot_name}: " + "; ".join(problems))
     return target
 
 
@@ -81,11 +82,11 @@ def settings_path(scope: str, project_root: Optional[Path]) -> Path:
         return Path.home() / ".claude" / "settings.json"
     if scope == "project":
         if project_root is None:
-            raise InstallError("--scope project 需要 --project-root")
+            raise InstallError("--scope project requires --project-root")
         target = project_root / ".claude" / "settings.json"
         target.parent.mkdir(parents=True, exist_ok=True)
         return target
-    raise InstallError(f"未知 scope: {scope}")
+    raise InstallError(f"unknown scope: {scope}")
 
 
 def load_settings(path: Path) -> dict[str, Any]:
@@ -94,19 +95,17 @@ def load_settings(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        raise InstallError(f"settings 损坏（拒绝写入）：{path}: {exc}") from exc
+        raise InstallError(f"settings are corrupt; refusing to write: {path}: {exc}") from exc
     if not isinstance(payload, dict):
-        raise InstallError(f"settings 顶层不是对象，拒绝写入：{path}")
+        raise InstallError(f"settings must be a top-level object; refusing to write: {path}")
     return payload
 
 
 def relative_markers(slot_name: str, hook_files: list[Path]) -> list[str]:
-    """插槽身份标记：slots/<name>/hooks/<file>，与安装根无关。
+    """Identify this slot's hooks independently of the installation root.
 
-    额外纳入目录级标记 ``slots/<name>/hooks/``：插槽拥有其 hooks/ 命名空间，
-    manifest 删掉的旧脚本（如 897a42f 删除的 loop_route_hook.py）留下的注册
-    条目同样属于本插槽，--remove 必须能回收，否则残留指向已删脚本的悬空
-    hook 在每次事件触发时报错。
+    Include the directory marker to reclaim entries for scripts removed from
+    the manifest; otherwise --remove would leave dangling hook registrations.
     """
     markers = [f"slots/{slot_name}/hooks/{f.name}" for f in hook_files]
     markers.append(f"slots/{slot_name}/hooks/")
@@ -125,13 +124,13 @@ def _is_own(entry: dict[str, Any], markers: set[str]) -> bool:
 
 
 def _split_items(items: Any, markers: set[str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """事件数组拆成（自己的条目, 他人保留物）。
+    """Separate this slot's entries from foreign event entries.
 
-    官方 schema：事件 -> matcher 组数组，组内 hooks 才是条目：
+    The official schema places entries in matcher-group hooks, for example:
       "Stop": [{"hooks": [{"type": "command", "command": "..."}]}]
-    旧版本曾把条目直接写在事件数组下（缺 hooks 包装，Claude Code 忽略整组）。
-    他人条目（组或裸条目）一律原样保留：他方安装器可能按原位置查找，
-    迁移他人的位置会令其幂等判定失灵。只有带本插槽标记的条目才回收改写。
+    Older installers wrote bare entries that Claude Code ignored. Preserve
+    foreign entries in their original groups or positions so their installers
+    remain idempotent; reclaim only entries bearing this slot's marker.
     """
     if not isinstance(items, list):
         return [], []
@@ -143,25 +142,25 @@ def _split_items(items: Any, markers: set[str]) -> tuple[list[dict[str, Any]], l
             continue
         inner = item.get("hooks")
         if isinstance(inner, list):
-            # matcher 组：组内他人的条目留在原组，自己的拆走
+            # Keep foreign entries in their original matcher group.
             foreign = [e for e in inner if isinstance(e, dict) and not _is_own(e, markers)]
             own_entries.extend(e for e in inner if isinstance(e, dict) and _is_own(e, markers))
             if foreign:
                 kept_items.append({**item, "hooks": foreign})
         elif _is_own(item, markers):
-            own_entries.append(item)  # 旧版裸条目：识别回收
+            own_entries.append(item)  # reclaim the slot's legacy bare entry
         else:
-            kept_items.append(item)  # 他人的裸条目：原样保留
+            kept_items.append(item)  # preserve foreign bare entries
     return own_entries, kept_items
 
 
 def apply_install(
     payload: dict[str, Any], slot_name: str, slot_dir: Path, hook_events: dict[str, list[str]]
 ) -> tuple[dict[str, Any], int]:
-    """manifest 内 hooks 路径相对插槽根；命令写入绝对路径。"""
+    """Resolve manifest hook paths from the slot root and write absolute commands."""
     hooks = payload.setdefault("hooks", {})
     if not isinstance(hooks, dict):
-        raise InstallError("settings.hooks 不是对象，拒绝写入")
+        raise InstallError("settings.hooks is not an object; refusing to write")
     markers = set(relative_markers(slot_name, [slot_dir / rel for rels in hook_events.values() for rel in rels]))
     added = 0
     for event, rel_scripts in hook_events.items():
@@ -172,7 +171,7 @@ def apply_install(
                 {"type": "command", "command": f'python3 "{slot_dir / rel}"', "timeout": HOOK_TIMEOUT_SECONDS}
             )
             added += 1
-        # 自己的新组放在最前，他人条目（原组序）跟在后面；无条目的空组不写
+        # Place this slot's group first; preserve foreign order and omit empty groups.
         rewritten = [new_group, *kept_items] if kept_items or new_group["hooks"] else kept_items
         if rewritten:
             hooks[event] = rewritten
@@ -213,13 +212,13 @@ def write_settings(path: Path, payload: dict[str, Any]) -> None:
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="install_slot_hooks.py", description="按插槽 manifest 注册/移除 Claude Code hooks"
+        prog="install_slot_hooks.py", description="Register or remove Claude Code hooks from a slot manifest"
     )
     parser.add_argument("--slot", required=True)
     parser.add_argument("--root", default=str(REPO_ROOT))
     parser.add_argument("--scope", choices=["user", "project"], default="user")
     parser.add_argument("--project-root", default=None)
-    parser.add_argument("--remove", action="store_true", help="移除该插槽注册的 hook 条目")
+    parser.add_argument("--remove", action="store_true", help="Remove hook entries registered by this slot")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 

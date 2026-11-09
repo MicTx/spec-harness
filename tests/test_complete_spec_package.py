@@ -139,9 +139,9 @@ def test_archive_non_git_generates_summary_and_moves_all_files(tmp_path: Path):
     summary = (archived / "completion-summary.md").read_text(encoding="utf-8")
     assert not package.exists()
     assert (archived / "evidence.txt").read_text(encoding="utf-8") == "proof\n"
-    assert "## 交付结论" in summary
+    assert "## Delivery Outcome" in summary
     assert "Task A" in summary
-    assert "## AGENTS.md 增量提议\n```diff\n+ Reusable project fact\n+ Second fact\n```" in summary
+    assert "## Project Fact Proposal\n```diff\n+ Reusable project fact\n+ Second fact\n```" in summary
     assert '"version": 1' in summary
     assert "## 失误方向统计" not in summary
     assert list(docs.iterdir()) == []
@@ -177,7 +177,7 @@ def test_archive_closes_existing_handoff(tmp_path: Path):
     handoff = (archive_path(tmp_path) / "handoff.md").read_text(encoding="utf-8")
     assert "event: close" in handoff
     assert "status: done" in handoff
-    assert "交接记录" in result.stdout
+    assert "Handoff record" in result.stdout
 
 
 def test_git_archive_moves_tracked_and_untracked_files(tmp_path: Path):
@@ -193,8 +193,8 @@ def test_git_archive_moves_tracked_and_untracked_files(tmp_path: Path):
     assert (archived / "extra.txt").read_text(encoding="utf-8") == "untracked\n"
     assert git(tmp_path, "diff", "--cached", "--name-status").count("R100") >= 3
     summary = (archived / "completion-summary.md").read_text(encoding="utf-8")
-    assert "## Git 记录" in summary
-    assert re.search(r"^- 提交区间：[0-9a-f]{40}\.\.[0-9a-f]{40}$", summary, re.MULTILINE)
+    assert "## Git Record" in summary
+    assert re.search(r"^- Commit interval: [0-9a-f]{40}\.\.[0-9a-f]{40}$", summary, re.MULTILINE)
 
 
 def test_archive_records_configured_mainline_when_multiple_branches_exist(tmp_path: Path):
@@ -214,7 +214,7 @@ def test_archive_records_configured_mainline_when_multiple_branches_exist(tmp_pa
     assert not package.exists()
     summary = (archive_path(tmp_path) / "completion-summary.md").read_text(encoding="utf-8")
     base = git(tmp_path, "merge-base", "develop", integration_head)
-    assert f"- 提交区间：{base}..{integration_head}" in summary
+    assert f"- Commit interval: {base}..{integration_head}" in summary
 
 
 def test_missing_mainline_records_explicit_no_interval(tmp_path: Path):
@@ -222,7 +222,7 @@ def test_missing_mainline_records_explicit_no_interval(tmp_path: Path):
     result = complete(tmp_path, "--archive", "--main-branch", "missing-main")
     assert result.returncode == 0, result.stdout + result.stderr
     summary = (archive_path(tmp_path) / "completion-summary.md").read_text(encoding="utf-8")
-    assert "- 提交区间：适用外（无法解析 refs/heads/missing-main 的 merge-base）" in summary
+    assert "- Commit interval: not applicable (cannot resolve merge-base for refs/heads/missing-main)" in summary
 
 
 def test_generated_interval_warns_when_archive_footer_is_reused(tmp_path: Path):
@@ -291,7 +291,7 @@ def test_existing_summary_requires_force_and_can_be_archived(tmp_path: Path):
     assert summary.read_text(encoding="utf-8") == "original\n"
     accepted = complete(tmp_path, "--archive", "--force")
     assert accepted.returncode == 0, accepted.stdout + accepted.stderr
-    assert "## 交付结论" in (archive_path(tmp_path) / "completion-summary.md").read_text(encoding="utf-8")
+    assert "## Delivery Outcome" in (archive_path(tmp_path) / "completion-summary.md").read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("archive", [False, True])
@@ -306,7 +306,7 @@ def test_force_summary_replaces_current_entry_without_changing_hardlink(tmp_path
     result = complete(tmp_path, "--force", *(["--archive"] if archive else []))
     assert result.returncode == 0, result.stdout + result.stderr
     generated = (archive_path(tmp_path) if archive else package) / "completion-summary.md"
-    assert "## 交付结论" in generated.read_text(encoding="utf-8")
+    assert "## Delivery Outcome" in generated.read_text(encoding="utf-8")
     assert sentinel.read_text(encoding="utf-8") == "frozen summary\n"
     assert generated.stat().st_ino != sentinel.stat().st_ino
     assert generated.stat().st_nlink == 1
@@ -357,8 +357,8 @@ def test_archive_records_scoped_legacy_evidence(tmp_path: Path):
     result = complete(tmp_path, "--archive")
     assert result.returncode == 0, result.stdout + result.stderr
     summary = (archive_path(tmp_path) / "completion-summary.md").read_text(encoding="utf-8")
-    assert "- 级别：package" in summary
-    assert "验收证据见任务包" in summary
+    assert "- Level: package" in summary
+    assert "See task package for acceptance evidence" in summary
 
 
 def test_validated_decision_allows_archive(tmp_path: Path):
@@ -585,6 +585,6 @@ def test_archive_carries_fresh_machine_evidence(tmp_path: Path):
     result = complete(tmp_path, "--archive")
     assert result.returncode == 0, result.stdout + result.stderr
     summary = (archive_path(tmp_path) / "completion-summary.md").read_text(encoding="utf-8")
-    assert "- 机器验证率：1/1；manual 任务 1 项不计入分母" in summary
-    assert '- 脚本验证：`python3 -c "print(1)"` -> exit 0 (runs:task_0001)' in summary
+    assert "- Machine verification rate: 1/1; 1 manual task(s) excluded from the denominator" in summary
+    assert '- Script verification: `python3 -c "print(1)"` -> exit 0 (runs:task_0001)' in summary
     assert (archive_path(tmp_path) / "runs.jsonl").is_file()

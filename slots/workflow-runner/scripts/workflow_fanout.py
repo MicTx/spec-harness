@@ -1,35 +1,31 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-"""workflow-runner 子进程确定性 fan-out 驱动（pi / codex 双后端）。
+"""Deterministic subprocess fan-out driver with pi and codex worker backends.
 
-仓库自有确定性编排由本脚本承担，pi / codex CLI 仅作为可替换 worker 后端：
-输入任务清单 JSON -> 并发派发一次性子进程 -> 收敛为 JSONL 磁盘真源。
+This repository-owned driver dispatches one-shot workers concurrently from a JSON
+plan and collects results in JSONL. The main session owns task decomposition,
+assignment contracts, routing, acceptance, and done/push gates. Each worker timeout
+or failure affects only its item; output is collected as text, not fabricated structure.
 
-设计约束：
-- 主会话负责任务拆分与 assignment contract；本脚本只做确定性派发与收敛。
-- fail-per-item：单个子进程超时/失败只记该 item 失败，不拖垮整批。
-- 永不伪造结构化：子进程输出按文本收敛（stdout 摘要 + 完整输出落盘）。
-- 路由/验收/done-push 门禁保留在主会话；本脚本是执行段托管形态之一。
-
-用法：
+Usage:
   python3 workflow_fanout.py --backend pi --plan plan.json --out results.jsonl
   python3 workflow_fanout.py --backend codex --plan plan.json --out results.jsonl \
       --timeout 20 --concurrency 2
   python3 workflow_fanout.py --backend pi --plan plan.json --out results.jsonl --no-cache
 
-结果缓存（断点续传）：
-  默认未知执行上下文，不读写缓存。显式提供非敏感 --cache-context 后，只有
-  Git 工作区可验证完整干净时才按上下文/任务缓存成功项；每项完成及整批结束再次
-  校验工作区，每次命中校验产物 SHA-256。外部环境由调用方负责确认；不可确认
-  时不得提供该标识。--no-cache 始终跳过读写，强制全量派发。
+Cache reuse is off by default. A non-secret --cache-context enables successful-item
+caching only when the entire Git workspace is verifiably clean. The workspace is
+rechecked after each item and at batch end; artifact SHA-256 is checked on each hit.
+The caller must attest external inputs; omit the identifier if they cannot be verified.
+--no-cache always bypasses cache reads and writes and redispatches every item.
 
-plan.json 结构：
+plan.json structure:
   {
     "items": [
-      {"id": "rev-1", "prompt": "<完整任务指令>", "requiresWrite": false}
+      {"id": "rev-1", "prompt": "<complete assignment>", "requiresWrite": false}
     ]
   }
-  requiresWrite 是可选布尔值。显式 true 时 codex 的只读沙箱拒绝该项，绝不提权。
+  requiresWrite is optional; true is rejected by the read-only codex backend without escalation.
 """
 
 from __future__ import annotations
@@ -52,7 +48,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 BACKENDS = ("pi", "codex")
-STDOUT_SUMMARY_CAP = 2000  # JSONL 内 stdout 摘要上限；完整输出另落文件
+STDOUT_SUMMARY_CAP = 2000  # JSONL stdout summary limit; full output is stored separately.
 MAX_PLAN_ITEMS = 1000
 MAX_ID_LENGTH = 128
 MAX_PROMPT_LENGTH = 128 * 1024
@@ -62,16 +58,15 @@ MAX_TIMEOUT_SECONDS = 24 * 60 * 60
 
 
 class BatchStopError(OSError):
-    """批次级安全停止：同组清理 signal/验证失败，不是 per-item spawn 失败。
+    """Stop the batch if process-group cleanup or verification fails.
 
-    继承 OSError 以兼容既有 ``except OSError`` 与 ``pytest.raises(OSError)``，
-    但作为独立类型可被 run_item / main 在逐项容错之上优先识别，从而阻止未开始
-    项继续派发、协调已并行项收束，不再突破物理并发上限。
+    OSError inheritance preserves existing handlers; this distinct type lets
+    run_item and main stop queued dispatch and wait for concurrent items.
     """
 
 
 def _platform_support_error() -> Optional[str]:
-    """执行面能力检查；返回原因字符串，正常环境返回 None。"""
+    """Return an execution capability error, or None when supported."""
     required = ("waitid", "P_PID", "WEXITED", "WNOHANG", "WNOWAIT", "killpg")
     if not sys.platform.startswith("linux") or not all(hasattr(os, name) for name in required):
         return "verified process-group cleanup requires Linux /proc and waitid(WNOWAIT)"
@@ -344,11 +339,10 @@ def _write_results(path: Path, records: list[dict[str, Any]]) -> None:
 
 
 def build_command(backend: str, prompt: str, output_file: Optional[Path], model: Optional[str] = None) -> list[str]:
-    """按后端构造一次性子进程命令。codex 用 --output-last-message 落盘。
+    """Build a one-shot worker command; codex writes via --output-last-message.
 
-    prompt 之前固定加 ``--``：plan.json 是外部输入面，以 ``-`` 开头的
-    prompt 否则会被 worker CLI 的参数解析器吞成选项（pi 与 codex 的
-    解析器都支持 ``--`` 终止符）。
+    Terminate options with ``--`` so an external prompt beginning with ``-`` is
+    not interpreted as an option by either worker CLI.
     """
     flags = ["--model", model] if model is not None else []
     if backend == "pi":
@@ -362,7 +356,7 @@ def build_command(backend: str, prompt: str, output_file: Optional[Path], model:
 
 
 def resolve_binary(backend: str) -> Optional[str]:
-    """后端二进制不存在时返回 None（整批 fail-fast，比逐 item 报同样错诚实）。"""
+    """Return the backend executable, or None if it is unavailable."""
     return shutil.which(backend)
 
 
@@ -582,10 +576,10 @@ def cache_path(out_dir: Path, key: str) -> Path:
 
 
 def read_cache(out_dir: Path, key: str) -> Optional[dict[str, Any]]:
-    """读缓存：文件不存在/损坏均视为 miss（返回 None），绝不抛错。
+    """Return a validated successful cache record or None for a miss.
 
-    只认 ok=true 且关联产物可读取、摘要匹配的记录；不完整或旧格式
-    缓存一律视为 miss 并重新派发。
+    The associated artifact must be readable and its digest must match; missing,
+    corrupt, incomplete, and legacy records are dispatched again.
     """
     path = cache_path(out_dir, key)
     try:
@@ -607,11 +601,10 @@ def read_cache(out_dir: Path, key: str) -> Optional[dict[str, Any]]:
 
 
 def write_cache(out_dir: Path, key: str, record: dict[str, Any]) -> None:
-    """原子写缓存：先写独立 tmp 再 rename，读者永远看不到半截文件。
+    """Atomically write a cache record using a unique temporary file.
 
-    tmp 名含 uuid4：并发运行写同一 key 时各自提交临时文件，避免固定
-    tmp 被另一写者移走。最终是后写者胜出；每条记录仍引用自己的产物，
-    不假设不同执行的 worker 输出相同。
+    Concurrent writers do not share temporary files; the last rename wins and
+    each record still refers to its own artifact.
     """
     cache_dir = out_dir / "cache"
     if cache_dir.is_symlink():
@@ -632,7 +625,7 @@ def run_item(
     timeout: float,
     model: Optional[str] = None,
 ) -> dict[str, Any]:
-    """派发单个 item；main 逐项落进度，仅在严格上下文再验证通过时写缓存。"""
+    """Dispatch one item; main checkpoints progress and revalidates before caching."""
     item_id = item.get("id") if isinstance(item, dict) else "item"
     item_id = item_id if isinstance(item_id, str) else "item"
     prompt = item.get("prompt") if isinstance(item, dict) else ""
@@ -667,8 +660,8 @@ def run_item(
             "outputFile": "",
             "stdoutSummary": "",
         }
-    # codex 的 --output-last-message 写这个文件；stdout/stderr 倾倒必须分开，
-    # 否则 codex 落盘的最终消息会被覆盖（pi 后端不消费 output_file，不受影响）
+    # Keep stdout/stderr separate from the codex --output-last-message artifact.
+    # The pi backend does not use output_file.
 
     record: dict[str, Any] = {
         "id": item_id,
@@ -689,8 +682,7 @@ def run_item(
         record["durationSec"] = round(time.time() - started, 2)
         return record
     except BatchStopError:
-        # 同组清理 signal/验证失败是批次级事件，必须上抛给 main 做安全停止，
-        # 不能降级成 per-item spawn 失败让线程池继续派发已排队项。
+        # Cleanup signaling or verification failure stops the batch, not just one item.
         raise
     except (OSError, UnicodeError) as exc:
         record["error"] = f"spawn failed: {exc}"
@@ -720,8 +712,7 @@ def run_item(
         record["error"] = f"output write failed: {exc}"
         return record
     if backend == "pi":
-        # pi 没有 codex 式 --output-last-message 落盘，`.out` 永远不会存在；
-        # outputFile 必须指向真实产物（完整 stdout/stderr 转储），否则证据链悬空。
+        # Pi has no --output-last-message file; point to its actual stdout/stderr artifact.
         record["outputFile"] = str(dump_output)
     record["stdoutSummary"] = stdout[:STDOUT_SUMMARY_CAP]
     record["returncode"] = completed.returncode
@@ -766,23 +757,25 @@ def load_plan(plan_path: Path) -> list[dict[str, Any]]:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    parser = argparse.ArgumentParser(prog="workflow_fanout.py", description="子进程确定性 fan-out 驱动")
+    parser = argparse.ArgumentParser(prog="workflow_fanout.py", description="deterministic subprocess fan-out driver")
     parser.add_argument("--backend", required=True, choices=BACKENDS)
-    parser.add_argument("--model", default=None, help="显式模型 ID；Codex 必填并由本机 bundled catalog 验证最高档")
-    parser.add_argument("--plan", required=True, help="任务清单 JSON（items + prompt）")
-    parser.add_argument("--out", required=True, help="结果 JSONL 输出路径")
-    parser.add_argument("--out-dir", default=None, help="完整输出目录（默认 <out>.d/）")
-    parser.add_argument("--concurrency", type=int, default=3, help="并发上限（默认 3）")
-    parser.add_argument("--timeout", type=float, default=300.0, help="单 item 硬超时秒（默认 300）")
+    parser.add_argument(
+        "--model", default=None, help="explicit model ID; Codex requires a top-tier local catalog model"
+    )
+    parser.add_argument("--plan", required=True, help="JSON task plan (items + prompt)")
+    parser.add_argument("--out", required=True, help="JSONL result output path")
+    parser.add_argument("--out-dir", default=None, help="full output directory (default: <out>.d/)")
+    parser.add_argument("--concurrency", type=int, default=3, help="concurrency limit (default: 3)")
+    parser.add_argument("--timeout", type=float, default=300.0, help="hard timeout per item in seconds (default: 300)")
     parser.add_argument(
         "--cache-context",
         default=None,
-        help="非敏感外部上下文标识；仅在 Git 工作区可证明干净时启用缓存",
+        help="non-secret external context identifier; caching also requires a verifiably clean Git workspace",
     )
     parser.add_argument(
         "--no-cache",
         action="store_true",
-        help="跳过结果缓存读与写，强制全量派发（逃生门：怀疑缓存污染时用）",
+        help="bypass cache reads and writes and dispatch every item",
     )
     args = parser.parse_args(argv)
 
@@ -913,13 +906,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             cancelled: set[concurrent.futures.Future[dict[str, Any]]] = set()
             for future in concurrent.futures.as_completed(futures):
                 if future in cancelled:
-                    continue  # 已作为未开始项记录，不再重复收敛
+                    continue  # Already recorded as unstarted.
                 item = futures[future]
                 try:
                     result = future.result()
                 except BatchStopError as exc:
-                    # 批次级安全停止：第一个批次级失败触发后，阻止尚未开始的项
-                    # 继续派发（不再突破物理并发上限），已并行项由 with 块收束等待。
+                    # Stop unstarted items on batch-level failure; the pool waits for active items.
                     result = {
                         "id": item["id"],
                         "backend": args.backend,

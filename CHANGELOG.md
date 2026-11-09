@@ -4,6 +4,15 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [0.29.0] - 2026-11-09
+
+### Changed
+
+- **BREAKING — 业务文本英文真源**：`SKILL.md`、`references/`、`agents/`、`slots/`、`scripts/`、`hooks/`、`install.sh`、agent-plugin 说明与运行时生成的全部业务文本改为精准英文；新包模板、新交付摘要、新 handoff 与完成摘要标题、门禁/路由/诊断输出统一英文。
+- **BREAKING — English business source**: `SKILL.md`, `references/`, `agents/`, `slots/`, `scripts/`, `hooks/`, `install.sh`, agent-plugin descriptions, and all runtime-emitted business text now use precise English; new-package templates, new delivery summaries, new handoff and completion-summary headings, and gate/route/diagnostic output are uniformly English.
+- **兼容性保留**：机器字段、JSON schema、状态文件值、旧中文包解析、归档文档、`release/` canonical 载荷与双语公开 README 契约不变；`SectionKey`/`SECTION_ALIASES`/`EVIDENCE_ANCHOR_KEYS`/`_METRIC_ALIASES` 等保留中文 canonical + 英文 alias。
+- **Compatibility preserved**: machine keys, JSON schemas, state-file values, legacy-Chinese package parsing, archived records, `release/` canonical payloads, and the bilingual public README contract are unchanged; `SectionKey`/`SECTION_ALIASES`/`EVIDENCE_ANCHOR_KEYS`/`_METRIC_ALIASES` keep Chinese canonicals plus English aliases.
+
 ## [0.28.0] - 2026-11-09
 
 ### Changed
@@ -12,8 +21,8 @@ All notable user-facing changes to Spec Harness are recorded here. Internal deve
 - **BREAKING — Lightweight default package**: `init_spec_package.py` renders the LITE template by default (goal, key assumptions, open questions, exclusions, minimal path, verification command, success criteria); intent and option ledgers move behind `--workflow full` and are validated only for FULL packages. `### 5.1` requires only the scope level and quick check, plus the checks a higher level needs; the minimal path needs one item.
 - **精简技能文档**：`SKILL.md`、阶段页与参考文档按「防御准入四问」重写；`references/` 从 228 KB 降至约 62 KB，新增 `tests/test_budget.py` 与 `tests/test_ceremony.py` 卡住体积与仪式成本。
 - **Leaner skill documents**: `SKILL.md`, stage pages and references were rewritten under the defense admission test; `references/` shrank from 228 KB to about 62 KB, and `tests/test_budget.py` plus `tests/test_ceremony.py` now hold size and ceremony budgets.
-- **BREAKING — 链式执行只保留当前会话**：autoplan/autorun 改由新的 `scripts/chain_state.py` 记录进度（单个 `.spec/<chain>/chain.json`，autorun 默认 5 轮上限，同一步重入不计轮）。0.27 之前的链状态会被拒绝并提示删除后重开。
-- **BREAKING — Current-session chains only**: autoplan/autorun record progress with the new `scripts/chain_state.py` (one `.spec/<chain>/chain.json`, default 5-round autorun cap, re-entering the same step spends no round). Chain state from before 0.27 is refused with an instruction to delete it and begin again.
+- **BREAKING — 链式执行只保留当前会话**：autoplan/autorun 改由新的 `scripts/chain_state.py` 记录进度（单个 `.spec/<chain>/chain.json`，同一步重入不计轮）。两条链省略旗标即无上限；`--max-rounds`/`--unbounded` 仍显式限轮。0.27 之前的链状态会被拒绝并提示删除后重开。
+- **BREAKING — Current-session chains only**: autoplan/autorun record progress with the new `scripts/chain_state.py` (one `.spec/<chain>/chain.json`, re-entering the same step spends no round). Omitting the flag leaves both chains uncapped; `--max-rounds`/`--unbounded` still bound one deliberately. Chain state from before 0.27 is refused with an instruction to delete it and begin again.
 - **证据只绑定命令与工作树**：`spec_verify.py` 不再记录包内辅助文件指纹，不再拒绝“空洞命令”，也不再因验证期间改动问题而作废记录；`check` 前跑一次 `run --all` 即可定稿。
 - **Evidence binds to the command and the worktree only**: `spec_verify.py` no longer fingerprints auxiliary package files, refuses "hollow" commands, or voids a run whose questions changed meanwhile; one `run --all` before `check` settles the evidence.
 - **路由只看包结构**：`route_decision.py` 删除 `--text` 文本启发式与 `channel_profile`，只在准备委派时调用。

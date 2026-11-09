@@ -39,7 +39,9 @@ SKIP_DIRECTORIES = {
     "vendor",
 }
 TIMEOUT = 60
-COMMIT_INTERVAL_LINE_RE = re.compile(r"^- 提交区间：([0-9a-f]{40})\.\.([0-9a-f]{40})\s*$", re.MULTILINE)
+COMMIT_INTERVAL_LINE_RE = re.compile(
+    r"^- (?:提交区间：|Commit interval: )([0-9a-f]{40})\.\.([0-9a-f]{40})\s*$", re.MULTILINE
+)
 FOOTER_WINDOW_BASE_RE = re.compile(r"^[0-9a-f]{40,64}$")
 
 

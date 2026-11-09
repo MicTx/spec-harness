@@ -102,11 +102,11 @@ def test_status_reports_unchecked_checklist_as_risk_and_check_next_step():
         tasks,
     )
     assert output.startswith("# Status\n")
-    assert "- 已完成：1/1" in output
-    assert "done：完成" in output
-    assert "## 接下来" in output
-    assert "修复验收未通过项" in output
-    assert "门禁" not in output
+    assert "- Completed: 1/1" in output
+    assert "done: done" in output
+    assert "## Next" in output
+    assert "Fix failed acceptance checks" in output
+    assert "Gate" not in output
     assert "/spec:" not in output
 
 
@@ -191,8 +191,8 @@ def test_status_illegal_orchestration_route_is_advisory_not_a_gate():
         tasks,
     )
     # Routing hints are advisory: delivery state never blocks on 5.4.
-    assert "编排策略尚未满足" not in output
-    assert "整理交付结果并完成归档" in output
+    assert "Orchestration requirements not met" not in output
+    assert "Prepare delivery and archive the record" in output
 
 
 def test_status_legal_orchestration_route_stays_quiet():
@@ -206,8 +206,8 @@ def test_status_legal_orchestration_route_stays_quiet():
         ["Phase"],
         tasks,
     )
-    assert "编排策略尚未满足" not in output
-    assert "整理交付结果并完成归档" in output
+    assert "Orchestration requirements not met" not in output
+    assert "Prepare delivery and archive the record" in output
 
 
 def test_status_absent_54_section_stays_quiet():
@@ -221,8 +221,8 @@ def test_status_absent_54_section_stays_quiet():
         ["Phase"],
         tasks,
     )
-    assert "编排策略尚未满足" not in output
-    assert "整理交付结果并完成归档" in output
+    assert "Orchestration requirements not met" not in output
+    assert "Prepare delivery and archive the record" in output
 
 
 # -- report must agree with route on every gate fact it already computes --
@@ -280,10 +280,10 @@ def test_status_next_step_prefers_definition_gaps_over_advisory_routing():
         ["P"],
         tasks,
     )
-    assert "编排策略尚未满足" not in output
-    assert output.count("项目定义不完整") >= 1
-    assert "修正编排策略" not in output.split("## 接下来")[-1]
-    assert "补齐项目定义" in output
+    assert "Orchestration requirements not met" not in output
+    assert output.count("Project definition incomplete") >= 1
+    assert "Fix the orchestration strategy" not in output.split("## Next")[-1]
+    assert "Complete the project definition" in output
 
 
 def test_status_projects_dependency_errors():
@@ -298,7 +298,7 @@ def test_status_projects_dependency_errors():
         tasks,
     )
     assert "task-ghost" in output
-    assert "整理交付结果并完成归档" not in output
+    assert "Prepare delivery and archive the record" not in output
 
 
 def test_status_projects_standalone_blocked_line():
@@ -312,8 +312,9 @@ def test_status_projects_standalone_blocked_line():
         ["P"],
         tasks,
     )
-    assert "阻塞" in output.split("## 需要关注")[-1] if "## 需要关注" in output else "阻塞" in output
-    assert "整理交付结果并完成归档" not in output
+    assert "## Attention" in output
+    assert "Task blocked: 阻塞：等待外部系统恢复" in output.split("## Attention")[-1]
+    assert "Prepare delivery and archive the record" not in output
 
 
 def test_status_projects_missing_evidence_gate():
@@ -327,8 +328,8 @@ def test_status_projects_missing_evidence_gate():
         ["P"],
         tasks,
     )
-    assert "整理交付结果并完成归档" not in output
-    assert "完成剩余验收项" in output or "修复验收未通过项" in output
+    assert "Prepare delivery and archive the record" not in output
+    assert "Fix failed acceptance checks" in output
 
 
 def test_tasks_view_preserves_explicit_parallel_markers_and_blocked_precedence():
@@ -368,7 +369,7 @@ def test_tasks_view_preserves_explicit_parallel_markers_and_blocked_precedence()
     summary = package_status_summary(
         "2026-06-12_dash-run", content, VALID_STATUS_SPEC, PASSED_CHECKLIST, sections, tasks
     )
-    assert summary["primary"] == "并行甲、并行乙"
+    assert summary["primary"] == "并行甲, 并行乙"
     assert summary["blocked"] == "等待系统"
 
 
@@ -382,7 +383,7 @@ def test_tasks_view_and_summary_do_not_promote_a_pending_task():
     summary = package_status_summary(
         "2026-06-12_dash-run", content, VALID_STATUS_SPEC, PASSED_CHECKLIST, sections, tasks
     )
-    assert summary["primary"] == "无"
+    assert summary["primary"] == ""
 
 
 def test_multi_status_reports_all_active_tasks_without_promoting_pending(tmp_path):
@@ -399,11 +400,24 @@ def test_multi_status_reports_all_active_tasks_without_promoting_pending(tmp_pat
         (package / "tasks.md").write_text("## 实现\n" + task_lines, encoding="utf-8")
         (package / "checklist.md").write_text(PASSED_CHECKLIST, encoding="utf-8")
     text = render_multi_status(tmp_path, specs_root, [slug for slug, _, _ in projects])
-    current = text.split("## 正在处理\n", 1)[1].split("\n## ", 1)[0]
-    assert "- First：并行甲、并行乙" in current
-    assert "- Second：并行丙" in current
+    current = text.split("## In Progress\n", 1)[1].split("\n## ", 1)[0]
+    assert "- First: 并行甲, 并行乙" in current
+    assert "- Second: 并行丙" in current
     assert "待做" not in current
-    assert "First：已完成 0/3；当前 并行甲、并行乙" in text
-    assert "Second：已完成 0/2；当前 并行丙" in text
-    third_row = next(line for line in text.splitlines() if line.startswith("- Third："))
-    assert "当前" not in third_row
+    assert "First: completed 0/3; current: 并行甲, 并行乙" in text
+    assert "Second: completed 0/2; current: 并行丙" in text
+    third_row = next(line for line in text.splitlines() if line.startswith("- Third:"))
+    assert "current:" not in third_row
+
+
+def test_multi_status_preserves_punctuation_inside_task_titles(tmp_path):
+    specs_root = tmp_path / ".spec"
+    package = specs_root / "specs" / "2026-06-12_first"
+    package.mkdir(parents=True)
+    (package / "spec.md").write_text(VALID_STATUS_SPEC.replace("# Status", "# First"), encoding="utf-8")
+    (package / "tasks.md").write_text("## 实现\n- [>] 接口、缓存联调\n- [>] 并行乙\n", encoding="utf-8")
+    (package / "checklist.md").write_text(PASSED_CHECKLIST, encoding="utf-8")
+    text = render_multi_status(tmp_path, specs_root, ["2026-06-12_first"])
+    current = text.split("## In Progress\n", 1)[1].split("\n## ", 1)[0]
+    assert "- First: 接口、缓存联调, 并行乙" in current
+    assert "First: completed 0/2; current: 接口、缓存联调, 并行乙" in text

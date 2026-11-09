@@ -271,7 +271,7 @@ class TestRunRecorder:
         assert result.returncode == 1
         assert [record["exit"] for record in read_records(package)] == [3]
         assert gate_for(root, package).runs_gate_ok is False
-        assert any("task_0002" in error and "未验证" in error for error in gate_for(root, package).runs_errors)
+        assert any("task_0002" in error and "not verified" in error for error in gate_for(root, package).runs_errors)
 
     def test_run_all_uses_one_final_tree_fingerprint(self, tmp_path):
         root = init_repo(tmp_path)
@@ -316,7 +316,7 @@ class TestRunRecorder:
         package = make_package(root, SLUG, runs_protocol=True, tasks_text=tasks)
         result = run_recorder(root, SLUG, "--task", "task_0001", check=False)
         assert result.returncode == 1
-        assert "反引号" in result.stderr
+        assert "backtick" in result.stderr
         assert read_records(package) == []
         assert gate_for(root, package).runs_gate_ok is False
 
@@ -325,7 +325,7 @@ class TestRunRecorder:
         package = make_package(root, SLUG, runs_protocol=True, tasks_text=MACHINE_TASKS)
         result = run_recorder(root, SLUG, "--task", "task_9999", check=False)
         assert result.returncode == 1
-        assert "未知 task id" in result.stderr
+        assert "unknown task id" in result.stderr
         assert read_records(package) == []
 
     def test_verify_that_changes_tree_must_not_pass(self, tmp_path):
@@ -334,7 +334,7 @@ class TestRunRecorder:
         package = make_package(root, SLUG, runs_protocol=True, tasks_text=tasks)
         result = run_recorder(root, SLUG, "--all", check=False)
         assert result.returncode == 1
-        assert "改变工作树" in result.stderr
+        assert "changed the working tree" in result.stderr
         assert read_records(package)[-1]["exit"] != 0
         assert gate_for(root, package).runs_gate_ok is False
 
@@ -355,7 +355,7 @@ class TestRunsGate:
         package = make_package(root, SLUG, runs_protocol=True, tasks_text=PASSING_TASKS)
         results = gate_for(root, package)
         assert results.runs_gate_ok is False
-        assert any("task_0001" in error and "未验证" in error for error in results.runs_errors)
+        assert any("task_0001" in error and "not verified" in error for error in results.runs_errors)
 
     @pytest.mark.parametrize("specs_dir", ["archive/state", "docs/archive/specs", "state"])
     def test_only_specs_archive_container_freezes_evidence(self, tmp_path, specs_dir):
@@ -368,7 +368,7 @@ class TestRunsGate:
         results = gate_for(root, package)
         assert results.runs_gate_ok is False
         assert results.overall_ok is False
-        assert any("未验证" in error for error in results.runs_errors)
+        assert any("not verified" in error for error in results.runs_errors)
         result = run_recorder(root, SLUG, "--specs-dir", specs_dir, "--all")
         assert result.returncode == 0
         assert gate_for(root, package).runs_gate_ok is True
@@ -377,7 +377,7 @@ class TestRunsGate:
         package.rename(archive)
         (archive / RUNS_FILENAME).unlink()
         ok, errors, detail = evaluate_runs_gate("evidence: runs", PASSING_TASKS, archive, root)
-        assert ok is None and errors == [] and "冻结" in detail
+        assert ok is None and errors == [] and "frozen" in detail
 
     def test_passing_records_clear_the_gate(self, tmp_path):
         root = init_repo(tmp_path)
@@ -398,7 +398,7 @@ class TestRunsGate:
             (tmp_path / "source.txt").write_text(contents, encoding="utf-8")
             ok, errors, _detail = evaluate_runs_gate("evidence: runs", tasks, package, tmp_path)
             assert ok is False
-            assert any("过期" in error for error in errors)
+            assert any("stale" in error for error in errors)
 
     def test_manual_only_task_needs_no_record(self, tmp_path):
         root = init_repo(tmp_path)
@@ -406,7 +406,7 @@ class TestRunsGate:
         package = make_package(root, SLUG, runs_protocol=True, tasks_text=tasks)
         results = gate_for(root, package)
         assert results.runs_gate_ok is True
-        assert "manual 1 项" in results.runs_detail
+        assert "1 manual task" in results.runs_detail
         assert machine_verification_summary(tasks, package) is None
 
     def test_changed_worktree_expires_evidence_until_rerun(self, tmp_path):
@@ -416,7 +416,7 @@ class TestRunsGate:
         (root / "README.md").write_text("changed\n", encoding="utf-8")
         results = gate_for(root, package)
         assert results.runs_gate_ok is False
-        assert any("task_0001" in error and "证据过期" in error for error in results.runs_errors)
+        assert any("task_0001" in error and "stale evidence" in error for error in results.runs_errors)
         run_recorder(root, SLUG, "--all")
         assert gate_for(root, package).runs_gate_ok is True
 
@@ -473,7 +473,7 @@ class TestRunsGate:
         spec = (package / "spec.md").read_text(encoding="utf-8")
         tasks = (package / "tasks.md").read_text(encoding="utf-8")
         ok, errors, detail = evaluate_runs_gate(spec, tasks, None, None)
-        assert ok is None and not errors and "未评估" in detail
+        assert ok is None and not errors and "not evaluated" in detail
 
     def test_fresh_evidence_requires_matching_command_and_tree(self, tmp_path):
         root = init_repo(tmp_path)
@@ -494,7 +494,10 @@ class TestRunsGate:
         package = make_package(root, SLUG, runs_protocol=True, tasks_text=MACHINE_TASKS)
         run_recorder(root, SLUG, "--task", "task_0001")
         run_recorder(root, SLUG, "--task", "task_0002", check=False)
-        assert machine_verification_summary(MACHINE_TASKS, package) == "1/2；manual 任务 1 项不计入分母"
+        assert (
+            machine_verification_summary(MACHINE_TASKS, package)
+            == "1/2; 1 manual task(s) excluded from the denominator"
+        )
 
 
 class TestShowSubcommand:

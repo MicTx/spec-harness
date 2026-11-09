@@ -71,10 +71,10 @@ def section_values(content: str, heading, fallback: str) -> list[str]:
 def archive_commit_range(root: Path, main_branch: str) -> str:
     head = gitx.head(root)
     if not head:
-        return "适用外（非 Git 工作区或无提交）"
+        return "not applicable (not a Git worktree or no commits)"
     result = gitx.git(root, "merge-base", f"refs/heads/{main_branch}", "HEAD", check=False)
     if result.returncode != 0:
-        return f"适用外（无法解析 refs/heads/{main_branch} 的 merge-base）"
+        return f"not applicable (cannot resolve merge-base for refs/heads/{main_branch})"
     return f"{result.stdout.strip()}..{head}"
 
 
@@ -89,61 +89,65 @@ def build_summary(
     *,
     main_branch: str,
 ) -> str:
-    assumptions = section_values(spec, SECTION_KEY_ASSUMPTIONS, "已按任务包验收")
-    choices = section_values(spec, SECTION_MINIMAL_PATH, "按任务包最小路径交付")
-    excluded = section_values(spec, SECTION_OUT_OF_SCOPE, "未扩张到任务边界外")
-    metrics = section_values(spec, SECTION_BEHAVIOR_METRICS, "以任务包验收标准为准")
+    assumptions = section_values(spec, SECTION_KEY_ASSUMPTIONS, "Accepted against the task package")
+    choices = section_values(spec, SECTION_MINIMAL_PATH, "Delivered using the task package's minimal path")
+    excluded = section_values(spec, SECTION_OUT_OF_SCOPE, "No expansion beyond the task boundary")
+    metrics = section_values(spec, SECTION_BEHAVIOR_METRICS, "See the task package acceptance criteria")
     delivered = [str(item["subject"]) for item in parse_task_records(tasks).values() if item["completed"]]
     proposal_lines = [line.strip() for line in proposals if line.strip()]
-    proposal = "```diff\n" + "\n".join(proposal_lines) + "\n```" if proposal_lines else "无"
+    proposal = "```diff\n" + "\n".join(proposal_lines) + "\n```" if proposal_lines else "None"
     machine_rate = machine_verification_summary(tasks, package) if runs_protocol_enabled(spec) else None
     machine = fresh_machine_evidence(spec, tasks, package, root) if machine_rate else []
-    evidence = [f"脚本验证：{item}" for item in machine]
+    evidence = [f"Script verification: {item}" for item in machine]
     if not evidence:
-        evidence = ["manual：人工验证说明见 tasks.md" if runs_protocol_enabled(spec) else "验收证据见任务包"]
-    rate = f"- 机器验证率：{machine_rate}\n" if machine_rate else ""
-    scope = verification_scope(spec) or "历史包未声明"
+        evidence = [
+            "manual: see tasks.md for manual verification"
+            if runs_protocol_enabled(spec)
+            else "See task package for acceptance evidence"
+        ]
+    rate = f"- Machine verification rate: {machine_rate}\n" if machine_rate else ""
+    scope = verification_scope(spec) or "Not declared in legacy package"
     completed = datetime.now().strftime("%Y-%m-%d %H:%M")
-    return f"""# {title} - 完成总结
+    return f"""# {title} - Completion Summary
 
-## 交付结论
-- 结果：完成
-- 完成时间：{completed}
+## Delivery Outcome
+- Result: Complete
+- Completed at: {completed}
 
-## 假设回顾
-{bullet_lines(assumptions, "已按任务包验收")}
+## Assumptions Review
+{bullet_lines(assumptions, "Accepted against the task package")}
 
-## 交付范围
-{bullet_lines(delivered, "尚无已完成任务")}
+## Delivery Scope
+{bullet_lines(delivered, "No completed tasks yet")}
 
-## 简化决策
-{bullet_lines(choices, "按任务包最小路径交付")}
+## Simplification Decisions
+{bullet_lines(choices, "Delivered using the task package's minimal path")}
 
-## 变更边界
-- 具体边界见 tasks.md
-{bullet_lines(excluded, "未扩张到任务边界外")}
+## Change Boundaries
+- See tasks.md for the specific boundaries
+{bullet_lines(excluded, "No expansion beyond the task boundary")}
 
-## 验证证据
-{bullet_lines(evidence, "验收证据见任务包")}
+## Verification Evidence
+{bullet_lines(evidence, "See task package for acceptance evidence")}
 
-## 验证范围
-- 级别：{scope}
+## Verification Scope
+- Level: {scope}
 {rate}
-## 哲学生效证据
-{bullet_lines(metrics, "以任务包验收标准为准")}
+## Outcome Evidence
+{bullet_lines(metrics, "See the task package acceptance criteria")}
 
-## Git 记录
-- 日期时间：{completed}
-- 范围：{title}
-- 提交区间：{archive_commit_range(root, main_branch)}
-- 提交：pending local commit
-- 推送：not-run (push stage follows commit)
+## Git Record
+- Date and time: {completed}
+- Scope: {title}
+- Commit interval: {archive_commit_range(root, main_branch)}
+- Commit: pending local commit
+- Push: not-run (push stage follows commit)
 
-## AGENTS.md 增量提议
+## Project Fact Proposal
 {proposal}
 
-## 门禁证据
-- check gates 已通过
+## Gate Evidence
+- Check gates passed
 
 {render_issue_closure(issues)}
 """
@@ -167,11 +171,11 @@ def move_package(root: Path, package: Path, destination: Path) -> None:
 def display_done(slug: str, title: str, tasks: str, destination: Path, *, archived: bool, close: int | None) -> None:
     _sections, records = parse_tasks(tasks)
     strip, labels = task_strip_from_records(records)
-    detail = [f"交付记录：{destination}" if archived else f"交付总结草稿：{destination}"]
+    detail = [f"Delivery record: {destination}" if archived else f"Draft completion summary: {destination}"]
     if archived:
-        detail.append(f"完成总结：{destination / 'completion-summary.md'}")
+        detail.append(f"Completion summary: {destination / 'completion-summary.md'}")
         if close is not None:
-            detail.append(f"交接记录：{destination / 'handoff.md'}（entry {close} 关闭）")
+            detail.append(f"Handoff record: {destination / 'handoff.md'} (entry {close} closed)")
     dashboard = Dashboard(
         slug=slug,
         stage="done",
@@ -181,8 +185,10 @@ def display_done(slug: str, title: str, tasks: str, destination: Path, *, archiv
         health=HEALTH_OK if archived else HEALTH_RISK,
         strip=strip,
         strip_labels=labels,
-        metrics={"门禁": "通过" if archived else "草稿"},
-        next_step="完成代码提交与发布收尾" if archived else "完成验收后归档交付记录",
+        metrics={"Gate": "Passed" if archived else "Draft"},
+        next_step=(
+            "Commit the code and finish the release" if archived else "Archive the delivery record after acceptance"
+        ),
         detail=detail,
     )
     print(dashboard.render())

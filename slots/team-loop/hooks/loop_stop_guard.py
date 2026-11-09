@@ -1,20 +1,15 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-"""Claude Code Stop hook：spec team-loop 插槽收敛守卫。
+"""Claude Code Stop hook for team-loop convergence.
 
-协议（官方 hooks 文档，Stop 事件）：
-- stdin JSON 含 stop_hook_active / last_assistant_message / background_tasks 等字段。
-- stdout JSON {"decision": "block", "reason": ...} 阻止熄火；exit 0 无输出放行。
-- stop_hook_active=true 时本 hook 静默放行以避免递归阻塞；宿主也可能施加自己的限制。
-  因此该 hook 不保证未收敛 run 一定继续执行。
+The hook reads Stop event JSON from stdin and blocks with a JSON reason on stdout.
+An empty response with exit 0 allows stopping. When stop_hook_active is true, it
+allows stopping to avoid recursive blocking; the host may impose other limits, so
+this hook cannot guarantee that an unconverged run will continue.
 
-行为（抄 spec 的 claude_stop_guard.py 骨架，判据换成 loop 收敛）：
-- 从 cwd 向上找项目根，列出活跃 run。
-- 无活跃 run -> 放行（绝不误伤普通会话）。
-- 活跃 run 未收敛 -> block，reason 携带下一步动作（保证每轮 block 之间有实质推进）。
-- 多个活跃 run -> block 一次并列出，要求 agent 收敛歧义（fail closed）。
-- 活跃 run 命中终止条件（stopped）-> block 并给出 finish 指令；
-  自然收敛（converged 状态已在 loop_state 侧落盘）-> 放行。
+It discovers active runs from the project root. No active run allows stopping;
+multiple or corrupt runs fail closed. An unconverged run receives next actions,
+a stopped run receives finish instructions, and a persisted converged run allows stopping.
 """
 
 from __future__ import annotations
@@ -57,26 +52,29 @@ def main() -> int:
     try:
         active, corrupt = find_active_runs(root)
     except (OSError, LoopStateError) as exc:
-        emit_block(f"spec team-loop：无法安全读取 run 状态（{exc}）。请修复状态或确认已废弃后再结束会话。")
+        emit_block(
+            f"spec team-loop: cannot safely read run state ({exc}). Repair it or confirm retirement before ending."
+        )
         return 0
 
     if corrupt:
-        # 损坏的 run 不静默放行：block 一次并列出修复入口（fail-closed）
-        names = "；".join(p.name for p in corrupt[:5])
+        # Corrupt runs fail closed with a repair entrypoint.
+        names = "; ".join(p.name for p in corrupt[:5])
         emit_block(
-            f"spec team-loop：存在状态损坏的 run（{names}）。"
-            f"请逐个排查修复后再结束：python3 {SKILL_DIR}/scripts/loop_state.py status --run-dir <run目录>，"
-            "或确认已废弃后删除其目录（.agents/runtime/loop/ 下对应 run）。"
+            f"spec team-loop: corrupt run state detected ({names}). "
+            f"Investigate and repair each run before ending: python3 {SKILL_DIR}/scripts/loop_state.py "
+            "status --run-dir <run-dir>. Alternatively, confirm the run is retired and remove its directory "
+            "under .agents/runtime/loop/."
         )
         return 0
 
     if not active:
         return 0
     if len(active) > 1:
-        names = "；".join(p.name for p in active[:5])
+        names = "; ".join(p.name for p in active[:5])
         emit_block(
-            f"spec team-loop：当前项目有多个活跃 run（{names}）。"
-            "请逐个收敛或显式 finish/cancel 后再结束；歧义未消除前不放行。"
+            f"spec team-loop: multiple active runs in this project ({names}). "
+            "Converge or explicitly finish/cancel each run before ending; resolve the ambiguity first."
         )
         return 0
 
@@ -88,35 +86,35 @@ def main() -> int:
         store = LoopStore(run_dir).load()
     except (OSError, LoopStateError) as exc:
         emit_block(
-            f"spec team-loop：活跃 run 状态损坏（{run_dir}：{exc}）。"
-            f"请修复或运行 python3 {state_script} resume --run-dir {run_arg} 排查后再结束。"
+            f"spec team-loop: corrupt active run state ({run_dir}: {exc}). "
+            f"Repair it or investigate with python3 {state_script} resume --run-dir {run_arg} before ending."
         )
         return 0
 
     try:
         verdict = termination_check(store, utc_now())
     except (OSError, LoopStateError) as exc:
-        # 例如 STOP 哨兵为 symlink：终止判定自身异常时必须 fail-closed，
-        # 未捕获崩溃会让守卫以非 0 非 2 退出码静默放行未收敛 run。
+        # An invalid STOP sentinel must fail closed rather than crash and allow stopping.
         emit_block(
-            f"spec team-loop：终止判定无法安全评估（{run_dir}：{exc}）。"
-            "请先核实 STOP 的路径、文件类型与所有权，再人工处理；本守卫不提供删除命令。"
+            f"spec team-loop: termination cannot be evaluated safely ({run_dir}: {exc}). "
+            "Verify the STOP path, file type, and ownership before handling it manually; "
+            "this guard does not provide a deletion command."
         )
         return 0
     if verdict["stop"]:
-        reasons = "；".join(verdict["reasons"])
+        reasons = "; ".join(verdict["reasons"])
         if verdict["verdict"] == "converged":
             emit_block(
-                f"spec team-loop：run 已满足收敛条件（{reasons}）。"
-                f"执行 python3 {state_script} finish converged --run-dir {run_arg} "
-                '--summary "<成果摘要>" 落终态后再结束。'
+                f"spec team-loop: run meets convergence conditions ({reasons}). "
+                f"Run python3 {state_script} finish converged --run-dir {run_arg} "
+                '--summary "<outcome summary>" to record the terminal state before ending.'
             )
         else:
             emit_block(
-                f"spec team-loop：run 命中管理停止条件（{reasons}）。"
-                f"核对并停止宿主 worker 后执行 python3 {state_script} "
+                f"spec team-loop: run meets a managed stop condition ({reasons}). "
+                f"Verify and stop host workers, then run python3 {state_script} "
                 f"finish failed --run-dir {run_arg} --confirmed-stopped "
-                "（或用 cancelled）写明原因落终态；不得静默熄火。"
+                "(or use cancelled) and record the reason; do not stop silently."
             )
         return 0
 
@@ -142,30 +140,40 @@ def main() -> int:
     in_flight = [key for key in in_flight if key not in reserved]
     parts = []
     if reserved:
-        parts.append(f"核对未登记的预约 {', '.join(reserved)}；登记 worker 或确认宿主已停止后 abandon")
+        parts.append(
+            f"check unattached reservations {', '.join(reserved)}; "
+            "attach the worker or confirm it has stopped before abandon"
+        )
     if not open_rounds:
-        parts.append('round start：python3 …/loop_state.py round start --goal "<本轮目标>"')
+        parts.append('round start: python3 …/loop_state.py round start --goal "<round goal>"')
     if in_flight:
-        parts.append(f"wait 在途任务 {', '.join(in_flight)}；宿主确认停止后由主会话记录 task result")
+        parts.append(
+            f"wait for in-flight tasks {', '.join(in_flight)}; "
+            "the main session records task result after host confirmation"
+        )
         try:
             stale = stale_tasks(store, utc_now())
         except (OSError, LoopStateError):
             stale = []
         if stale:
             parts.append(
-                f"心跳超时的在途任务 {', '.join(stale)} 只是嫌疑；逐个向宿主确认已停止后执行 "
+                f"stale heartbeats for in-flight tasks {', '.join(stale)} are only a suspicion; "
+                "confirm each worker has stopped with the host before running "
                 f"python3 {control_script} stale --reap --task rN/id --confirmed-stopped --run-dir {run_arg}"
             )
     if pending:
-        parts.append(f"派发 pending 任务 {', '.join(pending)}（先对每个任务 reserve）")
+        parts.append(f"dispatch pending tasks {', '.join(pending)} (reserve each task first)")
     if open_rounds and not (pending or in_flight or reserved):
-        parts.append("任务均已终态：按真实评审结束本轮；若有 failed，记录 round end --decision fail")
+        parts.append(
+            "all tasks are terminal: close the round based on actual review; "
+            "if any failed, use round end --decision fail"
+        )
     if not parts:
-        parts.append("按终止判定推进下一轮或 finish converged")
+        parts.append("advance to the next round or finish converged according to the termination decision")
     emit_block(
-        f"spec team-loop：run {store.state['runId']} 未收敛"
-        f"（goal：{store.state['goal'][:80]}）。下一步：{'；'.join(parts)}。"
-        f"状态详情：python3 {state_script} status --run-dir {run_arg}"
+        f"spec team-loop: run {store.state['runId']} has not converged "
+        f"(goal: {store.state['goal'][:80]}). Next: {'; '.join(parts)}. "
+        f"Status: python3 {state_script} status --run-dir {run_arg}"
     )
     return 0
 

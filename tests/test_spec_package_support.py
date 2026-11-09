@@ -165,7 +165,7 @@ def test_select_active_package_fails_closed_when_multi_package_is_unbound(tmp_pa
     )
     assert selection.slug is None
     assert selection.mode == "unbound"
-    assert "已隐藏跨包数据" in selection.warning
+    assert "cross-package data is hidden" in selection.warning
 
 
 def test_select_active_package_supports_legacy_convention_and_explicit_override(tmp_path):
@@ -208,7 +208,7 @@ FRESH_SPEC = """\
 
 def test_clarification_gaps_fresh():
     gaps = clarification_gaps(FRESH_SPEC)
-    assert any("缺少有效" in g for g in gaps)
+    assert any("missing a valid" in g for g in gaps)
 
 
 def test_clarification_gaps_complete():
@@ -579,7 +579,7 @@ def test_clarification_gaps_flags_template_only_minimal_path():
 - 不做的抽象/配置化：xxx
 """
     gaps = clarification_gaps(spec)
-    assert "`spec.md` 缺少有效区块：## 4. 最小实现路径" in gaps
+    assert "`spec.md` is missing a valid section: ## 4. Minimal Implementation Path" in gaps
 
 
 def test_minimal_path_template_slots_filtered_but_real_xxx_items_count():
@@ -808,6 +808,18 @@ def test_extract_evidence_fields_nested_bullets():
     assert has_command_evidence(content)
 
 
+def test_english_evidence_aliases_ignore_label_casing():
+    from spec_package_support import extract_evidence_anchor
+
+    content = """\
+## Acceptance Evidence
+- Script Verification: pytest -q
+- Evidence Anchor: HEAD f3b69a49367f90e97750e248f8994081ebcf9e38 @ 2026-09-25T10:00:00+08:00
+"""
+    assert has_command_evidence(content)
+    assert extract_evidence_anchor(content) == ("f3b69a49367f90e97750e248f8994081ebcf9e38", "2026-09-25T10:00:00+08:00")
+
+
 def test_section_exists_requires_exact_heading():
     content = "## 行为成效回填\n- [x] a\n## 行为成效\n- [ ] b\n"
     assert section_exists(content, "## 行为成效")
@@ -958,13 +970,13 @@ def test_verification_scope_accepts_parenthetical_heading_suffix():
 def test_verification_scope_rejects_unknown_or_missing_level(level):
     errors = verification_scope_errors(_verification_scope(level))
     assert errors
-    assert any("范围级别" in error for error in errors)
+    assert any("scope level" in error for error in errors)
 
 
 def test_verification_scope_rejects_placeholder_quick_check():
     text = _verification_scope(quick_check="<command>")
     errors = verification_scope_errors(text)
-    assert any("快速检查" in error for error in errors)
+    assert any("quick check" in error for error in errors)
 
 
 def test_verification_scope_is_optional_for_legacy_spec():
@@ -998,7 +1010,7 @@ def test_orchestration_strategy_errors_rejects_invalid_route_only():
     for route_line in ("- route: build（主线程）+ review", "- route: nonsense"):
         content = f"### 5.4 编排策略\n{route_line}\n"
         errors = orchestration_strategy_errors(content)
-        assert errors and "route 必须" in errors[0], route_line
+        assert errors and "route must" in errors[0], route_line
     # 无 route 字段 = 默认 local，不报错
     assert orchestration_strategy_errors("### 5.4 编排策略\n- ownership: 主线程\n") == []
     assert orchestration_strategy_errors("### 5.4 编排策略\n- route: local\n- route: review\n") == []

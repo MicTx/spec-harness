@@ -75,7 +75,8 @@ def _violations_for(value: str, allowed: frozenset[str], field: str) -> list[str
         illegal = sorted(used - allowed)
         if illegal:
             problems.append(
-                f"{field} 引用了该字段不允许的上下文: {', '.join(illegal)}（允许: {', '.join(sorted(allowed))}）"
+                f"{field} references contexts not allowed in this field: {', '.join(illegal)} "
+                f"(allowed: {', '.join(sorted(allowed))})"
             )
     return problems
 
@@ -108,16 +109,16 @@ def lint_workflow_text(name: str, text: str) -> list[str]:
             env_state = None  # block ended
 
         if _WORKFLOW_ENV_HEADER_RE.match(raw):
-            env_state = (0, WORKFLOW_ENV_ALLOWED, "workflow 级 env")
+            env_state = (0, WORKFLOW_ENV_ALLOWED, "workflow-level env")
             continue
         if _JOB_ENV_HEADER_RE.match(raw):
-            env_state = (4, JOB_ENV_ALLOWED, "job 级 env")
+            env_state = (4, JOB_ENV_ALLOWED, "job-level env")
             continue
 
         job_if = _JOB_IF_RE.match(raw)
         if job_if:
             value = _strip_comment(job_if.group(1))
-            for problem in _violations_for(value, JOB_IF_ALLOWED, "job 级 if"):
+            for problem in _violations_for(value, JOB_IF_ALLOWED, "job-level if"):
                 errors.append(f"{name}:{lineno}: {problem}")
             continue
 
@@ -127,14 +128,14 @@ def lint_workflow_text(name: str, text: str) -> list[str]:
                 jobs_seen = True
             elif current_job is not None:
                 if not current_job_has_runs_on:
-                    errors.append(f"{name}:{lineno}: job「{current_job}」缺少 runs-on（无 job 可派发）")
+                    errors.append(f"{name}:{lineno}: job '{current_job}' is missing runs-on; no job can be dispatched")
                 current_job = None
             continue
 
         job_key = _JOB_KEY_RE.match(raw)
         if job_key and jobs_seen:
             if current_job is not None and not current_job_has_runs_on:
-                errors.append(f"{name}:{lineno}: job「{current_job}」缺少 runs-on（无 job 可派发）")
+                errors.append(f"{name}:{lineno}: job '{current_job}' is missing runs-on; no job can be dispatched")
             current_job = job_key.group(1)
             current_job_has_runs_on = False
             job_names.append(current_job)
@@ -144,9 +145,9 @@ def lint_workflow_text(name: str, text: str) -> list[str]:
             current_job_has_runs_on = True
 
     if current_job is not None and not current_job_has_runs_on:
-        errors.append(f"{name}: job「{current_job}」缺少 runs-on（无 job 可派发）")
+        errors.append(f"{name}: job '{current_job}' is missing runs-on; no job can be dispatched")
     if not jobs_seen or not job_names:
-        errors.append(f"{name}: 缺少 jobs 或 jobs 下没有任何 job（无 job 可派发）")
+        errors.append(f"{name}: jobs is missing or empty; no job can be dispatched")
     return errors
 
 
@@ -156,7 +157,7 @@ def lint_workflow_file(path: Path) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("paths", nargs="*", help="workflow 文件或目录（默认 .github/workflows）")
+    parser.add_argument("paths", nargs="*", help="Workflow files or directories (default: .github/workflows)")
     args = parser.parse_args(argv)
 
     targets: list[Path] = []
@@ -171,7 +172,7 @@ def main(argv: list[str] | None = None) -> int:
     errors: list[str] = []
     for target in targets:
         if not target.is_file():
-            errors.append(f"{target}: 文件不存在")
+            errors.append(f"{target}: file does not exist")
             continue
         errors.extend(lint_workflow_file(target))
 
@@ -179,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
         print(error, file=sys.stderr)
     if errors:
         return 1
-    print(f"workflow startup validity: {len(targets)} 个文件通过")
+    print(f"workflow startup validity: {len(targets)} file(s) passed")
     return 0
 
 

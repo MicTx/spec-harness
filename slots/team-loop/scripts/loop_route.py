@@ -1,23 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-"""agents-team-loop 路由决策：任务文本 -> 是否进入受管 loop + 建议配置。
+"""Recommend a managed team loop and configuration from task text.
 
-代码触发半边：任何会话/脚本都可以 `loop_route.py --text "..."` 拿到结构化判定，
-无需人工记忆该加载哪个 skill。
-
-F12（AUD-11）触发域收敛后，形态信号分强弱：
-- 强信号：自带「循环到通过/收敛」绑定语义的组合形态（直至/直到通过/到…为止/
-  iterate until…/迭代收敛等）与显式轮数——单个即过推荐阈；
-- 弱信号：裸循环词（循环/多轮/迭代/反复/loop）与团队词——单独出现确定性
-  不推荐，降级为普通 sidecar 编排，仅与强信号共现时补分。
-
-评审-修复让出：带「再审/复审」复合语义的文本先于通用打分让出。
-
-批量 fan-out 与评审-修复闭环形态归 workflow-runner（仓库自有执行面裁定）；
-批量让出以删词实现（2026-10-04），评审-修复让出以显式早退实现（2026-10-08 补完，
-词表与 workflow 侧 LOOP 强表行为级镜像、源码级独立——slot 自包含契约不允许跨 slot
-import，两侧一致性由 tests/test_route_cross_consistency.py 行为级钉住）。
-本脚本不再对这两类形态做推荐，避免双 slot 同文本撞车。
+Any session or script can call `loop_route.py --text "..."` for a structured decision.
+Strong convergence signals and explicit round counts independently cross the recommendation
+threshold. Generic loop and team terms are weak signals and only add weight alongside a
+strong signal. Composite review-fix requests defer to workflow-runner before scoring;
+bare convergence requests remain eligible for team-loop. The independently maintained
+pattern tables are checked for behavioral consistency by tests/test_route_cross_consistency.py.
 """
 
 from __future__ import annotations
@@ -30,21 +20,20 @@ from typing import Any, Optional
 
 MODES = ("until-converged", "fixed-rounds", "none")
 
-# 收敛语义强信号（F12 强弱分权）：自带「循环到通过/收敛」绑定语义，单个即过推荐阈。
+# Strong convergence signals independently cross the recommendation threshold.
 LOOP_STRONG_PATTERNS = [
     r"直至",
     r"直到.{0,12}(通过|收敛|完成|达标)",
     r"到.{0,10}为止",
     r"一轮轮",
     r"自?[主自].{0,6}(推进|完成)",
-    # 组合收敛语义：迭代/循环 + 收敛，自带「循环到收敛」绑定（如「迭代收敛」）。
+    # A loop or iteration paired with convergence is a strong signal.
     r"(迭代|循环|多轮|反复).{0,6}收敛",
     r"\biterat\w*\b.{0,30}\buntil\b",
     r"\bretry\b.{0,30}\buntil\b",
     r"\buntil\b.{0,16}\b(pass|converge|green|done)\b",
 ]
-# 裸循环弱信号：泛化循环词，单独出现不推荐（确定性降级为普通 sidecar 编排），
-# 仅与强信号/显式轮数共现时补分（F12：循环依赖/事件循环/多轮谈判等不是收敛任务）。
+# Generic loop terms are weak: they only add weight alongside strong signals or explicit rounds.
 LOOP_WEAK_PATTERNS = [
     r"循环",
     r"多轮",
@@ -62,9 +51,8 @@ TEAM_PATTERNS = [
     r"\bsubagent",
     r"\bteam\b.{0,10}\bmode\b",
 ]
-# 评审-修复复合形态让出（2026-10-04 裁定，2026-10-08 补完显式分支）：
-# 与 workflow 侧 LOOP 强表同语义镜像；收敛词（直到/iterate until…）永不进本表，
-# 裸收敛文本仍由本 slot 承接（until-converged）。
+# Defer composite review-fix requests to workflow-runner. Bare convergence stays here.
+# The separate pattern tables intentionally mirror each other's routing behavior.
 REVIEW_FIX_DEFER_PATTERNS = [
     r"评审.{0,8}后.{0,8}(修复|改)",
     r"(修复|改正).{0,6}(后.{0,4}再|并复)(审|验|测)",
@@ -80,24 +68,22 @@ def _score(text: str, patterns: list[str]) -> int:
 
 
 def route(text: str) -> dict[str, Any]:
-    """对任务文本做路由判定。永不抛错，永远返回结构化结果。"""
+    """Return a structured routing decision for task text."""
     text = (text or "").strip()
     if not text:
-        return {"loopRecommended": False, "mode": "none", "score": 0, "reason": "空文本", "suggestedConfig": None}
+        return {"loopRecommended": False, "mode": "none", "score": 0, "reason": "empty text", "suggestedConfig": None}
 
-    # 评审-修复复合形态让出（2026-10-04 裁定）：命中即归 workflow-runner，
-    # 不再进入通用打分——避免双 slot 对同文本双推荐；裸收敛语义不受影响。
+    # Review-fix requests belong to workflow-runner; bare convergence is unaffected.
     if _score(text, REVIEW_FIX_DEFER_PATTERNS):
         return {
             "loopRecommended": False,
             "mode": "none",
             "score": 0,
-            "reason": "评审-修复闭环归 workflow-runner（2026-10-04 裁定）",
+            "reason": "review-fix loops belong to workflow-runner (2026-10-04 decision)",
             "suggestedConfig": None,
         }
 
-    # F12 强弱分权：收敛语义（强）单个即过阈；裸循环词/团队词（弱）单独不推荐，
-    # 确定性降级为普通 sidecar 编排；显式轮数本身就是强信号（用户点名了轮数）。
+    # A strong convergence signal or explicit round count is required; weak terms only add weight.
     strong_hits = _score(text, LOOP_STRONG_PATTERNS)
     weak_hits = _score(text, LOOP_WEAK_PATTERNS)
     team_hits = _score(text, TEAM_PATTERNS)
@@ -128,28 +114,28 @@ def route(text: str) -> dict[str, Any]:
 
     reasons = []
     if strong_hits:
-        reasons.append(f"循环/收敛语义(强) x{strong_hits}")
+        reasons.append(f"loop/convergence signal (strong) x{strong_hits}")
     if team_hits:
-        reasons.append(f"显式团队词 x{team_hits}")
+        reasons.append(f"explicit team terms x{team_hits}")
     if explicit_rounds:
-        reasons.append(f"显式轮数 {explicit_rounds.group(0)}")
+        reasons.append(f"explicit rounds {explicit_rounds.group(0)}")
     if weak_hits:
-        reasons.append(f"循环词(弱) x{weak_hits}")
+        reasons.append(f"loop terms (weak) x{weak_hits}")
 
     return {
         "loopRecommended": recommended,
         "mode": mode,
         "score": total,
-        "reason": "；".join(reasons) if reasons else "无循环特征",
+        "reason": "; ".join(reasons) if reasons else "no loop signals",
         "suggestedConfig": config,
     }
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    parser = argparse.ArgumentParser(prog="loop_route.py", description="agents-team-loop 路由判定")
-    parser.add_argument("--text", default=None, help="任务文本；缺省读 stdin")
-    parser.add_argument("--file", default=None, help="从文件读任务文本")
-    parser.add_argument("--json", action="store_true", help="输出 JSON（供 hook 消费）")
+    parser = argparse.ArgumentParser(prog="loop_route.py", description="agents-team-loop routing decision")
+    parser.add_argument("--text", default=None, help="task text; read stdin if omitted")
+    parser.add_argument("--file", default=None, help="read task text from a file")
+    parser.add_argument("--json", action="store_true", help="output JSON for hooks")
     args = parser.parse_args(argv)
 
     if args.text is not None:
@@ -159,7 +145,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             with open(args.file, encoding="utf-8") as handle:
                 text = handle.read()
         except OSError as exc:
-            print(f"[loop-route] 无法读取文件: {exc}", file=sys.stderr)
+            print(f"[loop-route] cannot read file: {exc}", file=sys.stderr)
             return 2
     else:
         text = sys.stdin.read()
@@ -168,8 +154,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.json:
         print(json.dumps(decision, ensure_ascii=False, indent=2))
     else:
-        flag = "推荐" if decision["loopRecommended"] else "不推荐"
-        print(f"[loop-route] {flag} mode={decision['mode']} score={decision['score']}（{decision['reason']}）")
+        flag = "recommended" if decision["loopRecommended"] else "not recommended"
+        print(f"[loop-route] {flag} mode={decision['mode']} score={decision['score']} ({decision['reason']})")
         if decision["suggestedConfig"]:
             print(json.dumps(decision["suggestedConfig"], ensure_ascii=False))
     return 0

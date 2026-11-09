@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-"""spec 插槽注册器：枚举、展示与校验 `slots/<name>/manifest.json`。
+"""List, show, and validate slot manifests at `slots/<name>/manifest.json`.
 
-插槽契约（详见 references/slots.md）：
-- 每个插槽是 `slots/<name>/` 下的自包含目录，由 manifest.json 声明其
-  scripts / hooks / docs / tests 资产。
-- 注册器只做静态校验：字段齐全、声明文件存在、路径不得逃逸插槽目录、
-  hook 事件必须是已知 Claude Code 事件。不做热加载。
+Each self-contained slot declares its scripts, hooks, docs, and tests in its
+manifest. Validation checks required fields, existing assets, contained paths,
+and known Claude Code hook events. It does not load slots dynamically; see
+references/slots.md.
 
-用法：
+Usage:
   python3 scripts/slot_registry.py list [--root .]
   python3 scripts/slot_registry.py show --slot team-loop [--root .]
-  python3 scripts/slot_registry.py validate [--root .]   # 逐插槽校验，任一无效 exit 2
+  python3 scripts/slot_registry.py validate [--root .]   # exit 2 if any slot is invalid
 """
 
 from __future__ import annotations
@@ -51,7 +50,7 @@ KNOWN_HOOK_EVENTS = (
 
 
 class SlotError(Exception):
-    """插槽 manifest 无效或路径非法。"""
+    """A slot manifest or path is invalid."""
 
 
 def slots_root(root: Path) -> Path:
@@ -74,24 +73,24 @@ def _validate_asset_path(slot_dir: Path, rel: object, kind: str) -> tuple[Path |
     resolving outside the slot.
     """
     if not isinstance(rel, str):
-        return None, f"{kind} 路径必须是字符串: {rel!r}"
+        return None, f"{kind} path must be a string: {rel!r}"
     if not rel or "\x00" in rel or any(ord(char) < 32 or ord(char) == 127 for char in rel):
-        return None, f"{kind} 路径包含非法控制字符或为空: {rel!r}"
+        return None, f"{kind} path is empty or contains invalid control characters: {rel!r}"
     candidate_rel = Path(rel)
     if candidate_rel.is_absolute() or ".." in candidate_rel.parts:
-        return None, f"{kind} 路径逃逸插槽目录: {rel}"
+        return None, f"{kind} path escapes the slot directory: {rel}"
     candidate = slot_dir / candidate_rel
     if not _contained(slot_dir, candidate):
-        return None, f"{kind} 路径逃逸插槽目录: {rel}"
+        return None, f"{kind} path escapes the slot directory: {rel}"
     try:
         relative = candidate.relative_to(slot_dir)
         current = slot_dir
         for part in relative.parts:
             current = current / part
             if current.is_symlink():
-                return None, f"{kind} 不能通过符号链接访问: {rel}"
+                return None, f"{kind} must not be accessed through a symlink: {rel}"
     except (OSError, ValueError):
-        return None, f"{kind} 路径不可访问: {rel}"
+        return None, f"{kind} path is inaccessible: {rel}"
     return candidate, None
 
 
@@ -101,30 +100,30 @@ def _check_asset(slot_dir: Path, rel: object, kind: str) -> str | None:
         return problem
     assert target is not None
     if not target.is_file() or not stat.S_ISREG(target.stat().st_mode):
-        return f"{kind} 不存在或不是普通文件: {rel}"
+        return f"{kind} does not exist or is not a regular file: {rel}"
     return None
 
 
 def load_manifest(slot_dir: Path) -> dict[str, Any]:
     manifest_path = slot_dir / "manifest.json"
     if not manifest_path.is_file():
-        raise SlotError(f"缺少 manifest.json: {manifest_path}")
+        raise SlotError(f"missing manifest.json: {manifest_path}")
     try:
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
-        raise SlotError(f"manifest.json 解析失败 {manifest_path}: {exc}") from exc
+        raise SlotError(f"failed to parse manifest.json {manifest_path}: {exc}") from exc
     if not isinstance(payload, dict):
-        raise SlotError(f"manifest.json 顶层必须是对象: {manifest_path}")
+        raise SlotError(f"manifest.json must be a top-level object: {manifest_path}")
     return payload
 
 
 def validate_slot(slot_dir: Path) -> list[str]:
-    """返回问题清单；空列表即有效。"""
+    """Return validation problems; an empty list means the slot is valid."""
     problems: list[str] = []
     if slot_dir.is_symlink():
-        return [f"插槽目录不能是符号链接: {slot_dir}"]
+        return [f"slot directory must not be a symlink: {slot_dir}"]
     if not slot_dir.is_dir():
-        return [f"插槽目录不存在或不是目录: {slot_dir}"]
+        return [f"slot directory does not exist or is not a directory: {slot_dir}"]
     try:
         manifest = load_manifest(slot_dir)
     except SlotError as exc:
@@ -132,21 +131,21 @@ def validate_slot(slot_dir: Path) -> list[str]:
 
     for field in REQUIRED_FIELDS:
         if field not in manifest:
-            problems.append(f"缺少必填字段: {field}")
+            problems.append(f"missing required field: {field}")
     if problems:
         return problems
 
     if not isinstance(manifest.get("name"), str):
-        problems.append("name 必须是字符串")
+        problems.append("name must be a string")
     if not isinstance(manifest.get("version"), str):
-        problems.append("version 必须是字符串")
+        problems.append("version must be a string")
     if not isinstance(manifest.get("summary"), str):
-        problems.append("summary 必须是字符串")
+        problems.append("summary must be a string")
     if isinstance(manifest.get("name"), str) and manifest["name"] != slot_dir.name:
-        problems.append(f"name 与目录名不一致: {manifest['name']!r} != {slot_dir.name!r}")
+        problems.append(f"name does not match directory name: {manifest['name']!r} != {slot_dir.name!r}")
 
     if not isinstance(manifest.get("scripts"), list) or not manifest["scripts"]:
-        problems.append("scripts 必须是非空列表")
+        problems.append("scripts must be a non-empty list")
     else:
         for rel in manifest["scripts"]:
             problem = _check_asset(slot_dir, rel, "script")
@@ -155,13 +154,13 @@ def validate_slot(slot_dir: Path) -> list[str]:
 
     hooks = manifest.get("hooks")
     if not isinstance(hooks, dict):
-        problems.append("hooks 必须是对象（事件 -> 脚本列表）；无 hook 的 slot 声明为空对象")
+        problems.append("hooks must be an object mapping events to script lists; use an empty object for no hooks")
     else:
         for event, entries in hooks.items():
             if event not in KNOWN_HOOK_EVENTS:
-                problems.append(f"未知 hook 事件: {event}")
+                problems.append(f"unknown hook event: {event}")
             if not isinstance(entries, list) or not entries:
-                problems.append(f"hooks.{event} 必须是非空列表")
+                problems.append(f"hooks.{event} must be a non-empty list")
                 continue
             for rel in entries:
                 problem = _check_asset(slot_dir, rel, "hook")
@@ -170,7 +169,7 @@ def validate_slot(slot_dir: Path) -> list[str]:
 
     docs = manifest.get("docs", [])
     if not isinstance(docs, list):
-        problems.append("docs 必须是列表")
+        problems.append("docs must be a list")
     else:
         for rel in docs:
             problem = _check_asset(slot_dir, rel, "doc")
@@ -180,18 +179,18 @@ def validate_slot(slot_dir: Path) -> list[str]:
     tests = manifest.get("tests")
     if tests is not None:
         if not isinstance(tests, (str, list)):
-            problems.append("tests 必须是目录字符串或列表")
+            problems.append("tests must be a directory string or list")
         else:
             test_paths = [tests] if isinstance(tests, str) else tests
             for rel in test_paths:
                 if not isinstance(rel, str):
-                    problems.append(f"tests 路径必须是字符串: {rel!r}")
+                    problems.append(f"tests path must be a string: {rel!r}")
                     continue
                 target, problem = _validate_asset_path(slot_dir, rel, "tests")
                 if problem:
                     problems.append(problem)
                 elif target is None or not target.is_dir():
-                    problems.append(f"tests 目录不存在: {rel}")
+                    problems.append(f"tests directory does not exist: {rel}")
 
     return problems
 
@@ -227,15 +226,15 @@ def _emit(payload: Any) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="slot_registry.py", description="spec 插槽注册器")
+    parser = argparse.ArgumentParser(prog="slot_registry.py", description="Spec slot registry")
     sub = parser.add_subparsers(dest="command", required=True)
     for name, help_text in (
-        ("list", "列出全部插槽与有效性"),
-        ("validate", "逐插槽校验，任一无效 exit 2"),
+        ("list", "List all slots and their validity"),
+        ("validate", "Validate each slot; exit 2 if any is invalid"),
     ):
         p = sub.add_parser(name, help=help_text)
         p.add_argument("--root", default=str(REPO_ROOT))
-    p = sub.add_parser("show", help="展示单个插槽")
+    p = sub.add_parser("show", help="Show one slot")
     p.add_argument("--slot", required=True)
     p.add_argument("--root", default=str(REPO_ROOT))
     return parser
@@ -252,13 +251,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         if args.command == "show":
             target = root / SLOTS_DIR_NAME / args.slot
             if not target.is_dir():
-                print(f"error: 插槽不存在: {args.slot}", file=sys.stderr)
+                print(f"error: slot not found: {args.slot}", file=sys.stderr)
                 return 2
             _emit(slot_info(target, root))
             return 0
         if args.command == "validate":
             if not slots:
-                print("没有已注册插槽", file=sys.stderr)
+                print("No registered slots", file=sys.stderr)
                 return 0
             all_valid = True
             for slot_dir in slots:

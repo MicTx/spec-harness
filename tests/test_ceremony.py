@@ -14,13 +14,13 @@ MAX_FILLED_FIELDS = 10
 PROBE = "`python3 -c \"import pathlib; assert pathlib.Path('README').exists()\"`"
 
 SPEC_FILL = {
-    "一句话描述项目要解决什么问题": "验证默认任务包的仪式成本",
-    "- 假设 A": "- 默认模板足以通过门禁",
-    "- [ ] 问题 A": "- 无",
-    "- 明确列出本轮不做的内容": "- 不改业务代码",
-    "- 最简单可行方案：xxx": "- 最简单可行方案：只填模板必填项",
-    "<变更对象对应的局部测试/静态检查命令>": "python3 -m pytest -q tests/test_ceremony.py",
-    "- [ ] 标准 A 达成 -> verify: task_0001": "- [x] README 存在 -> verify: task_0001",
+    "one sentence describing the problem this project solves": "验证默认任务包的仪式成本",
+    "- Assumption A": "- 默认模板足以通过门禁",
+    "- [ ] Question A": "- none",
+    "- explicitly list what this round will not do": "- 不改业务代码",
+    "- simplest viable approach: xxx": "- simplest viable approach: 只填模板必填项",
+    "<local test or static check command for the changed area>": "python3 -m pytest -q tests/test_ceremony.py",
+    "- [ ] Criterion A met -> verify: task_0001": "- [x] README 存在 -> verify: task_0001",
 }
 TASK_VERIFY_PREFIX = "  - verify: `python3 -m pytest -q tests/test_"
 
@@ -46,7 +46,7 @@ def _fill_tasks(text: str) -> tuple[str, int]:
     for line in text.splitlines():
         if line.startswith(TASK_VERIFY_PREFIX):
             line, filled = f"  - verify: {PROBE}", filled + 1
-        if line.strip() == "- [ ] 实现核心功能 A 的最小闭环":
+        if line.strip() == "- [ ] Deliver the smallest end-to-end slice of core feature A":
             line, filled = "- [ ] 验证默认任务包仪式成本", filled + 1
         lines.append(line.replace("- [ ]", "- [x]"))
     return "\n".join(lines) + "\n", filled

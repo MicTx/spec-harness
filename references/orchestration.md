@@ -14,7 +14,7 @@ Exactly one token:
 | `review` | Code exists and risk dominates | Review lanes in parallel |
 | `external` | Isolation or long-running execution is actually required | Upgrade only; no backend ships |
 
-`python3 scripts/route_decision.py --root <project> --slug <slug>` derives the route from package structure only (open tasks, boundary modules, dependency width, risk labels). Zero structural signal routes `local`; risk labels route `review`. `--route <token>` or a `### 5.4 编排策略` route overrides it within the vocabulary.
+`python3 scripts/route_decision.py --root <project> --slug <slug>` derives the route from package structure only (open tasks, boundary modules, dependency width, risk labels). Zero structural signal routes `local`; risk labels route `review`. `--route <token>` or a `### 5.4 Orchestration Strategy` route overrides it within the vocabulary.
 
 ## Operating model
 
@@ -32,30 +32,30 @@ Before starting a lane, write:
 
 Lanes never overlap write scopes. Wait for a lane only when the next decision depends on it. A lane's own report never completes a task: the main session runs the task's `verify`.
 
-## Task-shape decision table（任务形状→执行面判定表）
+## Task-shape decision table
 
-人读面收敛：什么任务形状走哪条执行面。判定只用既有五 route 词表与既有 slot mode 名，不新增 token；脚本输出是建议，主会话保留最终判断（存疑取 `local`）。
+This table maps task shapes to execution surfaces using only the existing five route tokens and slot mode names. Script output is advisory; the main session makes the final decision and chooses `local` when uncertain.
 
-| 任务形状 | 执行面（token） | 决策脚本 | 前置条件 | 降级路径 |
+| Task shape | Execution surface (token) | Decision script | Prerequisites | Fallback |
 | --- | --- | --- | --- | --- |
-| 局部 | `local` | `scripts/route_decision.py --root --slug` | 小而耦合、无跨模块并行收益；零结构信号一律 local（无文本长度回退） | 误判可用 `--route` 显式覆盖回正确 token |
-| 探索 | `explore` + 2-3 条定向探察 sidecar | `scripts/route_decision.py --root --slug` | 多任务宽边界或依赖纠缠（依据=包结构，指标可解释），且 assignment contract 五字段可写清 | 契约写不清就收回主线程串行探察 |
-| 并行扇出 | `explore` / `build` / `review` × workflow-runner（`batch-fanout` / `parallel-review` / `perspective-panel` / `review-fix-loop`） | `slots/workflow-runner/scripts/workflow_route.py`（仅强信号），且 `route_decision.py --root --slug` 判定 ∈ `explore` / `build` / `review` | route ∈ `explore` / `build` / `review`（README 书面激活域）；仓库驱动可读且选定 worker CLI 在 PATH | 前置不满足即降级为普通 sidecar 或 team-loop（workflow-runner README Hard preconditions），不静默伪造结果 |
-| 循环收敛 | 任意 route × team-loop（`until-converged` / `fixed-rounds`）；评审-修复组合形态由 workflow-runner 承接（loop_route 显式让出） | `slots/team-loop/scripts/loop_route.py`（仅强信号：收敛绑定语义或显式轮数） | `loopRecommended=true`（命中即移交执行段）；弱信号单独不推荐，确定性降级为普通 sidecar 编排；agents-team 工具面已加载 | 工具面缺失时显式报错，不静默降级为单会话循环 |
-| 外部隔离 | `external` | `scripts/route_decision.py --root --slug`（结构路由不自动给 external） | 实际需要隔离 git 状态/长时运行/多终端；由显式 5.4 route / `--route` 覆盖到达；本轮无外部后端 | 无外部后端时降级为 in-process 或串行交接，绝不中途发明控制面 |
+| Local | `local` | `scripts/route_decision.py --root --slug` | Small and coupled, with no benefit from cross-module parallelism; zero structural signal always selects `local` (no text-length fallback) | Correct a misclassification explicitly with `--route` |
+| Exploration | `explore` + 2-3 targeted explorer sidecars | `scripts/route_decision.py --root --slug` | Multiple tasks with broad boundaries or tangled dependencies, based on explainable package-structure metrics; all five assignment-contract fields can be stated clearly | If the contract cannot be stated clearly, explore serially on the main thread |
+| Parallel fan-out | `explore` / `build` / `review` × workflow-runner (`batch-fanout` / `parallel-review` / `perspective-panel` / `review-fix-loop`) | `slots/workflow-runner/scripts/workflow_route.py` (strong signals only), and `route_decision.py --root --slug` selects `explore` / `build` / `review` | Route is `explore` / `build` / `review` (the README's documented activation domain); repository driver is readable and the selected worker CLI is on PATH | Fall back to ordinary sidecars or team-loop if prerequisites fail (workflow-runner README, Hard preconditions); never silently fabricate results |
+| Convergence loop | Any route × team-loop (`until-converged` / `fixed-rounds`); workflow-runner handles combined review-fix shapes (`loop_route` explicitly yields) | `slots/team-loop/scripts/loop_route.py` (strong signals only: convergence-bound semantics or an explicit round count) | `loopRecommended=true` hands off execution; weak signals alone do not recommend a loop and deterministically fall back to ordinary sidecar orchestration; the agents-team tool surface is loaded | If the tool surface is unavailable, report an explicit error; never silently fall back to a single-session loop |
+| External isolation | `external` | `scripts/route_decision.py --root --slug` (structural routing never selects `external` automatically) | Actual need for isolated Git state, long-running work, or multiple terminals; selected by an explicit 5.4 route / `--route` override; no external backend is available this round | Without an external backend, fall back to in-process work or serial handoff; never invent a control surface mid-run |
 
-共存合法性：`loopRecommended=true` 与 `route=local` 共存是合法语义，不是矛盾——slot 激活与编排路由相互独立（SKILL.md「Activation rule」），命中即把执行段移交受管 loop 协议（stages/run.md 第 3 步）。同理 `workflowRecommended=true` 只是建议：实际激活受 workflow-runner README 书面激活域与驱动前置检查约束，行为现状由 `tests/test_route_decision.py` 的组合语义回归钉守护。
+`loopRecommended=true` and `route=local` may coexist: slot activation and orchestration routing are independent (SKILL.md, "Activation rule"). A match hands execution to the managed loop protocol described in `stages/run.md` and the slot's README. Likewise, `workflowRecommended=true` is only a recommendation; actual activation is constrained by the workflow-runner README's documented activation domain and driver prerequisite checks. `tests/test_route_decision.py` guards the current combined behavior.
 
-## `### 5.4 编排策略`
+## `### 5.4 Orchestration Strategy`
 
-Optional section under `## 5. 技术决策` in `spec.md`. When present, `check_spec_package.py` validates structure: `route` is a single token from the vocabulary above (backticks optional); multi-token values such as `build（主线程）+ review` are rejected; ownership / waiting strategy / verification gate live as sibling bullets, never inside the `route` token; absence does not block the package (local by default). Recommended shape (single-token `route` only), written from `route_decision.py` output plus judgment — never invent extra tokens:
+Optional section under `## 5. Technical Decisions` in `spec.md`. When present, `check_spec_package.py` validates structure: `route` is a single token from the vocabulary above (backticks optional); multi-token values such as `build (main thread) + review` are rejected; ownership / waiting strategy / verification gate live as sibling bullets, never inside the `route` token; absence does not block the package (local by default). Recommended shape (single-token `route` only), written from `route_decision.py` output plus judgment — never invent extra tokens:
 
 ```markdown
-### 5.4 编排策略
+### 5.4 Orchestration Strategy
 - route: local
 - immediate blocker: <what stays on the main thread>
-- ownership: <bounded slices, or 主线程独占>
-- waiting strategy: <when to wait, or 无>
+- ownership: <bounded slices, or main thread only>
+- waiting strategy: <when to wait, or none>
 - verification gate: <what must pass before finalizing>
-- workflow: <编排面说明（可选）>
+- workflow: <execution-surface notes, optional>
 ```

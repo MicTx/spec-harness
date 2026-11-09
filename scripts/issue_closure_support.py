@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import Any
 
 CLOSURE_VERSION = 1
-CLOSURE_HEADING = "## 问题处置"
+CLOSURE_HEADING = "## Issue Disposition"
+LEGACY_CLOSURE_HEADING = "## 问题处置"
 DISPOSITION_TYPES = {
     "resolved_current",
     "resolved_followup",
@@ -30,6 +31,16 @@ SLUG_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}_[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$
 PLACEHOLDER_VALUES = {"", "无", "none", "n/a", "na", "待补充", "待完善", "xxx"}
 SUMMARY_PLACEHOLDERS = ("待补充", "待完善", "xxx")
 REQUIRED_SUMMARY_HEADINGS = (
+    "## Delivery Outcome",
+    "## Assumptions Review",
+    "## Delivery Scope",
+    "## Simplification Decisions",
+    "## Change Boundaries",
+    "## Verification Evidence",
+    "## Gate Evidence",
+    CLOSURE_HEADING,
+)
+LEGACY_SUMMARY_HEADINGS = (
     "## 交付结论",
     "## 假设回顾",
     "## 交付范围",
@@ -37,7 +48,7 @@ REQUIRED_SUMMARY_HEADINGS = (
     "## 变更边界",
     "## 验证证据",
     "## 门禁证据",
-    CLOSURE_HEADING,
+    LEGACY_CLOSURE_HEADING,
 )
 MAX_CLOSURE_FILE_BYTES = 2 * 1024 * 1024
 MAX_FOLLOWUP_NODES = 128
@@ -100,24 +111,26 @@ def render_issue_closure(issues: list[dict[str, Any]]) -> str:
 
 
 def extract_issue_closure(summary_content: str) -> dict[str, Any] | None:
-    heading_index = summary_content.find(CLOSURE_HEADING)
-    if heading_index < 0:
+    headings = (CLOSURE_HEADING, LEGACY_CLOSURE_HEADING)
+    matches = [(summary_content.find(heading), heading) for heading in headings if heading in summary_content]
+    if not matches:
         return None
-    tail = summary_content[heading_index + len(CLOSURE_HEADING) :]
+    heading_index, heading = min(matches)
+    tail = summary_content[heading_index + len(heading) :]
     next_heading = re.search(r"(?m)^##\s+", tail)
     section = tail[: next_heading.start()] if next_heading else tail
     fence = section.find("```json")
     if fence < 0:
-        raise IssueClosureError("问题处置 section must contain one JSON object")
+        raise IssueClosureError("Issue Disposition section must contain one JSON object")
     payload_text = section[fence + len("```json") :].lstrip()
     try:
         payload, end = json.JSONDecoder().raw_decode(payload_text)
     except json.JSONDecodeError as exc:
-        raise IssueClosureError(f"问题处置 JSON is invalid: {exc}") from exc
+        raise IssueClosureError(f"Issue Disposition JSON is invalid: {exc}") from exc
     if not payload_text[end:].lstrip().startswith("```"):
-        raise IssueClosureError("问题处置 section must contain one JSON object")
+        raise IssueClosureError("Issue Disposition section must contain one JSON object")
     if not isinstance(payload, dict):
-        raise IssueClosureError("问题处置 JSON must be an object")
+        raise IssueClosureError("Issue Disposition JSON must be an object")
     return payload
 
 
@@ -135,8 +148,8 @@ def validate_completion_summary(
 ) -> list[str]:
     """Validate a generated completion summary and its structured closeout."""
     failures: list[str] = []
-    for heading in REQUIRED_SUMMARY_HEADINGS:
-        if heading not in summary_content:
+    for heading, legacy in zip(REQUIRED_SUMMARY_HEADINGS, LEGACY_SUMMARY_HEADINGS):
+        if heading not in summary_content and legacy not in summary_content:
             failures.append(f"completion summary missing section: {heading}")
     for placeholder in SUMMARY_PLACEHOLDERS:
         if placeholder in summary_content:

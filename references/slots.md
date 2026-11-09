@@ -44,7 +44,7 @@ slots/<name>/
 A scripts+docs-only slot declares no hook: write `"hooks": {}`. The fence stays standard JSON — parser-rejected syntax such as `//` comments belongs in the prose around it, never inside the block.
 
 Hard rules (enforced by the registry):
-- Required fields: `name / version / summary / scripts / hooks`（`hooks` 允许为空对象——纯 scripts+docs 型 slot）
+- Required fields: `name / version / summary / scripts / hooks` (`hooks` may be an empty object for a scripts-and-docs-only slot)
 - No declared path may escape the slot directory
 - Hook events must be known Claude Code events
 - `name` must equal the directory name

@@ -133,7 +133,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     update.add_argument(
         "--note",
         default="",
-        help="One-line context for the 上下文 slot (at most 4000 characters; longer narrative belongs in the slots)",
+        help="One-line context for the Context slot (at most 4000 characters; longer narrative belongs in the slots)",
     )
 
     show = subparsers.add_parser(
@@ -260,8 +260,8 @@ def _command_show(root: Path, args: argparse.Namespace) -> int:
     lines = [
         f"# handoff - {slug}",
         "",
-        f"- 新鲜度：{label}（{detail}）",
-        f"- 条目数：{len(doc.entries)}",
+        f"- Freshness: {label} ({detail})",
+        f"- Entries: {len(doc.entries)}",
         "",
         heading,
         "",
@@ -270,7 +270,7 @@ def _command_show(root: Path, args: argparse.Namespace) -> int:
         "```",
     ]
     for name, body in entry.sections.items():
-        lines.extend(["", f"#### {name}", body or "（空）"])
+        lines.extend(["", f"#### {name}", body or "(empty)"])
     print("\n".join(lines))
     return EXIT_OK
 
