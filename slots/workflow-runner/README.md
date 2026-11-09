@@ -36,20 +36,8 @@ authorized, suitably capable sidecar or do it on the main thread. An omitted dec
 proof that a task is read-only; the coordinator must classify assignments. Pi permissions remain
 the host’s responsibility, not a permission grant by this slot.
 
-Mandatory ultrathink uses the shared `scripts/reasoning_policy.py` before dispatch: Pi requests
-`--thinking max` (`--model` optional); Codex requires an explicit catalog `--model` and requests
-that model's highest advertised effort. Unknown models/capabilities fail before any worker starts;
-no lower-effort retry or raw command is supported. JSONL records the policy, requested level and
-`provider_effect=unverified`; this proves a launch request, not actual provider reasoning. Cache
-keys bind policy/model/level, so old lower/default-effort entries cannot be reused. Protocol and
-host limitations: [mandatory ultrathink](../../references/commands.md#mandatory-ultrathink).
-
-Every dispatched item snapshots active package decisions before execution. A worker that alters,
-closes, removes or relabels an existing decision, or creates an already-closed decision, fails
-with `returncode=-1`; a persistent abnormal guard also blocks route/check and further launches.
-New open decisions remain valid escalation. This is an invocation-integrity check, not actor
-authentication or protection for current-session/ABA edits. Stop related workers before user
-review and explicit guard-record resolution; no automatic clearing or acceptance.
+Workers use the host's default reasoning; pass `--model` to pick one. Decisions in the package are
+checked once, at `/spec:check`: a closed `[decision]` needs `authority: user:<reference>`.
 
 ### Cache and output provenance
 

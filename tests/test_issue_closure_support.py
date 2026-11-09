@@ -260,11 +260,10 @@ def test_followup_archive_rejects_oversized_closure_file(tmp_path: Path):
 
 
 def _spec_with_unchecked_function_box(package: Path) -> None:
+    """Make the archived spec fail a current delivery gate (unchecked §6)."""
     spec = package / "spec.md"
     spec.write_text(
-        spec.read_text(encoding="utf-8").replace(
-            "## 3. 功能范围\n", "## 3. 功能范围\n### 3.1 核心功能（MVP）\n- [ ] 功能 A：描述\n", 1
-        ),
+        spec.read_text(encoding="utf-8") + "## 6. 成功标准\n- [ ] 功能 A：未完成\n",
         encoding="utf-8",
     )
 

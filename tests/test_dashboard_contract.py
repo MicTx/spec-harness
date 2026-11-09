@@ -353,15 +353,3 @@ def test_dashboard_preserves_active_tasks_beyond_the_task_list_limit():
     text = Dashboard(slug="s", stage="run", strip=[GLYPH_ACTIVE] * len(labels), strip_labels=labels).render()
     assert "其余 3 项见任务包" in text
     assert _current_area(text, False) == labels
-
-
-def test_goal_output_stops_locally_and_does_not_default_to_a_push_command():
-    contract = (Path(__file__).resolve().parent.parent / "references" / "output-contracts.md").read_text(
-        encoding="utf-8"
-    )
-    goal = contract.split("## `/spec:goal`", 1)[1].split("\n## ", 1)[0]
-    assert "stops at the local commit by default" in goal
-    assert "local commit outcome" in goal
-    assert "Never push without explicit user authorization" in goal
-    assert "only after an authorized push has actually completed" in goal
-    assert "Give a push command only when the user explicitly requests one, not by default" in goal

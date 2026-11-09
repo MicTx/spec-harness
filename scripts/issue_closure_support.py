@@ -198,9 +198,10 @@ def _load_archive_node(
     if not all(filename in contents for filename in ("spec.md", "tasks.md", "completion-summary.md")):
         return failures, ()
 
-    from spec_package_support import acceptance_complete, count_unfinished_tasks
+    from spec_package_support import acceptance_complete, count_tasks
 
-    unfinished = count_unfinished_tasks(contents["tasks.md"])
+    total, completed = count_tasks(contents["tasks.md"])
+    unfinished = total - completed
     if unfinished:
         failures.append(f"follow-up archive has unfinished tasks: {slug}")
     if not acceptance_complete(contents.get("checklist.md"), contents["spec.md"]):

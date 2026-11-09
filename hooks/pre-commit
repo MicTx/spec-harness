@@ -47,13 +47,6 @@ fi
 # spec/* branch an archive commit fully checks its archived packages while
 # unrelated active work still gets structural lint; WIP commits get lint only.
 # The channel is decided by staged paths, never a committer-declared footer.
-baseline=""
-for ref in refs/heads/main refs/heads/master; do
-  if baseline=$(git rev-parse --verify "$ref" 2>/dev/null); then
-    break
-  fi
-  baseline=""
-done
 branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
 case "$branch" in
   spec/*)
@@ -92,9 +85,6 @@ print("\n".join(sorted(slugs)))
     "$python" "$checker" --root "$repo" --lint-only
     "$python" "$checker" --root "$repo" --index --lint-only
     set --
-    if [ -n "$baseline" ]; then
-      set -- --legacy-baseline "$baseline"
-    fi
     for slug in $archive_slugs; do
       set -- "$@" --slug "$slug"
     done
@@ -103,9 +93,5 @@ print("\n".join(sorted(slugs)))
     ;;
 esac
 
-set --
-if [ -n "$baseline" ]; then
-  set -- --legacy-baseline "$baseline"
-fi
-"$python" "$checker" --root "$repo" "$@"
-"$python" "$checker" --root "$repo" --index "$@"
+"$python" "$checker" --root "$repo"
+"$python" "$checker" --root "$repo" --index

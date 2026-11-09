@@ -27,26 +27,14 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 INSTALLER = ROOT / "install.sh"
 EXPORTER = ROOT / "scripts" / "export_skill_package.py"
-PARITY = ROOT / "scripts" / "verify_install_parity.py"
 
 CORE_STAGES = ("new", "run", "check", "done", "push", "doctor")
 EXTENDED_STAGES = ("goal", "autoplan", "autorun", "update", "status", "organize")
-CORE_EXCLUDED_DIRS = ("agents", "server", "slots")
+CORE_EXCLUDED_DIRS = ("agents", "slots")
 KEPT_COMPONENT_DIRS = ("hooks", "references")
-# F16 sub-step 2: chain-family scripts are extension surface. The list is
-# triplicated (payload_contract.py, install.sh copy path, smoke layout) —
-# this module pins all three to the same members.
-CORE_EXCLUDED_SCRIPTS = (
-    "autorun_spawn.py",
-    "autoplan_spawn.py",
-    "autoplan_gate.py",
-    "chain_spawn_support.py",
-    "chain_recovery.py",
-    "chain_lifecycle.py",
-    "chain_session.py",
-    "reasoning_policy.py",
-    "sweep_chain_windows.py",
-)
+# Chain scripts are full-profile only; payload_contract.py, install.sh and the
+# smoke layout must agree on this list.
+CORE_EXCLUDED_SCRIPTS = ("autoplan_gate.py", "chain_state.py")
 
 CORE_KEPT_AGENT_FILES = ("openai.yaml",)
 
@@ -68,7 +56,7 @@ requires_bash = pytest.mark.skipif(
 
 def run_export(output: Path, *extra: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(EXPORTER), "--output", str(output), "--force", "--skip-signing", *extra],
+        [sys.executable, str(EXPORTER), "--output", str(output), "--force", *extra],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -76,7 +64,10 @@ def run_export(output: Path, *extra: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def tree_manifest(root: Path, skip_names: frozenset[str] = frozenset({".spec-skill-install"})) -> dict[str, bytes]:
+def tree_manifest(
+    root: Path,
+    skip_names: frozenset[str] = frozenset({".spec-skill-install", "install-manifest.json"}),
+) -> dict[str, bytes]:
     manifest: dict[str, bytes] = {}
     for path in sorted(root.rglob("*")):
         if path.is_file() and not any(part in ("__pycache__",) for part in path.parts):
@@ -97,16 +88,11 @@ def sandbox_env(home: Path, extra_env: dict[str, str] | None = None) -> dict[str
         "HOME": str(home),
         "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
         "BACKUP_ROOT": str(home / ".spec-skill-backups"),
-        # Deterministic payload: never sign from a checkout that happens to
-        # carry maintainer signing files.
-        "SPEC_SKIP_SIGNING": "1",
     }
     for var in (
         "INSTALL_HOSTS",
         "INSTALL_PROFILE",
         "SOURCE_DIR",
-        "SPEC_SIGNING_IDENTITY",
-        "SPEC_SIGNING_KEY",
         "FORCE",
         "INSTALL_DIR",
     ):
@@ -163,11 +149,6 @@ def test_exported_instructions_admit_missing_optional_capabilities(tmp_path, pro
     output = tmp_path / profile
     result = run_export(output, "--profile", profile)
     assert result.returncode == 0, result.stderr
-    skill = (output / "SKILL.md").read_text(encoding="utf-8")
-    run = (output / "references/stages/run.md").read_text(encoding="utf-8")
-    assert "Before slot routing, check that the relevant slot is installed" in skill
-    assert "Never silently claim managed execution" in skill
-    assert "core omits slots and agent role documents" in run
     assert (output / "slots/team-loop/README.md").exists() is (profile == "full")
 
 
@@ -219,33 +200,6 @@ def test_export_rejects_unknown_profile(tmp_path):
     assert result.returncode != 0
     assert "invalid choice" in result.stderr
     assert not output.exists()
-
-
-def test_parity_tool_profile_aware_for_core_installs(tmp_path):
-    """A core install fails the default (full) audit and passes --profile core."""
-    core_output = tmp_path / "core-export"
-    assert run_export(core_output, "--profile", "core").returncode == 0
-
-    default_audit = subprocess.run(
-        [sys.executable, str(PARITY), "--install", str(core_output), "--repo", str(ROOT)],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    assert default_audit.returncode != 0
-    assert (
-        "missing shipped file: agents/" in default_audit.stdout
-        or "missing shipped file: slots/" in default_audit.stdout
-    )
-
-    core_audit = subprocess.run(
-        [sys.executable, str(PARITY), "--install", str(core_output), "--repo", str(ROOT), "--profile", "core"],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    assert core_audit.returncode == 0, core_audit.stdout
-    assert "PASS" in core_audit.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -330,10 +284,8 @@ def test_sandbox_core_upgrade_sweeps_full_artifacts(tmp_path):
     assert swept, "extended stage commands must land in backups on downgrade"
     for name in ("orchestrator", "planner"):
         assert list(backups.rglob(f"{name}.md*")), f"agent {name} must land in backups on downgrade"
-    # The former full tree (server/, chain scripts) lands in the whole-tree
-    # backup, not in the live skill.
-    assert list(backups.rglob("server.py")), "server/ must land in backups on downgrade"
-    assert list(backups.rglob("autorun_spawn.py")), "chain scripts must land in backups on downgrade"
+    # The former full tree (chain scripts) lands in the whole-tree backup, not in the live skill.
+    assert list(backups.rglob("chain_state.py")), "chain scripts must land in backups on downgrade"
 
 
 @requires_bash
@@ -386,10 +338,18 @@ def test_sandbox_doctor_is_profile_aware(tmp_path):
     layout = next(check for check in payload["checks"] if check["id"] == "skill.layout")
     assert layout["status"] == "ok"
     assert "profile=core" in layout["detail"]
-    commands = next(check for check in payload["checks"] if check["id"] == "claude.commands")
-    assert commands["status"] == "ok"
-    assert "6 个阶段命令文件" in commands["detail"]
-    assert all(check["id"] != "claude.agents" for check in payload["checks"])
+    # The reduced doctor reports the five probes only; the stage command files
+    # remain an installer surface, asserted directly instead.
+    assert {check["id"] for check in payload["checks"]} <= {
+        "python.runtime",
+        "git.available",
+        "skill.layout",
+        "project.hooks",
+        "hooks.stop",
+        "advice.checkpoint",
+        "advice.activation",
+    }
+    assert claude_stage_commands(home) == sorted(f"{stage}.md" for stage in CORE_STAGES)
 
     full_home = tmp_path / "home-full"
     full_home.mkdir()
@@ -417,9 +377,7 @@ def test_sandbox_doctor_is_profile_aware(tmp_path):
     full_layout = next(check for check in full_payload["checks"] if check["id"] == "skill.layout")
     assert full_layout["status"] == "ok"
     assert "profile=full" in full_layout["detail"]
-    full_commands = next(check for check in full_payload["checks"] if check["id"] == "claude.commands")
-    assert full_commands["status"] == "ok"
-    assert "12 个阶段命令文件" in full_commands["detail"]
+    assert claude_stage_commands(full_home) == sorted(f"{stage}.md" for stage in CORE_STAGES + EXTENDED_STAGES)
 
 
 # ---------------------------------------------------------------------------
@@ -465,12 +423,8 @@ def test_smoke_default_profile_is_full_and_rejects_unknown():
 # Discovery metadata survives core (proactive admission)
 # ---------------------------------------------------------------------------
 
-ACTIVATION_RUNTIME_FILES = (
-    "hooks/claude_activation_guard.py",
-    "scripts/assess_spec_activation.py",
-    "scripts/activation_state.py",
-    "scripts/install_activation_hooks.py",
-)
+#: Retired guard kept as a no-op stub until 0.28 so old settings entries never block.
+ACTIVATION_RUNTIME_FILES = ("hooks/claude_activation_guard.py",)
 
 
 def test_export_core_keeps_discovery_metadata_but_no_agent_contracts(tmp_path):
@@ -483,7 +437,7 @@ def test_export_core_keeps_discovery_metadata_but_no_agent_contracts(tmp_path):
         assert not (output / "agents" / contract).exists(), contract
 
 
-def test_export_core_ships_the_activation_runtime_without_slots(tmp_path):
+def test_export_core_ships_the_retired_activation_stub_without_slots(tmp_path):
     output = tmp_path / "core-export"
     assert run_export(output, "--profile", "core").returncode == 0
     for rel in ACTIVATION_RUNTIME_FILES:
@@ -538,18 +492,6 @@ def test_sandbox_full_to_core_downgrade_keeps_metadata(tmp_path):
     skill = home / ".claude" / "skills" / "spec"
     assert (skill / "agents" / "openai.yaml").is_file()
     assert not (skill / "agents" / "planner.md").exists()
-
-
-@requires_bash
-def test_sandbox_install_reports_unwired_activation_and_the_one_time_command(tmp_path):
-    home = tmp_path / "home"
-    home.mkdir()
-    result = run_installer(home)
-    assert result.returncode == 0, result.stderr
-    output = result.stdout + result.stderr
-    assert "not wired by default" in output
-    assert "install_activation_hooks.py --mode on" in output
-    assert not (home / ".claude" / "settings.json").exists()
 
 
 def _fingerprint_dir(root: Path) -> dict:
@@ -610,87 +552,6 @@ def _seed_claude_home(home: Path, cwd: Path):
 
 
 @requires_bash
-def test_installed_cli_recovers_context_core_and_full(tmp_path):
-    import json as _json
-
-    for profile in ("core", "full"):
-        home = tmp_path / f"home-{profile}"
-        home.mkdir()
-        before_source = _source_runtime_fingerprint()
-        result = run_installer(home, {"INSTALL_PROFILE": profile, "PYTHONDONTWRITEBYTECODE": "1"})
-        assert result.returncode == 0, result.stderr[-300:]
-        script = home / ".claude" / "skills" / "spec" / "scripts" / "spec_context.py"
-        assert script.is_file(), profile
-        if profile == "core":
-            assert all(not (script.parent / name).exists() for name in CORE_EXCLUDED_SCRIPTS)
-
-        target = tmp_path / f"target-{profile}"
-        target.mkdir()
-        native_home = tmp_path / f"native-{profile}"
-        _seed_claude_home(native_home, target)
-        before_target = _fingerprint_dir(target)
-        before_native = _fingerprint_dir(native_home)
-
-        env = dict(os.environ)
-        env["HOME"] = str(native_home)
-        env["PYTHONDONTWRITEBYTECODE"] = "1"
-        discovered = subprocess.run(
-            [
-                sys.executable,
-                "-B",
-                str(script),
-                "discover",
-                "--root",
-                ".",
-                "--home",
-                str(native_home),
-                "--client",
-                "devin",
-            ],
-            cwd=target,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        assert discovered.returncode == 0, discovered.stderr[-300:]
-        payload = _json.loads(discovered.stdout)
-        assert payload["candidates"] and payload["candidates"][0]["agent"] == "claude"
-        read = subprocess.run(
-            [
-                sys.executable,
-                "-B",
-                str(script),
-                "read",
-                "--root",
-                ".",
-                "--home",
-                str(native_home),
-                "--agent",
-                "claude",
-                "--session",
-                payload["candidates"][0]["session_id"],
-            ],
-            cwd=target,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        assert read.returncode == 0, read.stderr[-300:]
-        body = _json.loads(read.stdout)
-        assert [m["text"] for m in body["messages"]] == ["export alpha", "alpha next step"]
-        assert body["authority"] == "context-only"
-        assert "untrusted" in " ".join(body["advisories"])
-        assert any("completion" in advisory or "evidence" in advisory for advisory in body["advisories"])
-        assert _fingerprint_dir(target) == before_target
-        assert _fingerprint_dir(native_home) == before_native
-        assert _source_runtime_fingerprint() == before_source
-        assert not (target / ".spec").exists()
-        assert not list(script.parent.rglob("__pycache__"))
-
-
-@requires_bash
 def test_installer_preserves_user_settings_both_ways(tmp_path):
     import json as _json
 
@@ -709,30 +570,3 @@ def test_installer_preserves_user_settings_both_ways(tmp_path):
                 assert settings.read_bytes() == original
             else:
                 assert not settings.exists()
-
-
-@requires_bash
-def test_generated_wrappers_load_recovery_contract(tmp_path):
-    for host, install_env in (("claude", {}), ("pi", {"INSTALL_HOSTS": "pi"})):
-        home = tmp_path / f"home-{host}"
-        home.mkdir()
-        result = run_installer(home, {**install_env, "PYTHONDONTWRITEBYTECODE": "1"})
-        assert result.returncode == 0, result.stderr[-300:]
-        if host == "claude":
-            wrappers = home / ".claude" / "commands" / "spec"
-            texts = [p.read_text() for p in wrappers.glob("*.md")]
-            assert not (home / ".claude" / "commands" / "spec.md").exists()
-            skill = (home / ".claude" / "skills" / "spec" / "SKILL.md").read_text()
-            assert skill.index("spec_context.py discover") < skill.index("scripts/route_spec_package.py")
-        else:
-            pi_prompts = home / ".pi" / "agent" / "prompts"
-            texts = (
-                [p.read_text() for p in pi_prompts.glob("*.md") if not p.name.endswith(".spec-skill-install")]
-                if pi_prompts.exists()
-                else []
-            )
-        assert texts, host
-        for text in texts:
-            normalized = " ".join(text.lower().split())
-            assert normalized.index("installed skill") < normalized.index("native session recovery")
-            assert normalized.index("native session recovery") < normalized.index("before stage analysis")

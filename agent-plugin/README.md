@@ -4,7 +4,7 @@
 
 > 入口归类：**maintainer-only** —— 本目录只在源码库存在，不进运行时导出树；公开入口索引见 [`../docs/README.md`](../docs/README.md) 与 [`../docs/README-en.md`](../docs/README-en.md)。
 
-本目录是 `scripts/package_agent_plugin.py` 的打包模板：脚本读取这里的清单模板，
+本目录是 `.maintainer/tools/release/package_agent_plugin.py` 的打包模板：脚本读取这里的清单模板，
 渲染占位符、校验字段合法性，再组装本仓运行时 skill 载荷并产出可分发的插件 zip。
 
 格式依据 Agent Plugins 1.0 与 Claude Code plugin manifest 规范：
@@ -31,16 +31,16 @@
 
 ```bash
 # 默认：Agent Plugins 1.0 格式，产出 dist/<name>-<version>-agent-plugins.zip
-python3 scripts/package_agent_plugin.py
+python3 .maintainer/tools/release/package_agent_plugin.py
 
 # Claude Code 格式
-python3 scripts/package_agent_plugin.py --format claude-code
+python3 .maintainer/tools/release/package_agent_plugin.py --format claude-code
 
 # dsh bundle 格式（解压后 `dsh plugin --profile <name> add ./spec-harness`）
-python3 scripts/package_agent_plugin.py --format dsh
+python3 .maintainer/tools/release/package_agent_plugin.py --format dsh
 
 # 自定义输出与元数据
-python3 scripts/package_agent_plugin.py --name spec-harness --version 1.2.3 \
+python3 .maintainer/tools/release/package_agent_plugin.py --name spec-harness --version 1.2.3 \
     --output dist/spec-harness.zip --force
 ```
 
@@ -55,7 +55,7 @@ python3 scripts/package_agent_plugin.py --name spec-harness --version 1.2.3 \
     └── spec/              # 兼容名下的运行时 skill 载荷（SKILL.md 在 skill 目录根部）
         ├── SKILL.md
         ├── install.sh
-        ├── agents/ hooks/ references/ server/ scripts/ ...
+        ├── agents/ hooks/ references/ scripts/ ...
 ```
 
 Claude Code 格式仅清单位置不同（`.claude-plugin/plugin.json`），skills 载荷完全一致。
@@ -67,7 +67,3 @@ Claude Code 格式仅清单位置不同（`.claude-plugin/plugin.json`），skil
 - 模板必须保持合法 JSON（占位符除外），脚本渲染后会拒绝任何残留 `{{...}}`。
 
 - dsh 格式：`index.js` 是无依赖 Cordis 插件（`inject=['skills']`），在 `ctx.skills` 注册 `bundled`（rank 600）提供者并剥离 frontmatter；`package.json` 声明 `dsh.bundle.patch`。依据 dsh `docs/user/develop/basic/publish.md` 与 `packages/experimental/skill-badge`，dsh 为 developer preview，未做 live 验收。
-
-## 主动启用与插件
-
-插件包只分发技能文件（含 `hooks/claude_activation_guard.py`、`scripts/install_activation_hooks.py`），**不会**修改宿主的 `settings.json`，因此装插件不等于接通了主动评估。需要时由用户在宿主侧显式执行一次 `install_activation_hooks.py --mode on`；`spec:doctor` 会如实标注“未接线”与“未经 live 验证”。

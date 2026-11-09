@@ -1,10 +1,8 @@
 import json
-import os
 import re
 import subprocess
 import sys
 import tempfile
-import unicodedata
 from pathlib import Path
 
 import pytest
@@ -39,9 +37,8 @@ def test_collect_excludes_export():
 
 def test_collect_includes_core_scripts():
     files = _collect_script_files()
-    assert "autorun_spawn.py" in files
+    assert "chain_state.py" in files
     assert "autoplan_gate.py" in files
-    assert "autoplan_spawn.py" in files
     assert "spec_package_support.py" in files
     assert "init_spec_package.py" in files
     assert "route_spec_package.py" in files
@@ -53,7 +50,6 @@ def test_collect_includes_core_scripts():
     assert "smoke_test_spec_skill.py" in files
     assert "issue_closure_support.py" in files
     assert "route_decision.py" in files
-    assert "structure_contracts.py" in files
     # The recruitment machinery must not ship in the exported skill.
     for removed in (
         "supervisor_keepalive_support.py",
@@ -78,7 +74,6 @@ def test_exported_contract_auditor_detects_real_violation(tmp_path, profile):
             str(skill_root),
             "--output",
             str(output),
-            "--skip-signing",
             "--profile",
             profile,
         ],
@@ -86,7 +81,12 @@ def test_exported_contract_auditor_detects_real_violation(tmp_path, profile):
         text=True,
     )
     assert result.returncode == 0, result.stderr
-    assert (output / "scripts" / "structure_contracts.py").is_file()
+    organize = output / "slots" / "organize" / "scripts" / "organize_project_structure.py"
+    if profile == "core":
+        # The organize slot is extension surface: it ships only under full.
+        assert not organize.exists()
+        return
+    assert organize.is_file()
     project = tmp_path / "project"
     arch = project / ".spec" / "architecture"
     arch.mkdir(parents=True)
@@ -109,7 +109,7 @@ def test_exported_contract_auditor_detects_real_violation(tmp_path, profile):
     audit = subprocess.run(
         [
             sys.executable,
-            str(output / "scripts" / "organize_project_structure.py"),
+            str(organize),
             "--root",
             str(project),
             "--check",
@@ -135,7 +135,6 @@ def test_export_end_to_end():
                 "--output",
                 str(output),
                 "--force",
-                "--skip-signing",
                 "--root",
                 str(skill_root),
             ],
@@ -154,22 +153,18 @@ def test_export_end_to_end():
         assert (output / "scripts" / "init_spec_package.py").exists()
         # full keeps the chain-family scripts (extension surface under core
         # only — planning F16 sub-step 2).
-        assert (output / "scripts" / "autorun_spawn.py").is_file()
-        assert (output / "scripts" / "autoplan_spawn.py").is_file()
-        assert (output / "scripts" / "chain_recovery.py").is_file()
-        assert (output / "scripts" / "chain_lifecycle.py").is_file()
+        assert (output / "scripts" / "chain_state.py").is_file()
+        assert (output / "scripts" / "autoplan_gate.py").is_file()
         assert (output / "scripts" / "route_decision.py").is_file()
         assert (output / "agents" / "orchestrator.md").is_file()
         assert (output / "agents" / "planner.md").is_file()
         assert (output / "references" / "orchestration.md").is_file()
-        assert (output / "server" / "server.py").is_file()
-        assert (output / "server" / "install.sh").is_file()
-        assert (output / "server" / "README.md").is_file()
         assert (output / "slots" / "team-loop" / "manifest.json").is_file()
         assert (output / "slots" / "workflow-runner" / "manifest.json").is_file()
         assert (output / "slots" / "workflow-runner" / "scripts" / "workflow_fanout.py").is_file()
         assert not (output / "scripts" / "export_skill_package.py").exists()
-        assert not (output / "scripts" / "payload_contract.py").exists()
+        # payload_contract.py ships: install.sh queries it for the profile lists.
+        assert (output / "scripts" / "payload_contract.py").is_file()
         assert not (output / "scripts" / "path_safety.py").exists()
         assert not (output / "scripts" / "skill_watermark.py").exists()
         assert not (output / ".watermark-key").exists()
@@ -177,39 +172,10 @@ def test_export_end_to_end():
         exported = (output / "SKILL.md").read_text(encoding="utf-8")
         assert "\u2063" not in exported
         assert exported == (skill_root / "SKILL.md").read_text(encoding="utf-8")
-        # Unsigned export: no NOTICE carrier either.
-        assert not (output / "NOTICE").exists()
         # __pycache__ must not leak into the export
         assert not any(output.rglob("__pycache__")), "__pycache__ leaked into export"
         assert not any(output.rglob("*.pyc")), "*.pyc leaked into export"
         assert not any(output.rglob(".DS_Store")), ".DS_Store leaked into export"
-
-
-def test_export_refuses_keyless_formal_stamp(tmp_path: Path):
-    skill_root = Path(__file__).resolve().parent.parent
-    output = tmp_path / "spec-export"
-    env = os.environ.copy()
-    env["SPEC_SIGNING_IDENTITY"] = str(tmp_path / "missing-identity.json")
-    env["SPEC_SIGNING_KEY"] = str(tmp_path / "missing-key")
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(skill_root / "scripts" / "export_skill_package.py"),
-            "--output",
-            str(output),
-            "--force",
-            "--root",
-            str(skill_root),
-        ],
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-
-    assert result.returncode != 0
-    assert "signing identity" in result.stderr
-    assert not output.exists()
 
 
 @pytest.mark.parametrize("destination", ["root", "child", "ancestor"])
@@ -230,7 +196,6 @@ def test_export_rejects_output_overlapping_source_tree(tmp_path: Path, destinati
             "--output",
             str(output),
             "--force",
-            "--skip-signing",
             "--root",
             str(skill_root),
         ],
@@ -239,102 +204,6 @@ def test_export_rejects_output_overlapping_source_tree(tmp_path: Path, destinati
     )
     assert result.returncode != 0
     assert sentinel.read_bytes() == before
-
-
-def test_release_and_plugin_require_watermark(tmp_path: Path):
-    skill_root = Path(__file__).resolve().parent.parent
-    env = os.environ.copy()
-    env["SPEC_SIGNING_IDENTITY"] = str(tmp_path / "missing-identity.json")
-    env["SPEC_SIGNING_KEY"] = str(tmp_path / "missing-key")
-
-    release = subprocess.run(
-        [
-            sys.executable,
-            str(skill_root / "scripts" / "build_release.py"),
-            "--output",
-            str(tmp_path / "dist"),
-            "--skip-checks",
-        ],
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-    plugin = subprocess.run(
-        [
-            sys.executable,
-            str(skill_root / "scripts" / "package_agent_plugin.py"),
-            "--root",
-            str(skill_root),
-            "--output",
-            str(tmp_path / "plugin.zip"),
-        ],
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-
-    assert release.returncode != 0
-    assert plugin.returncode != 0
-    assert "signing identity" in release.stderr
-    assert "signing identity" in plugin.stderr
-
-
-def test_export_stamps_notice_carrier_without_leaking_identity(tmp_path: Path):
-    skill_root = Path(__file__).resolve().parent.parent
-    identity = {
-        "holder": "Rights Holder Example",
-        "contact": "holder@example.invalid",
-        "channel": "example-channel-only",
-        "commercial": "not-permitted",
-    }
-    identity_path = tmp_path / "identity.json"
-    key_path = tmp_path / "key"
-    identity_path.write_text(json.dumps(identity), encoding="utf-8")
-    key_path.write_bytes(b"k" * 32)
-    output = tmp_path / "spec-export"
-    env = os.environ.copy()
-    env["SPEC_SIGNING_IDENTITY"] = str(identity_path)
-    env["SPEC_SIGNING_KEY"] = str(key_path)
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(skill_root / "scripts" / "export_skill_package.py"),
-            "--output",
-            str(output),
-            "--force",
-            "--root",
-            str(skill_root),
-        ],
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-    assert result.returncode == 0, result.stderr
-
-    # AUD-17: the entry SKILL.md stays byte-identical plain text; the
-    # invisible signature rides in NOTICE.
-    exported = (output / "SKILL.md").read_text(encoding="utf-8")
-    assert exported == (skill_root / "SKILL.md").read_text(encoding="utf-8")
-    assert not any(unicodedata.category(ch) == "Cf" for ch in exported)
-    notice = (output / "NOTICE").read_text(encoding="utf-8")
-    assert "\u2063" in notice
-    assert "Rights Holder Example" not in notice
-    assert "holder@example.invalid" not in notice
-    shipped = "\n".join(
-        path.read_text(encoding="utf-8", errors="ignore") for path in output.rglob("*") if path.is_file()
-    )
-    for needle in identity.values():
-        assert needle not in shipped
-    assert not (output / "scripts" / "skill_watermark.py").exists()
-    assert list(output.rglob(".watermark-key")) == []
-    assert list(output.rglob(".watermark-identity.json")) == []
-
-    sys.path.insert(0, str(skill_root / "scripts"))
-    from skill_watermark import verify
-
-    # the signature is verifiable, now from the NOTICE carrier
-    assert verify(notice, key_path.read_bytes())["channel"] == "example-channel-only"
 
 
 TREE_MARKER = re.compile(r"^([ │├└─]*)[├└]──\s*(.+?)\s*$")
@@ -359,13 +228,13 @@ def _readme_export_tree_files(readme: str) -> set[str]:
         full = "/".join([*stack, entry])
         if entry.endswith("/"):
             stack.append(entry[:-1])
-        else:
-            files.add(full)
+        if depth == 0:
+            files.add(full.rstrip("/"))
     return files
 
 
 def _exporter_expected_files() -> set[str]:
-    from export_skill_package import IGNORE_PATTERNS, NOTICE_CARRIER, ROOT_FILES, SCRIPT_FILES
+    from export_skill_package import IGNORE_PATTERNS, ROOT_FILES, SCRIPT_FILES
     from payload_contract import COPY_DIRS
 
     def ignored(path: Path) -> bool:
@@ -375,9 +244,6 @@ def _exporter_expected_files() -> set[str]:
 
     skill_root = Path(__file__).resolve().parent.parent
     expected: set[str] = set(ROOT_FILES)
-    # NOTICE is generated at export time as the signature carrier (signed
-    # release layout — the layout the README tree documents).
-    expected.add(NOTICE_CARRIER)
     for name in COPY_DIRS:
         for path in sorted((skill_root / name).rglob("*")):
             if path.is_file() and not ignored(path):
@@ -394,7 +260,8 @@ def test_readme_export_tree_matches_exporter_output():
 
     for readme, label in ((readme_zh, "README.md"), (readme_en, "README-en.md")):
         declared = _readme_export_tree_files(readme)
-        assert declared == expected, (
-            f"{label} export tree drifted from the exporter rule: "
-            f"missing={sorted(expected - declared)} extra={sorted(declared - expected)}"
+        expected_roots = {path.split("/", 1)[0] for path in expected}
+        assert declared == expected_roots, (
+            f"{label} export roots drifted from the exporter rule: "
+            f"missing={sorted(expected_roots - declared)} extra={sorted(declared - expected_roots)}"
         )

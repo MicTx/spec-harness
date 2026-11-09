@@ -42,8 +42,8 @@ def run_installer(home: Path, extra_env: dict[str, str] | None = None) -> subpro
         }
     )
     environment.pop("SOURCE_DIR", None)
-    environment.pop("SPEC_SIGNING_IDENTITY", None)
-    environment.pop("SPEC_SIGNING_KEY", None)
+    for variable in ("SPEC_SIGNING_IDENTITY", "SPEC_SIGNING_KEY", "SPEC_SKIP_SIGNING"):
+        environment.pop(variable, None)
     if extra_env:
         environment.update(extra_env)
     return subprocess.run(
@@ -60,7 +60,8 @@ def marker_path(home: Path, name: str) -> Path:
     return home / ".claude" / "agents" / f"{name}.md.spec-skill-install"
 
 
-def _watermark_env(tmp_path: Path) -> dict[str, str]:
+def _stale_signing_env(tmp_path: Path) -> dict[str, str]:
+    """Legacy signing credentials must be ignored by the unsigned installer."""
     identity = tmp_path / "identity.json"
     key = tmp_path / "key"
     identity.write_text(
@@ -76,7 +77,7 @@ def _watermark_env(tmp_path: Path) -> dict[str, str]:
 def test_installer_publishes_native_claude_agents(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
-    result = run_installer(home, _watermark_env(tmp_path))
+    result = run_installer(home, _stale_signing_env(tmp_path))
     assert result.returncode == 0, result.stderr
     installed = (home / ".claude" / "skills" / "spec" / "SKILL.md").read_text(encoding="utf-8")
     # AUD-17: the entry file installs byte-identical plain text.
@@ -95,9 +96,8 @@ def test_installer_publishes_native_claude_agents(tmp_path):
 
 @requires_bash
 def test_installer_copies_unmarked_source_without_key(tmp_path):
-    # AUD-04 / F3: an unsigned source layout with no local credentials is the
-    # normal fresh-checkout case — the installer copies it as-is with a visible
-    # notice instead of the pre-F3 refusal dead end.
+    # Install-time signing was removed (D7): an unsigned source layout is the
+    # normal fresh-checkout case and copies as-is without credentials.
     home = tmp_path / "home"
     home.mkdir()
     unmarked = tmp_path / "unmarked-skill"
@@ -110,7 +110,6 @@ def test_installer_copies_unmarked_source_without_key(tmp_path):
             "--output",
             str(unmarked),
             "--force",
-            "--skip-signing",
         ],
         capture_output=True,
         text=True,
@@ -119,7 +118,6 @@ def test_installer_copies_unmarked_source_without_key(tmp_path):
     (unmarked / "scripts" / "route_spec_package.py").unlink()
     result = run_installer(home, {"SOURCE_DIR": str(unmarked)})
     assert result.returncode == 0, result.stderr
-    assert "no signing credentials found - installing the unsigned source tree as-is" in result.stdout
     installed = home / ".claude" / "skills" / "spec" / "SKILL.md"
     assert installed.is_file()
     assert installed.read_text(encoding="utf-8") == (unmarked / "SKILL.md").read_text(encoding="utf-8")
@@ -142,17 +140,18 @@ def test_installer_keeps_existing_mark_without_local_key(tmp_path):
         ],
         capture_output=True,
         text=True,
-        env={**os.environ, **_watermark_env(tmp_path)},
     )
     assert export.returncode == 0, export.stderr
     (marked / "scripts" / "route_spec_package.py").unlink()
+    # A pre-removal release build can still carry NOTICE; the installer must
+    # copy that payload unchanged and never introduce a new mark.
+    (marked / "NOTICE").write_text("distribution notice\n" + "\u2063\u2060\u200b\u2060\u200b\u2063", encoding="utf-8")
     result = run_installer(home, {"SOURCE_DIR": str(marked)})
     assert result.returncode == 0, result.stderr
     installed_skill = (home / ".claude" / "skills" / "spec" / "SKILL.md").read_text(encoding="utf-8")
     assert "\u2063" not in installed_skill
     installed_notice = (home / ".claude" / "skills" / "spec" / "NOTICE").read_text(encoding="utf-8")
     assert "\u2063" in installed_notice
-    assert "holder@example.invalid" not in installed_notice
 
 
 @requires_bash
@@ -164,7 +163,7 @@ def test_installer_refuses_to_overwrite_user_owned_native_agent(tmp_path):
     user_agent = agents_dir / "orchestrator.md"
     user_agent.write_text("# user's own orchestrator\n", encoding="utf-8")
 
-    result = run_installer(home, _watermark_env(tmp_path))
+    result = run_installer(home, _stale_signing_env(tmp_path))
     assert result.returncode != 0, "installer must refuse a user-owned native agent file"
     assert "user-owned" in result.stderr or "refusing" in result.stderr.lower()
     assert user_agent.read_text(encoding="utf-8") == "# user's own orchestrator\n"
@@ -174,13 +173,13 @@ def test_installer_refuses_to_overwrite_user_owned_native_agent(tmp_path):
 def test_installer_replaces_installer_owned_native_agent(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
-    first = run_installer(home, _watermark_env(tmp_path))
+    first = run_installer(home, _stale_signing_env(tmp_path))
     assert first.returncode == 0, first.stderr
     agents_dir = home / ".claude" / "agents"
     drifted = agents_dir / "planner.md"
     drifted.write_text("# drifted copy\n", encoding="utf-8")
 
-    second = run_installer(home, _watermark_env(tmp_path))
+    second = run_installer(home, _stale_signing_env(tmp_path))
     assert second.returncode == 0, second.stderr
     source = ROOT / "agents" / "planner.md"
     assert drifted.read_text(encoding="utf-8") == source.read_text(encoding="utf-8"), (
@@ -197,7 +196,7 @@ def test_installer_force_backs_up_user_owned_native_agent(tmp_path):
     user_agent = agents_dir / "planner.md"
     user_agent.write_text("# user's own planner\n", encoding="utf-8")
 
-    result = run_installer(home, extra_env={"FORCE": "1", **_watermark_env(tmp_path)})
+    result = run_installer(home, extra_env={"FORCE": "1", **_stale_signing_env(tmp_path)})
     assert result.returncode == 0, result.stderr
     source = ROOT / "agents" / "planner.md"
     assert user_agent.read_text(encoding="utf-8") == source.read_text(encoding="utf-8")
@@ -210,7 +209,7 @@ def test_installer_force_backs_up_user_owned_native_agent(tmp_path):
 def test_installer_updates_agent_when_source_changes(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
-    first = run_installer(home, _watermark_env(tmp_path))
+    first = run_installer(home, _stale_signing_env(tmp_path))
     assert first.returncode == 0, first.stderr
     agents_dir = home / ".claude" / "agents"
     agent = agents_dir / "orchestrator.md"
@@ -220,7 +219,7 @@ def test_installer_updates_agent_when_source_changes(tmp_path):
     marker.write_text(marker.read_text(encoding="utf-8") + "version=0.0.0-test\n", encoding="utf-8")
     agent.write_text("# stale installed copy\n", encoding="utf-8")
 
-    second = run_installer(home, _watermark_env(tmp_path))
+    second = run_installer(home, _stale_signing_env(tmp_path))
     assert second.returncode == 0, second.stderr
     assert agent.read_text(encoding="utf-8") == (ROOT / "agents" / "orchestrator.md").read_text(encoding="utf-8")
 
@@ -229,13 +228,13 @@ def test_installer_updates_agent_when_source_changes(tmp_path):
 def test_installer_replaces_orphan_native_agent_marker(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
-    first = run_installer(home, _watermark_env(tmp_path))
+    first = run_installer(home, _stale_signing_env(tmp_path))
     assert first.returncode == 0, first.stderr
     agent = home / ".claude" / "agents" / "planner.md"
     marker = marker_path(home, "planner")
     assert marker.is_file()
     agent.unlink()
-    second = run_installer(home, _watermark_env(tmp_path))
+    second = run_installer(home, _stale_signing_env(tmp_path))
     assert second.returncode == 0, second.stderr
     assert agent.is_file()
     assert agent.read_text(encoding="utf-8") == (ROOT / "agents" / "planner.md").read_text(encoding="utf-8")

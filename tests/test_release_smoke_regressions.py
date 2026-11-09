@@ -18,7 +18,7 @@ from spec_package_support import extract_integration_branch, validate_branch_bou
 
 @pytest.mark.parametrize("git_repo", [False, True])
 @pytest.mark.parametrize("package_state", ["missing", "incomplete", "invalid-encoding"])
-def test_conflicting_completion_options_fail_before_package_state(tmp_path, git_repo, package_state):
+def test_archive_refuses_invalid_package_state_without_mutation(tmp_path, git_repo, package_state):
     slug = "2026-09-05_fix-completion-options"
     if git_repo:
         subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
@@ -37,7 +37,6 @@ def test_conflicting_completion_options_fail_before_package_state(tmp_path, git_
             str(tmp_path),
             "--slug",
             slug,
-            "--allow-incomplete",
             "--archive",
         ],
         capture_output=True,
@@ -45,7 +44,7 @@ def test_conflicting_completion_options_fail_before_package_state(tmp_path, git_
         timeout=30,
     )
     assert result.returncode == 1
-    assert "cannot be combined with --archive" in result.stderr
+    assert result.stderr.strip()
     assert result.stdout == ""
     assert {p.relative_to(package): p.read_bytes() for p in package.glob("*")} == before
     assert not (tmp_path / ".spec" / "specs" / "archive").exists()
@@ -96,7 +95,7 @@ def _minimal_runtime_tree(root: Path) -> None:
         "agents/planner.md",
         "hooks/pre-commit",
         "hooks/pre-push",
-        "scripts/safe_open_support.py",
+        "scripts/gitx.py",
         "scripts/issue_closure_support.py",
         "scripts/init_spec_package.py",
         "scripts/read_version.py",

@@ -1,26 +1,20 @@
 #!/usr/bin/env python3
-"""Validate every active Spec package in a repository."""
+"""Check active Spec packages and archives changed in a Git snapshot."""
 
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-import spec_package_support as _spec_support
-from check_spec_package import overall_check_passed, package_physical_state_errors
-from issue_closure_support import CLOSURE_HEADING, validate_completion_summary
-from safe_open_support import SafeOpenError, open_regular_read
+import gitx
+from check_spec_package import overall_check_passed
 from spec_package_support import (
     extract_integration_branch,
     is_development_record_slug,
@@ -29,24 +23,6 @@ from spec_package_support import (
     scope_from_changed_paths,
 )
 
-MAX_SPEC_FILE_BYTES = _spec_support.MAX_SPEC_FILE_BYTES
-
-ACTIVE_REQUIRED_FILES = ("spec.md", "tasks.md")
-ARCHIVE_REQUIRED_FILES = ("spec.md", "tasks.md", "completion-summary.md")
-# Optional since v2 packages (F11): checklist.md is read when present and its
-# absence moves acceptance to the spec.md §6 success-criteria surface. Legacy
-# packages keep theirs and are gated exactly as before.
-OPTIONAL_PACKAGE_FILES = ("checklist.md",)
-# The legacy archive hash contract is frozen: baseline hashes (and the
-# legacy-compatibility comparison) always digest this exact four-file
-# sequence, regardless of what current archives ship. Changing it would
-# retroactively invalidate every baseline hash and regrade history.
-LEGACY_ARCHIVE_BUNDLE = ("spec.md", "tasks.md", "checklist.md", "completion-summary.md")
-# Directories whose children are trusted as genuine Spec package roots.
-# .spec is the default; .trae is the legacy name.  Other directories with
-# a specs/ subdirectory are NOT automatically treated as Spec roots to avoid
-# false positives (e.g. hardware/specs/draft-a).
-TRUSTED_SPECS_PARENT_NAMES = {".spec", ".trae"}
 SKIP_DIRECTORIES = {
     ".claude",
     ".git",
@@ -62,64 +38,9 @@ SKIP_DIRECTORIES = {
     "target",
     "vendor",
 }
-TRUSTED_POSIX_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin"
-
-
-def _windows_safe_path() -> str:
-    temp_roots: list[Path] = []
-    for name in ("TEMP", "TMP", "TMPDIR"):
-        value = os.environ.get(name)
-        if value:
-            temp_roots.append(Path(value).resolve(strict=False))
-    kept: list[str] = []
-    seen: set[str] = set()
-    for value in os.environ.get("PATH", "").split(os.pathsep):
-        if not value:
-            continue
-        candidate = Path(value).resolve(strict=False)
-        lowered = str(candidate).lower()
-        if lowered in seen or not candidate.is_dir():
-            continue
-        if any(candidate == root or root in candidate.parents for root in temp_roots):
-            continue
-        seen.add(lowered)
-        kept.append(str(candidate))
-    return os.pathsep.join(kept)
-
-
-def clean_git_env(*, index_file: Path | None = None) -> dict[str, str]:
-    blocked = {
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_INDEX_FILE",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    }
-    environment = {
-        key: value
-        for key, value in os.environ.items()
-        if key not in blocked and not key.startswith("GIT_CONFIG_") and key != "SSH_ASKPASS"
-    }
-    if sys.platform == "win32":
-        environment["PATH"] = _windows_safe_path()
-    else:
-        environment["PATH"] = TRUSTED_POSIX_PATH
-    if index_file is not None:
-        environment["GIT_INDEX_FILE"] = str(index_file)
-    return environment
-
-
-# F21: git reads in this gate are bounded — a stalled repository
-# operation fails inside the bound instead of hanging pre-commit.
-SUBPROCESS_LOCAL_TIMEOUT_SECONDS = 60
-
-
-def trusted_git() -> str:
-    path = clean_git_env().get("PATH", "")
-    candidate = shutil.which("git", path=path)
-    if not candidate:
-        raise ValueError("git is not available on the trusted PATH")
-    return candidate
+TIMEOUT = 60
+COMMIT_INTERVAL_LINE_RE = re.compile(r"^- 提交区间：([0-9a-f]{40})\.\.([0-9a-f]{40})\s*$", re.MULTILINE)
+FOOTER_WINDOW_BASE_RE = re.compile(r"^[0-9a-f]{40,64}$")
 
 
 @dataclass(frozen=True)
@@ -129,26 +50,8 @@ class CheckFailure:
     reason: str
 
 
-# F9 (AUD-06): the archive commit-interval anchor. The label is deliberately
-# NOT localized with git_record_labels — it is the machine-readable anchor
-# both the interval parser and the acceptance criterion grep for, so every
-# archive (zh or en) records it under the same fixed label.
-COMMIT_INTERVAL_LINE_RE = re.compile(r"^- 提交区间：([0-9a-f]{40})\.\.([0-9a-f]{40})\s*$", re.MULTILINE)
-FOOTER_WINDOW_BASE_RE = re.compile(r"^[0-9a-f]{40,64}$")
-
-
-def archive_commit_interval(summary_text: str) -> tuple[str, str] | None:
-    """Parse the recorded 提交区间 anchor; None when the archive predates F9."""
-    match = COMMIT_INTERVAL_LINE_RE.search(summary_text)
-    if match is None:
-        return None
-    return match.group(1), match.group(2)
-
-
 @dataclass(frozen=True)
 class FooterIntervalWarning:
-    """One footer-attribution anchor judged outside the push window (AUD-06)."""
-
     specs_identity: str
     slug: str
     base: str
@@ -156,24 +59,226 @@ class FooterIntervalWarning:
     window_base: str
 
 
-def _revision_file_text(root: Path, revision: str, posix_path: str) -> str | None:
-    """Read one file from a revision tree; None when absent or unreadable."""
+def archive_commit_interval(summary_text: str) -> tuple[str, str] | None:
+    match = COMMIT_INTERVAL_LINE_RE.search(summary_text)
+    return (match.group(1), match.group(2)) if match else None
+
+
+def discover_specs_roots(root: Path, explicit: list[str] | None = None) -> list[Path]:
+    root = root.resolve()
+    roots = {resolve_specs_root(root, name).resolve() for name in explicit or []}
+    for name in (".spec", ".trae"):
+        default = root / name
+        if default.is_symlink():
+            raise ValueError(f"default Spec root must not be a symlink: {default}")
+        if (default / "specs").is_dir():
+            roots.add(default.resolve())
+
+    def on_error(error: OSError) -> None:
+        raise error
+
+    for current, directories, _files in os.walk(root, followlinks=False, onerror=on_error):
+        current_path = Path(current)
+        if current_path != root and (current_path / ".git").exists():
+            directories[:] = []
+            continue
+        directories[:] = [
+            name for name in directories if name not in SKIP_DIRECTORIES and not (current_path / name).is_symlink()
+        ]
+        if "specs" in directories:
+            if current_path.name in {".spec", ".trae"}:
+                roots.add(current_path.resolve())
+            directories.remove("specs")
+    return sorted(roots)
+
+
+def active_package_dirs(specs_root: Path) -> list[Path]:
+    path = specs_root / "specs"
+    if not path.is_dir():
+        return []
+    return sorted(
+        child
+        for child in path.iterdir()
+        if child.name != "archive" and not child.name.startswith(".") and (child.is_dir() or child.is_symlink())
+    )
+
+
+def _validate_package(specs_root: Path, package: Path, *, archived: bool, lint_only: bool) -> list[CheckFailure]:
+    slug = package.name
+    if package.is_symlink() or not package.is_dir():
+        return [CheckFailure(specs_root, slug, "package must be a non-symlink directory")]
+    if not is_development_record_slug(slug):
+        return [CheckFailure(specs_root, slug, "invalid Development Record slug")]
     try:
-        shown = subprocess.run(
-            [trusted_git(), "show", f"{revision}:{posix_path}"],
-            cwd=root,
-            env=clean_git_env(),
-            capture_output=True,
-            timeout=SUBPROCESS_LOCAL_TIMEOUT_SECONDS,
+        spec = read_regular_text(package / "spec.md")
+        tasks = read_regular_text(package / "tasks.md")
+        checklist_path = package / "checklist.md"
+        checklist = read_regular_text(checklist_path) if checklist_path.exists() else None
+        if archived and not read_regular_text(package / "completion-summary.md").strip():
+            return [CheckFailure(specs_root, slug, "completion summary is empty")]
+    except (OSError, UnicodeError, ValueError) as exc:
+        return [CheckFailure(specs_root, slug, str(exc))]
+    # check/done own live evidence and branch binding. This shared evaluator
+    # enforces delivery content without trying to fingerprint an exported tree.
+    if not lint_only and not overall_check_passed(spec, tasks, checklist, slug=slug, package_dir=package):
+        return [CheckFailure(specs_root, slug, "check gates not passed")]
+    return []
+
+
+def _changed_archives(paths: list[str], identities: set[str]) -> set[tuple[str, str]]:
+    changed: set[tuple[str, str]] = set()
+    roots = sorted((Path(identity).parts, identity) for identity in identities)
+    for path in paths:
+        parts = Path(path).parts
+        for prefix, identity in roots:
+            tail = parts[len(prefix) :] if parts[: len(prefix)] == prefix else ()
+            if len(tail) < 3 or tail[:2] != ("specs", "archive") or tail[2] == "retired":
+                continue
+            if len(tail) == 3 and not is_development_record_slug(tail[2]):
+                continue  # e.g. archive/README.md
+            changed.add((identity, tail[2]))
+    return changed
+
+
+def check_all_packages(
+    root: Path,
+    explicit: list[str] | None = None,
+    *,
+    slugs: list[str] | None = None,
+    lint_only: bool = False,
+    changed_paths: list[str] | None = None,
+) -> list[CheckFailure]:
+    root = root.resolve()
+    try:
+        specs_roots = discover_specs_roots(root, explicit)
+        identities = {specs.relative_to(root).as_posix(): specs for specs in specs_roots}
+        changed = _changed_archives(changed_paths or [], set(identities))
+        failures: list[CheckFailure] = []
+        found: set[str] = set()
+        selected = set(slugs or [])
+        invalid = {slug for slug in selected if not is_development_record_slug(slug)}
+        if invalid:
+            return [CheckFailure(root, slug, "invalid Development Record slug") for slug in sorted(invalid)]
+        for identity, specs_root in identities.items():
+            active = active_package_dirs(specs_root)
+            branches: dict[str, list[str]] = {}
+            for package in active:
+                if (specs_root / "specs" / "archive" / package.name).exists():
+                    failures.append(
+                        CheckFailure(specs_root, package.name, "package exists in both active and archive directories")
+                    )
+                try:
+                    branch = extract_integration_branch(read_regular_text(package / "spec.md"))
+                    if branch:
+                        branches.setdefault(branch, []).append(package.name)
+                except (OSError, UnicodeError, ValueError):
+                    pass  # The package read below reports the error.
+                if selected and package.name not in selected:
+                    continue
+                found.add(package.name)
+                failures.extend(_validate_package(specs_root, package, archived=False, lint_only=lint_only))
+            for branch, owners in branches.items():
+                if len(owners) > 1:
+                    failures.append(
+                        CheckFailure(
+                            specs_root,
+                            ",".join(owners),
+                            f"integration branch bound to multiple active packages: {branch}",
+                        )
+                    )
+            for changed_root, slug in sorted(changed):
+                if changed_root != identity:
+                    continue
+                package = specs_root / "specs" / "archive" / slug
+                # A fully removed archive has no remaining files to validate.
+                if not package.exists() and not package.is_symlink():
+                    continue
+                found.add(slug)
+                failures.extend(_validate_package(specs_root, package, archived=True, lint_only=lint_only))
+            # Slug lookup is existence-only; never regrade a frozen archive.
+            for slug in selected - found:
+                archive = specs_root / "specs" / "archive" / slug
+                if archive.is_dir() and not archive.is_symlink():
+                    found.add(slug)
+        failures.extend(
+            CheckFailure(root, slug, "explicit package slug not found in active or archive")
+            for slug in sorted(selected - found)
         )
-    except (OSError, ValueError, subprocess.TimeoutExpired):
-        return None
-    if shown.returncode != 0:
-        return None
+        return failures
+    except (OSError, UnicodeError, ValueError) as exc:
+        return [CheckFailure(root, "<discovery>", str(exc))]
+
+
+def _changed_paths(root: Path, revision: str | None = None, baseline: str | None = None) -> list[str]:
+    env = gitx.clean_env(
+        index_file=Path(os.environ["GIT_INDEX_FILE"]) if revision is None and os.environ.get("GIT_INDEX_FILE") else None
+    )
+    if revision is None:
+        args = ("diff", "--cached", "--name-only", "--no-renames", "-z")
+    elif baseline and set(baseline) != {"0"}:
+        args = ("diff", "--name-only", "--no-renames", "-z", baseline, revision)
+    elif baseline:  # A new remote ref has no predecessor: compare with the empty tree.
+        empty_tree = gitx.git(root, "hash-object", "-t", "tree", "--stdin", input="", timeout=TIMEOUT).stdout.strip()
+        args = ("diff", "--name-only", "--no-renames", "-z", empty_tree, revision)
+    else:
+        parent = gitx.git(root, "rev-parse", "--verify", f"{revision}^1", check=False, timeout=TIMEOUT)
+        if parent.returncode == 0:
+            args = ("diff", "--name-only", "--no-renames", "-z", parent.stdout.strip(), revision)
+        else:
+            args = ("diff-tree", "--root", "--no-commit-id", "--name-only", "-r", "--no-renames", "-z", revision)
+    return [path for path in gitx.git(root, *args, env=env, timeout=TIMEOUT).stdout.split("\0") if path]
+
+
+@contextmanager
+def git_revision_snapshot(root: Path, revision: str):
+    tree = gitx.git(root, "rev-parse", "--verify", f"{revision}^{{tree}}", timeout=TIMEOUT).stdout.strip()
+    with tempfile.TemporaryDirectory(prefix="spec-revision-") as temp_dir:
+        temporary = Path(temp_dir)
+        snapshot = temporary / "snapshot"
+        snapshot.mkdir()
+        environment = gitx.clean_env(index_file=temporary / "index")
+        gitx.git(root, "read-tree", tree, env=environment, timeout=TIMEOUT)
+        gitx.git(root, "checkout-index", "--all", f"--prefix={snapshot}{os.sep}", env=environment, timeout=TIMEOUT)
+        yield snapshot
+
+
+def check_git_index(
+    root: Path,
+    explicit: list[str] | None = None,
+    *,
+    slugs: list[str] | None = None,
+    lint_only: bool = False,
+) -> list[CheckFailure]:
     try:
-        return _normalized_archive_text(shown.stdout)
-    except UnicodeError:
-        return None
+        paths = _changed_paths(root)
+        with tempfile.TemporaryDirectory(prefix="spec-index-") as temp_dir:
+            snapshot = Path(temp_dir)
+            environment = gitx.clean_env(
+                index_file=Path(os.environ["GIT_INDEX_FILE"]) if os.environ.get("GIT_INDEX_FILE") else None
+            )
+            gitx.git(root, "checkout-index", "--all", f"--prefix={snapshot}{os.sep}", env=environment, timeout=TIMEOUT)
+            return check_all_packages(snapshot, explicit, slugs=slugs, lint_only=lint_only, changed_paths=paths)
+    except subprocess.CalledProcessError as exc:
+        return [CheckFailure(root, "<git-index>", (exc.stderr or str(exc)).strip())]
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        return [CheckFailure(root, "<git-index>", str(exc))]
+
+
+def check_git_revision(
+    root: Path,
+    revision: str,
+    explicit: list[str] | None = None,
+    *,
+    slugs: list[str] | None = None,
+    baseline: str | None = None,
+    lint_only: bool = False,
+) -> list[CheckFailure]:
+    try:
+        paths = _changed_paths(root, revision, baseline)
+        with git_revision_snapshot(root, revision) as snapshot:
+            return check_all_packages(snapshot, explicit, slugs=slugs, lint_only=lint_only, changed_paths=paths)
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        return [CheckFailure(root, "<git-revision>", str(exc))]
 
 
 def footer_interval_warnings(
@@ -184,77 +289,31 @@ def footer_interval_warnings(
     window_base: str,
     specs_dirs: list[str] | None = None,
 ) -> list[FooterIntervalWarning]:
-    """AUD-06 footer-attribution interval judge (observation-period warning).
-
-    For each footer-attributed slug whose ARCHIVED completion-summary records
-    a 提交区间, warn when the interval base is strictly older than the
-    delivery-window base (the fork point of the pushed history): the cited
-    attribution anchor was delivered before this window. Archives without the
-    interval field (pre-F9 history) stay silent, and unresolvable ancestry
-    skips honestly instead of guessing. Warnings never block anything — the
-    observation period collects false-positive data before a later release
-    turns the judgment into a hard failure.
-    """
-    if not slugs or not FOOTER_WINDOW_BASE_RE.match(window_base):
+    if not slugs or not FOOTER_WINDOW_BASE_RE.fullmatch(window_base):
         return []
     try:
-        specs_roots = discover_specs_roots(root, specs_dirs)
-    except (OSError, ValueError):
-        return []
-    resolved_root = root.resolve(strict=False)
-    try:
-        git_bin = trusted_git()
-    except ValueError:
-        return []
-    warnings: list[FooterIntervalWarning] = []
-    for specs_root in specs_roots:
-        try:
-            specs_identity = specs_root.relative_to(resolved_root).as_posix()
-        except ValueError:
-            continue
-        for slug in sorted(set(slugs)):
-            text = _revision_file_text(root, revision, f"{specs_identity}/specs/archive/{slug}/completion-summary.md")
-            if text is None:
-                # Not archived at this revision: attribution lifecycle is
-                # owned by the archive gates, not by this warning channel.
-                continue
-            interval = archive_commit_interval(text)
-            if interval is None:
-                continue
-            base, head = interval
-            if base == window_base:
-                # Anchored exactly at this window's fork point: delivered here.
-                continue
-            try:
-                ancestry = subprocess.run(
-                    [git_bin, "merge-base", "--is-ancestor", base, window_base],
-                    cwd=root,
-                    env=clean_git_env(),
-                    capture_output=True,
-                    timeout=SUBPROCESS_LOCAL_TIMEOUT_SECONDS,
+        identities = [path.relative_to(root.resolve()).as_posix() for path in discover_specs_roots(root, specs_dirs)]
+        warnings: list[FooterIntervalWarning] = []
+        for identity in identities:
+            for slug in sorted(set(slugs)):
+                path = f"{identity}/specs/archive/{slug}/completion-summary.md"
+                summary = gitx.git(root, "show", f"{revision}:{path}", check=False, timeout=TIMEOUT)
+                interval = archive_commit_interval(summary.stdout) if summary.returncode == 0 else None
+                if interval is None or interval[0] == window_base:
+                    continue
+                base, head = interval
+                ancestor = gitx.git(
+                    root, "merge-base", "--is-ancestor", base, window_base, check=False, timeout=TIMEOUT
                 )
-            except (OSError, subprocess.TimeoutExpired):
-                continue
-            if ancestry.returncode == 0:
-                warnings.append(
-                    FooterIntervalWarning(
-                        specs_identity=specs_identity,
-                        slug=slug,
-                        base=base,
-                        head=head,
-                        window_base=window_base,
-                    )
-                )
-    return warnings
+                if ancestor.returncode == 0:
+                    warnings.append(FooterIntervalWarning(identity, slug, base, head, window_base))
+        return warnings
+    except (OSError, UnicodeError, ValueError, subprocess.SubprocessError):
+        return []
 
 
 def render_footer_interval_warnings(warnings: list[FooterIntervalWarning]) -> str:
-    """Render the interval warnings once for every surface (same elements)."""
-    lines = [
-        "spec gate warning: footer attribution cites an archive delivered before "
-        "this push window (observation period: warn-only; a later release turns "
-        "this into a hard failure)"
-    ]
+    lines = ["spec gate warning: footer attribution cites an archive delivered before this push window (advisory only)"]
     for warning in warnings:
         lines.extend(
             [
@@ -267,780 +326,59 @@ def render_footer_interval_warnings(warnings: list[FooterIntervalWarning]) -> st
     return "\n".join(lines)
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Validate all active Spec packages under a project root.")
-    parser.add_argument(
-        "--scope-paths-file",
-        help="Internal: parse trusted Spec slugs from newline-delimited changed paths and exit",
-    )
-    parser.add_argument("--root", default=".", help="Project root (default: current directory)")
-    parser.add_argument(
-        "--specs-dir",
-        action="append",
-        default=[],
-        help="Additional trusted Spec root relative to root; may be repeated",
-    )
-    parser.add_argument(
-        "--slug",
-        action="append",
-        default=[],
-        dest="slugs",
-        help="Only validate the named package slug; may be repeated (default: all)",
-    )
-    parser.add_argument(
-        "--index",
-        action="store_true",
-        help="Validate the Git index snapshot instead of the working tree",
-    )
-    parser.add_argument(
-        "--revision",
-        help="Validate one Git revision/ref snapshot instead of the working tree",
-    )
-    parser.add_argument(
-        "--legacy-baseline",
-        help="Authoritative Git revision used only to recognize byte-identical legacy archives",
-    )
-    parser.add_argument(
-        "--require-archived",
-        action="store_true",
-        help="Fail when any active package remains outside archive",
-    )
-    parser.add_argument(
-        "--lint-only",
-        action="store_true",
-        help=(
-            "Structure-only lint: slug validity, required files, checkpoint state, "
-            "and archive completeness are still enforced; the gate-pass judgment "
-            "(check gates not passed) is skipped. Used by the pre-commit WIP channel "
-            "for in-flight integration-branch commits"
-        ),
-    )
-    parser.add_argument(
-        "--footer-window-base",
-        help=(
-            "AUD-06 footer-attribution interval check: with footer-collected --slug "
-            "values and --revision, warn (never fail) when a cited archive's "
-            "recorded commit interval predates this push-window base"
-        ),
-    )
-    return parser.parse_args()
-
-
-def discover_specs_roots(root: Path, explicit: list[str] | None = None) -> list[Path]:
-    roots: set[Path] = set()
-    for name in explicit or []:
-        roots.add(resolve_specs_root(root, name).resolve(strict=False))
-
-    resolved_root = root.resolve(strict=False)
-    for name in (".spec", ".trae"):
-        default = root / name
-        if default.is_symlink():
-            raise ValueError(f"default Spec root must not be a symlink: {default}")
-        if (default / "specs").is_dir():
-            resolved_default = default.resolve(strict=False)
-            if resolved_default != resolved_root and resolved_root not in resolved_default.parents:
-                raise ValueError(f"default Spec root escapes project root: {default}")
-            roots.add(resolved_default)
-
-    def on_error(error: OSError) -> None:
-        raise error
-
-    for current, directories, _ in os.walk(root, topdown=True, followlinks=False, onerror=on_error):
-        current_path = Path(current)
-        if current_path != root and (current_path / ".git").exists():
-            directories[:] = []
-            continue
-        directories[:] = [
-            name for name in directories if name not in SKIP_DIRECTORIES and not (current_path / name).is_symlink()
-        ]
-        if "specs" in directories:
-            # Only auto-discover specs roots whose parent is a known
-            # trusted container (.spec or .trae).  Other directories with
-            # a specs/ subdirectory — e.g. hardware/specs/draft-a — are NOT
-            # treated as Spec roots to avoid false positives blocking user
-            # commits.  Custom locations must use --specs-dir explicitly.
-            parent_name = current_path.name
-            if parent_name in TRUSTED_SPECS_PARENT_NAMES:
-                roots.add(current_path.resolve(strict=False))
-            directories.remove("specs")
-    return sorted(roots)
-
-
-def package_dirs(specs_root: Path, *, archived: bool) -> list[Path]:
-    packages_root = specs_root / "specs" / ("archive" if archived else "")
-    if not packages_root.is_dir():
-        return []
-    result: list[Path] = []
-    for child in sorted(packages_root.iterdir()):
-        if not archived and child.name == "archive":
-            continue
-        if archived and child.name == "retired":
-            # organize's retired container holds retired assets plus MANIFEST.md,
-            # not a package bundle
-            continue
-        if child.name.startswith("."):
-            continue
-        if child.is_symlink():
-            result.append(child)
-            continue
-        if child.is_dir():
-            result.append(child)
-    return result
-
-
-def active_package_dirs(specs_root: Path) -> list[Path]:
-    return package_dirs(specs_root, archived=False)
-
-
-def archived_package_dirs(specs_root: Path) -> list[Path]:
-    return package_dirs(specs_root, archived=True)
-
-
-def _archive_bundle_sha256(contents: dict[str, str]) -> str:
-    digest = hashlib.sha256()
-    # Frozen legacy bundle sequence: v2 archives (no checklist.md) digest the
-    # members they have, which can never collide with a baseline hash.
-    for filename in LEGACY_ARCHIVE_BUNDLE:
-        if filename not in contents:
-            continue
-        digest.update(filename.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(contents[filename].encode("utf-8"))
-        digest.update(b"\0")
-    return digest.hexdigest()
-
-
-def _archive_path_identity(
-    path: str,
-    explicit_roots: list[str] | None = None,
-) -> tuple[str, str, str] | None:
-    parts = Path(path).parts
-    prefixes = {Path(name).parts for name in explicit_roots or []}
-    for index, part in enumerate(parts):
-        if part in {".spec", ".trae"}:
-            prefixes.add(parts[: index + 1])
-    for prefix in prefixes:
-        length = len(prefix)
-        if parts[:length] != prefix or parts[length : length + 2] != ("specs", "archive"):
-            continue
-        if len(parts) != length + 4 or parts[-1] not in (*ARCHIVE_REQUIRED_FILES, *OPTIONAL_PACKAGE_FILES):
-            return None
-        return Path(*prefix).as_posix(), parts[length + 2], parts[-1]
-    return None
-
-
-def _normalized_archive_text(data: bytes) -> str:
-    """Decode archive bytes with the SAME strict pipeline on both sides.
-
-    The baseline side used to decode ``git show`` output through the process
-    locale (``text=True``), so a non-UTF-8 locale (e.g. Windows GBK) garbled or
-    crashed on Chinese content while the worktree side decoded strict UTF-8 —
-    producing false "not byte-identical" failures. Both sides now go through
-    this single strict-UTF-8 + universal-newline pipeline, so the comparison
-    is locale-independent while keeping the intentional CRLF tolerance.
-    """
-    return data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
-
-
-def _read_archive_file_bytes(path: Path) -> bytes:
-    """Raw bytes of one archive file with the same safety guards as text reads."""
-    try:
-        with open_regular_read(path, max_bytes=MAX_SPEC_FILE_BYTES) as descriptor:
-            with os.fdopen(descriptor, "rb", closefd=False) as handle:
-                return handle.read(MAX_SPEC_FILE_BYTES + 1)
-    except SafeOpenError as exc:
-        raise ValueError(str(exc)) from exc
-
-
-_LEGACY_CACHE_KEY_SEP = "\x1f"
-_LEGACY_CACHE_DIR = "spec-cache"
-
-
-def _legacy_cache_path(root: Path, cache_key: str) -> Path:
-    return root / ".git" / _LEGACY_CACHE_DIR / f"legacy-archive-hashes-{cache_key}.json"
-
-
-def _load_legacy_cache(root: Path, cache_key: str) -> dict[tuple[str, str], str] | None:
-    """Best-effort read of the immutable-archive hash cache; None on any miss."""
-    try:
-        data = json.loads(_legacy_cache_path(root, cache_key).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(data, dict) or not isinstance(data.get("hashes"), dict):
-        return None
-    hashes: dict[tuple[str, str], str] = {}
-    for key, value in data["hashes"].items():
-        parts = key.split(_LEGACY_CACHE_KEY_SEP)
-        if len(parts) == 2 and isinstance(value, str):
-            hashes[(parts[0], parts[1])] = value
-    return hashes or None
-
-
-def _store_legacy_cache(root: Path, cache_key: str, hashes: dict[tuple[str, str], str]) -> None:
-    """Best-effort cache write; failures never break the gate."""
-    path = _legacy_cache_path(root, cache_key)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps(
-            {"hashes": {f"{a}{_LEGACY_CACHE_KEY_SEP}{b}": v for (a, b), v in hashes.items()}},
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(payload, encoding="utf-8")
-        tmp.replace(path)
-    except OSError:
-        pass
-
-
-def legacy_archive_hashes(
-    root: Path,
-    baseline_revision: str | None = None,
-    specs_dirs: list[str] | None = None,
-) -> dict[tuple[str, str], str]:
-    """Return immutable legacy archive hashes from an authoritative baseline."""
-    git_bin = trusted_git()
-    if not (root / ".git").exists():
-        return {}
-    baseline = None
-    candidates = (
-        (baseline_revision,)
-        if baseline_revision
-        else (
-            "refs/remotes/origin/main",
-            "refs/remotes/origin/master",
-        )
-    )
-    for candidate in candidates:
-        if not candidate or set(candidate) == {"0"}:
-            continue
-        checked = subprocess.run(
-            [git_bin, "rev-parse", "--verify", candidate],
-            cwd=root,
-            env=clean_git_env(),
-            capture_output=True,
-            text=True,
-            timeout=SUBPROCESS_LOCAL_TIMEOUT_SECONDS,
-        )
-        if checked.returncode == 0:
-            baseline = checked.stdout.strip()
-            break
-    if baseline is None:
-        return {}
-    # The baseline sha pins immutable archive content, so (baseline, specs_dirs)
-    # is a sound cache key: same key always means same blobs in git.
-    cache_key = hashlib.sha256(
-        f"{baseline}{_LEGACY_CACHE_KEY_SEP}{json.dumps(specs_dirs or [], ensure_ascii=False)}".encode("utf-8")
-    ).hexdigest()[:16]
-    cached = _load_legacy_cache(root, cache_key)
-    if cached is not None:
-        return cached
-    try:
-        listed = subprocess.run(
-            [git_bin, "ls-tree", "-r", "--name-only", baseline],
-            cwd=root,
-            env=clean_git_env(),
-            capture_output=True,
-            text=True,
-            timeout=SUBPROCESS_LOCAL_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired:
-        return {}
-    if listed.returncode != 0:
-        return {}
-    bundles: dict[tuple[str, str], dict[str, str]] = {}
-    for path in listed.stdout.splitlines():
-        identity = _archive_path_identity(path, specs_dirs)
-        if identity is None:
-            continue
-        specs_name, slug, filename = identity
-        shown = subprocess.run(
-            [git_bin, "show", f"{baseline}:{path}"],
-            cwd=root,
-            env=clean_git_env(),
-            capture_output=True,
-        )
-        if shown.returncode == 0:
-            bundles.setdefault((specs_name, slug), {})[filename] = _normalized_archive_text(shown.stdout)
-    hashes: dict[tuple[str, str], str] = {}
-    for identity, bundle in bundles.items():
-        if set(bundle) != set(LEGACY_ARCHIVE_BUNDLE):
-            continue
-        digest = hashlib.sha256()
-        for filename in LEGACY_ARCHIVE_BUNDLE:
-            digest.update(filename.encode("utf-8"))
-            digest.update(b"\0")
-            digest.update(bundle[filename].encode("utf-8"))
-            digest.update(b"\0")
-        hashes[identity] = digest.hexdigest()
-    _store_legacy_cache(root, cache_key, hashes)
-    return hashes
-
-
-def archive_baseline_equivalence(
-    specs_root: Path,
-    specs_identity: str,
-    legacy_hashes: dict[tuple[str, str], str],
-) -> Callable[[str], bool]:
-    """Build a slug predicate: is this archive byte-identical to the baseline?
-
-    Single source of the baseline-equivalence ruling: callers (package loop,
-    follow-up graph, done-time closure validation) must reuse this instead of
-    growing parallel re-grade policies. Reads go through the same raw-byte +
-    strict-UTF-8 pipeline the baseline side uses, so identity never depends on
-    the process locale.
-    """
-
-    def equivalent(slug: str) -> bool:
-        expected = legacy_hashes.get((specs_identity, slug))
-        if expected is None:
-            return False
-        package = specs_root / "specs" / "archive" / slug
-        try:
-            texts = {
-                filename: _normalized_archive_text(_read_archive_file_bytes(package / filename))
-                for filename in LEGACY_ARCHIVE_BUNDLE
-            }
-        except (OSError, UnicodeError, ValueError):
-            return False
-        return _archive_bundle_sha256(texts) == expected
-
-    return equivalent
-
-
-def _validate_package(
-    root: Path,
-    specs_root: Path,
-    package: Path,
-    *,
-    archived: bool,
-    legacy_hashes: dict[tuple[str, str], str],
-    specs_identity: str,
-    lint_only: bool = False,
-) -> list[CheckFailure]:
-    slug = package.name
-    failures: list[CheckFailure] = []
-    if package.is_symlink() or not package.is_dir():
-        return [CheckFailure(specs_root, slug, "package must be a non-symlink directory")]
-    if not is_development_record_slug(slug):
-        return [CheckFailure(specs_root, slug, "invalid Development Record slug")]
-    filenames = ARCHIVE_REQUIRED_FILES if archived else ACTIVE_REQUIRED_FILES
-    contents: dict[str, str] = {}
-    try:
-        for filename in filenames:
-            contents[filename] = read_regular_text(package / filename)
-        for filename in OPTIONAL_PACKAGE_FILES:
-            if (package / filename).is_file():
-                contents[filename] = read_regular_text(package / filename)
-        # Hash input goes through the same raw-byte pipeline the baseline side
-        # uses, so archive identity never depends on the process locale.
-        # Legacy archives bundle their checklist; v2 archives have none.
-        archive_texts = (
-            {
-                filename: _normalized_archive_text(_read_archive_file_bytes(package / filename))
-                for filename in (*filenames, *(name for name in OPTIONAL_PACKAGE_FILES if (package / name).is_file()))
-            }
-            if archived
-            else None
-        )
-    except (OSError, UnicodeError, ValueError) as exc:
-        return [CheckFailure(specs_root, slug, str(exc))]
-    # Read-only legacy compatibility (storage-and-archive contract): an
-    # archive whose four-file bundle is byte-identical to the authoritative
-    # baseline was graded under the gates of its day and is never
-    # retrospectively re-graded. Any byte change (hash mismatch) or a missing
-    # baseline immediately restores full current-gate validation; structural
-    # checks and the v1 closure validation below always stay in force.
-    legacy_compatible = (
-        archived
-        and archive_texts is not None
-        and legacy_hashes.get((specs_identity, slug)) == _archive_bundle_sha256(archive_texts)
-    )
-    if not archived:
-        failures.extend(CheckFailure(specs_root, slug, error) for error in package_physical_state_errors(package))
-    # Evidence freshness is an active-package gate. Archived records retain
-    # the evidence captured at their closeout; re-grading them against every
-    # later HEAD would make a valid archive fail merely because new work landed.
-    # Closed autonomous questions still need bound proof. Pass a separate
-    # archive identity root so only those claims are re-checked; historical
-    # runs packages without closed questions retain the closeout contract.
-    check_root = root if not archived else None
-    if (
-        not lint_only
-        and not legacy_compatible
-        and not overall_check_passed(
-            contents["spec.md"],
-            contents["tasks.md"],
-            contents.get("checklist.md"),
-            slug=slug,
-            root=check_root,
-            package_dir=package,
-            archived_root=root if archived else None,
-        )
-    ):
-        failures.append(CheckFailure(specs_root, slug, "check gates not passed"))
-    if archived:
-        summary = contents["completion-summary.md"]
-        if not summary.strip():
-            failures.append(CheckFailure(specs_root, slug, "completion summary is empty"))
-        elif CLOSURE_HEADING in summary:
-            closure_failures = validate_completion_summary(
-                summary,
-                specs_root=specs_root,
-                current_slug=slug,
-                current_tasks_content=contents["tasks.md"],
-                require_v1=True,
-                baseline_equivalent=archive_baseline_equivalence(specs_root, specs_identity, legacy_hashes),
-                spec_gate=overall_check_passed,
-            )
-            failures.extend(CheckFailure(specs_root, slug, failure) for failure in closure_failures)
-        elif legacy_hashes.get((specs_identity, slug)) != _archive_bundle_sha256(archive_texts or contents):
-            failures.append(
-                CheckFailure(
-                    specs_root,
-                    slug,
-                    "archive lacks v1 issue closure and is not byte-identical to a baseline legacy summary",
-                )
-            )
-    return failures
-
-
-def archived_package_failures(
-    root: Path,
-    *,
-    baseline_revision: str | None = None,
-) -> list[CheckFailure]:
-    """Validate every archived package against the current gates.
-
-    Active packages are excluded: a rule change must keep already-delivered
-    records green without being blocked by in-progress work. Archived packages
-    byte-identical to the authoritative baseline stay exempt through the same
-    legacy-hash path the full gate uses.
-    """
-    resolved_root = root.resolve(strict=False)
-    try:
-        specs_roots = discover_specs_roots(resolved_root)
-    except (OSError, ValueError) as exc:
-        return [CheckFailure(resolved_root, "<discovery>", str(exc))]
-
-    failures: list[CheckFailure] = []
-    for specs_root in specs_roots:
-        try:
-            specs_identity = specs_root.relative_to(resolved_root).as_posix()
-        except ValueError:
-            failures.append(CheckFailure(specs_root, "<identity>", "Spec root is outside project root"))
-            continue
-        try:
-            archived = archived_package_dirs(specs_root)
-        except OSError as exc:
-            failures.append(CheckFailure(specs_root, "<enumeration>", str(exc)))
-            continue
-        if not archived:
-            continue
-        legacy_hashes = legacy_archive_hashes(resolved_root, baseline_revision, [specs_identity])
-        for package in archived:
-            failures.extend(
-                _validate_package(
-                    resolved_root,
-                    specs_root,
-                    package,
-                    archived=True,
-                    legacy_hashes=legacy_hashes,
-                    specs_identity=specs_identity,
-                )
-            )
-    return failures
-
-
-def check_all_packages(
-    root: Path,
-    explicit: list[str] | None = None,
-    *,
-    require_archived: bool = False,
-    slugs: list[str] | None = None,
-    legacy_hashes: dict[tuple[str, str], str] | None = None,
-    lint_only: bool = False,
-) -> list[CheckFailure]:
-    failures: list[CheckFailure] = []
-    try:
-        specs_roots = discover_specs_roots(root, explicit)
-    except (OSError, ValueError) as exc:
-        return [CheckFailure(root, "<discovery>", str(exc))]
-
-    slug_filter = set(slugs) if slugs else None
-    found_slugs: set[str] = set()
-    legacy_hashes = legacy_hashes or {}
-
-    for specs_root in specs_roots:
-        try:
-            specs_identity = specs_root.relative_to(root.resolve(strict=False)).as_posix()
-        except ValueError:
-            failures.append(CheckFailure(specs_root, "<identity>", "Spec root is outside project root"))
-            continue
-        try:
-            active = active_package_dirs(specs_root)
-            archived = archived_package_dirs(specs_root)
-        except OSError as exc:
-            failures.append(CheckFailure(specs_root, "<enumeration>", str(exc)))
-            continue
-
-        active_by_slug = {package.name: package for package in active}
-        archived_by_slug = {package.name: package for package in archived}
-        branch_owners: dict[str, list[str]] = {}
-        for package in active:
-            try:
-                branch = extract_integration_branch(read_regular_text(package / "spec.md"))
-            except (OSError, UnicodeError, ValueError):
-                branch = None
-            if branch:
-                branch_owners.setdefault(branch, []).append(package.name)
-        for branch, owners in sorted(branch_owners.items()):
-            if len(owners) > 1:
-                failures.append(
-                    CheckFailure(
-                        specs_root,
-                        ",".join(owners),
-                        f"integration branch bound to multiple active packages: {branch}",
-                    )
-                )
-        duplicate_slugs = set(active_by_slug).intersection(archived_by_slug)
-        failures.extend(
-            CheckFailure(specs_root, slug, "package exists in both active and archive directories")
-            for slug in sorted(duplicate_slugs)
-        )
-
-        if slug_filter is not None:
-            active = [package for package in active if package.name in slug_filter]
-            archived = [package for package in archived if package.name in slug_filter]
-        found_slugs.update(package.name for package in (*active, *archived))
-
-        for package in active:
-            failures.extend(
-                _validate_package(
-                    root,
-                    specs_root,
-                    package,
-                    archived=False,
-                    legacy_hashes=legacy_hashes,
-                    specs_identity=specs_identity,
-                    lint_only=lint_only,
-                )
-            )
-            if require_archived:
-                failures.append(CheckFailure(specs_root, package.name, "active package must be archived"))
-        for package in archived:
-            failures.extend(
-                _validate_package(
-                    root,
-                    specs_root,
-                    package,
-                    archived=True,
-                    legacy_hashes=legacy_hashes,
-                    specs_identity=specs_identity,
-                    lint_only=lint_only,
-                )
-            )
-
-    if slug_filter is not None:
-        for missing in sorted(slug_filter - found_slugs):
-            failures.append(CheckFailure(root, missing, "explicit package slug not found in active or archive"))
-    return failures
-
-
-def check_git_index(
-    root: Path,
-    explicit: list[str] | None = None,
-    *,
-    slugs: list[str] | None = None,
-    legacy_baseline: str | None = None,
-    lint_only: bool = False,
-) -> list[CheckFailure]:
-    with tempfile.TemporaryDirectory(prefix="spec-index-") as temp_dir:
-        snapshot = Path(temp_dir)
-        try:
-            completed = subprocess.run(
-                [trusted_git(), "checkout-index", "--all", f"--prefix={snapshot}{os.sep}"],
-                cwd=root,
-                env=clean_git_env(),
-                capture_output=True,
-                text=True,
-                timeout=SUBPROCESS_LOCAL_TIMEOUT_SECONDS,
-            )
-        except subprocess.TimeoutExpired:
-            return [CheckFailure(root, "<git-index>", "checkout-index timed out within 60s")]
-        if completed.returncode != 0:
-            detail = completed.stderr.strip() or completed.stdout.strip()
-            return [CheckFailure(root, "<git-index>", detail or "checkout-index failed")]
-        return check_all_packages(
-            snapshot,
-            explicit,
-            slugs=slugs,
-            legacy_hashes=legacy_archive_hashes(root, legacy_baseline, explicit),
-            lint_only=lint_only,
-        )
-
-
-@contextmanager
-def git_revision_snapshot(root: Path, revision: str):
-    git_bin = trusted_git()
-    try:
-        resolved = subprocess.run(
-            [git_bin, "rev-parse", "--verify", f"{revision}^{{tree}}"],
-            cwd=root,
-            env=clean_git_env(),
-            capture_output=True,
-            text=True,
-            timeout=SUBPROCESS_LOCAL_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise ValueError(f"git rev-parse timed out within {SUBPROCESS_LOCAL_TIMEOUT_SECONDS}s") from exc
-    if resolved.returncode != 0:
-        detail = resolved.stderr.strip() or resolved.stdout.strip()
-        raise ValueError(detail or f"invalid revision: {revision}")
-    tree_sha = resolved.stdout.strip()
-    with tempfile.TemporaryDirectory(prefix="spec-revision-") as temp_dir:
-        temporary = Path(temp_dir)
-        snapshot = temporary / "snapshot"
-        snapshot.mkdir()
-        environment = clean_git_env(index_file=temporary / "index")
-        try:
-            read_tree = subprocess.run(
-                [git_bin, "read-tree", tree_sha],
-                cwd=root,
-                env=environment,
-                capture_output=True,
-                text=True,
-                timeout=SUBPROCESS_LOCAL_TIMEOUT_SECONDS,
-            )
-        except subprocess.TimeoutExpired:
-            raise ValueError(f"git read-tree timed out within {SUBPROCESS_LOCAL_TIMEOUT_SECONDS}s")
-        if read_tree.returncode != 0:
-            detail = read_tree.stderr.strip() or read_tree.stdout.strip()
-            raise ValueError(detail or f"cannot read revision: {revision}")
-        checkout = subprocess.run(
-            [git_bin, "checkout-index", "--all", f"--prefix={snapshot}{os.sep}"],
-            cwd=root,
-            env=environment,
-            capture_output=True,
-            text=True,
-        )
-        if checkout.returncode != 0:
-            detail = checkout.stderr.strip() or checkout.stdout.strip()
-            raise ValueError(detail or f"cannot export revision: {revision}")
-        yield snapshot
-
-
-def check_git_revision(
-    root: Path,
-    revision: str,
-    explicit: list[str] | None = None,
-    *,
-    require_archived: bool = False,
-    slugs: list[str] | None = None,
-    legacy_baseline: str | None = None,
-    lint_only: bool = False,
-) -> list[CheckFailure]:
-    try:
-        with git_revision_snapshot(root, revision) as snapshot:
-            return check_all_packages(
-                snapshot,
-                explicit,
-                require_archived=require_archived,
-                slugs=slugs,
-                legacy_hashes=legacy_archive_hashes(root, legacy_baseline, explicit),
-                lint_only=lint_only,
-            )
-    except (OSError, ValueError) as exc:
-        return [CheckFailure(root, "<git-revision>", str(exc))]
-
-
 def render_failures(root: Path, failures: list[CheckFailure]) -> str:
     lines = ["# Spec Disk Truth", "", f"- root: {root}", "- result: blocked", "", "## Failures"]
-    lines.extend(f"- {failure.specs_root}:{failure.slug}: {failure.reason}" for failure in failures)
-    return "\n".join(lines)
+    return "\n".join([*lines, *(f"- {failure.specs_root}:{failure.slug}: {failure.reason}" for failure in failures)])
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", default=".", help="Project root (default: current directory)")
+    parser.add_argument("--specs-dir", action="append", default=[], help="Additional trusted Spec root; repeatable")
+    parser.add_argument("--slug", action="append", default=[], dest="slugs", help="Filter active packages; repeatable")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--index", action="store_true", help="Check the Git index and its staged archive changes")
+    group.add_argument("--revision", help="Check a Git revision and its archive changes")
+    parser.add_argument("--baseline", help="Start of revision diff (default: target commit's parent)")
+    parser.add_argument("--lint-only", action="store_true", help="Skip delivery gates for work in progress")
+    parser.add_argument("--scope-paths-file", help="Parse trusted Spec slugs from newline-delimited changed paths")
+    parser.add_argument("--footer-window-base", help="Warn when footer attribution predates the push window")
+    return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    root = Path(args.root).resolve(strict=False)
+    root = Path(args.root).resolve()
     if args.scope_paths_file:
         try:
-            content = read_regular_text(Path(args.scope_paths_file))
-            slugs = scope_from_changed_paths(content.splitlines(), args.specs_dir)
+            paths = read_regular_text(Path(args.scope_paths_file)).splitlines()
+            for slug in scope_from_changed_paths(paths, args.specs_dir):
+                print(f"SPEC {slug}")
+            return 0
         except (OSError, UnicodeError, ValueError) as exc:
             print(f"error: cannot parse changed-path scope: {exc}", file=sys.stderr)
             return 1
-        for slug in slugs:
-            print(f"SPEC {slug}")
-        return 0
-    slug_filter = args.slugs or None
-    if args.index and args.revision:
-        print("error: --index and --revision are mutually exclusive", file=sys.stderr)
+    if args.baseline and not args.revision:
+        print("error: --baseline requires --revision", file=sys.stderr)
         return 1
-    if args.footer_window_base:
-        if not args.revision:
-            print(
-                "error: --footer-window-base requires --revision (the pushed tree owns the archive state)",
-                file=sys.stderr,
-            )
-            return 1
-        if slug_filter is None:
-            print(
-                "error: --footer-window-base requires the footer-collected --slug list",
-                file=sys.stderr,
-            )
-            return 1
-        if not FOOTER_WINDOW_BASE_RE.match(args.footer_window_base):
-            print(
-                "error: --footer-window-base must be one commit sha (got: " + args.footer_window_base + ")",
-                file=sys.stderr,
-            )
-            return 1
+    if args.footer_window_base and (
+        not args.revision or not args.slugs or not FOOTER_WINDOW_BASE_RE.fullmatch(args.footer_window_base)
+    ):
+        print("error: --footer-window-base requires --revision, --slug, and a commit SHA", file=sys.stderr)
+        return 1
+    options = {"slugs": args.slugs or None, "lint_only": args.lint_only}
     if args.index:
-        if args.require_archived:
-            print(
-                "error: --require-archived is not supported with --index; "
-                "the index snapshot has no archive lifecycle state",
-                file=sys.stderr,
-            )
-            return 1
-        failures = check_git_index(
-            root,
-            args.specs_dir,
-            slugs=slug_filter,
-            legacy_baseline=args.legacy_baseline,
-            lint_only=args.lint_only,
-        )
+        failures = check_git_index(root, args.specs_dir, **options)
     elif args.revision:
-        failures = check_git_revision(
-            root,
-            args.revision,
-            args.specs_dir,
-            require_archived=args.require_archived,
-            slugs=slug_filter,
-            legacy_baseline=args.legacy_baseline,
-            lint_only=args.lint_only,
-        )
+        failures = check_git_revision(root, args.revision, args.specs_dir, baseline=args.baseline, **options)
     else:
-        failures = check_all_packages(
-            root,
-            args.specs_dir,
-            require_archived=args.require_archived,
-            slugs=slug_filter,
-            legacy_hashes=legacy_archive_hashes(root, specs_dirs=args.specs_dir),
-            lint_only=args.lint_only,
-        )
+        failures = check_all_packages(root, args.specs_dir, **options)
     if args.footer_window_base:
-        # Observation-period warning (AUD-06): evidence only, never a verdict.
-        interval_warnings = footer_interval_warnings(
-            root,
-            sorted(slug_filter or []),
-            revision=args.revision or "HEAD",
-            window_base=args.footer_window_base,
-            specs_dirs=args.specs_dir,
+        warnings = footer_interval_warnings(
+            root, args.slugs, revision=args.revision, window_base=args.footer_window_base, specs_dirs=args.specs_dir
         )
-        if interval_warnings:
-            print(render_footer_interval_warnings(interval_warnings), file=sys.stderr)
+        if warnings:
+            print(render_footer_interval_warnings(warnings), file=sys.stderr)
     if failures:
         print(render_failures(root, failures))
         return 1

@@ -1,6 +1,6 @@
 # ADR 0007：Bash write coverage gap
 
-- 状态：Proposed（2026-11-03）
+- 状态：Superseded（0.27 删除激活守卫，本缺口不再适用）
 - 范围：调研结论；不修改 `hooks/claude_activation_guard.py` 或 `scripts/check_spec_package.py`
 - 当前证据：`hooks/claude_activation_guard.py:23-40` 明确 Bash、MCP 和自定义工具不在覆盖范围，且内部错误 fail open；`hooks/claude_activation_guard.py:67` 只匹配 `Edit`、`Write`、`MultiEdit`、`NotebookEdit`、`Agent`、`Task`、`SendMessage`；`tests/test_activation_hooks.py:5-10` 已把该边界写成测试语义。
 

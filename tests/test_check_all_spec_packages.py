@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import subprocess
 import sys
@@ -7,16 +9,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-import check_all_spec_packages as check_all_module
-from check_all_spec_packages import (
-    MAX_SPEC_FILE_BYTES,
-    archived_package_dirs,
-    check_all_packages,
-    check_git_index,
-    check_git_revision,
-    legacy_archive_hashes,
-)
+import check_all_spec_packages as checker
+from check_all_spec_packages import check_all_packages, check_git_index, check_git_revision
 
+SCRIPT = Path(checker.__file__).resolve()
 SPEC = """\
 # Gate - 项目范围
 
@@ -24,7 +20,6 @@ SPEC = """\
 - **项目目标**：验证全仓门禁
 - **目标用户**：维护者
 - **核心价值**：状态可信
-
 ## 2. 假设与待确认
 ### 2.1 已确认事实
 - 已确认
@@ -37,43 +32,27 @@ SPEC = """\
 - 不改业务代码
 ## 4. 最小实现路径
 - 复用 checker
-- 不复制规则
-- 返回退出码
-### 6.1 行为成效指标
-- 无关改动数 <= 0 -> verify: diff
-- 澄清前置率 >= 100% -> verify: spec
-- 返工次数 <= 1 -> verify: notes
+## 6. 成功标准与验证方式
+- [x] 门禁通过 -> verify: task_0001
 """
 TASKS_DONE = "- [x] Gate\n  - boundary: scripts only\n  - verify: pytest\n"
-CHECKLIST_DONE = """\
-## 跨载体一致性
-- [x] Consistent
-## 行为成效
-- [x] Metrics
-## 验收证据
-- 脚本验证：pytest
-**验收结果**：通过
-"""
-SUMMARY_V1 = """# Archived - 完成总结
-## 交付结论
-- 完成
-## 假设回顾
-- verified
-## 交付范围
-- delivered
-## 简化决策
-- simple
-## 变更边界
-- scripts
-## 验证证据
-- pytest
-## 门禁证据
-- passed
-## 问题处置
-```json
-{"version": 1, "issues": []}
-```
-"""
+SUMMARY = "# 完成总结\n\n- 已完成\n"
+
+
+def git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["git", *args], cwd=root, check=check, capture_output=True, text=True)
+
+
+def init_repo(root: Path) -> None:
+    git(root, "init", "-q", "-b", "main")
+    git(root, "config", "user.email", "test@example.com")
+    git(root, "config", "user.name", "Spec Test")
+
+
+def commit(root: Path, message: str) -> str:
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", message)
+    return git(root, "rev-parse", "HEAD").stdout.strip()
 
 
 def make_package(root: Path, slug: str, specs_dir: str = ".spec", *, passed: bool = True) -> Path:
@@ -81,632 +60,311 @@ def make_package(root: Path, slug: str, specs_dir: str = ".spec", *, passed: boo
     package.mkdir(parents=True)
     (package / "spec.md").write_text(SPEC, encoding="utf-8")
     (package / "tasks.md").write_text(TASKS_DONE if passed else TASKS_DONE.replace("[x]", "[ ]"), encoding="utf-8")
-    (package / "checklist.md").write_text(
-        CHECKLIST_DONE if passed else CHECKLIST_DONE.replace("[x]", "[ ]"), encoding="utf-8"
-    )
     return package
 
 
-def make_archived_package(root: Path, slug: str, *, summary: str = SUMMARY_V1) -> Path:
-    active = make_package(root, slug, passed=True)
-    archive_root = root / ".spec" / "specs" / "archive"
-    archive_root.mkdir(parents=True, exist_ok=True)
-    archived = active.rename(archive_root / slug)
-    (archived / "completion-summary.md").write_text(summary, encoding="utf-8")
-    return archived
+def make_archive(root: Path, slug: str, specs_dir: str = ".spec", *, passed: bool = True) -> Path:
+    package = root / specs_dir / "specs" / "archive" / slug
+    package.mkdir(parents=True)
+    (package / "spec.md").write_text(SPEC, encoding="utf-8")
+    (package / "tasks.md").write_text(TASKS_DONE if passed else TASKS_DONE.replace("[x]", "[ ]"), encoding="utf-8")
+    (package / "completion-summary.md").write_text(SUMMARY, encoding="utf-8")
+    return package
 
 
-def test_duplicate_active_integration_branch_is_rejected(tmp_path):
-    first = make_package(tmp_path, "2026-09-05_fix-first", passed=True)
-    second = make_package(tmp_path, "2026-09-05_fix-second", passed=True)
-    shared = "spec/shared"
-    for package in (first, second):
-        (package / "spec.md").write_text(SPEC + f"\n- Git integration branch：`{shared}`\n", encoding="utf-8")
-    failures = check_all_packages(tmp_path)
-    assert any("integration branch bound to multiple active packages" in failure.reason for failure in failures)
-
-
-def test_discovers_default_and_custom_specs_roots(tmp_path):
-    make_package(tmp_path, "2026-07-13_fix-default", passed=True)
+def test_discovers_default_and_explicit_specs_roots(tmp_path: Path) -> None:
+    make_package(tmp_path, "2026-07-13_fix-default")
     make_package(tmp_path, "2026-07-13_fix-custom", "spec-state", passed=False)
-
     failures = check_all_packages(tmp_path, explicit=["spec-state"])
-
     assert [failure.slug for failure in failures] == ["2026-07-13_fix-custom"]
 
 
-def test_require_archived_rejects_even_passing_active_package(tmp_path):
-    make_package(tmp_path, "2026-07-13_fix-active", passed=True)
+@pytest.mark.parametrize(
+    ("filename", "before", "after"),
+    [
+        ("spec.md", "- **项目目标**：验证全仓门禁\n", ""),
+        ("spec.md", "### 2.3 待确认问题\n- 无", "### 2.3 待确认问题\n- [ ] 问题待确认"),
+        ("spec.md", "- [x] 门禁通过", "- [ ] 门禁通过"),
+        ("tasks.md", "  - boundary: scripts only\n", ""),
+        ("tasks.md", "  - verify: pytest\n", ""),
+        ("tasks.md", "- [x] Gate", "- [ ] Gate"),
+        ("tasks.md", "Gate", "核心功能 A"),
+    ],
+)
+def test_active_delivery_gates_use_shared_evaluator(tmp_path: Path, filename: str, before: str, after: str) -> None:
+    slug = "2026-07-13_fix-active"
+    package = make_package(tmp_path, slug)
+    path = package / filename
+    original = path.read_text(encoding="utf-8")
+    assert before in original
+    path.write_text(original.replace(before, after), encoding="utf-8")
+    failures = check_all_packages(tmp_path)
+    assert any(f.slug == slug and "check gates not passed" in f.reason for f in failures), failures
 
-    failures = check_all_packages(tmp_path, require_archived=True)
 
-    assert failures[0].reason == "active package must be archived"
+def test_active_evaluator_skips_duplicate_live_evidence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    package = make_package(tmp_path, "2026-07-13_fix-root")
+    seen: list[tuple[Path | None, Path | None]] = []
 
-
-def test_active_gate_receives_project_root_for_evidence_freshness(tmp_path, monkeypatch):
-    make_package(tmp_path, "2026-07-13_fix-root-forwarding", passed=True)
-    seen = []
-
-    def fake_overall(*args, **kwargs):
-        seen.append(kwargs.get("root"))
+    def evaluator(*args, **kwargs):
+        seen.append((kwargs.get("root"), kwargs.get("package_dir")))
         return True
 
-    monkeypatch.setattr(check_all_module, "overall_check_passed", fake_overall)
+    monkeypatch.setattr(checker, "overall_check_passed", evaluator)
     assert check_all_packages(tmp_path) == []
-    assert seen == [tmp_path]
+    assert seen == [(None, package)]
 
 
-def test_archived_gate_receives_package_dir_and_no_live_root(tmp_path, monkeypatch):
-    """An archive keeps frozen evidence: no live root, but its own package dir.
-
-    Dropping ``package_dir`` too would make every archived ``evidence: runs``
-    question unevaluable ("需在项目根目录运行 check"), which is a permanent
-    failure rather than the intended "do not re-grade against later HEAD".
-    """
-    slug = "2026-07-13_fix-archived-root"
-    make_archived_package(tmp_path, slug)
-    seen = []
-
-    def fake_overall(*args, **kwargs):
-        seen.append((kwargs.get("root"), kwargs.get("package_dir"), kwargs.get("archived_root")))
-        return True
-
-    monkeypatch.setattr(check_all_module, "overall_check_passed", fake_overall)
-    assert check_all_packages(tmp_path, slugs=[slug]) == []
-    assert seen == [(None, tmp_path / ".spec" / "specs" / "archive" / slug, tmp_path)]
+def test_lint_only_reports_missing_files_without_requiring_completed_work(tmp_path: Path) -> None:
+    make_package(tmp_path, "2026-07-13_fix-wip", passed=False)
+    missing = make_package(tmp_path, "2026-07-13_fix-missing")
+    (missing / "tasks.md").unlink()
+    failures = check_all_packages(tmp_path, lint_only=True)
+    assert {failure.slug for failure in failures} == {"2026-07-13_fix-missing"}
+    assert "tasks.md" in failures[0].reason
 
 
-def test_archived_runs_without_closed_questions_keep_historical_closeout(tmp_path):
-    slug = "2026-07-13_fix-historical-runs"
-    archived = make_archived_package(tmp_path, slug)
-    (archived / "spec.md").write_text(SPEC + "\n- evidence: runs\n", encoding="utf-8")
-    # Early records predate package_id/package_fp. An unrelated new question
-    # rule must not retroactively demand live freshness from these archives.
-    (archived / "runs.jsonl").write_text('{"task": "task_0001", "exit": 0}\n', encoding="utf-8")
-    assert check_all_packages(tmp_path, slugs=[slug]) == []
+def test_lint_only_cli_skips_delivery_gate(tmp_path: Path) -> None:
+    make_package(tmp_path, "2026-07-13_fix-wip", passed=False)
+    cmd = [sys.executable, str(SCRIPT), "--root", str(tmp_path)]
+    full = subprocess.run(cmd, capture_output=True, text=True)
+    lint = subprocess.run([*cmd, "--lint-only"], capture_output=True, text=True)
+    assert full.returncode == 1
+    assert "check gates not passed" in full.stdout
+    assert lint.returncode == 0, lint.stdout + lint.stderr
 
 
-def test_archive_is_validated_and_explicit_slug_must_exist(tmp_path):
-    slug = "2026-07-13_fix-archived"
-    archived = make_archived_package(tmp_path, slug)
+def test_only_trusted_spec_roots_are_discovered(tmp_path: Path) -> None:
+    make_package(tmp_path, "2026-07-13_fix-parent")
+    make_package(tmp_path, "2026-07-13_fix-untrusted", "hardware", passed=False)
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    init_repo(nested)
+    make_package(nested, "2026-07-13_fix-nested", passed=False)
+    assert check_all_packages(tmp_path) == []
 
-    assert check_all_packages(tmp_path, require_archived=True, slugs=[slug]) == []
 
-    (archived / "completion-summary.md").unlink()
-    failures = check_all_packages(tmp_path, slugs=[slug])
-    assert any("completion-summary.md" in failure.reason for failure in failures)
-
+def test_invalid_active_slug_and_missing_explicit_slug_are_reported(tmp_path: Path) -> None:
+    make_package(tmp_path, "invalid-slug")
+    failures = check_all_packages(tmp_path)
+    assert any(f.slug == "invalid-slug" and "invalid" in f.reason for f in failures)
     missing = check_all_packages(tmp_path, slugs=["2026-07-13_fix-missing"])
-    assert missing[0].reason == "explicit package slug not found in active or archive"
+    assert any(f.slug == "2026-07-13_fix-missing" and "not found" in f.reason for f in missing)
 
 
-def test_new_archive_cannot_downgrade_by_removing_closure_block(tmp_path):
-    slug = "2026-08-22_fix-missing-closure"
-    make_archived_package(tmp_path, slug, summary="# New Archive - 完成总结\n")
-
-    failures = check_all_packages(tmp_path, slugs=[slug])
-    assert any("not byte-identical to a baseline legacy summary" in failure.reason for failure in failures)
+def test_explicit_slug_must_be_one_development_record_name(tmp_path: Path) -> None:
+    (tmp_path / ".spec" / "specs" / "archive").mkdir(parents=True)
+    failures = check_all_packages(tmp_path, slugs=["../../../"])
+    assert any("invalid Development Record slug" in f.reason for f in failures)
 
 
-def test_archive_v1_issue_closure_is_strict(tmp_path):
-    slug = "2026-07-13_fix-closure"
-    summary = """# Archive - 完成总结
-## 交付结论
-- 完成
-## 假设回顾
-- verified
-## 交付范围
-- delivered
-## 简化决策
-- simple
-## 变更边界
-- scripts
-## 验证证据
-- pytest
-## 门禁证据
-- passed
-## 问题处置
-```json
-{
-  "version": 1,
-  "issues": [
-    {
-      "id": "bad",
-      "summary": "unlinked work",
-      "actionable": true,
-      "disposition": "resolved_current",
-      "taskId": "task_9999",
-      "evidence": "claimed"
-    }
-  ]
-}
-```
-"""
-    make_archived_package(tmp_path, slug, summary=summary)
-
-    failures = check_all_packages(tmp_path, slugs=[slug])
-    assert any("taskId does not exist" in failure.reason for failure in failures)
-
-
-def test_archive_cannot_duplicate_active_slug(tmp_path):
+def test_duplicate_active_and_archived_slug_is_rejected_without_reading_archive(tmp_path: Path) -> None:
     slug = "2026-07-13_fix-duplicate"
     make_package(tmp_path, slug)
-    archive = tmp_path / ".spec" / "specs" / "archive" / slug
-    archive.mkdir(parents=True)
-    for filename, content in {
-        "spec.md": SPEC,
-        "tasks.md": TASKS_DONE,
-        "checklist.md": CHECKLIST_DONE,
-        "completion-summary.md": "# old\n",
-    }.items():
-        (archive / filename).write_text(content, encoding="utf-8")
-
-    failures = check_all_packages(tmp_path, slugs=[slug])
-    assert any("both active and archive" in failure.reason for failure in failures)
-
-
-def test_archived_package_dirs_skip_retired_container(tmp_path):
-    retired = tmp_path / ".spec" / "specs" / "archive" / "retired" / "2026-09-30"
-    retired.mkdir(parents=True)
-    (retired / "MANIFEST.md").write_text("# retired container\n", encoding="utf-8")
-    (retired / "docs").mkdir()
-    (retired / "docs" / "guide.md").write_text("guide\n", encoding="utf-8")
-
-    assert archived_package_dirs(tmp_path / ".spec") == []
-
-
-def test_check_all_ignores_retired_archive_container(tmp_path):
-    slug = "2026-07-13_fix-archived"
-    make_archived_package(tmp_path, slug)
-    retired = tmp_path / ".spec" / "specs" / "archive" / "retired" / "2026-09-30"
-    retired.mkdir(parents=True)
-    (retired / "MANIFEST.md").write_text("# retired container\n", encoding="utf-8")
-    (retired / "server").mkdir()
-    (retired / "server" / "run.py").write_text("print('retired')\n", encoding="utf-8")
-
-    assert check_all_packages(tmp_path, require_archived=True) == []
-
-
-def test_git_baseline_allows_unchanged_legacy_archive_but_rejects_modified_or_new(tmp_path):
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "Spec Test"], cwd=tmp_path, check=True)
-    legacy_slug = "2026-08-21_fix-legacy"
-    legacy = make_archived_package(tmp_path, legacy_slug, summary="# Legacy - 完成总结\n")
-    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-qm", "legacy baseline"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "branch", "-M", "main"], cwd=tmp_path, check=True)
-
-    assert (
-        check_all_packages(
-            tmp_path,
-            slugs=[legacy_slug],
-            legacy_hashes=legacy_archive_hashes(tmp_path, "refs/heads/main"),
-        )
-        == []
-    )
-
-    (legacy / "completion-summary.md").write_text("# Legacy modified - 完成总结\n", encoding="utf-8")
-    modified = check_all_packages(
-        tmp_path,
-        slugs=[legacy_slug],
-        legacy_hashes=legacy_archive_hashes(tmp_path, "refs/heads/main"),
-    )
-    assert any("not byte-identical" in failure.reason for failure in modified)
-
-    new_slug = "2026-08-20_fix-backdated-new"
-    make_archived_package(tmp_path, new_slug, summary="# Backdated - 完成总结\n")
-    added = check_all_packages(
-        tmp_path,
-        slugs=[new_slug],
-        legacy_hashes=legacy_archive_hashes(tmp_path, "refs/heads/main"),
-    )
-    assert any("not byte-identical" in failure.reason for failure in added)
-
-
-def test_git_baseline_read_only_compat_skips_regrade_of_byte_identical_legacy(tmp_path):
-    """Storage contract: byte-identical legacy archives are read-only
-    compatible. Current gates must not re-grade content that was archived
-    under the gates of its day; one modified byte restores re-grading."""
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "Spec Test"], cwd=tmp_path, check=True)
-    legacy_slug = "2026-08-21_fix-legacy-regrade"
-    archived = make_archived_package(tmp_path, legacy_slug)
-    # Valid under older gates, failing current ones: an unresolved acceptance
-    # result, exactly how pre-0.10 archives look to today's gate extractor.
-    (archived / "checklist.md").write_text(
-        CHECKLIST_DONE.replace("**验收结果**：通过", "**验收结果**：待修复"), encoding="utf-8"
-    )
-    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-qm", "legacy baseline"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "branch", "-M", "main"], cwd=tmp_path, check=True)
-
-    # Without an authoritative baseline the archive is still re-graded.
-    assert any(
-        "check gates not passed" in failure.reason for failure in check_all_packages(tmp_path, slugs=[legacy_slug])
-    )
-
-    # Byte-identical to the baseline: read-only compatibility, no failures.
-    assert (
-        check_all_packages(
-            tmp_path,
-            slugs=[legacy_slug],
-            legacy_hashes=legacy_archive_hashes(tmp_path, "refs/heads/main"),
-        )
-        == []
-    )
-
-    # One modified byte drops the exemption; current gates apply again.
-    (archived / "spec.md").write_text(SPEC + "\n- 后补一行\n", encoding="utf-8")
-    assert any(
-        "check gates not passed" in failure.reason
-        for failure in check_all_packages(
-            tmp_path,
-            slugs=[legacy_slug],
-            legacy_hashes=legacy_archive_hashes(tmp_path, "refs/heads/main"),
-        )
-    )
-
-
-@pytest.mark.parametrize("root_name", [".spec", ".trae"])
-@pytest.mark.parametrize("target_kind", ["inside", "outside"])
-def test_default_spec_root_symlink_is_rejected(tmp_path, target_kind, root_name):
-    target = (
-        tmp_path / f"real-{root_name[1:]}"
-        if target_kind == "inside"
-        else tmp_path.parent / f"{tmp_path.name}-outside-{root_name[1:]}"
-    )
-    (target / "specs").mkdir(parents=True)
-    try:
-        (tmp_path / root_name).symlink_to(target, target_is_directory=True)
-    except (OSError, NotImplementedError):
-        pytest.skip("symlinks unavailable")
-
+    archive = make_archive(tmp_path, slug)
+    (archive / "spec.md").write_bytes(b"\xff")
     failures = check_all_packages(tmp_path)
-    assert failures[0].slug == "<discovery>"
-    assert "must not be a symlink" in failures[0].reason
+    assert any(f.slug == slug and "both active and archive" in f.reason for f in failures), failures
 
 
-def test_rejects_invalid_slug_and_symlink_package(tmp_path):
-    make_package(tmp_path, "invalid-slug", passed=True)
-    target = make_package(tmp_path, "2026-07-13_fix-target", passed=True)
-    link = tmp_path / ".spec" / "specs" / "2026-07-13_fix-link"
-    link.symlink_to(target, target_is_directory=True)
-
+def test_duplicate_active_branch_is_rejected(tmp_path: Path) -> None:
+    for slug in ("2026-09-05_fix-first", "2026-09-05_fix-second"):
+        package = make_package(tmp_path, slug)
+        (package / "spec.md").write_text(SPEC + "\n- Git integration branch：`spec/shared`\n", encoding="utf-8")
     failures = check_all_packages(tmp_path)
-    reasons = {failure.slug: failure.reason for failure in failures}
-
-    assert reasons["invalid-slug"] == "invalid Development Record slug"
-    assert reasons["2026-07-13_fix-link"] == "package must be a non-symlink directory"
+    assert any("integration branch bound to multiple active packages" in f.reason for f in failures)
 
 
-@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO unavailable")
-def test_rejects_fifo_without_blocking(tmp_path):
-    package = make_package(tmp_path, "2026-07-13_fix-fifo", passed=True)
-    (package / "spec.md").unlink()
-    os.mkfifo(package / "spec.md")
+def test_frozen_archives_are_not_read_even_with_explicit_slug(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    init_repo(tmp_path)
+    slug = "2026-07-13_fix-frozen"
+    archived = make_archive(tmp_path, slug, passed=False)
+    (archived / "spec.md").write_bytes(b"\xff")
+    commit(tmp_path, "frozen archive")
 
-    failures = check_all_packages(tmp_path)
+    original = checker.read_regular_text
 
-    assert "not a regular file" in failures[0].reason
+    def guarded(path: Path) -> str:
+        assert archived not in path.parents, f"frozen archive unexpectedly read: {path}"
+        return original(path)
 
-
-def test_rejects_oversized_required_file(tmp_path):
-    package = make_package(tmp_path, "2026-07-13_fix-large", passed=True)
-    (package / "spec.md").write_bytes(b"x" * (MAX_SPEC_FILE_BYTES + 1))
-
-    failures = check_all_packages(tmp_path)
-
-    assert "exceeds" in failures[0].reason
+    monkeypatch.setattr(checker, "read_regular_text", guarded)
+    assert check_all_packages(tmp_path) == []
+    assert check_all_packages(tmp_path, slugs=[slug]) == []
+    assert check_git_index(tmp_path, slugs=[slug]) == []
 
 
-def test_git_index_detects_stale_unchecked_package(tmp_path):
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    package = make_package(tmp_path, "2026-07-13_fix-index", passed=False)
-    subprocess.run(["git", "add", ".spec"], cwd=tmp_path, check=True)
-    (package / "tasks.md").write_text(TASKS_DONE, encoding="utf-8")
-    (package / "checklist.md").write_text(CHECKLIST_DONE, encoding="utf-8")
+def test_index_checks_only_staged_archive_changes_and_uses_staged_contents(tmp_path: Path) -> None:
+    init_repo(tmp_path)
+    frozen = make_archive(tmp_path, "2026-07-13_fix-frozen", passed=False)
+    changed = make_archive(tmp_path, "2026-07-13_fix-changed")
+    commit(tmp_path, "baseline")
+    (frozen / "tasks.md").write_text("unstaged broken archive\n", encoding="utf-8")
+    (changed / "completion-summary.md").write_text("", encoding="utf-8")
+    git(tmp_path, "add", str(changed / "completion-summary.md"))
+    (changed / "completion-summary.md").write_text(SUMMARY, encoding="utf-8")
 
     failures = check_git_index(tmp_path)
+    assert any(f.slug == changed.name and "summary" in f.reason for f in failures), failures
+    assert not any(f.slug == frozen.name for f in failures)
+    assert check_all_packages(tmp_path) == []
 
-    assert failures[0].slug == "2026-07-13_fix-index"
+
+def test_index_detects_staged_unchecked_active_not_worktree_fix(tmp_path: Path) -> None:
+    init_repo(tmp_path)
+    package = make_package(tmp_path, "2026-07-13_fix-index", passed=False)
+    git(tmp_path, "add", ".spec")
+    (package / "tasks.md").write_text(TASKS_DONE, encoding="utf-8")
+    failures = check_git_index(tmp_path)
+    assert any(f.slug == package.name and "check gates not passed" in f.reason for f in failures)
 
 
-def test_git_revision_validates_target_tree_not_current_checkout(tmp_path):
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "Spec Test"], cwd=tmp_path, check=True)
-    (tmp_path / "README.md").write_text("main\n", encoding="utf-8")
-    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-qm", "main"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "branch", "-M", "main"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "checkout", "-qb", "feature/spec"], cwd=tmp_path, check=True)
+def test_index_detects_deleted_required_archive_file(tmp_path: Path) -> None:
+    init_repo(tmp_path)
+    archive = make_archive(tmp_path, "2026-07-13_fix-delete")
+    commit(tmp_path, "baseline")
+    (archive / "completion-summary.md").unlink()
+    git(tmp_path, "add", "-u")
+    failures = check_git_index(tmp_path)
+    assert any(f.slug == archive.name and "completion-summary.md" in f.reason for f in failures)
+
+
+def test_new_staged_archive_is_subject_to_delivery_gate(tmp_path: Path) -> None:
+    init_repo(tmp_path)
+    archive = make_archive(tmp_path, "2026-07-13_fix-new", passed=False)
+    git(tmp_path, "add", ".spec")
+    failures = check_git_index(tmp_path)
+    assert any(f.slug == archive.name and "check gates not passed" in f.reason for f in failures)
+
+
+def test_changed_archive_on_custom_trusted_root(tmp_path: Path) -> None:
+    init_repo(tmp_path)
+    archive = make_archive(tmp_path, "2026-07-13_fix-custom", "custom/state", passed=False)
+    git(tmp_path, "add", "custom")
+    assert check_git_index(tmp_path) == []
+    failures = check_git_index(tmp_path, explicit=["custom/state"])
+    assert any(f.slug == archive.name and "check gates not passed" in f.reason for f in failures)
+
+
+def test_revision_checks_changed_archives_over_explicit_range(tmp_path: Path) -> None:
+    init_repo(tmp_path)
+    frozen = make_archive(tmp_path, "2026-07-13_fix-frozen", passed=False)
+    base = commit(tmp_path, "baseline")
+    changed = make_archive(tmp_path, "2026-07-13_fix-new", passed=False)
+    first = commit(tmp_path, "archive")
+    (tmp_path / "notes.txt").write_text("later\n", encoding="utf-8")
+    tip = commit(tmp_path, "follow-up")
+
+    # No baseline means only the target commit, not every archive in its tree.
+    assert check_git_revision(tmp_path, tip) == []
+    failures = check_git_revision(tmp_path, tip, baseline=base)
+    assert any(f.slug == changed.name and "check gates not passed" in f.reason for f in failures)
+    assert not any(f.slug == frozen.name for f in failures)
+    assert check_git_revision(tmp_path, first, baseline=first) == []
+
+
+def test_revision_reads_target_not_checkout_or_index(tmp_path: Path) -> None:
+    init_repo(tmp_path)
+    (tmp_path / "README.md").write_text("base\n", encoding="utf-8")
+    base = commit(tmp_path, "base")
+    git(tmp_path, "checkout", "-qb", "feature/spec")
     slug = "2026-07-13_fix-revision"
-    make_archived_package(tmp_path, slug)
-    subprocess.run(["git", "add", ".spec"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-qm", "archive"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "checkout", "-q", "main"], cwd=tmp_path, check=True)
-
+    make_archive(tmp_path, slug)
+    revision = commit(tmp_path, "archive")
+    git(tmp_path, "checkout", "-q", "main")
     assert not (tmp_path / ".spec").exists()
-    assert (
-        check_git_revision(
-            tmp_path,
-            "refs/heads/feature/spec",
-            require_archived=True,
-            slugs=[slug],
-        )
-        == []
-    )
-    missing = check_git_revision(
-        tmp_path,
-        "refs/heads/main",
-        require_archived=True,
-        slugs=[slug],
-    )
-    assert missing[0].reason == "explicit package slug not found in active or archive"
+    assert check_git_revision(tmp_path, revision, slugs=[slug], baseline=base) == []
+    failures = check_git_revision(tmp_path, base, slugs=[slug])
+    assert any(f.slug == slug and "not found" in f.reason for f in failures)
 
 
-def test_skips_nested_git_repository(tmp_path):
-    make_package(tmp_path, "2026-07-13_fix-parent", passed=True)
-    nested = tmp_path / "nested"
-    subprocess.run(["git", "init", "-q", str(nested)], check=True)
-    make_package(nested, "2026-07-13_fix-nested", passed=False)
-
-    assert check_all_packages(tmp_path) == []
-
-
-def test_active_package_dirs_skips_dotfiles(tmp_path):
-    """Dotfiles like .DS_Store must not be enumerated as packages."""
-    from check_all_spec_packages import active_package_dirs
-
-    specs_root = tmp_path / ".spec"
-    packages_root = specs_root / "specs"
-    packages_root.mkdir(parents=True)
-    (packages_root / ".DS_Store").write_bytes(b"\x00")
-    assert active_package_dirs(specs_root) == []
+def test_staged_archive_checks_ignore_unrelated_slug_filter(tmp_path: Path) -> None:
+    init_repo(tmp_path)
+    selected = make_archive(tmp_path, "2026-07-13_fix-selected")
+    unselected = make_archive(tmp_path, "2026-07-13_fix-unselected", passed=False)
+    git(tmp_path, "add", ".spec")
+    failures = check_git_index(tmp_path, slugs=[selected.name])
+    assert any(f.slug == unselected.name and "check gates not passed" in f.reason for f in failures)
 
 
-def test_active_package_dirs_skips_non_directories(tmp_path):
-    """Stray non-directory files must not be enumerated as packages."""
-    from check_all_spec_packages import active_package_dirs
-
-    specs_root = tmp_path / ".spec"
-    packages_root = specs_root / "specs"
-    packages_root.mkdir(parents=True)
-    (packages_root / "README.md").write_text("not a package", encoding="utf-8")
-    assert active_package_dirs(specs_root) == []
-
-
-def test_discover_specs_roots_ignores_untrusted_specs_dirs(tmp_path):
-    """specs/ under an untrusted parent (e.g. hardware/) must not be a specs root."""
-    untrusted = tmp_path / "hardware" / "specs" / "draft-a"
-    untrusted.mkdir(parents=True)
-    (untrusted / "spec.md").write_text("x", encoding="utf-8")
-    (untrusted / "tasks.md").write_text("x", encoding="utf-8")
-    (untrusted / "checklist.md").write_text("x", encoding="utf-8")
-
-    assert check_all_packages(tmp_path) == []
+def test_git_index_uses_transaction_index_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    init_repo(tmp_path)
+    frozen = make_archive(tmp_path, "2026-07-13_fix-frozen", passed=False)
+    commit(tmp_path, "baseline")
+    alternate = tmp_path / "alternate-index"
+    env = {**os.environ, "GIT_INDEX_FILE": str(alternate)}
+    subprocess.run(["git", "read-tree", "HEAD"], cwd=tmp_path, env=env, check=True)
+    (frozen / "completion-summary.md").write_text("", encoding="utf-8")
+    subprocess.run(["git", "add", str(frozen / "completion-summary.md")], cwd=tmp_path, env=env, check=True)
+    monkeypatch.setenv("GIT_INDEX_FILE", str(alternate))
+    failures = check_git_index(tmp_path)
+    assert any(f.slug == frozen.name and "summary" in f.reason for f in failures), failures
 
 
-# -- G6/G7: review-round gate-machinery fixes --
+def test_revision_checks_merged_archive_without_explicit_baseline(tmp_path: Path) -> None:
+    init_repo(tmp_path)
+    (tmp_path / "README.md").write_text("base\n", encoding="utf-8")
+    commit(tmp_path, "base")
+    git(tmp_path, "checkout", "-qb", "feature/archive")
+    archive = make_archive(tmp_path, "2026-07-13_fix-merged", passed=False)
+    commit(tmp_path, "archive")
+    git(tmp_path, "checkout", "-q", "main")
+    (tmp_path / "main.txt").write_text("main\n", encoding="utf-8")
+    commit(tmp_path, "main")
+    git(tmp_path, "merge", "--no-ff", "-qm", "merge archive", "feature/archive")
+    failures = check_git_revision(tmp_path, "HEAD")
+    assert any(f.slug == archive.name and "check gates not passed" in f.reason for f in failures), failures
 
 
-def test_index_mode_rejects_require_archived_combination(tmp_path):
-    """--index + --require-archived must fail loudly, not drop the flag."""
-    script = Path(__file__).resolve().parent.parent / "scripts" / "check_all_spec_packages.py"
-    subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)], check=True)
+def test_revision_merge_uses_only_first_parent_delta(tmp_path: Path) -> None:
+    init_repo(tmp_path)
+    (tmp_path / "README.md").write_text("base\n", encoding="utf-8")
+    commit(tmp_path, "base")
+    git(tmp_path, "checkout", "-qb", "feature/without-archive")
+    (tmp_path / "feature.txt").write_text("feature\n", encoding="utf-8")
+    commit(tmp_path, "feature")
+    git(tmp_path, "checkout", "-q", "main")
+    make_archive(tmp_path, "2026-07-13_fix-earlier", passed=False)
+    commit(tmp_path, "earlier archive")
+    git(tmp_path, "merge", "--no-ff", "-qm", "merge feature", "feature/without-archive")
+    assert check_git_revision(tmp_path, "HEAD") == []
+
+
+def test_invalid_revision_range_fails_closed(tmp_path: Path) -> None:
+    init_repo(tmp_path)
+    (tmp_path / "README.md").write_text("base\n", encoding="utf-8")
+    commit(tmp_path, "base")
+    failures = check_git_revision(tmp_path, "HEAD", baseline="not-a-revision")
+    assert failures and "git" in failures[0].slug
+
+
+def test_archive_container_and_untrusted_paths_are_ignored(tmp_path: Path) -> None:
+    init_repo(tmp_path)
+    for rel in (
+        ".spec/specs/archive/README.md",
+        ".spec/specs/archive/retired/old/note.md",
+        "hardware/specs/draft-a/spec.md",
+    ):
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("content\n", encoding="utf-8")
+    git(tmp_path, "add", "-A")
+    assert check_git_index(tmp_path) == []
+
+
+def test_help_removes_server_flag_and_keeps_hook_arguments() -> None:
+    result = subprocess.run([sys.executable, str(SCRIPT), "--help"], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    for flag in ("--root", "--index", "--revision", "--baseline", "--slug", "--specs-dir", "--lint-only"):
+        assert flag in result.stdout
+    assert "--require-archived" not in result.stdout
+
+
+def test_index_and_revision_are_mutually_exclusive(tmp_path: Path) -> None:
     result = subprocess.run(
-        [sys.executable, str(script), "--root", str(tmp_path), "--index", "--require-archived"],
+        [sys.executable, str(SCRIPT), "--root", str(tmp_path), "--index", "--revision", "HEAD"],
         capture_output=True,
         text=True,
     )
-    assert result.returncode == 1
-    assert "--require-archived is not supported with --index" in result.stderr
-
-
-def test_legacy_hash_pipeline_is_locale_independent_and_crlf_tolerant(tmp_path):
-    """G7: both hash sides share one strict-UTF-8 + newline-normalized pipeline.
-
-    - CRLF worktree copies of an LF-committed legacy archive must stay
-      byte-identical (tolerance preserved).
-    - Raw non-UTF-8 bytes must fail identically on both sides instead of
-      being garbled through the process locale.
-    """
-    from check_all_spec_packages import _normalized_archive_text
-
-    lf = "验收：通过\n".encode("utf-8")
-    crlf = "验收：通过\r\n".encode("utf-8")
-    assert _normalized_archive_text(lf) == _normalized_archive_text(crlf) == "验收：通过\n"
-    # Lone CR is normalized too (universal-newline parity with text mode).
-    assert _normalized_archive_text(b"a\rb") == "a\nb"
-    # Strict UTF-8 on both sides: invalid bytes raise instead of locale garbling.
-    with pytest.raises(UnicodeDecodeError):
-        _normalized_archive_text("验收".encode("utf-8") + b"\xff\xfe")
-
-
-def test_legacy_hash_matches_crlf_worktree_copy_against_lf_baseline(tmp_path):
-    """End-to-end G7: autocrlf-style CRLF worktree copy of a legacy archive
-    does not falsely report not-byte-identical."""
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "Spec Test"], cwd=tmp_path, check=True)
-    legacy_slug = "2026-08-21_fix-crlf"
-    legacy = make_archived_package(tmp_path, legacy_slug, summary="# Legacy CRLF - 完成总结\n")
-    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-qm", "legacy baseline"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "branch", "-M", "main"], cwd=tmp_path, check=True)
-
-    # Rewrite every archive file on disk with CRLF endings (autocrlf checkout).
-    for name in ("spec.md", "tasks.md", "checklist.md", "completion-summary.md"):
-        raw = (legacy / name).read_bytes()
-        (legacy / name).write_bytes(raw.replace(b"\n", b"\r\n"))
-
-    assert (
-        check_all_packages(
-            tmp_path,
-            slugs=[legacy_slug],
-            legacy_hashes=legacy_archive_hashes(tmp_path, "refs/heads/main"),
-        )
-        == []
-    )
-
-
-@pytest.mark.parametrize("checkpoint_state", ["active", "corrupted"])
-def test_check_all_rejects_interrupted_update_checkpoint(tmp_path, checkpoint_state, write_historical_checkpoint):
-    slug = "2026-09-22_fix-public-example-11"
-    package = make_package(tmp_path, slug, passed=True)
-    checkpoint_file = write_historical_checkpoint(package, "封堵归档绕过")
-    if checkpoint_state == "corrupted":
-        checkpoint_file.write_text("{ bad json", encoding="utf-8")
-
-    failures = check_all_packages(tmp_path)
-    assert any(
-        failure.slug == slug
-        and "update checkpoint" in failure.reason
-        and "删除 update-checkpoint.json" in failure.reason
-        for failure in failures
-    )
-
-
-def test_check_all_rejects_standalone_blocked_status_line(tmp_path):
-    slug = "2026-09-22_fix-public-example-11"
-    package = make_package(tmp_path, slug, passed=True)
-    (package / "tasks.md").write_text(TASKS_DONE + "\n阻塞：等待外部系统\n", encoding="utf-8")
-
-    failures = check_all_packages(tmp_path)
-    assert any(failure.slug == slug and "check gates not passed" in failure.reason for failure in failures)
-
-
-def _summary_with_followup_issue(followup_slug: str) -> str:
-    import json
-
-    payload = {
-        "version": 1,
-        "issues": [
-            {
-                "id": "finding-followup-closed",
-                "summary": "verify follow-up closure",
-                "actionable": True,
-                "disposition": "resolved_followup",
-                "followUpSpecSlug": followup_slug,
-                "evidence": "follow-up archived and graded in its own round",
-            }
-        ],
-    }
-    return SUMMARY_V1.replace('{"version": 1, "issues": []}', json.dumps(payload, ensure_ascii=False))
-
-
-def _git_baseline(tmp_path) -> None:
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "Spec Test"], cwd=tmp_path, check=True)
-
-
-def _add_unchecked_function_box(package: Path) -> None:
-    spec = package / "spec.md"
-    spec.write_text(
-        spec.read_text(encoding="utf-8").replace(
-            "## 3. 功能范围\n", "## 3. 功能范围\n### 3.1 核心功能（MVP）\n- [ ] 功能 A：描述\n", 1
-        ),
-        encoding="utf-8",
-    )
-
-
-def test_followup_spec_gate_exempts_baseline_identical_archive_with_unchecked_spec_boxes(tmp_path):
-    """基线字节等价的 follow-up 归档不被当前 spec.md 功能框门追溯重评（裁定 A）。"""
-    followup_slug = "2026-08-21_fix-legacy-followup"
-    referencing_slug = "2026-08-21_fix-referencing"
-    _git_baseline(tmp_path)
-    followup = make_archived_package(tmp_path, followup_slug)
-    _add_unchecked_function_box(followup)
-    make_archived_package(tmp_path, referencing_slug, summary=_summary_with_followup_issue(followup_slug))
-    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-qm", "legacy baseline"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "branch", "-M", "main"], cwd=tmp_path, check=True)
-    legacy_hashes = legacy_archive_hashes(tmp_path, "refs/heads/main")
-
-    failures = check_all_packages(tmp_path, slugs=[referencing_slug], legacy_hashes=legacy_hashes)
-    assert not any("Spec gate is not passed" in failure.reason for failure in failures)
-    assert not any("check gates not passed" in failure.reason for failure in failures)
-
-
-def test_followup_spec_gate_still_fails_drifted_archive_with_unchecked_spec_boxes(tmp_path):
-    """与基线有字节差异的 follow-up 归档仍被当前门禁（含 spec.md 功能框门）打红。"""
-    followup_slug = "2026-08-21_fix-drifted-followup"
-    referencing_slug = "2026-08-21_fix-drifted-referencing"
-    _git_baseline(tmp_path)
-    followup = make_archived_package(tmp_path, followup_slug)
-    _add_unchecked_function_box(followup)
-    make_archived_package(tmp_path, referencing_slug, summary=_summary_with_followup_issue(followup_slug))
-    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-qm", "legacy baseline"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "branch", "-M", "main"], cwd=tmp_path, check=True)
-    legacy_hashes = legacy_archive_hashes(tmp_path, "refs/heads/main")
-
-    # One post-baseline byte on the follow-up archive restores full re-grading.
-    (followup / "spec.md").write_text(
-        (followup / "spec.md").read_text(encoding="utf-8") + "\n<!-- drift -->\n", encoding="utf-8"
-    )
-    failures = check_all_packages(tmp_path, slugs=[referencing_slug], legacy_hashes=legacy_hashes)
-    assert any("Spec gate is not passed" in failure.reason for failure in failures)
-
-    # Without an authoritative baseline the archive is re-graded as well.
-    failures = check_all_packages(tmp_path, slugs=[referencing_slug])
-    assert any("Spec gate is not passed" in failure.reason for failure in failures)
-
-
-# --- --lint-only structural channel (AUD-07 WIP gate) ---
-
-
-def test_lint_only_carries_gate_failing_active_package(tmp_path):
-    """A work-in-progress package fails the full gate but passes the lint."""
-    slug = "2026-10-12_allow-public-example-21"
-    make_package(tmp_path, slug, passed=False)
-
-    gate_failures = check_all_packages(tmp_path)
-    lint_failures = check_all_packages(tmp_path, lint_only=True)
-
-    assert any(f.slug == slug and "check gates not passed" in f.reason for f in gate_failures)
-    assert lint_failures == []
-
-
-def test_lint_only_still_reports_structural_errors(tmp_path, write_historical_checkpoint):
-    invalid = make_package(tmp_path, "invalid-record-slug", passed=False)
-    del invalid  # slug itself is the defect under test
-    blocked = make_package(tmp_path, "2026-10-12_fix-lint-structure", passed=False)
-    write_historical_checkpoint(blocked, "WIP lint structural probe")
-    missing = make_package(tmp_path, "2026-10-12_fix-missing-file", passed=False)
-    (missing / "tasks.md").unlink()
-
-    failures = check_all_packages(tmp_path, lint_only=True)
-    reasons = {(f.slug, f.reason) for f in failures}
-
-    assert ("invalid-record-slug", "invalid Development Record slug") in reasons
-    assert any(slug == "2026-10-12_fix-lint-structure" and "update checkpoint" in reason for slug, reason in reasons)
-    assert any(
-        slug == "2026-10-12_fix-missing-file" and ("tasks.md" in reason or "No such file" in reason)
-        for slug, reason in reasons
-    )
-
-
-def test_lint_only_still_enforces_archive_completeness(tmp_path):
-    archived = make_archived_package(tmp_path, "2026-10-12_fix-archive-lint")
-    (archived / "completion-summary.md").write_text("", encoding="utf-8")
-
-    failures = check_all_packages(tmp_path, lint_only=True)
-
-    assert any(f.slug == "2026-10-12_fix-archive-lint" and "completion summary is empty" in f.reason for f in failures)
-
-
-def test_lint_only_cli_flag_switches_channel(tmp_path):
-    make_package(tmp_path, "2026-10-12_allow-public-example-21", passed=False)
-    cli = [sys.executable, str(Path(check_all_module.__file__).resolve()), "--root", str(tmp_path)]
-
-    full = subprocess.run(cli, capture_output=True, text=True)
-    linted = subprocess.run([*cli, "--lint-only"], capture_output=True, text=True)
-
-    assert full.returncode == 1
-    assert "check gates not passed" in full.stdout
-    assert linted.returncode == 0, linted.stdout + linted.stderr
-    assert "result: passed" in linted.stdout
+    assert result.returncode != 0
+    assert "not allowed with argument --index" in result.stderr

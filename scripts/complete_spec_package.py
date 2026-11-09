@@ -1,22 +1,18 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-"""
-Generate completion-summary.md for a Spec package and optionally archive it.
-"""
+"""Generate a completion summary and optionally archive a checked package."""
 
 from __future__ import annotations
 
 import argparse
 import os
-import re
-import shutil
 import subprocess
 import sys
-from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
-from check_spec_package import overall_check_passed, package_physical_state_errors
+import gitx
+from check_spec_package import compute_gate_results, gate_failure_details, overall_check_passed
 from dashboard_support import HEALTH_OK, HEALTH_RISK, Dashboard, task_strip_from_records
 from handoff_support import HandoffError, append_close_entry
 from issue_closure_support import (
@@ -27,1114 +23,250 @@ from issue_closure_support import (
     validate_completion_summary,
     validate_issue_dispositions,
 )
-from safe_open_support import SafeOpenError, open_regular_read
+from report_spec_package import parse_tasks
 from spec_package_support import (
-    MAX_SPEC_FILE_BYTES,
     SECTION_BEHAVIOR_METRICS,
-    SECTION_CORRECTION_LOG,
-    SECTION_DEVIATION_LOG,
     SECTION_KEY_ASSUMPTIONS,
     SECTION_MINIMAL_PATH,
     SECTION_OUT_OF_SCOPE,
-    SPEC_TITLE_SUFFIXES,
     SpecControlError,
-    _titled_section_lines,
     add_specs_dir_arg,
-    detect_language,
-    extract_evidence_fields,
-    extract_heading_title_from_content,
     extract_section_bullets,
+    extract_title_from_content,
     is_development_record_slug,
-    is_placeholder_value,
     normalize_items,
     read_regular_text,
     resolve_specs_child,
     resolve_specs_root,
-    rule_message,
-    validate_branch_bound_package,
     verification_scope,
+    write_text,
 )
-from spec_package_support import (
-    parse_task_records as parse_task_records_for_machine_notes,
-)
-from spec_verify import (
-    compute_package_fingerprint,
-    compute_tree_fingerprint,
-    fresh_machine_evidence,
-    latest_record_by_task,
-    machine_verification_summary,
-    package_identities,
-    read_runs_records,
-    runs_protocol_enabled,
-    stale_record_reason,
-)
+from spec_verify import fresh_machine_evidence, machine_verification_summary, runs_protocol_enabled
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Generate completion-summary.md for a Spec package and optionally archive it."
-    )
-    parser.add_argument("--slug", required=True, help="Task package slug, e.g. 2026-06-12_payment-recovery")
-    parser.add_argument(
-        "--root",
-        default=".",
-        help="Project root where the .spec directory exists (default: current directory)",
-    )
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--slug", required=True, help="Development Record slug")
+    parser.add_argument("--root", default=".", help="Project root (default: current directory)")
     add_specs_dir_arg(parser)
-    parser.add_argument("--result", default="完成", help="Delivery result label")
-    parser.add_argument("--completed-at", help="Completion time override, e.g. 2026-04-22 21:15")
-    parser.add_argument("--verified-assumption", action="append", default=[])
-    parser.add_argument("--open-risk", action="append", default=[])
-    parser.add_argument("--delivered", action="append", default=[])
-    parser.add_argument("--not-delivered", action="append", default=[])
-    parser.add_argument("--deviation", action="append", default=[])
-    parser.add_argument("--simplification", action="append", default=[])
-    parser.add_argument("--out-of-scope", action="append", default=[])
-    parser.add_argument("--touched-area", action="append", default=[])
-    parser.add_argument("--untouched-area", action="append", default=[])
-    parser.add_argument("--build-evidence", action="append", default=[])
-    parser.add_argument("--test-evidence", action="append", default=[])
-    parser.add_argument("--manual-evidence", action="append", default=[])
-    parser.add_argument("--effect-metric", action="append", default=[])
-    parser.add_argument("--consistency-evidence", action="append", default=[])
-    parser.add_argument("--commit", default="pending local commit")
-    parser.add_argument("--push", default="not-run (push stage follows commit)")
+    parser.add_argument("--archive", action="store_true", help="Move the checked package into archive")
+    parser.add_argument("--force", action="store_true", help="Overwrite an existing completion summary, not an archive")
+    parser.add_argument("--main-branch", default="main", help="Main branch for the recorded Git commit interval")
+    parser.add_argument("--agents-proposal", action="append", default=[], help="Incremental project-fact diff line")
     parser.add_argument(
-        "--git-record-language",
-        choices=("auto", "zh", "en"),
-        default="auto",
-        help="Language for Git record labels in completion-summary.md (auto detects from spec title)",
-    )
-    parser.add_argument(
-        "--main-branch",
-        default="main",
-        help="Branch the integration branch merges into; used only for the recorded 提交区间 anchor",
-    )
-    parser.add_argument(
-        "--agents-proposal",
-        action="append",
-        default=[],
-        help=(
-            "One line of the AGENTS.md incremental diff proposal for this round's "
-            "distillation; repeat for multiple lines. Rendered as a single diff "
-            "fence in the summary; omit to record 无 (no reusable fact this round). "
-            "The script only carries session-authored proposal text and never "
-            "writes into AGENTS.md or any host instruction file."
-        ),
-    )
-    parser.add_argument(
-        "--follow-up",
-        action="append",
-        default=[],
-        help=(
-            "Legacy draft-only note. Closed archives reject this free-text channel; "
-            "use --issue-disposition with a typed JSON object instead."
-        ),
-    )
-    parser.add_argument(
-        "--issue-disposition",
-        action="append",
-        default=[],
-        help=(
-            "One v1 issue-disposition JSON object, inline or @path. Repeat for multiple findings. "
-            "Executable follow-up work must target an already archived Development Record."
-        ),
-    )
-    parser.add_argument("--rejected-extension", action="append", default=[])
-    parser.add_argument("--gate-evidence", action="append", default=[])
-    parser.add_argument(
-        "--process-metric",
-        action="append",
-        default=[],
-        help=(
-            "Optional process metric of the check loop, e.g. check rounds, rework "
-            "count, or a human-escalation mark. Repeat for multiple entries; "
-            "omitting it keeps the summary without the 过程指标 section."
-        ),
-    )
-    parser.add_argument("--archive", action="store_true", help="Move the package into .spec/specs/archive/")
-    parser.add_argument(
-        "--allow-incomplete",
-        action="store_true",
-        help="Bypass task/checklist completion gates",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Overwrite existing completion-summary.md or archive destination if needed",
+        "--issue-disposition", action="append", default=[], help="Issue disposition JSON object or @path"
     )
     return parser.parse_args()
 
 
-def has_any_real_value(values: list[str]) -> bool:
-    return any(value.strip() and not is_placeholder_value(value) for value in values)
+def bullet_lines(items: list[str], fallback: str) -> str:
+    values = [item.strip() for item in items if item.strip()]
+    return "\n".join(f"- {item}" for item in (values or [fallback]))
 
 
-def bullet_lines(items: list[str], default: str) -> str:
-    values = [item.strip() for item in items if item and item.strip()]
-    if not values:
-        values = [default]
-    return "\n".join(f"- {value}" for value in values)
-
-
-def bullet_inline(items: list[str], default: str) -> str:
-    values = [item.strip() for item in items if item and item.strip()]
-    if not values:
-        return default
-    return "；".join(values)
-
-
-def completed_task_subjects(tasks_content: str) -> list[str]:
-    return [str(record["subject"]) for record in parse_task_records(tasks_content).values() if record["completed"]]
-
-
-MISTAKE_DIRECTIONS = ("DEFERENCE", "OVERREACH", "KNOWLEDGE", "PROCESS")
-
-
-def _classify_review_issue(issue: dict[str, object]) -> str:
-    values = [str(issue.get(key, "")) for key in ("id", "summary", "evidence")]
-    text = " ".join(values).lower()
-    if any(token in text for token in ("deference", "literal request", "literal ask", "wrong request")):
-        return "DEFERENCE"
-    if any(token in text for token in ("overreach", "unrequested", "beyond the need", "addition", "scope creep")):
-        return "OVERREACH"
-    if any(token in text for token in ("knowledge", "external fact", "stale source", "assumption", "api behavior")):
-        return "KNOWLEDGE"
-    return "PROCESS"
-
-
-def _classify_deviation_row(line: str) -> str:
-    cells = [cell.strip().lower() for cell in line.strip("|").split("|")]
-    text = " ".join(cells[1:])
-    if any(
-        token in text
-        for token in (
-            "deference",
-            "skipped requested",
-            "deferred requested",
-            "omitted requested",
-            "not implement requested",
-        )
-    ):
-        return "DEFERENCE"
-    if any(token in text for token in ("external fact", "stale source", "assumption", "api behavior", "knowledge")):
-        return "KNOWLEDGE"
-    if any(token in text for token in ("gate sequencing", "process", "test", "tool")):
-        return "PROCESS"
-    return "OVERREACH"
-
-
-def mistake_direction_entries(
-    spec_content: str,
-    issue_dispositions: list[dict[str, object]],
-) -> dict[str, list[str]]:
-    """Derive source-cited mistake-direction counts from persisted package state."""
-    entries = {direction: [] for direction in MISTAKE_DIRECTIONS}
-    for line in _titled_section_lines(spec_content, SECTION_CORRECTION_LOG):
-        if not line.startswith("|") or set(line) <= {"|", "-", " ", ":"}:
-            continue
-        cells = [cell.strip() for cell in line.strip("|").split("|")]
-        if len(cells) != 4 or not cells[0].isdigit():
-            continue
-        knowledge_marker = re.compile(r"A\d+\s+FALSI" r"FIED", re.IGNORECASE)
-        direction = "KNOWLEDGE" if knowledge_marker.search(cells[3]) else "PROCESS"
-        entries[direction].append(f"spec.md ### 5.5 修正日志 round {cells[0]}")
-    for line in _titled_section_lines(spec_content, SECTION_DEVIATION_LOG):
-        if not line.startswith("|") or set(line) <= {"|", "-", " ", ":"}:
-            continue
-        match = re.match(r"\|?\s*(D\d+)\s*\|", line)
-        if match:
-            entries[_classify_deviation_row(line)].append(f"spec.md ### 5.6 偏离日志 {match.group(1)}")
-    for issue in issue_dispositions:
-        issue_id = str(issue.get("id", "")).strip()
-        if not issue_id:
-            continue
-        entries[_classify_review_issue(issue)].append(f"completion-summary.md 问题处置 {issue_id}")
-    return entries
-
-
-def render_mistake_directions(directions: dict[str, list[str]] | None) -> str:
-    supplied = directions or {}
-    values = {direction: list(supplied.get(direction, [])) for direction in MISTAKE_DIRECTIONS}
-    lines = ["## 失误方向统计"]
-    for direction in MISTAKE_DIRECTIONS:
-        lines.append(f"- {direction}：{len(values[direction])}")
-        lines.extend(f"  - {source}" for source in values[direction])
-    lines.append("- 只统计，不自动调整 Autonomy。")
-    return "\n".join(lines)
-
-
-_MACHINE_NOTE_PREFIX = re.compile(r"^-\s*(?:测试|构建|脚本验证)：")
-_MACHINE_NOTE_SYNTAX = re.compile(
-    r"^-\s*(?:(?:测试|构建|脚本验证)：)?`([^`]+)` -> exit 0 "
-    r"\(runs:(task_\d{4,}|task-[a-z0-9][a-z0-9-]{0,58})\)$"
-)
-_RUN_REFERENCE = re.compile(r"\bruns:(task_\d{4,}|task-[a-z0-9][a-z0-9-]{0,58})\b", re.IGNORECASE)
-
-
-def machine_success_note_errors(
-    summary: str,
-    tasks_content: str,
-    package_dir: Path,
-    *,
-    root: Path | None,
-) -> list[str]:
-    """Validate explicit claims; ``root=None`` is only for syntax-only callers."""
-    lines = summary.splitlines()
-    machine_notes: list[str] = []
-    in_evidence = False
-    in_gate = False
-    for line in lines:
-        if line == "## 验证证据":
-            in_evidence, in_gate = True, False
-            continue
-        if line == "## 门禁证据":
-            in_evidence, in_gate = False, True
-            continue
-        if re.match(r"^##\s+", line):
-            in_evidence = in_gate = False
-            continue
-        machine_category = in_evidence and bool(_MACHINE_NOTE_PREFIX.match(line))
-        gate_claim = in_gate and line.strip() != "- 无"
-        if (in_evidence or in_gate) and line.startswith("- ") and (machine_category or gate_claim):
-            machine_notes.append(line)
-    if not machine_notes:
-        return []
-
-    task_commands: dict[str, str] = {}
-    for task_record in parse_task_records_for_machine_notes(tasks_content):
-        command_match = re.search(r"`([^`]+)`", task_record.verify)
-        if command_match and not task_record.verify.strip().lower().startswith("manual:"):
-            task_commands[task_record.id] = command_match.group(1).strip()
-    try:
-        records = read_runs_records(package_dir) or []
-    except (OSError, UnicodeError, ValueError) as exc:
-        return [rule_message("SPEC-EVID-003", f"runs 证据不可读：{exc}")]
-    latest = latest_record_by_task(records)
-    errors: list[str] = []
-    fingerprints: tuple[str, str, str] | None = None
-    for note in machine_notes:
-        syntax_match = _MACHINE_NOTE_SYNTAX.fullmatch(note)
-        if not syntax_match:
-            errors.append(f"机器成功声明必须使用 closed syntax：`<command>` -> exit 0 (runs:<task id>)：{note}")
-            continue
-        references = [syntax_match.group(2)]
-        for task_id in references:
-            if task_id not in task_commands:
-                errors.append(f"机器成功声明引用了不存在的机器任务：{task_id}")
-                continue
-            record = latest.get(task_id)
-            if not record:
-                errors.append(
-                    rule_message(
-                        "SPEC-EVID-001",
-                        f"机器成功声明没有 runs.jsonl 记录：{task_id}；使用 spec_verify.py run --task {task_id} 重跑",
-                    )
-                )
-                continue
-            elif record.get("exit") != 0:
-                errors.append(f"机器成功声明引用的任务未通过：{task_id} exit={record.get('exit')}")
-                continue
-            recorded_command = str(record.get("cmd", ""))
-            if recorded_command != task_commands.get(task_id):
-                errors.append(f"机器成功声明引用的任务命令不一致：{task_id}")
-            elif syntax_match.group(1) != recorded_command:
-                errors.append(f"机器成功声明与 run 命令不一致：{task_id}：{recorded_command}")
-            elif root is not None:
-                try:
-                    if fingerprints is None:
-                        tree_fp = compute_tree_fingerprint(root, package_dir)
-                        if tree_fp is None:
-                            raise ValueError("工作树指纹不可计算；无法核验显式运行证据")
-                        fingerprints = (
-                            tree_fp,
-                            compute_package_fingerprint(package_dir),
-                            package_identities(root, package_dir),
-                        )
-                    stale = stale_record_reason(record, recorded_command, *fingerprints)
-                except (OSError, UnicodeError, ValueError) as exc:
-                    errors.append(rule_message("SPEC-EVID-003", f"运行证据无法核验：{exc}"))
-                    continue
-                if stale:
-                    errors.append(rule_message("SPEC-EVID-002", f"{task_id}：证据过期（{stale}）"))
-    return errors
-
-
-def archive_summary_values(
-    spec_content: str,
-    tasks_content: str,
-    checklist_content: str | None,
-    args: argparse.Namespace,
-    *,
-    auto_machine_evidence: list[str] | None = None,
-) -> dict[str, list[str]]:
-    """Fill archive summary sections from the already-passed package.
-
-    Evidence fields collapse to machine evidence (runs.jsonl for
-    ``evidence: runs`` packages) plus free-text notes (F11): the legacy
-    ``--test-evidence`` / ``--build-evidence`` / ``--manual-evidence``
-    arguments aggregate into the notes list and never gate the archive.
-    """
-    assumptions = normalize_items(extract_section_bullets(spec_content, SECTION_KEY_ASSUMPTIONS))
-    minimal_path = normalize_items(extract_section_bullets(spec_content, SECTION_MINIMAL_PATH))
-    out_of_scope = normalize_items(extract_section_bullets(spec_content, SECTION_OUT_OF_SCOPE))
-    behavior = normalize_items(extract_section_bullets(spec_content, SECTION_BEHAVIOR_METRICS))
-    delivered = completed_task_subjects(tasks_content)
-    explicit_machine = [
-        *(f"测试：{value}" for value in args.test_evidence),
-        *(f"构建：{value}" for value in args.build_evidence),
-    ]
-    manual = [f"手工：{value}" for value in args.manual_evidence]
-    auto_machine = [f"脚本验证：{value}" for value in (auto_machine_evidence or [])]
-    if explicit_machine:
-        evidence_notes = explicit_machine + manual
-    elif auto_machine:
-        evidence_notes = auto_machine + manual
-    elif manual:
-        evidence_notes = manual
-    elif runs_protocol_enabled(spec_content):
-        evidence_notes = ["机器证据：runs.jsonl（见验证范围的机器验证率）"]
-    else:
-        evidence_notes = ["手工：legacy checklist evidence retained in checklist.md"]
-    return {
-        "verified_assumptions": args.verified_assumption or assumptions or ["Development Record 假设与范围门禁通过"],
-        "delivered": args.delivered or delivered or ["Development Record 内全部任务已完成"],
-        "simplifications": args.simplification or minimal_path or ["按 Development Record 最小实现路径交付"],
-        "out_of_scope": args.out_of_scope or out_of_scope or ["未扩张到任务边界外"],
-        "touched_areas": args.touched_area or ["见 tasks.md 的 boundary 记录"],
-        "untouched_areas": args.untouched_area or out_of_scope or ["任务边界外模块未触碰"],
-        "evidence_notes": evidence_notes,
-        "effect_metrics": args.effect_metric or behavior or ["Development Record 行为门禁通过"],
-        "consistency_evidence": args.consistency_evidence or ["验收面（checklist 或成功标准）已通过"],
-        "gate_evidences": args.gate_evidence or ["无"],
-    }
-
-
-MAX_ARCHIVE_FILES = 512
-MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
-
-
-def extract_title_from_content(spec_content: str, slug: str) -> str:
-    # Shared bilingual suffix pair (项目范围 / Project Scope): the H1 is
-    # display text and never gates, so both localizations strip here.
-    return extract_heading_title_from_content(spec_content, slug, SPEC_TITLE_SUFFIXES)
-
-
-def write_regular_text(path: Path, content: str) -> None:
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            descriptor = -1
-            handle.write(content)
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-
-
-def validate_package_tree(package_dir: Path) -> None:
-    for path in package_dir.rglob("*"):
-        if path.is_symlink():
-            raise ValueError(f"package contains symlink: {path}")
-        if not path.is_dir() and not path.is_file():
-            raise ValueError(f"package contains non-regular entry: {path}")
-
-
-def copy_validated_tree(
-    package_dir: Path,
-    staging: Path,
-    required_snapshots: dict[str, str],
-) -> None:
-    file_count = 0
-    total_bytes = 0
-    for root, directories, files in os.walk(package_dir, topdown=True, followlinks=False):
-        root_path = Path(root)
-        relative_root = root_path.relative_to(package_dir)
-        for name in directories:
-            source = root_path / name
-            if source.is_symlink():
-                raise ValueError(f"package contains symlink: {source}")
-            (staging / relative_root / name).mkdir(parents=True, exist_ok=True)
-        for name in files:
-            source = root_path / name
-            relative = relative_root / name
-            target = staging / relative
-            if relative_root == Path(".") and name in required_snapshots:
-                write_regular_text(target, required_snapshots[name])
-                continue
-            if relative_root == Path(".") and name == "completion-summary.md":
-                continue
-            try:
-                with open_regular_read(source, max_bytes=MAX_SPEC_FILE_BYTES) as descriptor:
-                    metadata = os.fstat(descriptor)
-                    file_count += 1
-                    total_bytes += metadata.st_size
-                    if file_count > MAX_ARCHIVE_FILES or total_bytes > MAX_ARCHIVE_BYTES:
-                        raise ValueError("package exceeds archive file or byte limit")
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    output = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                    try:
-                        while chunk := os.read(descriptor, 1024 * 1024):
-                            view = memoryview(chunk)
-                            while view:
-                                written = os.write(output, view)
-                                view = view[written:]
-                    finally:
-                        os.close(output)
-            except SafeOpenError as exc:
-                raise ValueError(f"package contains unsafe entry: {source}: {exc}") from exc
-
-
-def remove_path(path: Path) -> None:
-    if path.is_symlink() or path.is_file():
-        path.unlink()
-    elif path.exists():
-        shutil.rmtree(path)
-
-
-def archive_validated_package(
-    package_dir: Path,
-    archive_destination: Path,
-    summary: str,
-    required_snapshots: dict[str, str],
-    *,
-    force: bool,
-) -> None:
-    staging = archive_destination.with_name(f".{archive_destination.name}.staging-{os.getpid()}")
-    backup = archive_destination.with_name(f".{archive_destination.name}.backup-{os.getpid()}")
-    quarantine = package_dir.with_name(f".{package_dir.name}.archiving-{os.getpid()}")
-    archived_tombstone = archive_destination.parent / quarantine.name
-
-    # A prior invocation may have published the archive and then failed while
-    # deleting its tombstone/backup.  Treat that state as recoverable: clean
-    # the residue and return without rebuilding or resurrecting the active
-    # package.  This keeps archive, quarantine and active paths consistent and
-    # makes retrying `--archive` safe after an interrupted cleanup.
-    if (
-        not os.path.lexists(package_dir)
-        and os.path.lexists(archive_destination)
-        and (os.path.lexists(archived_tombstone) or os.path.lexists(backup))
-    ):
-        try:
-            if os.path.lexists(archived_tombstone):
-                remove_path(archived_tombstone)
-            if os.path.lexists(backup):
-                remove_path(backup)
-        except OSError as exc:
-            raise ValueError(f"archive cleanup pending; retry after fixing residue: {exc}") from exc
-        return
-
-    validate_package_tree(package_dir)
-    if any(os.path.lexists(path) for path in (staging, backup, quarantine, archived_tombstone)):
-        raise ValueError("archive staging, backup, or quarantine path already exists")
-    source_dir = package_dir
-    published = False
-    try:
-        os.replace(package_dir, quarantine)
-        source_dir = quarantine
-        current_snapshots = {filename: read_regular_text(source_dir / filename) for filename in required_snapshots}
-        if current_snapshots != required_snapshots:
-            raise ValueError("required package files changed after validation")
-        validate_package_tree(source_dir)
-        staging.mkdir(parents=False)
-        copy_validated_tree(source_dir, staging, required_snapshots)
-        write_regular_text(staging / "completion-summary.md", summary)
-
-        had_destination = os.path.lexists(archive_destination)
-        if had_destination:
-            if not force:
-                raise ValueError(f"archive destination already exists: {archive_destination}")
-            os.replace(archive_destination, backup)
-        try:
-            os.replace(staging, archive_destination)
-            published = True
-        except Exception:
-            if had_destination and os.path.lexists(backup):
-                os.replace(backup, archive_destination)
-            raise
-        if os.path.lexists(backup):
-            try:
-                remove_path(backup)
-            except OSError as exc:
-                print(
-                    f"warning: archive published but backup cleanup failed; retained recoverable backup "
-                    f"{backup}: {exc}",
-                    file=sys.stderr,
-                )
-        os.replace(source_dir, archived_tombstone)
-        try:
-            remove_path(archived_tombstone)
-        except OSError as exc:
-            print(
-                f"warning: archive published but tombstone cleanup failed: {archived_tombstone}: {exc}",
-                file=sys.stderr,
-            )
-    except Exception:
-        remove_path(staging)
-        if os.path.lexists(backup) and not os.path.lexists(archive_destination):
-            os.replace(backup, archive_destination)
-        if not published and os.path.lexists(quarantine) and not os.path.lexists(package_dir):
-            os.replace(quarantine, package_dir)
-        raise
+def section_values(content: str, heading, fallback: str) -> list[str]:
+    return normalize_items(extract_section_bullets(content, heading)) or [fallback]
 
 
 def archive_commit_range(root: Path, main_branch: str) -> str:
-    """AUD-06: the delivery window this archive anchors to, frozen at archive time.
-
-    Returns ``<merge-base(main, HEAD)>..<HEAD>`` — the interval covering every
-    commit this package delivered on its integration branch, computed once
-    here and never recomputed by gates (the archive commit that lands right
-    after this summary is head's direct child and carries the same Spec
-    footer, closing the window by construction). Non-Git roots, a missing
-    main branch, or an unresolvable merge-base return an explicit 适用外 note
-    so archival is never blocked by the interval itself.
-    """
-
-    def run_git(*args: str) -> str | None:
-        try:
-            result = subprocess.run(
-                ["git", *args],
-                cwd=root,
-                capture_output=True,
-                text=True,
-                timeout=10,
-                check=False,
-                env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
-            )
-        except (OSError, subprocess.SubprocessError):
-            return None
-        return result.stdout.strip() if result.returncode == 0 else None
-
-    head = run_git("rev-parse", "HEAD")
-    if head is None:
+    head = gitx.head(root)
+    if not head:
         return "适用外（非 Git 工作区或无提交）"
-    base = run_git("merge-base", f"refs/heads/{main_branch}", "HEAD")
-    if base is None:
+    result = gitx.git(root, "merge-base", f"refs/heads/{main_branch}", "HEAD", check=False)
+    if result.returncode != 0:
         return f"适用外（无法解析 refs/heads/{main_branch} 的 merge-base）"
-    return f"{base}..{head}"
-
-
-def git_record_labels(language: str) -> dict[str, str]:
-    if language == "en":
-        return {
-            "section": "Git Records",
-            "datetime": "Date Time",
-            "scope": "Scope",
-            "feature": "Feature",
-            "action": "Action",
-            "effect": "Effect",
-            "commit": "Commit",
-            "push": "Push",
-        }
-    return {
-        "section": "Git 记录",
-        "datetime": "日期时间",
-        "scope": "范围",
-        "feature": "功能",
-        "action": "操作",
-        "effect": "成效",
-        "commit": "提交",
-        "push": "推送",
-    }
+    return f"{result.stdout.strip()}..{head}"
 
 
 def build_summary(
     title: str,
-    completed_at: str,
-    result: str,
-    verified_assumptions: list[str],
-    open_risks: list[str],
-    delivered: list[str],
-    not_delivered: list[str],
-    deviations: list[str],
-    simplifications: list[str],
-    out_of_scope: list[str],
-    touched_areas: list[str],
-    untouched_areas: list[str],
-    evidence_notes: list[str],
-    effect_metrics: list[str],
-    consistency_evidence: list[str],
-    commit_ref: str,
-    push_ref: str,
-    git_record_language: str,
-    agents_proposals: list[str],
-    follow_ups: list[str],
-    rejected_extensions: list[str],
-    gate_evidences: list[str],
-    issue_dispositions: list[dict[str, object]] | None = None,
-    process_metrics: list[str] | None = None,
-    verification_scope_level: str | None = None,
-    machine_verification_rate: str | None = None,
-    commit_range: str | None = None,
-    mistake_directions: dict[str, list[str]] | None = None,
+    spec: str,
+    tasks: str,
+    package: Path,
+    root: Path,
+    issues: list[dict],
+    proposals: list[str],
+    *,
+    main_branch: str,
 ) -> str:
-    git_labels = git_record_labels(git_record_language)
-    closure = render_issue_closure(issue_dispositions or [])
-    # Optional machine-verification line: rendered only for `evidence: runs`
-    # packages, so legacy summaries keep their exact field order and content.
-    machine_rate_section = f"- 机器验证率：{machine_verification_rate}\n" if machine_verification_rate else ""
-    # AUD-06: the commit-interval anchor. The label stays fixed Chinese (not
-    # localized) because it is the machine-readable anchor the footer
-    # interval judge parses; None keeps legacy callers' output unchanged.
-    commit_range_section = f"- 提交区间：{commit_range}\n" if commit_range else ""
-    mistake_direction_section = render_mistake_directions(mistake_directions)
-    # Optional process-metrics section: rendered only when real entries are
-    # passed, so legacy summaries keep their exact field order.
-    process_metrics_section = ""
-    metric_entries = [value.strip() for value in (process_metrics or []) if value and value.strip()]
-    if metric_entries:
-        rendered_metrics = "\n".join(f"- {value}" for value in metric_entries)
-        process_metrics_section = f"\n## 过程指标\n{rendered_metrics}\n"
-    # AUD-13 (F15): distillation is an incremental AGENTS.md diff proposal the
-    # done session authors; the script only renders it (diff fence, one line
-    # per repeated flag value) and records 无 explicitly when there is nothing
-    # reusable. It never writes into AGENTS.md or any host instruction file —
-    # landing a proposal stays a human decision.
-    proposal_lines = [line.strip() for line in agents_proposals if line and line.strip()]
-    if proposal_lines:
-        agents_proposal_section = "```diff\n" + "\n".join(proposal_lines) + "\n```"
-    else:
-        agents_proposal_section = "无"
+    assumptions = section_values(spec, SECTION_KEY_ASSUMPTIONS, "已按任务包验收")
+    choices = section_values(spec, SECTION_MINIMAL_PATH, "按任务包最小路径交付")
+    excluded = section_values(spec, SECTION_OUT_OF_SCOPE, "未扩张到任务边界外")
+    metrics = section_values(spec, SECTION_BEHAVIOR_METRICS, "以任务包验收标准为准")
+    delivered = [str(item["subject"]) for item in parse_task_records(tasks).values() if item["completed"]]
+    proposal_lines = [line.strip() for line in proposals if line.strip()]
+    proposal = "```diff\n" + "\n".join(proposal_lines) + "\n```" if proposal_lines else "无"
+    machine_rate = machine_verification_summary(tasks, package) if runs_protocol_enabled(spec) else None
+    machine = fresh_machine_evidence(spec, tasks, package, root) if machine_rate else []
+    evidence = [f"脚本验证：{item}" for item in machine]
+    if not evidence:
+        evidence = ["manual：人工验证说明见 tasks.md" if runs_protocol_enabled(spec) else "验收证据见任务包"]
+    rate = f"- 机器验证率：{machine_rate}\n" if machine_rate else ""
+    scope = verification_scope(spec) or "历史包未声明"
+    completed = datetime.now().strftime("%Y-%m-%d %H:%M")
     return f"""# {title} - 完成总结
 
 ## 交付结论
-- 结果：{result}
-- 完成时间：{completed_at}
+- 结果：完成
+- 完成时间：{completed}
 
 ## 假设回顾
-### 已验证假设
-{bullet_lines(verified_assumptions, "待补充")}
-
-### 仍未完全验证的假设
-{bullet_lines(open_risks, "无")}
+{bullet_lines(assumptions, "已按任务包验收")}
 
 ## 交付范围
-### 已交付
-{bullet_lines(delivered, "待补充")}
-
-### 未交付
-{bullet_lines(not_delivered, "无")}
-
-### 偏差说明
-{bullet_lines(deviations, "无")}
+{bullet_lines(delivered, "尚无已完成任务")}
 
 ## 简化决策
-### 保持简单的关键选择
-{bullet_lines(simplifications, "待补充")}
-
-### 本轮明确不做的内容
-{bullet_lines(out_of_scope, "待补充")}
+{bullet_lines(choices, "按任务包最小路径交付")}
 
 ## 变更边界
-### 本轮主要改动模块
-{bullet_lines(touched_areas, "待补充")}
-
-### 明确未触碰的区域
-{bullet_lines(untouched_areas, "待补充")}
+- 具体边界见 tasks.md
+{bullet_lines(excluded, "未扩张到任务边界外")}
 
 ## 验证证据
-### 备注
-{bullet_lines(evidence_notes, "待补充")}
+{bullet_lines(evidence, "验收证据见任务包")}
 
 ## 验证范围
-- 级别：{verification_scope_level or "历史包未声明"}
-{machine_rate_section}- 规则：check 与 done 复用该范围；只有记录升级触发时才执行全项目检查
-
+- 级别：{scope}
+{rate}
 ## 哲学生效证据
-### 行为成效回填
-{bullet_lines(effect_metrics, "待补充")}
+{bullet_lines(metrics, "以任务包验收标准为准")}
 
-### 一致性门禁回顾
-{bullet_lines(consistency_evidence, "待补充")}
-
-{mistake_direction_section}
-
-## {git_labels["section"]}
-- {git_labels["datetime"]}：{completed_at}
-- {git_labels["scope"]}：{title}
-- {git_labels["feature"]}：{bullet_inline(delivered, "待补充")}
-- {git_labels["action"]}：{git_labels["commit"]} / {git_labels["push"]}
-- {git_labels["effect"]}：{bullet_inline(effect_metrics, "待补充")}
-- {git_labels["commit"]}：{commit_ref}
-{commit_range_section}- {git_labels["push"]}：{push_ref}
+## Git 记录
+- 日期时间：{completed}
+- 范围：{title}
+- 提交区间：{archive_commit_range(root, main_branch)}
+- 提交：pending local commit
+- 推送：not-run (push stage follows commit)
 
 ## AGENTS.md 增量提议
-{agents_proposal_section}
-
-## 被拒绝的扩展提议
-{bullet_lines(rejected_extensions, "无")}
+{proposal}
 
 ## 门禁证据
-{bullet_lines(gate_evidences, "无")}
-{process_metrics_section}
-## 遗留事项
-{bullet_lines(follow_ups, "无；问题处置见下方结构化区块")}
+- check gates 已通过
 
-{closure}
+{render_issue_closure(issues)}
 """
 
 
-def _archive_baseline_equivalence_for_done(root: Path, specs_root: Path) -> Callable[[str], bool] | None:
-    """Follow-up Spec-gate exemption for done-time closure validation.
+def move_package(root: Path, package: Path, destination: Path) -> None:
+    """Use git mv for tracked packages; wholly untracked packages need a rename."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if os.path.lexists(destination):
+        raise ValueError(f"archive destination already exists: {destination}")
+    if gitx.toplevel(root) is not None:
+        source = package.relative_to(root).as_posix()
+        target = destination.relative_to(root).as_posix()
+        tracked = gitx.git(root, "ls-files", "--", f":(literal){source}")
+        if tracked.stdout:
+            gitx.git(root, "mv", "--", source, target)
+            return
+    package.rename(destination)
 
-    Reuses check_all's single baseline-equivalence mechanism (same hash
-    pipeline, same default baseline resolution) so a follow-up archive that is
-    byte-identical to the authoritative baseline keeps its day-grade verdict
-    instead of being re-graded by current gates. The baseline scan loads
-    lazily on first queried slug: done runs whose closures visit no follow-up
-    nodes never pay for it. ``None`` (specs root outside the project root)
-    keeps the always-regrade default.
-    """
-    try:
-        specs_identity = specs_root.relative_to(root).as_posix()
-    except ValueError:
-        return None
-    builder: dict[str, Callable[[str], bool]] = {}
 
-    def equivalent(slug: str) -> bool:
-        if not builder:
-            from check_all_spec_packages import archive_baseline_equivalence, legacy_archive_hashes
-
-            builder["inner"] = archive_baseline_equivalence(specs_root, specs_identity, legacy_archive_hashes(root))
-        return builder["inner"](slug)
-
-    return equivalent
+def display_done(slug: str, title: str, tasks: str, destination: Path, *, archived: bool, close: int | None) -> None:
+    _sections, records = parse_tasks(tasks)
+    strip, labels = task_strip_from_records(records)
+    detail = [f"交付记录：{destination}" if archived else f"交付总结草稿：{destination}"]
+    if archived:
+        detail.append(f"完成总结：{destination / 'completion-summary.md'}")
+        if close is not None:
+            detail.append(f"交接记录：{destination / 'handoff.md'}（entry {close} 关闭）")
+    dashboard = Dashboard(
+        slug=slug,
+        stage="done",
+        title=title,
+        done=sum(task.is_completed for task in records),
+        total=len(records),
+        health=HEALTH_OK if archived else HEALTH_RISK,
+        strip=strip,
+        strip_labels=labels,
+        metrics={"门禁": "通过" if archived else "草稿"},
+        next_step="完成代码提交与发布收尾" if archived else "完成验收后归档交付记录",
+        detail=detail,
+    )
+    print(dashboard.render())
 
 
 def main() -> int:
     args = parse_args()
-
-    # Reject incompatible options before reading package state or Git metadata.
-    if args.archive and args.allow_incomplete:
-        print(
-            "error: --allow-incomplete cannot be combined with --archive; incomplete packages must remain active",
-            file=sys.stderr,
-        )
-        return 1
-
-    slug = args.slug.strip()
-
     root = Path(args.root).resolve()
+    slug = args.slug.strip()
     try:
+        if not is_development_record_slug(slug):
+            raise ValueError("task package slug must follow YYYY-MM-DD_slug Development Record format")
         specs_root = resolve_specs_root(root, args.specs_dir)
-    except ValueError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-    try:
-        package_dir = resolve_specs_child(specs_root, "specs", slug)
-        archive_dir = resolve_specs_child(specs_root, "specs", "archive")
-    except ValueError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-
-    if not package_dir.exists() or package_dir.is_symlink() or not package_dir.is_dir():
-        print(f"error: task package must be a non-symlink directory: {package_dir}", file=sys.stderr)
-        return 1
-
-    try:
-        spec_path = resolve_specs_child(specs_root, "specs", slug, "spec.md")
-        tasks_path = resolve_specs_child(specs_root, "specs", slug, "tasks.md")
+        package = resolve_specs_child(specs_root, "specs", slug)
+        destination = resolve_specs_child(specs_root, "specs", "archive", slug)
+        if package.resolve() != package:
+            raise ValueError(f"task package path must not contain symlinks: {package}")
+        if package.is_symlink() or not package.is_dir():
+            raise ValueError(f"task package must be a non-symlink directory: {package}")
+        spec = read_regular_text(resolve_specs_child(specs_root, "specs", slug, "spec.md"))
+        tasks = read_regular_text(resolve_specs_child(specs_root, "specs", slug, "tasks.md"))
         checklist_path = resolve_specs_child(specs_root, "specs", slug, "checklist.md")
+        checklist = read_regular_text(checklist_path) if checklist_path.exists() else None
+        results = compute_gate_results(spec, tasks, checklist, slug=slug, root=root, package_dir=package)
+        if not results.overall_ok:
+            details = "; ".join(gate_failure_details(results, slug).values())
+            raise ValueError(f"spec package has not passed check gates: {details}")
         summary_path = resolve_specs_child(specs_root, "specs", slug, "completion-summary.md")
-    except ValueError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-
-    for path in (spec_path, tasks_path):
-        if not path.exists():
-            print(f"error: required file missing: {path}", file=sys.stderr)
-            return 1
-    # checklist.md is optional since v2 packages (F11).
-    checklist_content: str | None = read_regular_text(checklist_path) if checklist_path.exists() else None
-
-    try:
-        spec_content = read_regular_text(spec_path)
-        tasks_content = read_regular_text(tasks_path)
-    except (OSError, UnicodeError, ValueError) as exc:
-        print(f"error: invalid task package file: {exc}", file=sys.stderr)
-        return 1
-    required_snapshots = {
-        "spec.md": spec_content,
-        "tasks.md": tasks_content,
-        **({"checklist.md": checklist_content} if checklist_content is not None else {}),
-    }
-    branch_ok, branch_detail = validate_branch_bound_package(root, slug, spec_content)
-    if not branch_ok:
-        print(f"error: {branch_detail}", file=sys.stderr)
-        return 1
-
-    if not is_development_record_slug(slug):
-        print(
-            "error: task package slug must follow YYYY-MM-DD_slug Development Record format",
-            file=sys.stderr,
-        )
-        return 1
-
-    if not args.allow_incomplete:
-        physical_errors = package_physical_state_errors(package_dir)
-        if physical_errors:
-            print(f"error: {physical_errors[0]}", file=sys.stderr)
-            return 1
-        # root enables the evidence freshness anchor: a stale 证据锚点 at done
-        # time (HEAD moved after evidence capture) blocks the archive, exactly
-        # like the check stage it reuses. package_dir additionally enables the
-        # executable-verify gate: an `evidence: runs` package archives only
-        # when every machine task's latest runs.jsonl record is exit==0 and
-        # fingerprint-fresh against the current worktree.
-        if not overall_check_passed(
-            spec_content, tasks_content, checklist_content, slug=slug, root=root, package_dir=package_dir
+        if os.path.lexists(summary_path) and (
+            not args.force or summary_path.is_symlink() or not summary_path.is_file()
         ):
-            print(
-                "error: spec package has not passed check gates; "
-                "run check_spec_package.py or use --allow-incomplete to bypass",
-                file=sys.stderr,
-            )
-            return 1
-
-    if os.path.lexists(summary_path) and not args.force:
-        print(
-            f"error: completion summary already exists: {summary_path}; use --force to overwrite",
-            file=sys.stderr,
+            raise ValueError(f"completion summary already exists: {summary_path}; use --force for a regular file")
+        if args.archive and os.path.lexists(destination):
+            raise ValueError(f"archive destination already exists: {destination}")
+        issues = [parse_issue_disposition_arg(value) for value in args.issue_disposition]
+        title = extract_title_from_content(spec, slug)
+        summary = build_summary(
+            title, spec, tasks, package, root, issues, args.agents_proposal, main_branch=args.main_branch
         )
-        return 1
-
-    try:
-        archive_destination = resolve_specs_child(specs_root, "specs", "archive", slug)
-    except ValueError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-    if args.archive and os.path.lexists(archive_destination) and not args.force:
-        print(
-            f"error: archive destination already exists: {archive_destination}; use --force to overwrite",
-            file=sys.stderr,
-        )
-        return 1
-
-    title = extract_title_from_content(spec_content, slug)
-    completed_at = args.completed_at or datetime.now().strftime("%Y-%m-%d %H:%M")
-
-    try:
-        issue_dispositions = [parse_issue_disposition_arg(value) for value in args.issue_disposition]
-    except IssueClosureError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-    disposition_failures = validate_issue_dispositions(
-        issue_dispositions,
-        specs_root=specs_root,
-        current_slug=slug,
-        current_tasks_content=tasks_content,
-        spec_gate=overall_check_passed,
-    )
-    if disposition_failures:
-        print("error: issue closure gate failed:", file=sys.stderr)
-        for failure in disposition_failures:
-            print(f"  - {failure}", file=sys.stderr)
-        return 1
-
-    if args.archive:
-        legacy_open_items = {
-            "--open-risk": args.open_risk,
-            "--not-delivered": args.not_delivered,
-            "--deviation": args.deviation,
-            "--follow-up": args.follow_up,
-        }
-        used_legacy = [name for name, values in legacy_open_items.items() if has_any_real_value(values)]
-        if used_legacy:
-            print(
-                "error: closed archives reject free-text unresolved fields: "
-                + ", ".join(used_legacy)
-                + "; resolve current work or use --issue-disposition",
-                file=sys.stderr,
-            )
-            return 1
-        auto_machine_evidence: list[str] = []
-        if runs_protocol_enabled(spec_content) and not args.test_evidence and not args.build_evidence:
-            try:
-                auto_machine_evidence = fresh_machine_evidence(
-                    spec_content,
-                    tasks_content,
-                    package_dir,
-                    root,
-                )
-            except (OSError, UnicodeError, ValueError, SpecControlError) as exc:
-                print(f"error: runs 证据不可读：{exc}", file=sys.stderr)
-                return 1
-        summary_values = archive_summary_values(
-            spec_content,
-            tasks_content,
-            checklist_content,
-            args,
-            auto_machine_evidence=auto_machine_evidence,
-        )
-    else:
-        summary_values = {
-            "verified_assumptions": args.verified_assumption,
-            "delivered": args.delivered,
-            "simplifications": args.simplification,
-            "out_of_scope": args.out_of_scope,
-            "touched_areas": args.touched_area,
-            "untouched_areas": args.untouched_area,
-            "evidence_notes": [
-                *(f"测试：{value}" for value in args.test_evidence),
-                *(f"构建：{value}" for value in args.build_evidence),
-                *(f"手工：{value}" for value in args.manual_evidence),
-            ],
-            "effect_metrics": args.effect_metric,
-            "consistency_evidence": args.consistency_evidence,
-            "gate_evidences": args.gate_evidence,
-        }
-
-    git_record_language = args.git_record_language
-    if git_record_language == "auto":
-        git_record_language = detect_language(title)
-
-    # Executable-verify packages carry their machine-verification rate into
-    # the archived summary (manual tasks are honest human work, excluded
-    # from the denominator). Computed from the same runs.jsonl the gate
-    # above already accepted, so the rate never disagrees with the gate.
-    machine_rate = None
-    if runs_protocol_enabled(spec_content):
-        try:
-            machine_rate = machine_verification_summary(tasks_content, package_dir)
-        except (OSError, UnicodeError, ValueError, SpecControlError) as exc:
-            print(f"error: runs 证据不可读：{exc}", file=sys.stderr)
-            return 1
-
-    summary = build_summary(
-        title=title,
-        completed_at=completed_at,
-        result=args.result.strip() or "完成",
-        verified_assumptions=summary_values["verified_assumptions"],
-        open_risks=args.open_risk,
-        delivered=summary_values["delivered"],
-        not_delivered=args.not_delivered,
-        deviations=args.deviation,
-        simplifications=summary_values["simplifications"],
-        out_of_scope=summary_values["out_of_scope"],
-        touched_areas=summary_values["touched_areas"],
-        untouched_areas=summary_values["untouched_areas"],
-        evidence_notes=summary_values["evidence_notes"],
-        effect_metrics=summary_values["effect_metrics"],
-        consistency_evidence=summary_values["consistency_evidence"],
-        commit_ref=args.commit.strip() or "pending local commit",
-        push_ref=args.push.strip() or "not-run (push stage follows commit)",
-        git_record_language=git_record_language,
-        agents_proposals=args.agents_proposal,
-        follow_ups=args.follow_up,
-        rejected_extensions=args.rejected_extension,
-        gate_evidences=summary_values["gate_evidences"],
-        issue_dispositions=issue_dispositions,
-        # Process metrics stay opt-in in both draft and archive modes: no
-        # package-derived default, an unpassed flag renders no section.
-        process_metrics=args.process_metric,
-        verification_scope_level=verification_scope(spec_content),
-        machine_verification_rate=machine_rate,
-        commit_range=archive_commit_range(root, args.main_branch),
-        mistake_directions=mistake_direction_entries(spec_content, issue_dispositions),
-    )
-
-    if args.archive:
-        machine_note_failures = machine_success_note_errors(summary, tasks_content, package_dir, root=root)
-        if machine_note_failures:
-            print("error: machine evidence note gate failed:", file=sys.stderr)
-            for failure in machine_note_failures:
-                print(f"  - {failure}", file=sys.stderr)
-            return 1
-        summary_failures = validate_completion_summary(
-            summary,
-            specs_root=specs_root,
-            current_slug=slug,
-            current_tasks_content=tasks_content,
-            require_v1=True,
-            baseline_equivalent=_archive_baseline_equivalence_for_done(root, specs_root),
-            spec_gate=overall_check_passed,
-        )
-        if summary_failures:
-            print("error: completion summary closure gate failed:", file=sys.stderr)
-            for failure in summary_failures:
-                print(f"  - {failure}", file=sys.stderr)
-            return 1
-
-    archive_dir.mkdir(parents=True, exist_ok=True)
-    # Dashboard 证据 metric: legacy packages count filled checklist evidence
-    # fields; v2 packages count checked §6 success criteria.
-    if checklist_content is not None:
-        evidence_values = extract_evidence_fields(checklist_content)
-        evidence_filled = sum(1 for value in evidence_values.values() if value and not is_placeholder_value(value))
-    else:
-        from spec_package_support import section_checkboxes_by_prefix
-
-        _total, evidence_filled = section_checkboxes_by_prefix(spec_content, "## 6.")
-    from report_spec_package import parse_tasks as parse_task_records_for_strip
-
-    _sections, package_tasks = parse_task_records_for_strip(tasks_content)
-    strip, strip_labels = task_strip_from_records(package_tasks)
-    if args.archive:
-        # Terminal handoff entry: the archive freezes the entry log with a
-        # close record; a package without a handoff document is unaffected.
-        try:
-            close_number = append_close_entry(package_dir, root, slug, tasks_content, spec_content)
-        except (OSError, UnicodeError, ValueError, HandoffError) as exc:
-            print(f"error: handoff close entry failed: {exc}", file=sys.stderr)
-            return 1
-        try:
-            archive_validated_package(
-                package_dir,
-                archive_destination,
+        if args.archive:
+            failures = validate_completion_summary(
                 summary,
-                required_snapshots,
-                force=args.force,
+                specs_root=specs_root,
+                current_slug=slug,
+                current_tasks_content=tasks,
+                spec_gate=overall_check_passed,
             )
-        except (OSError, ValueError, SpecControlError) as exc:
-            print(f"error: archive failed: {exc}", file=sys.stderr)
-            return 1
-        dash = Dashboard(
-            slug=slug,
-            stage="done",
-            title=title,
-            done=len(package_tasks),
-            total=len(package_tasks),
-            health=HEALTH_OK,
-            strip=strip,
-            strip_labels=strip_labels,
-            metrics={"阻塞": "0", "待确认": "0", "门禁": "通过", "证据": str(evidence_filled)},
-            delta=["交付内容已通过验收", "交付记录和完成总结已归档"],
-            next_step="完成代码提交与发布收尾",
-            detail=[
-                f"交付记录：{archive_destination}",
-                f"完成总结：{archive_destination / 'completion-summary.md'}",
-                *(
-                    [f"交接记录：{archive_destination / 'handoff.md'}（entry {close_number} 关闭）"]
-                    if close_number
-                    else []
-                ),
-            ],
+        else:
+            failures = validate_issue_dispositions(
+                issues,
+                specs_root=specs_root,
+                current_slug=slug,
+                current_tasks_content=tasks,
+                spec_gate=overall_check_passed,
+            )
+        if failures:
+            raise ValueError("completion summary closure gate failed: " + "; ".join(failures))
+        close = append_close_entry(package, root, slug, tasks, spec) if args.archive else None
+        write_text(summary_path, summary)
+        if args.archive:
+            try:
+                move_package(root, package, destination)
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                detail = (
+                    exc.stderr.strip() if isinstance(exc, subprocess.CalledProcessError) and exc.stderr else str(exc)
+                )
+                raise ValueError(
+                    f"archive failed: {detail}; retry with --force to regenerate the retained summary"
+                ) from exc
+        display_done(
+            slug, title, tasks, destination if args.archive else summary_path, archived=args.archive, close=close
         )
-        print(dash.render())
-    else:
-        try:
-            if args.force and os.path.lexists(summary_path):
-                summary_path.unlink()
-            write_regular_text(summary_path, summary)
-        except (OSError, ValueError) as exc:
-            print(f"error: completion summary write failed: {exc}", file=sys.stderr)
-            return 1
-        dash = Dashboard(
-            slug=slug,
-            stage="done",
-            title=title,
-            done=len([task for task in package_tasks if task.is_completed]),
-            total=len(package_tasks),
-            health=HEALTH_RISK,
-            strip=strip,
-            strip_labels=strip_labels,
-            metrics={"阻塞": "0", "待确认": "0", "门禁": "草稿", "证据": str(evidence_filled)},
-            alerts=["交付总结已生成，但项目尚未通过最终验收并归档"],
-            next_step="完成剩余验收项后归档交付记录",
-            detail=[f"交付总结草稿：{summary_path}"],
-        )
-        print(dash.render())
-
-    return 0
+        return 0
+    except (
+        OSError,
+        UnicodeError,
+        ValueError,
+        SpecControlError,
+        HandoffError,
+        IssueClosureError,
+        subprocess.SubprocessError,
+    ) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

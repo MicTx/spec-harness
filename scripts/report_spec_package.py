@@ -26,7 +26,6 @@ from dashboard_support import (
 from handoff_support import handoff_brief
 from spec_package_support import (
     SpecControlError,
-    acceptance_complete,
     active_package_slugs,
     add_specs_dir_arg,
     count_tasks,
@@ -39,7 +38,6 @@ from spec_package_support import (
     task_title_signals_blocked,
     validate_slug,
 )
-from update_checkpoint_support import CheckpointStatus, checkpoint_display_text, detect_update_checkpoint
 
 PENDING_TOKEN = " "
 COMPLETED_TOKEN = "x"
@@ -99,6 +97,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ascii", action="store_true", help="Render dashboard glyphs as ASCII fallback")
     parser.add_argument("--compact", action="store_true", help="Render metrics as a single line")
     return parser.parse_args()
+
+
+@dataclass(frozen=True)
+class CheckpointStatus:
+    """A leftover ``update-checkpoint.json`` from the retired update mechanism."""
+
+    path: Path
+    interrupted: bool
+
+
+def detect_update_checkpoint(package_dir: Path) -> CheckpointStatus:
+    path = package_dir / "update-checkpoint.json"
+    return CheckpointStatus(path, path.exists())
 
 
 def status_package_slugs(specs_dir: Path) -> list[str]:
@@ -181,9 +192,8 @@ def section_progress(section_tasks: list[Task]) -> tuple[int, int]:
 def overall_state(
     tasks: list[Task],
     pending_questions: list[str],
-    checklist_content: str | None,
     gate_gap_detected: bool,
-    spec_content: str = "",
+    gate_passed: bool = True,
 ) -> str:
     all_completed = all(task.is_completed for task in tasks) if tasks else False
     if any(task.is_blocked for task in tasks):
@@ -192,7 +202,7 @@ def overall_state(
         return HEALTH_RISK
     if pending_questions:
         return HEALTH_RISK
-    if all_completed and not acceptance_complete(checklist_content, spec_content):
+    if all_completed and not gate_passed:
         return HEALTH_RISK
     return HEALTH_OK
 
@@ -238,8 +248,6 @@ def status_next_step(
         return inquiry_next_step
     if primary_task and not all_completed:
         return primary_task.text
-    if all_completed and not acceptance_complete(checklist_content, spec_content):
-        return "完成剩余验收项"
     if all_completed and not gate_passed:
         return "修复验收未通过项"
     if checkpoint_pending:
@@ -250,33 +258,11 @@ def status_next_step(
 
 
 def checkpoint_recovery_guidance() -> str:
-    """Guide review, not automatic deletion or an assumed Git rollback."""
-    return (
-        "先备份当前文件和 checkpoint；核验记录结构、校验和与包身份后审阅有效 snapshot，"
-        "或审阅可信备份或逐路径检查 Git 历史（可能缺少未提交内容）。"
-        "snapshot 仅含文本，不恢复文件模式或索引，缺失项不表示应删除。"
-        "损坏或身份不符的记录不可相信；确认安全后选择保留现状或逐路径安全恢复，"
-        "无法确认安全状态则保持门禁阻塞。问题解决且 checkpoint（update-checkpoint.json）未变后"
-        "才删除 update-checkpoint.json 这一工作树文件并重跑门禁；"
-        "另查暂存状态，未经单独授权不得变更索引。详见 references/update-recovery.md"
-    )
+    return "用 git 确认无需恢复后删除 update-checkpoint.json，再重跑门禁"
 
 
 def checkpoint_alert(status: CheckpointStatus | None) -> str:
-    """Advisory line for a historical unresolved checkpoint."""
-    heading = "存在未完成 update checkpoint（历史遗留，机制已退役）："
-    if status is not None and status.state == "active" and status.checkpoint is not None:
-        if status.checkpoint.package == status.path.parent.name:
-            return (
-                f"{heading}更新「{checkpoint_display_text(status.checkpoint.intent)}」未确认完成；"
-                f"{checkpoint_recovery_guidance()}"
-            )
-        return f"{heading}记录包身份不符，不可信任；{checkpoint_recovery_guidance()}"
-    if status is not None and status.state == "corrupted":
-        if status.identity_mismatch:
-            return f"{heading}记录包身份不符，不可信任；{checkpoint_recovery_guidance()}"
-        return f"{heading}记录已损坏，不可信任；{checkpoint_recovery_guidance()}"
-    return f"{heading}记录状态尚未确认；{checkpoint_recovery_guidance()}"
+    return f"遗留 update-checkpoint.json（机制已退役）：{checkpoint_recovery_guidance()}"
 
 
 def render_unreadable_checkpoint(slug: str, status: CheckpointStatus) -> str:
@@ -332,7 +318,9 @@ def render_status(
 
     orchestration_errors = list(r.orchestration_errors)
     dependency_errors_list = list(r.task_contract_errors)
-    ordered_gate_gaps = list(r.spec_clarification_gaps)
+    # Same order as route_spec_package: definition gaps first, dependency
+    # errors second; both outrank acceptance/execution steps.
+    ordered_gate_gaps = [*r.spec_clarification_gaps, *dependency_errors_list]
     standalone_blocked_text: str | None = None
     if r.blocked_tasks and not blocked_tasks:
         standalone_blocked_text = next(
@@ -340,7 +328,7 @@ def render_status(
             "阻塞",
         )
 
-    health = overall_state(tasks, pending_questions, checklist_content, bool(ordered_gate_gaps), spec_content)
+    health = overall_state(tasks, pending_questions, bool(ordered_gate_gaps), gate_passed=r.overall_ok)
     if r.blocked_tasks:
         health = worst_health(health, HEALTH_BLOCKED)
     if checkpoint_pending:
@@ -486,11 +474,13 @@ def package_status_summary(
     )
     pending_questions = list(r.human_questions)
     dependency_errors_list = list(r.task_contract_errors)
-    ordered_gate_gaps = list(r.spec_clarification_gaps)
+    # Same order as route_spec_package: definition gaps first, dependency
+    # errors second; both outrank acceptance/execution steps.
+    ordered_gate_gaps = [*r.spec_clarification_gaps, *dependency_errors_list]
     checkpoint_pending = bool(checkpoint_status and checkpoint_status.interrupted)
     standalone_blocked = bool(r.blocked_tasks) and not blocked_tasks
 
-    state = overall_state(tasks, pending_questions, checklist_content, bool(ordered_gate_gaps), spec_content)
+    state = overall_state(tasks, pending_questions, bool(ordered_gate_gaps), gate_passed=r.overall_ok)
     if r.blocked_tasks:
         state = worst_health(state, HEALTH_BLOCKED)
     if checkpoint_pending:
@@ -510,7 +500,12 @@ def package_status_summary(
         r.all_tasks_done
         and not r.overall_ok
         and not (
-            checkpoint_pending or r.blocked_tasks or pending_questions or ordered_gate_gaps or r.orchestration_errors
+            checkpoint_pending
+            or r.blocked_tasks
+            or pending_questions
+            or ordered_gate_gaps
+            or dependency_errors_list
+            or r.orchestration_errors
         )
     )
     return {
@@ -565,7 +560,6 @@ def render_multi_status(
     orchestration_packages = 0
     dependency_packages = 0
     checkpoint_packages = 0
-    corrupted_checkpoint_packages = 0
     read_failure_packages = 0
     worst = HEALTH_OK
     primary_lines: list[str] = []
@@ -573,8 +567,6 @@ def render_multi_status(
         try:
             package_dir = resolve_specs_child(specs_root, "specs", slug)
             checkpoint_status = detect_update_checkpoint(package_dir)
-            if checkpoint_status.state == "corrupted":
-                corrupted_checkpoint_packages += 1
         except (OSError, UnicodeError, ValueError) as exc:
             rows.append(f"- {slug}：状态读取失败（{exc}）")
             read_failure_packages += 1
@@ -695,9 +687,7 @@ def render_multi_status(
     if dependency_packages:
         alerts.append(f"{dependency_packages} 个项目任务依赖存在错误")
 
-    if corrupted_checkpoint_packages:
-        next_step = f"处理历史遗留 update checkpoint：记录已损坏，不可信任；{checkpoint_recovery_guidance()}"
-    elif checkpoint_packages:
+    if checkpoint_packages:
         next_step = f"处理历史遗留 update checkpoint：{checkpoint_recovery_guidance()}"
     elif read_failure_packages:
         next_step = "修复项目记录读取失败或补齐可执行任务"
@@ -707,10 +697,10 @@ def render_multi_status(
         next_step = "修复调查契约"
     elif pending_packages:
         next_step = "确认项目需求"
-    elif gate_packages:
-        next_step = "修复项目定义或验收缺口"
     elif dependency_packages:
         next_step = "修正项目任务依赖"
+    elif gate_packages:
+        next_step = "修复项目定义或验收缺口"
     elif orchestration_packages:
         next_step = "修正项目编排策略"
     else:

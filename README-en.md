@@ -2,80 +2,22 @@
 
 Task-package workflow for AI coding agents with verifiable scope, evidence, and Git gates.
 
-[![CI](https://img.shields.io/github/actions/workflow/status/MicTx/spec-harness/ci-public.yml)](https://github.com/MicTx/spec-harness/actions/workflows/ci-public.yml)
-[![Release](https://img.shields.io/github/v/release/MicTx/spec-harness)](https://github.com/MicTx/spec-harness/releases)
-[![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](LICENSE)
-[![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
+[![CI](https://img.shields.io/github/actions/workflow/status/MicTx/spec-harness/ci-public.yml)](https://github.com/MicTx/spec-harness/actions/workflows/ci-public.yml) [![Release](https://img.shields.io/github/v/release/MicTx/spec-harness)](https://github.com/MicTx/spec-harness/releases) [![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](LICENSE) [![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
 
-[🇨🇳 阅读中文版](README.md)
+[🇨🇳 阅读中文版](README.md) · [Documentation index](docs/README-en.md) · [Introduction](docs/introduction.md) · [Tutorial](docs/tutorial.md)
 
-Spec Harness stores cross-session, multi-round engineering work as a recoverable Development Record. It provides task packages, routing, verification, archival, and Git closeout. It does not provide a model or make product decisions for you.
+It stores cross-session work as a Development Record under `.spec/specs/YYYY-MM-DD_slug/`: `spec.md` holds scope and success criteria, `tasks.md` holds boundaries and verify commands, and `runs.jsonl` records executions on the final working tree. Resume from files, not from chat recall.
 
-Pick your entry point by what you want to do: to understand the idea first, read the [introduction](docs/introduction.md); to run one end to end, follow the [long-running task tutorial](docs/tutorial.md); to release or roll back, see the [Git workflow](docs/git-workflow.en.md). The [documentation index](docs/README-en.md) lists every public entry point.
+- **Small kernel**: the default LITE template needs only a `boundary` and a `verify` per task.
+- **Checkable results**: verification runs before completion; change code or a verify command and the evidence is refreshed.
+- **Separated closeout**: archiving and local commit belong to `done`; merge, push, and branch deletion need separate authorization.
+- **Opt-in extension**: the full install adds the planning chain and slots; the main session always owns integration and acceptance.
 
-**Table of Contents**
+Contents: [Install](#install) · [Quick Start](#quick-start) · [Runtime Payload](#runtime-payload) · [Verify and Maintain](#verify-and-maintain) · [License](#license)
 
-- [What You Get](#what-you-get)
-- [Repository Layout](#repository-layout)
-- [Requirements](#requirements)
-- [Installation](#installation)
-- [Quick Start](#quick-start)
-- [Exporting A Runtime Skill Package](#exporting-a-runtime-skill-package)
-- [Verification](#verification)
-- [Versions And Releases](#versions-and-releases)
-- [Scope](#scope)
-- [License](#license)
+## Install
 
-## What You Get
-
-- **One task package**: `spec.md` and `tasks.md` under `.spec/specs/YYYY-MM-DD_slug/` (acceptance-surface rule: [`references/templates.md`](references/templates.md)).
-- **One evidence chain**: `goal -> scope -> tasks -> verification -> archive -> commit -> push`; every task declares a `boundary` and a `verify` command.
-- **Explicit stages**: `new`, `goal`, `autoplan`, `autorun`, `run`, `check`, `done`, `push`, `update`, `status`, `doctor`, and `organize`.
-- **Recoverable state**: reports, failures, completion summaries, and archives come from files on disk, so another session can continue.
-- **Session-boundary handoff**: packages may carry an optional `handoff.md` — a generated snapshot head plus an append-only entry log whose required slots adapt to the collaboration mode (solo / team / agent / cluster); maintained by `spec_handoff.py`, validated by the check gate, and frozen by a terminal entry at archive time.
-- **Evidence-led planning**: `autoplan` inspects code and data before framework, phase-detail and consistency-review passes. Only permission, irreversible actions, genuine preferences and inaccessible external dependencies go to the user. Desktop and IDE plugins stay in-session; verified CLIs may use a fresh-session chain. Review without a native reviewer is labeled main-session review; readiness never starts development automatically.
-- **Mandatory deep-reasoning requests**: controlled fresh/fanout workers request the highest native level; lower levels and raw `--command` are rejected. Codex requires an explicit catalog `--model`, with a model-specific maximum; Pi/Claude request `max`. Current hosts are `instruction_only`, never claimed reconfigured; provider effect stays `unverified`. [Reasoning control boundaries](references/commands.md#mandatory-ultrathink).
-- **Autonomous inquiry, not repeated confirmation**: new questions use `[fact]`, `[reversible]` or `[decision]`. The first two bind machine tasks and close only with fresh, conclusion-bound `runs` evidence. Legacy unclassified questions and real human decisions still block; Git and permission gates remain intact. [Question and evidence format](references/templates.md#autonomous-inquiry).
-- **Recoverable autorun**: `autorun` executes and verifies each planned package, then advances after authorized Git closeout. A desktop session never switches to another agent just because its CLI is on PATH. Paused work resumes the same unit; the default cap is 5 admitted rounds (`--max-rounds` changes it, `--unbounded` removes it). Current-session execution does not continue after the client is closed.
-- **Stable task identity**: tasks can declare an `id:` and explicit `depends-on`; protocol migrations never rewrite historical archives.
-- **Controlled execution**: the main session keeps routing, integration, acceptance, and done/push gates; `workflow-runner` and other slots only execute bounded work.
-- **Two runtime forms**: the local Skill is the reference implementation; the optional `server/` adapter projects remote task-package start/result/health operations.
-
-## Repository Layout
-
-```text
-.
-├── SKILL.md                  # skill entrypoint: stage commands and runtime contracts
-├── install.sh                # local Skill installer (multi-host, see table below)
-├── pyproject.toml
-├── agent-plugin/             # source-only: agent-plugin manifest templates
-├── agents/                   # optional orchestration agents (orchestrator/planner/reviewer/confirmer)
-├── docs/                     # public user and contributor guides
-├── hooks/                    # pre-commit / pre-push and Stop gates
-├── references/               # runtime contract references (commands, templates, slots, archival)
-├── scripts/                  # stage scripts; build/export/package packagers stay out of the runtime export
-├── server/                   # optional self-hosted server-mode adapter
-├── slots/                    # pluggable slots: team-loop and workflow-runner (contracts in references/slots.md)
-├── tests/                    # source-only pytest suite
-├── release/                  # development tree only: four artifacts, excluded from public snapshots and runtime exports
-└── .github/                  # CI and issue/pull-request templates
-```
-
-Runtime task packages default to `.spec/` in target projects; this source repository does not contain user-project state. Detailed contracts live in [`references/`](references/00-readme.md), and user-facing guides live in [`docs/README-en.md`](docs/README-en.md).
-
-## Requirements
-
-- Python 3.9 or newer.
-- An agent client that loads `SKILL.md`: CLI, IDE agent extension or desktop app, with actual workspace read/write and Python/Git execution tools.
-- Runtime helpers use only the Python standard library; development checks additionally use `pytest` and `ruff`.
-- The installer requires Bash; current-session chains target macOS and Linux/WSL2. Native Windows chains must run inside WSL2; platform-mocked tests do not establish native support.
-- Only fresh CLI sessions need an additional transport: macOS Terminal.app, or **tmux ≥3.2** and ps on Linux/WSL2. Current mode needs neither tmux/osascript nor another agent CLI. See the [execution and session backend contract](references/commands.md#session-backends).
-
-## Installation
-
-### Installer
-
-Run the installer from a checked-out source or release tree:
+Requires Python 3.9+, Git, Bash, and an agent client with project read/write and command execution tools. Windows uses WSL2; a plain read-only chat cannot run the full flow.
 
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
@@ -83,329 +25,82 @@ cd /tmp/spec-harness
 bash install.sh
 ```
 
-`install.sh` is the only local Skill installer. The optional `server/install.sh` is a separate self-hosted server-mode deployment entrypoint. To pin a version, check out its tag and use the documentation from that tag; rerun the installer after upgrading or rolling back.
+The installer defaults to `INSTALL_PROFILE=core`; without `INSTALL_HOSTS` it auto-detects installed hosts. Given a token, it installs only the selected hosts and skips detection.
 
-Installing from a source tree needs no signing credentials: when none are found locally, the installer exports with `--skip-signing` automatically and prints a one-line notice; distribution signing is enforced only by the release build (release archives ship pre-signed). To sign locally, point `SPEC_SIGNING_IDENTITY` and `SPEC_SIGNING_KEY` at an identity JSON and a key file; `SPEC_SKIP_SIGNING=1` skips explicitly.
-
-### Supported hosts
-
-| `INSTALL_HOSTS` | Host | Default directory | Extra behavior |
-| --- | --- | --- | --- |
-| `claude` | Claude Code | `~/.claude/skills` | writes `/spec` and stage commands (6 on core, 12 on full) |
-| `claude-desktop` | Claude Desktop | `~/.claude-desktop/skills` | Skill only |
-| `codex`, `codex-desktop` | Codex | `~/.codex/skills` | both tokens share the directory |
-| `gemini` | Gemini CLI | `~/.gemini/skills` | |
-| `grok`, `grokbuild` | Grok Build | `~/.grok/skills` | `grokbuild` is an alias |
-| `opencode` | OpenCode | `${XDG_CONFIG_HOME:-~/.config}/opencode/skills` | |
-| `openclaw` | OpenClaw | `~/.openclaw/skills` | |
-| `hermes` | Hermes | `~/.hermes/skills` | relocatable with `HERMES_HOME` |
-| `pi` | Pi agent | `~/.pi/agent/skills` + `~/.pi/agent/prompts` | relocatable with `PI_DIR`; also writes `/spec` and `/spec:<stage>` native prompt templates (`PI_PROMPTS_DIR` relocation, effective after `/reload`) |
-| `zcode` | ZCode | `~/.zcode/skills` | project-owned host |
-| `dsh` | DeepSeek Harness | `${DSH_HOME:-~/.dsh}/skills` | Skill only; relocate with `DSH_SKILLS_DIR`; dsh is a developer preview, not live verified |
-| `devin`, `devin-desktop` | Devin CLI / Local | `~/.config/devin/skills` | Skill only; relocatable with `DEVIN_SKILLS_DIR` |
-| `cursor`, `cursor-cli` | Cursor IDE / CLI | `~/.cursor/skills` | Skill only; relocatable with `CURSOR_SKILLS_DIR` |
-| `desktop`, `rpi` | Claude Code + Codex | both default directories | combined targets |
-| `all` | all hosts | as listed above | explicit full set |
-
-With no `INSTALL_HOSTS` the installer auto-detects: only hosts whose CLI is on `PATH` or whose default host directory exists get installed; hosts this installer installed before are kept via their ownership marker, and skipped hosts are listed in the install output. An explicit `INSTALL_HOSTS` value (including `all`) bypasses detection entirely.
-
-Select one host explicitly when needed:
-
-```bash
-INSTALL_HOSTS=codex CODEX_SKILLS_DIR=~/.codex/skills bash install.sh
-```
-
-Install profile: `INSTALL_PROFILE` selects the component surface and defaults to `core` — the kernel only (core stage commands `/spec:new` `/spec:run` `/spec:check` `/spec:done` `/spec:push` `/spec:doctor`, Git hooks, and the scripts tree), without extension components (`slots/`, `agents/`) or extended stage commands (`goal`/`autoplan`/`autorun`/`update`/`status`/`organize`). `INSTALL_PROFILE=full` restores the complete install (all 12 stage commands plus extension components, byte-identical to the previous behavior). Re-running the default install on a machine that previously installed full downgrades it back to core: extended stage commands and agents are backed up, then removed. Opt in explicitly when you need the chains, planning passes, or extension capabilities:
-
-```bash
-INSTALL_PROFILE=full bash install.sh
-```
-
-The installer refuses to overwrite a same-name Skill without its `.spec-skill-install` ownership marker. Set `FORCE=1` only when intentionally replacing a user-owned directory. `pi` now means the Pi agent; use `rpi` or `desktop` for the former Claude + Codex combination.
-
-### Execution surfaces and support boundaries
-
-The install target chooses where files live; execution policy chooses how this session proceeds. They are not the same allowlist. The historical `desktop` token still combines only Claude Code + Codex, not every desktop client.
-
-| Agent / surface | `auto` execution | Requirements and limits |
+| Host | `INSTALL_HOSTS` | Default skill directory |
 | --- | --- | --- |
-| Explicit Claude Code, Codex or Pi CLI session | fresh | Existing full interactive adapters; an explicit worker can select another verified CLI |
-| Claude/Codex and other IDE agent extensions | current | Use extension tools; the outer editor and inherited markers do not prove a CLI surface |
-| Devin Desktop, native Cursor Agent, ZCode | current | Continue in the main session without installing another agent CLI |
-| Devin/Cursor CLI, Gemini, Grok, OpenCode, OpenClaw, Hermes | current | No corresponding fresh adapter in this repository; this does not mean the product has no CLI |
-| Claude Desktop | conditional current | Requires actual local workspace read/write and command tools; ordinary chat or read-only tools are insufficient |
-| Unknown compatible client | current | Load the Skill explicitly and check real tools; do not guess configuration paths or commands |
-
-Install full for these extended capabilities, for example:
+| Claude Code / Desktop | `claude` / `claude-desktop` | `~/.claude/skills` / `~/.claude-desktop/skills` |
+| Codex / Gemini / Grok | `codex` / `gemini` / `grok` | `~/.codex/skills` / `~/.gemini/skills` / `~/.grok/skills` |
+| OpenCode / OpenClaw / Hermes | `opencode` / `openclaw` / `hermes` | `${XDG_CONFIG_HOME:-~/.config}/opencode/skills` / `~/.openclaw/skills` / `~/.hermes/skills` |
+| Pi / ZCode | `pi` / `zcode` | `~/.pi/agent/skills` / `~/.zcode/skills` |
+| DeepSeek Harness / Devin / Cursor | `dsh` / `devin` / `cursor` | `${DSH_HOME:-~/.dsh}/skills` / `~/.config/devin/skills` / `~/.cursor/skills` |
+| Combined / all | `desktop`, `rpi` / `all` | Claude Code + Codex / every directory above |
 
 ```bash
-INSTALL_HOSTS=devin,cursor,zcode INSTALL_PROFILE=full bash install.sh
+INSTALL_HOSTS=claude INSTALL_PROFILE=full bash install.sh
 ```
 
-In Devin/Cursor, load `/spec` then request `spec:autoplan` or `spec:autorun`; in ZCode use `$spec`. Refresh skills or start a new session as the host requires after installation; do not assume universal `/spec:<stage>` registration. The main session owns capability checks, permission boundaries and recovery. Neither a separate window nor subagents are required; review without a native reviewer is labeled main-session review.
+**Explicit stages**: `new`, `goal`, `autoplan`, `autorun`, `run`, `check`, `done`, `push`, `update`, `status`, `doctor`, `organize` (full ships 12 stage commands; core keeps `new/run/check/done/push/doctor`).
 
-Evidence levels: automated tests cover client profiles, recovery and isolated installs, not a live run of every product. Record Cursor/ZCode desktop, Linux/WSL2 and native Windows evidence separately; untested surfaces are not live verified. See the [execution and session backend contract](references/commands.md#session-backends).
-
-### Proactive admission (optional, one-time)
-
-Installing only places files; it never edits your Claude settings, so per-task assessment is **not** automatic by default. To have multi-feature or multi-implementer requests checked for "does this need a record?" before work starts, opt in once:
-
-```bash
-python3 ~/.claude/skills/spec/scripts/install_activation_hooks.py --mode on    # undo: --mode off; default preserve changes nothing
-```
-
-- The judgment is about the work's shape: independent acceptance surfaces, actual implementers, a resumable in-flight task. File count, text length, and idle teammates in a room never decide alone. Small fixes, read-only investigation, throwaway experiments, and an explicit "no task package" go straight through.
-- It manages only its own entries and keeps your other hooks, `permissions`, and unknown fields; a broken file is refused, writes are backed up, and `--mode off` undoes it.
-- Coverage is Edit/Write/MultiEdit/NotebookEdit plus Agent/Task/SendMessage. Bash, MCP, and custom tools are not parsed and not claimed. Teammates and subagents never create packages; they consume the coordinator's assignment. They are recognised by the host's `agent_id`, so a main session started with `--agent` is still checked as a main session; a split-pane teammate runs as its own process, and its prompt events (probed) carry no `agent_id`, so it is handled the same way.
-- This is a reminder gate for a cooperating agent, not a security boundary: shape and role are reported by the agent itself, verdict-shaped facts (opt-out, reversible-small, read-only) are rejected as inputs - an explicit user opt-out is honored only by the user at the host level (allowing the denied call or disabling the wiring) - and a recorded `direct` expires on a new user prompt or after 2 hours. It stops forgetting to assess, not under-reporting.
-- Event wiring targets Claude Code only. Other hosts share the same discovery text but have no equivalent event guarantee.
-- `spec:doctor` separates "not installed / not wired / wired", and even when wired it always reads "not live-verified": file presence and hook exit codes cannot show a model adopts on its own.
-- When work is already in flight on a dirty branch with teammates running, do not re-run `new` (it demands a clean tree). Use `init_spec_package.py --adopt --confirm-adopt`: it keeps the current branch and every change, records only baseline hashes, and never switches branch, stashes, or commits.
-
-### Manual install
-
-Export only the runtime Skill package:
-
-```bash
-python3 scripts/export_skill_package.py --output /tmp/spec --force
-```
-
-Calling the exporter directly never auto-skips signing: in a keyless environment add `--skip-signing` explicitly (the installer applies it automatically under the same conditions). The exporter also accepts `--profile core|full` (default `full`, byte-identical to the release payload).
-
-Place the exported `spec/` directory in the host's Skill directory. Trigger it with `$spec` in Codex/ZCode, use the native `/spec` and `/spec:<stage>` commands in Pi (arguments forwarded verbatim via `$@`), `/spec:goal` in Claude Code, or load `/spec` then request `spec:goal` in Devin/Cursor.
-
-DeepSeek Harness (dsh) plugin mode: `python3 scripts/package_agent_plugin.py --format dsh` builds a dsh bundle (`package.json` declares `dsh.bundle.patch`; `index.js` registers a provider on `ctx.skills`). Unzip it, install with `dsh plugin --profile <name> add ./spec-harness`, remove with `dsh plugin --profile <name> remove spec-harness`. dsh is a developer preview and is not live verified.
+The installer refuses to overwrite an unmarked same-name skill; use `FORCE=1` only when you mean to replace it. Re-running the default install after `full` downgrades to core and backs up extensions before removal. Installer tests are not a per-host live acceptance; dsh remains a developer preview.
 
 ## Quick Start
 
-First time here? Start with [From zero to your first task](docs/getting-started.md) (Chinese). It walks through installation, package creation, verification, archival, and recovery with expected results and failure handling.
-
-Once installed, the shortest path is to give your host one complete goal:
+Load the skill in the target project, then state a bounded goal. A core Claude Code install works directly:
 
 ```text
-$spec
-spec:goal add payment recovery with tests
-# Claude Code: /spec:goal add payment recovery with tests
+/spec:new Fix the export API permission check for admins and regular users
+/spec:run
+/spec:check
+/spec:done
 ```
 
-The host walks the stages with you: clarify the goal and scope first (`goal`), then execute (`run`) and review (`check`), and finally archive and commit (`done`); push (`push`) runs only when explicitly requested. To bypass the host and drive the scripts directly, the effect is equivalent — create a task package in the project you want to change:
+With the full install, `/spec:goal <goal>` runs the same single-package flow; Codex/ZCode use `$spec`, Pi uses `/spec` and `/spec:<stage>`. Other hosts load the skill and request stages per the [command index](references/commands.md).
 
-```bash
-python3 /tmp/spec-harness/scripts/init_spec_package.py \
-  --root /path/to/project \
-  --slug 2026-10-03_add-payment-recovery \
-  --title "Payment Recovery"
-```
+For the first run, follow the [LITE tutorial](docs/tutorial.md): create a package, fill in scope, change code, run `spec_verify.py run --all`, tick boxes, check, and archive. The expected output is a checkable completion record, not a claim of "done". A single small fix, read-only investigation, or one-off experiment does not need a package.
 
-After initialization, inspect the stage, status, and package gate:
+Machine evidence requires a computable Git working-tree fingerprint; non-Git projects can use manual verification but cannot claim the evidence stayed fresh after code changes. `push` runs only after explicit authorization; on failure, trust the actual Git state.
 
-```bash
-python3 /tmp/spec-harness/scripts/route_spec_package.py --root /path/to/project --slug 2026-10-03_add-payment-recovery
-python3 /tmp/spec-harness/scripts/report_spec_package.py --root /path/to/project --slug 2026-10-03_add-payment-recovery --view status
-python3 /tmp/spec-harness/scripts/check_spec_package.py --root /path/to/project --slug 2026-10-03_add-payment-recovery
-```
+## Runtime Payload
 
-When the work is verified, `/spec:done` performs the final checks, archives the package, and creates the Git commit. For direct operation, run:
-
-```bash
-python3 /tmp/spec-harness/scripts/complete_spec_package.py \
-  --root /path/to/project \
-  --slug 2026-10-03_add-payment-recovery \
-  --archive
-```
-
-This script creates the summary and archives the package; run `git commit` separately, then use `push_spec_package.py` for merge and push cleanup. Retired members go to `archive/retired` under a `never delete` policy. A task is only complete after its `verify` command has actually run — never a checked checkbox alone. For stronger evidence binding, declare `evidence: runs` in `spec.md`: machine tasks' `verify` commands are actually executed by `scripts/spec_verify.py run`, appending each run record (exit, duration, stdout tail hash, worktree fingerprint) to the package's `runs.jsonl`, and check/done accept only a latest record with `exit == 0` whose fingerprint still matches the current worktree — never run means unverified, and a tree changed after capture means expired evidence.
-
-## Exporting A Runtime Skill Package
-
-The source repository also contains packagers, tests, and release artifacts. `scripts/export_skill_package.py` defines the runtime payload: it keeps `SKILL.md`, the installer, `agents/`, `hooks/`, `references/`, `server/`, `slots/`, and runtime helpers while excluding source-maintenance tools, tests, and `release/`.
-
-The export tree is locked by tests:
+The runtime exporter and installer share one [payload contract](scripts/payload_contract.py). The tree below is the full top level; core omits slots and agent role docs, keeping only `agents/openai.yaml` for host discovery.
 
 ```text
 spec/
 ├── LICENSE
-├── NOTICE
 ├── SKILL.md
 ├── install.sh
 ├── pyproject.toml
 ├── agents/
-│   ├── openai.yaml
-│   ├── orchestrator.md
-│   ├── planner.md
-│   ├── reviewer.md
-│   └── confirmer.md
 ├── hooks/
-│   ├── pre-commit
-│   ├── pre-push
-│   ├── claude_activation_guard.py
-│   └── claude_stop_guard.py
 ├── references/
-│   ├── 00-readme.md
-│   ├── changelog-guide.md
-│   ├── commands.md
-│   ├── engineering-philosophy.md
-│   ├── handoff.md
-│   ├── naming-and-commits.md
-│   ├── output-contracts.md
-│   ├── slots.md
-│   ├── storage-and-archive.md
-│   ├── templates.md
-│   ├── update-recovery.md
-│   ├── orchestration.md
-│   └── stages/
-│       ├── autoplan.md
-│       ├── autorun.md
-│       ├── check.md
-│       ├── doctor.md
-│       ├── done.md
-│       ├── goal.md
-│       ├── new.md
-│       ├── organize.md
-│       ├── push.md
-│       ├── run.md
-│       ├── status.md
-│       └── update.md
 ├── scripts/
-│   ├── activation_state.py
-│   ├── assess_spec_activation.py
-│   ├── autoplan_gate.py
-│   ├── autoplan_spawn.py
-│   ├── autorun_spawn.py
-│   ├── chain_lifecycle.py
-│   ├── chain_recovery.py
-│   ├── chain_session.py
-│   ├── chain_spawn_support.py
-│   ├── check_all_spec_packages.py
-│   ├── check_issue_writeback.py
-│   ├── check_spec_package.py
-│   ├── complete_spec_package.py
-│   ├── dashboard_support.py
-│   ├── doctor_spec_environment.py
-│   ├── generate_changelog.py
-│   ├── handoff_support.py
-│   ├── init_spec_package.py
-│   ├── install_activation_hooks.py
-│   ├── install_git_hooks.py
-│   ├── install_slot_hooks.py
-│   ├── issue_closure_support.py
-│   ├── measure_skill_surface.py
-│   ├── organize_project_structure.py
-│   ├── gitea_hook_repair.py
-│   ├── push_spec_package.py
-│   ├── read_version.py
-│   ├── reasoning_policy.py
-│   ├── report_spec_package.py
-│   ├── route_decision.py
-│   ├── route_spec_package.py
-│   ├── safe_open_support.py
-│   ├── session_adapters.py
-│   ├── session_context_support.py
-│   ├── slot_registry.py
-│   ├── smoke_test_spec_skill.py
-│   ├── spec_context.py
-│   ├── spec_handoff.py
-│   ├── spec_package_support.py
-│   ├── worker_decision_guard.py
-│   ├── spec_verify.py
-│   ├── structure_contracts.py
-│   ├── sweep_chain_windows.py
-│   ├── update_checkpoint.py
-│   └── update_checkpoint_support.py
-├── server/
-│   ├── README.md
-│   ├── install.sh
-│   └── server.py
 └── slots/
-    ├── team-loop/
-    │   ├── manifest.json
-    │   ├── README.md
-    │   ├── hooks/
-    │   │   ├── loop_stop_guard.py
-    │   │   └── loop_teammate_gate.py
-    │   ├── scripts/
-    │   │   ├── loop_control.py
-    │   │   ├── loop_route.py
-    │   │   └── loop_state.py
-    │   └── tests/
-    │       ├── conftest.py
-    │       ├── recheck_probes.py
-    │       ├── smoke_run.py
-    │       ├── test_audit_regressions.py
-    │       ├── test_boundary_recheck.py
-    │       ├── test_continuation_loop_fix.py
-    │       ├── test_hooks.py
-    │       ├── test_loop_control.py
-    │       ├── test_loop_route.py
-    │       ├── test_loop_state.py
-    │       └── test_managed_boundaries.py
-    └── workflow-runner/
-        ├── manifest.json
-        ├── README.md
-        ├── scripts/
-        │   ├── workflow_fanout.py
-        │   └── workflow_route.py
-        └── tests/
-            ├── conftest.py
-            ├── test_fanout_checkpoint.py
-            ├── test_fanout_context_safety.py
-            ├── test_fanout_decision_guard.py
-            ├── test_workflow_fanout.py
-            ├── test_workflow_fanout_batch_safety.py
-            ├── test_workflow_fanout_proc_race.py
-            ├── test_workflow_fanout_realpath.py
-            ├── test_workflow_fanout_special_files.py
-            └── test_workflow_route.py
 ```
 
-## Verification
-
-Run the source-level checks with development dependencies installed:
+Export runtime files only:
 
 ```bash
-python3 -m compileall -q scripts server hooks slots tests
-python3 scripts/slot_registry.py validate
+python3 scripts/export_skill_package.py --profile core --output /tmp/spec
+```
+
+Drop the exported directory into the host's skill root; the installer additionally generates host stage commands and an install manifest. Release, watermark, and plugin packaging tools never enter the runtime package. The full extension protocol is in [slots](references/slots.md); the planning chain advances only in the current session and resumes explicitly after an interruption.
+
+## Verify and Maintain
+
+```bash
+python3 -m pytest -q tests slots
+python3 -m ruff check scripts hooks slots tests
 python3 scripts/smoke_test_spec_skill.py
-python3 -m pytest -q
-ruff check scripts/ server/ hooks/ slots/ tests/
-ruff format --check scripts/ server/ hooks/ slots/ tests/
+python3 scripts/slot_registry.py validate
 ```
 
-For documentation-only changes, also run:
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full verification matrix; [RELEASE.md](RELEASE.md) covers release, upgrade, and rollback, and [Git workflow](docs/git-workflow.en.md) covers closeout. Stable releases and SHA-256 files are on [GitHub Releases](https://github.com/MicTx/spec-harness/releases). The streamlined source flow does not mean existing release archives were rebuilt.
 
-```bash
-python3 -m pytest tests/test_public_docs.py tests/test_export_skill_package.py -q
-git diff --check
-```
+For old active packages, dry-run `scripts/migrate_packages.py` first, then pass `--apply` explicitly; packages whose checklists cannot be mapped reliably stay untouched and need manual acceptance links. Historical archives are neither migrated nor re-scored.
 
-The full contributor matrix is in [`CONTRIBUTING.md`](CONTRIBUTING.md). A task package declares `package`, `integration`, or `project` verification in `spec.md` under `### 5.1 验证策略` (machine key `verification-strategy`): sections are recognized by their machine keys, so English titles and key anchors are equally valid — see the English-title variant in [`references/templates.md`](references/templates.md).
-
-## Efficiency And Read Costs
-
-The trade-offs of the internal read surface (`route_spec_package.py --format json --brief` task slices and `spec_verify.py show` evidence views) versus prose compression are backed by a four-arm ablation: A baseline / B compression only / C internal tools only / D combined, with 16 frozen scenarios grouped into five fixed task classes, byte-identical stable projections across two consecutive runs, and three layers (bytes, deterministic calls, real usage) reported separately with no cross-layer conversion.
-
-- Prose compression lowers read bytes in all five task classes (−23 to −2,270 B per class) and the static document face by 1,357 B, with zero task-completeness loss.
-- The internal-tool dispatch sentence is a bounded 248 B always-on cost; the combined arm still nets 782 B saved on the highest-volume task class.
-- `--brief` reduces both calls and bytes when one view replaces several full reads (measured: −1 call and −552 B on the review scenario); small-package locating and single-file precise reads stay native per the dispatch decision table, and measured negative-benefit rows are preserved as-is.
-- `spec_verify.py show --history` full reassembly is used only when the complete log is required, with pages reassembling byte-for-byte; first screens and short evidence stay on direct reads.
-
-## Versions And Releases
-
-Stable versions and SHA-256 checksums are published on [GitHub Releases](https://github.com/MicTx/spec-harness/releases). See [RELEASE.md](RELEASE.md) for install, upgrade, rollback, and checksum steps. Contributors should read [CONTRIBUTING.md](CONTRIBUTING.md) and the [Git workflow](docs/git-workflow.en.md).
-
-## Scope
-
-Spec Harness provides task packages, workflow instructions, templates, verification scripts, and an optional self-hosted server-mode adapter. It does not operate a hosted service, provide a model, make product decisions, create pull requests, or orchestrate remote CI.
-
-> [!WARNING]
-> `server/` is an optional self-hosted HTTP adapter. Before exposing it publicly, configure `SPEC_SERVER_TOKEN` and `ALLOWED_ROOTS`, and terminate TLS at a trusted reverse proxy. `/health` is anonymous for probes; `/start` and `/result` require a Bearer token.
-
-## Acknowledgements
-
-Thanks to [@h565656445](https://github.com/h565656445) for [#3](https://github.com/MicTx/spec-harness/pull/3) and [#4](https://github.com/MicTx/spec-harness/pull/4), which found that `doctor` treated rendered gate hooks as project-owned and that public CI aborted during test collection. Both fixes ship in v0.21.1.
-
-Thanks to [@wait4xx](https://github.com/wait4xx) for [#1](https://github.com/MicTx/spec-harness/issues/1) (the "Falsified Paths" section in `spec.md`) and [#2](https://github.com/MicTx/spec-harness/issues/2) (the lightweight `claim:` line in `tasks.md`); both suggestions have shipped.
+Spec Harness provides no model or hosted service and makes no product decisions for you. Recoverable records and test evidence do not replace judgment about business correctness.
 
 ## License
 
-Software code is licensed under PolyForm Noncommercial 1.0.0 (`PolyForm-Noncommercial-1.0.0`). Commercial use requires separate written authorization. See [LICENSE](LICENSE) for the complete terms.
+Software code is licensed under [PolyForm Noncommercial 1.0.0](LICENSE). Commercial use requires separate written authorization.

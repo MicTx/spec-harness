@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -107,51 +106,19 @@ def record_runs(slug: str, root: Path, specs_dir: str = ".spec") -> None:
 
 
 def populate_spec(path: Path) -> None:
+    """Fill every placeholder of the default LITE template."""
     replace_all(
         path,
         {
             "一句话描述项目要解决什么问题": "修复 spec helper scripts 的状态机与模板一致性",
-            "谁会使用这个产品或系统": "维护 spec 技能的 agent 与仓库作者",
-            "完成后能持续提供什么价值": "让 route/status/check 输出可依赖",
-            "<verbatim request>": "修复状态机与模板一致性",
-            "<purpose|unknown>": "让状态输出可依赖",
-            (
-                "<result>; confidence: <high|medium|low>; evidence: <source>"
-            ): "状态输出可依赖; confidence: high; evidence: route/status/check fixtures",
-            "<constraints|unknown>": "不重写整个 workflow",
-            "<speed|quality|cost|maintainability|unknown>": "correctness",
-            "- 事实 A": "- 已确认 fresh package 需要先澄清而不是直接执行",
-            "- 假设 A": (
-                "- A1 | 保持标准库实现，不引入第三方依赖 | kind: system | "
-                "evidence: pyproject dev dependencies | CONFIRMED | if false: 收窄运行环境"
-            ),
-            # v2 template ships the 2.3 question as an unchecked checkbox; the
-            # smoke package has no open questions, so fill the 无 declaration.
+            "- 假设 A": "- 保持标准库实现，不引入第三方依赖",
+            # The smoke package has no open questions: fill the 无 declaration.
             "- [ ] 问题 A": "- 无",
-            # spec.md functional boxes must be checked once delivered — the
-            # checker's spec.md checkbox gate fails any unchecked box.
-            "- [ ] 功能 A：描述": "- [x] 功能 A：收敛模板源并修补状态机判断",
             "- 明确列出本轮不做的内容": "- 不重写整个 spec workflow",
             "- 最简单可行方案：xxx": "- 最简单可行方案：收敛模板源并修补状态机判断",
-            "- 暂不引入：xxx": "- 暂不引入：测试框架和额外配置层",
-            "- 不做的抽象/配置化：xxx": "- 不做的抽象/配置化：不引入 DSL 或数据库",
-            # This synthetic smoke task covers only helper logic, not a UI.
-            "- UI surface: <changed|unchanged>": "- UI surface: unchanged",
-            (
-                "- 变更对象：本任务包 boundary 涉及的模块、入口和数据契约"
-            ): "- 变更对象：spec helper scripts、模板与状态机入口",
             (
                 "- 快速检查：<变更对象对应的局部测试/静态检查命令>"
             ): "- 快速检查：python3 -m pytest -q tests/test_route_spec_package.py",
-            "- 集成检查：适用外：本轮没有直接受影响的跨模块用户路径": "- 集成检查：适用外：smoke 已覆盖本轮直接路径",
-            (
-                "- 全项目检查：适用外：本轮不涉及共享基础设施、跨模块契约或发布载荷；由发布门禁统一执行"
-            ): "- 全项目检查：适用外：本轮不涉及发布载荷；由发布门禁统一执行",
-            (
-                "- 升级触发：只有改动共享基础设施、跨模块契约、构建/依赖、发布载荷，"
-                "或 package/integration 检查暴露跨边界回归时，才把范围升级并记录理由"
-            ): "- 升级触发：共享基础设施或发布载荷变化时记录理由并升级",
-            "- 风险点：xxx -> 缓解措施": "- 风险点：修复破坏旧输出 -> 缓解措施：用 smoke test 覆盖关键分支",
         },
     )
 
@@ -167,14 +134,14 @@ def populate_tasks(path: Path, slug: str, specs_dir: str = ".spec") -> None:
     replace_all(
         path,
         {
-            "`python3 -m pytest -q tests/test_skeleton.py`（替换为本项目真实初始化验证命令）": f"`{probe}`",
+            "- [ ] 实现核心功能 A 的最小闭环": "- [ ] 实现冒烟最小闭环",
             "`python3 -m pytest -q tests/test_core_feature_a.py`（替换为本项目真实测试命令）": f"`{probe}`",
             "`python3 -m pytest -q tests/test_critical_path.py`（替换为本项目真实集成验证命令）": f"`{probe}`",
         },
     )
 
 
-def setup_git_repo(root: Path) -> None:
+def setup_git_repo(root: Path) -> Path:
     """Promote non-Git fixtures to distinct branch-bound packages for Git checks."""
     branch_placeholder = "Git integration branch：`spec/YYYY-MM-DD_<slug>` 或适用外理由"
     for specs_dir in (".spec", "spec-state"):
@@ -200,12 +167,16 @@ def setup_git_repo(root: Path) -> None:
         capture_output=True,
     )
     subprocess.run(["git", "checkout", "-b", "spec/test"], cwd=root, check=True, capture_output=True)
-    subprocess.run(
-        ["git", "remote", "add", "origin", "https://example.invalid/spec.git"],
-        cwd=root,
-        check=True,
-        capture_output=True,
-    )
+    remote = Path(tempfile.mkdtemp(prefix="spec-smoke-origin-"))
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=root, check=True, capture_output=True)
+    subprocess.run(["git", "push", "-u", "origin", "main"], cwd=root, check=True, capture_output=True)
+    return remote
+
+
+def checkout_branch(root: Path, branch: str, *, create: bool = False) -> None:
+    args = ["git", "checkout", "-b", branch] if create else ["git", "checkout", branch]
+    subprocess.run(args, cwd=root, check=True, capture_output=True)
 
 
 def assert_contains(text: str, needle: str) -> None:
@@ -228,7 +199,6 @@ def assert_runtime_layout(root: Path) -> None:
         "agents/planner.md",
         "hooks/pre-commit",
         "hooks/pre-push",
-        "scripts/safe_open_support.py",
         "scripts/issue_closure_support.py",
         "scripts/init_spec_package.py",
         "scripts/read_version.py",
@@ -281,7 +251,7 @@ def assert_runtime_layout(root: Path) -> None:
         raise AssertionError(f"doctor exit must be 0 or 1:\n{completed.stdout}\n{completed.stderr}")
     payload = json.loads(completed.stdout)
     ids = {check["id"] for check in payload["checks"]}
-    if not {"python.runtime", "skill.layout", "project.spec"} <= ids:
+    if not {"python.runtime", "skill.layout", "project.hooks"} <= ids:
         raise AssertionError(f"doctor check catalog drifted: {sorted(ids)}")
     log("doctor self-check ok")
 
@@ -294,7 +264,7 @@ def assert_doctor_self_check(root: Path) -> None:
         raise AssertionError(f"doctor exit must be 0 or 1:\n{completed.stdout}\n{completed.stderr}")
     payload = json.loads(completed.stdout)
     ids = {check["id"] for check in payload["checks"]}
-    if not {"python.runtime", "skill.layout", "project.spec"} <= ids:
+    if not {"python.runtime", "skill.layout", "project.hooks"} <= ids:
         raise AssertionError(f"doctor check catalog drifted: {sorted(ids)}")
     log("doctor self-check ok")
 
@@ -304,8 +274,8 @@ def assert_gate_counterexamples() -> None:
     sys.path.insert(0, str(SCRIPTS_DIR))
     from check_spec_package import overall_check_passed  # type: ignore
     from spec_package_support import (  # type: ignore
-        _is_no_pending_declaration,
         extract_evidence_fields,
+        extract_pending_questions,
         has_command_evidence,
         section_checkboxes,
         section_exists,
@@ -336,8 +306,11 @@ def assert_gate_counterexamples() -> None:
 """
     bare = """**验收结果**：通过
 """
-    if overall_check_passed(base_spec, tasks, bare, slug="2026-07-27_fix-gate"):
-        raise AssertionError("bare 验收结果：通过 must not pass overall_check_passed")
+    if not overall_check_passed(base_spec, tasks, bare, slug="2026-07-27_fix-gate"):
+        raise AssertionError("legacy v1 checklist 验收结果：通过 must stay readable when §6 is absent")
+    unchecked_criteria = base_spec + "## 6. 成功标准\n- [ ] 标准 A 未达成\n"
+    if overall_check_passed(unchecked_criteria, tasks, bare, slug="2026-07-27_fix-gate"):
+        raise AssertionError("unchecked §6 success criteria must fail overall_check_passed")
 
     if section_exists("## 行为成效回填\n- [x] a\n", "## 行为成效"):
         raise AssertionError("## 行为成效 must not match ## 行为成效回填")
@@ -367,38 +340,29 @@ def assert_gate_counterexamples() -> None:
         raise AssertionError("package with nested script evidence must pass")
     log("gate counterexamples ok (bare fail / heading / nested evidence)")
 
-    # Negated pending vocabulary inside a 无-declaration is a closure note,
-    # not a live blocker (archived package false positive).
-    negated_decl = (
-        "无（前端运行时外部 connect 路径已逐文件排查为零，见 2.1；"
-        "Esri 瓦片未来若改用 fetch 加载需同步调整 CSP，已记入第 7 节风险而非待确认项）"
-    )
-    if not _is_no_pending_declaration(negated_decl):
-        raise AssertionError("negated 待确认项 inside 无-declaration must not stay pending")
-    # Real blockers still stay pending, including separated pending verbs.
-    for live in (
-        "无（仍需用户授权后才能继续）",
-        "无（尚未确认采集端是否受 CSP 约束）",
-        "无（待确认 Esri 瓦片加载方式）",
-        "无（范围决策待用户授权）",
-    ):
-        if _is_no_pending_declaration(live):
-            raise AssertionError(f"live blocker must stay pending: {live}")
-    log("declaration negation probes ok (false positive / live blockers)")
+    # Pending questions use one unified row: unchecked = live, checkbox + answer = closed.
+    def with_questions(rows: str) -> str:
+        return base_spec.replace("### 2.3 待确认问题\n- 无", "### 2.3 待确认问题\n" + rows)
+
+    if not extract_pending_questions(with_questions("- 无（仍需用户授权后才能继续）\n")):
+        raise AssertionError("a 无-prefixed note with live text must stay pending")
+    if extract_pending_questions(with_questions("- [x] [fact] 瓦片加载方式 | answer: 已确认用 fetch\n")):
+        raise AssertionError("a checked question with answer must close")
+    if extract_pending_questions(with_questions("- [ ] [decision] 范围取舍 | authority: user: 待补\n")) != [
+        "[decision] 范围取舍"
+    ]:
+        raise AssertionError("unchecked question rows must stay pending")
+    log("question contract probes ok (checkbox + answer)")
 
 
 def assert_orchestration_runtime() -> None:
     """The orchestration assets must actually run, not just exist on disk."""
     route_script = str(SCRIPTS_DIR / "route_decision.py")
-    completed = run_result(route_script, "--text", "审查认证登录流程")
-    if completed.returncode != 0:
-        raise AssertionError(f"route_decision must succeed:\n{completed.stdout}\n{completed.stderr}")
-    payload = json.loads(completed.stdout)
-    if payload.get("route") != "review":
-        raise AssertionError(f"expected review route, got {payload!r}")
-    if "安全评审" not in payload.get("lanes", []):
-        raise AssertionError(f"auth risk must add a security lane, got {payload!r}")
-    rejected = run_result(route_script, "--text", "anything", "--route", "build + review")
+    with tempfile.TemporaryDirectory() as tmp:
+        missing = run_result(route_script, "--root", tmp, "--slug", "2026-01-01_fix-missing")
+        if missing.returncode != 1:
+            raise AssertionError(f"a missing package must fail closed, got {missing.returncode}: {missing.stderr}")
+        rejected = run_result(route_script, "--root", tmp, "--slug", "x", "--route", "build + review")
     if rejected.returncode != 2:
         raise AssertionError(f"multi-token --route must exit 2, got {rejected.returncode}: {rejected.stderr}")
     log("orchestration runtime ok")
@@ -457,17 +421,7 @@ def assert_core_layout(root: Path) -> None:
     # Chain-family scripts are extension surface (F16 sub-step 2): the
     # kernel gates never import them. payload_contract is maintainer-side
     # (never shipped), so the smoke pins the same list inline.
-    for excluded in (
-        "autorun_spawn.py",
-        "autoplan_spawn.py",
-        "autoplan_gate.py",
-        "chain_spawn_support.py",
-        "chain_recovery.py",
-        "chain_lifecycle.py",
-        "chain_session.py",
-        "reasoning_policy.py",
-        "sweep_chain_windows.py",
-    ):
+    for excluded in ("autoplan_gate.py", "chain_state.py"):
         if (root / "scripts" / excluded).exists():
             raise AssertionError(f"core profile must not ship scripts/{excluded}")
 
@@ -480,6 +434,7 @@ def run_core_gate_chain() -> None:
     and export blocks owned by the full tree.
     """
     temp_root = Path(tempfile.mkdtemp(prefix="spec-smoke-core-"))
+    remote_root = None
     try:
         run(
             str(SCRIPTS_DIR / "init_spec_package.py"),
@@ -493,7 +448,7 @@ def run_core_gate_chain() -> None:
         package_dir = temp_root / ".spec" / "specs" / "2026-06-12_smoke-test"
         # The worktree fingerprint behind runs.jsonl needs a Git workspace;
         # same promotion the full sequence does before its recordings.
-        setup_git_repo(temp_root)
+        remote_root = setup_git_repo(temp_root)
         populate_spec(package_dir / "spec.md")
         populate_tasks(package_dir / "tasks.md", "2026-06-12_smoke-test")
         active_route_state = run(
@@ -520,7 +475,7 @@ def run_core_gate_chain() -> None:
             raise AssertionError(
                 f"core check gate must pass:\n{passed_check_result.stdout}\n{passed_check_result.stderr}"
             )
-        assert_contains(passed_check_result.stdout, "验收结果：通过")
+        assert_contains(passed_check_result.stdout, "收敛状态：已收敛")
         done_route_state = run(
             str(SCRIPTS_DIR / "route_spec_package.py"),
             "--root",
@@ -534,6 +489,8 @@ def run_core_gate_chain() -> None:
         log("core gate chain ok (init -> run -> check -> done)")
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
+        if remote_root:
+            shutil.rmtree(remote_root, ignore_errors=True)
 
 
 def main() -> int:
@@ -548,6 +505,7 @@ def main() -> int:
         return 0
 
     temp_root = Path(tempfile.mkdtemp(prefix="spec-smoke-"))
+    remote_root = None
     try:
         assert_runtime_layout(REPO_ROOT)
         commands_text = (REPO_ROOT / "references" / "commands.md").read_text(encoding="utf-8")
@@ -608,8 +566,8 @@ def main() -> int:
             "status",
         )
         assert_contains(multi_status, "## 项目概览")
-        assert_contains(multi_status, "Smoke Test：已完成 0/3")
-        assert_contains(multi_status, "Second Pack：已完成 0/3")
+        assert_contains(multi_status, "Smoke Test：已完成 0/2")
+        assert_contains(multi_status, "Second Pack：已完成 0/2")
         log("multi-package status overview ok")
 
         fresh_route = run(
@@ -661,7 +619,7 @@ def main() -> int:
             raise AssertionError("failed spec check must return a non-zero exit status")
         assert_contains(fresh_check_result.stdout, "# Smoke Test")
         assert_contains(fresh_check_result.stdout, "## 需要关注")
-        assert_contains(fresh_check_result.stdout, "项目尚未完成验收")
+        assert_contains(fresh_check_result.stdout, "任务完成 0/2")
 
         all_check_result = run_result(
             str(SCRIPTS_DIR / "check_all_spec_packages.py"),
@@ -675,8 +633,7 @@ def main() -> int:
         assert_contains(all_check_result.stdout, "2026-06-12_smoke-test")
         assert_contains(all_check_result.stdout, "2026-06-12_custom-specs")
 
-        setup_git_repo(temp_root)
-
+        remote_root = setup_git_repo(temp_root)
         blocked_push = run_result(
             str(SCRIPTS_DIR / "push_spec_package.py"),
             "--root",
@@ -698,12 +655,11 @@ def main() -> int:
             str(temp_root),
             "--slug",
             "2026-06-12_smoke-test",
-            "--allow-incomplete",
             "--archive",
         )
         if incomplete_archive.returncode == 0:
-            raise AssertionError("--allow-incomplete must never archive a package")
-        assert_contains(incomplete_archive.stderr, "cannot be combined with --archive")
+            raise AssertionError("an incomplete package must never archive")
+        assert_contains(incomplete_archive.stderr, "has not passed check gates")
         log("fresh package routes to status (clarification-first)")
 
         populate_spec(spec_path)
@@ -715,7 +671,7 @@ def main() -> int:
             "--slug",
             "2026-06-12_smoke-test",
         )
-        assert_contains(active_route, "初始化最小项目骨架：待办")
+        assert_contains(active_route, "实现冒烟最小闭环：待办")
         assert "/spec:" not in active_route
         active_route_state = run(
             str(SCRIPTS_DIR / "route_spec_package.py"),
@@ -768,8 +724,13 @@ def main() -> int:
         # the worktree fingerprint is global, so one late edit would stale
         # every package's runs evidence.
         record_runs("2026-06-12_smoke-test", temp_root)
+        # Each fixture package records on its own bound branch; all branches
+        # share the same commit, so switching never touches the worktree.
+        checkout_branch(temp_root, "spec/2026-06-12_second-pack", create=True)
         record_runs("2026-06-12_second-pack", temp_root)
+        checkout_branch(temp_root, "spec/2026-06-12_custom-specs", create=True)
         record_runs("2026-06-12_custom-specs", temp_root, specs_dir="spec-state")
+        checkout_branch(temp_root, "spec/test")
         passed_check_result = run_result(
             str(SCRIPTS_DIR / "check_spec_package.py"),
             "--root",
@@ -781,8 +742,7 @@ def main() -> int:
             raise AssertionError(
                 f"passed spec check must return zero:\n{passed_check_result.stdout}\n{passed_check_result.stderr}"
             )
-        assert_contains(passed_check_result.stdout, "验收结果：通过")
-        assert_contains(passed_check_result.stdout, "有效证据：运行证据 runs.jsonl 满足")
+        assert_contains(passed_check_result.stdout, "收敛状态：已收敛")
         assert "## 需要关注" not in passed_check_result.stdout
         passed_all_result = run_result(
             str(SCRIPTS_DIR / "check_all_spec_packages.py"),
@@ -803,7 +763,7 @@ def main() -> int:
             "--slug",
             "2026-06-12_smoke-test",
         )
-        assert_contains(done_route, "- 已完成：3/3")
+        assert_contains(done_route, "- 已完成：2/2")
         assert_contains(done_route, "整理交付结果并完成归档")
         done_route_state = run(
             str(SCRIPTS_DIR / "route_spec_package.py"),
@@ -821,10 +781,6 @@ def main() -> int:
         if export_script.exists():
             export_root = temp_root / "exported-skill"
             export_args = [str(export_script), "--output", str(export_root), "--force"]
-            identity = Path(os.environ.get("SPEC_SIGNING_IDENTITY", REPO_ROOT / ".watermark-identity.json"))
-            key = Path(os.environ.get("SPEC_SIGNING_KEY", REPO_ROOT / ".watermark-key"))
-            if not (identity.is_file() and key.is_file()):
-                export_args.append("--skip-signing")
             run(*export_args)
             assert_runtime_layout(export_root)
             assert_doctor_self_check(export_root)
@@ -849,6 +805,8 @@ def main() -> int:
         return 0
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
+        if remote_root:
+            shutil.rmtree(remote_root, ignore_errors=True)
 
 
 if __name__ == "__main__":

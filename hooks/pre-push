@@ -187,6 +187,6 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   fi
   # shellcheck disable=SC2086
   set -- "$@" $specs_args
-  set -- "$@" --legacy-baseline "$legacy_baseline"
-  "$python" "$checker" --root "$repo" --revision "$local_sha" --require-archived "$@"
+  set -- "$@" --baseline "$legacy_baseline"
+  "$python" "$checker" --root "$repo" --revision "$local_sha" "$@"
 done <"$input_path"

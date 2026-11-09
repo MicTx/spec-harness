@@ -105,6 +105,9 @@ def test_reserve_rechecks_timeout_inside_lock(tmp_path, clock, monkeypatch):
     monkeypatch.setattr(LoopStore, "_persist", persist)
     with pytest.raises(LoopStateError, match="runTimeout"):
         store.task_reserve(1, "t1")
+    # 同一实例也必须回到磁盘真源：不得继续显示虚假 in_flight/预算占用
+    assert store.state["rounds"][0]["tasks"]["t1"]["status"] == "pending"
+    assert store.state["counters"]["tasksSpawned"] == 0
     # 落盘后不得残留 in_flight，预算不得消耗
     loaded = LoopStore(store.run_dir, now=clock).load()
     task = loaded.state["rounds"][0]["tasks"]["t1"]
@@ -139,6 +142,8 @@ def test_run_converged_rechecks_timeout_inside_lock(tmp_path, clock, monkeypatch
     monkeypatch.setattr(LoopStore, "_persist", persist)
     with pytest.raises(LoopStateError, match="runTimeout"):
         store.run_converged()
+    # 同一实例不得声称已收敛
+    assert store.state["status"] == "active"
     loaded = LoopStore(store.run_dir, now=clock).load()
     assert loaded.state["status"] == "active"
 

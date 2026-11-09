@@ -1,135 +1,63 @@
 # Commands
 
-This page is the stage index: shared conventions plus one link per stage. Each stage's full contract lives in its own file under [`stages/`](stages/) — read the one stage file that matches the current project state, then run the command it names. The default line is `new / run / check / done / push`; `update` / `status` adjust or inspect an existing package; `goal` is one-shot; `autoplan` produces the planning cluster; `autorun` chains rounds from it; `doctor` / `organize` maintain environment or structure outside the task-package state machine.
+Stage index. Read the one stage page that matches the package state, run the command it names, and let the next stage read the result from disk. Scripts run from the skill root; pass `--root <project>` to target a project. Contract output goes to stdout, diagnostics to stderr.
 
-Shortest safe path: route from disk, make one bounded change, run its verification, let the next stage consume the recorded state. Do not read every stage file when one is enough.
+## Host entry points
 
-## Host compatibility layer
-
-The command inventory lives once in `SKILL.md`. Claude Code exposes `/spec:<command>`; Codex/ZCode use `$spec`; Devin/Cursor can load `/spec`, then request `spec:<command>`. Other compatible hosts use their native skill entry. Stage names describe intent, not universal slash-command registration. The route and tasks views remain internal. See the README installation and execution matrices: installing a skill is not proof that the active client has workspace execution or subagent tools.
-
-Install profile boundary: `new / run / check / done / push / doctor` are the kernel stage commands every install ships. The extended stages (`goal`, `autoplan`, `autorun`, `update`, `status`, `organize`) belong to `INSTALL_PROFILE=full`; a core install (the default) answers an extended-stage invocation with the reinstall hint — `INSTALL_PROFILE=full bash install.sh` — instead of executing it.
-
-Before the first substantive implementation edit or implementation hand-off, run the four-question Quick self-check in [`engineering-philosophy.md`](engineering-philosophy.md). Read-only routing and preflight, and the initial package creation needed to record the answers, may precede it; resolve missing answers in the documents before implementation.
+Claude Code exposes `/spec:<stage>`; Codex and ZCode use `$spec`; Devin and Cursor load `/spec` and then `spec:<stage>`; other hosts use their native skill entry. The default install (`core`) ships `new / run / check / done / push / doctor`; the other stages need `INSTALL_PROFILE=full bash install.sh`, and a core install answers them with that hint.
 
 ## `/spec`
 
-Goal: act as the default user entry point; run route internally, then continue with the most fitting stage.
-
-Execution order:
-
-1. Before analysis/planning/execution, follow [native session recovery](handoff.md#native-session-recovery): discover current-project sessions, read relevant predecessors, reconcile disk truth. This shared preflight also applies to direct stage entry. Then run `python3 scripts/route_spec_package.py --root <project>`; if a package has `handoff.md`, read `python3 scripts/spec_handoff.py show --slug <slug>` before continuing. No active package does not prove no unfinished work.
-2. No active package → `new`; if the user also asks for `push` and the work tree / unpushed commits carry discrete changes, enter the push retro-pack path (atomic packing by theme, or one whole new spec package) — never skip packing and push directly.
-3. Active package that can continue → `run`; review request → `check`; archive/close-out request → `done`.
-4. Full goal with the one-shot chain → `goal` (new/run/check/done/commit); push only when explicitly authorized. Merge-push-and-delete after done → the standalone `push` stage internally, reporting only the publication result or external blocker.
-5. Scope or task adjustment → `update`; progress overview only → `status`.
-
-Constraints:
-
-- Route is never presented as a user-facing stage.
-- Obvious small tasks take the lightweight path from `SKILL.md` (direct fix + test) instead of `/spec:new` ceremony; the user decides, and `new` runs as usual when they want the record. Follow repository Git rules; push only with explicit user authorization.
-- User-visible output covers actual project progress, current work, concrete problems, and delivered results; internal routing commands are not offered as the user's next step ([output-contracts.md](output-contracts.md)).
-- If routing depends on a key assumption, state the assumption first or ask the minimal clarifying question.
+Resume from disk (`tasks.md`, `handoff.md`, `git log`), then `python3 scripts/route_spec_package.py --root <project>`. No active package → `new`; a continuable package → `run`; review → `check`; close-out → `done`; scope change → `update`. Small reversible work takes the lightweight path in `SKILL.md`. Push only with explicit user authorization.
 
 ## `/spec:new`
 
-Create a task package: scope, tasks, and acceptance criteria from a clarified goal — full contract: [`stages/new.md`](stages/new.md).
-
-## `/spec:goal`
-
-One-shot chain `new` → `run` → `check` → `done`, push only on explicit authorization — full contract: [`stages/goal.md`](stages/goal.md).
-
-## `/spec:autoplan`
-
-Interactive planning and framework/detail/review passes in the current host or a verified fresh CLI session, stopping at autorun readiness — full contract: [`stages/autoplan.md`](stages/autoplan.md).
-
-## `/spec:autorun`
-
-Finish the active package, plan the next round and continue in the selected execution mode until the recorded scope is complete — full contract: [`stages/autorun.md`](stages/autorun.md).
+Create a package: [`stages/new.md`](stages/new.md).
 
 ## `/spec:run`
 
-Execute all tasks in dependency order, verify each, check it off; resumes from package state — full contract: [`stages/run.md`](stages/run.md).
+Execute tasks in dependency order: [`stages/run.md`](stages/run.md).
 
 ## `/spec:check`
 
-Review round: write actionable issues back into the package and fix them in-round — full contract: [`stages/check.md`](stages/check.md).
+Run evidence and the gate, write failures back: [`stages/check.md`](stages/check.md).
 
 ## `/spec:done`
 
-Archive the package and create this round's commit; no merge, push, or branch deletion — full contract: [`stages/done.md`](stages/done.md).
+Archive and commit, nothing more: [`stages/done.md`](stages/done.md).
 
 ## `/spec:push`
 
-Merge into main, push, delete the confirmed-merged branch — full contract: [`stages/push.md`](stages/push.md).
+Merge, push and delete the merged branch, only when authorized: [`stages/push.md`](stages/push.md).
 
 ## `/spec:update`
 
-Add, remove, or adjust tasks and scope mid-flight with a recoverable pre-update snapshot — full contract: [`stages/update.md`](stages/update.md).
+Change scope or tasks mid-flight: [`stages/update.md`](stages/update.md).
 
 ## `/spec:status`
 
-Overview across packages: progress, blockers, next steps — full contract: [`stages/status.md`](stages/status.md).
+Overview of packages and blockers: [`stages/status.md`](stages/status.md).
+
+## `/spec:goal`
+
+One-shot new → run → check → done, stopping at the local commit: [`stages/goal.md`](stages/goal.md).
+
+## `/spec:autoplan`
+
+Plan a feature list to autorun readiness: [`stages/autoplan.md`](stages/autoplan.md).
+
+## `/spec:autorun`
+
+Work through the plan one package per round: [`stages/autorun.md`](stages/autorun.md).
 
 ## `/spec:doctor`
 
-Environment self-check and repair (`--fix` repairs the safe items) — full contract: [`stages/doctor.md`](stages/doctor.md).
+Environment self-check, `--fix` for safe repairs: [`stages/doctor.md`](stages/doctor.md).
 
 ## `/spec:organize`
 
-Structure audit and optional import contracts; read-only by default, `--update-baseline` explicitly freezes debt; `--apply` creates the package for fixes; never delete — full contract: [`stages/organize.md`](stages/organize.md).
+Structure audit, read-only unless `--apply`: [`stages/organize.md`](stages/organize.md).
 
 ## Session backends
 
-### Resolve execution before transport
-
-Keep agent identity, surface, actual tools and execution strategy separate. The main session supplies the actual `--client` and `--surface cli|ide-plugin|desktop|unknown` from session metadata or user instruction; an installed directory, outer editor, inherited CLI marker or binary on PATH is not that evidence. Unknown remains unknown, never guessed.
-
-```bash
-python3 scripts/chain_session.py route --chain autoplan --client devin --surface desktop --execution auto --format json
-```
-
-`auto` chooses fresh only for an explicitly identified CLI surface with an existing same-client Claude/Codex/Pi adapter; otherwise current. Devin/Cursor/ZCode and other CLIs without a verified fresh adapter can also use current. Explicit `fresh` accepts a verified `--worker`; specifying a worker with current is an error. Route returns requirements, not fabricated capability observations. Check actual read/write, Python ≥3.9, Git and user-interaction tools before starting. No exec tool → report the missing capability, not “install another agent”. Native workers are optional; never claim independent review when only the main session reviewed.
-
-### Mandatory ultrathink
-
-`scripts/reasoning_policy.py` owns every controlled fresh/fanout launch request. There is no opt-out or low-effort retry; reasoning never grants tools, network access, Git authority or broader filesystem permissions.
-
-- Codex requires an explicit catalog `--model`; `codex debug models --bundled` supplies its maximum. The installed CLI must report its version. Unknown/default models, bad catalogs and non-maximum `--reasoning` fail before launch. The error lists exact IDs; rerun with the chosen model, never auto-select. Custom providers/profiles remain unverified. The request sets `model_reasoning_effort`, `plan_mode_reasoning_effort` and `agents.default_subagent_reasoning_effort`. Codex 0.167.0 strict config recognizes all three, rejecting unknown keys. In an isolated home, app-server `config/read` reported all three as `xhigh` from `sessionFlags` over user `low`; a legacy default profile failed startup. An `exec --profile` startup banner reported top-level `xhigh` over profile-v2 `low`; plan/subagent parity with app-server is inferred, not observed. Each worker records `config_precedence=unverified`; these version-specific probes are not effective-config attestation. Native subagents may choose another model: inherited effort is `subagent_reasoning_control=requested_unverified`, not per-child preflight.
-- Pi requests literal `--thinking max`; model clamp is unverified. Claude requests `--effort max --settings '{"alwaysThinkingEnabled":true}'` and child-only `CLAUDE_CODE_EFFORT_LEVEL=max`, removing inherited `MAX_THINKING_TOKENS` and `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING`. [Claude Variables](https://code.claude.com/docs/en/env-vars) documents environment precedence, `0` disabling thinking and adaptive fallback. No global rewrite or managed-cap bypass.
-- Raw `--command` is rejected; prompts follow `--`. Models stay frozen. Missing reasoning upgrades only on a valid launch; old Codex chains without a frozen model fail closed. A recorded policy-enforced maximum may upgrade when still advertised beneath a new maximum, setting `reasoning_upgraded`; a lower maximum or removed level fails. Legacy low/unknown locks fail. Explicitly close/restart incompatible chains; never edit locks or auto-create a successor.
-- Audit distinguishes `reasoning_control=enforced` (launch request), `reasoning_request`, `reasoning_source`, `reasoning_policy`, `provider_effect=unverified` and `reasoning_cap=unknown`. Codex source includes binary, version and advertised levels. Cache binds policy/model/request. CLI acceptance, provider effects and quality need separate proof. Existing deadlines/budgets remain; never retry lower after timeout.
-- Current/skill-only sidecars remain `instruction_only`, `model_control=host`, `provider_effect=unverified`, `reasoning_cap=unknown`. Inspect primary evidence, challenge assumptions, compare bounded options, execute, verify and revise; never claim host/provider reconfiguration. Use host controls only when available and authorized.
-- `worker_decision_guard.py` snapshots decisions and unclassified questions across fresh autorun/autoplan windows, each fanout item and verify. Existing entries cannot change, close, disappear or be relabeled; newly closed entries record `abnormal` and block route/check/spawn, while new open entries permit escalation. A running record and process-held lock persist before launch; a lost lock without post-check fails closed, including SIGKILL. Records live in Git metadata (non-Git fallback `.spec/.worker-decision-guards/`); old/unverifiable records block too. Stop relevant workers before user review and explicit record resolution. Current-session edits, actor identity and ABA are not protected; unchanged archival is allowed. See [inquiry limits](templates.md#autonomous-inquiry).
-
-### Current-session protocol
-
-Use `scripts/chain_session.py` with `--chain autoplan|autorun --root <project>`; it never calls an LLM, starts a worker or controls windows. Native host tools perform the actual work. Supported execution environments are macOS and Linux/WSL2; native Windows receives WSL2 guidance.
-
-- `status [--owner <id>]` reads the checkpoint and recovery action. `route`, current `status` and every current `--dry-run` are read-only, including malformed-state handling.
-- Mutations take `--chain-id <id> --owner <opaque-session-id> --expected-revision <n>`. Generate a fresh UUID once per new chain, retain it for retries, and never reuse a closed chain's id. Start at revision 0, then carry that chain's returned identity/revision. Never retarget a rejected request to another chain-id. Owner is a stable per-session identifier, not a command, path or secret; only its hash is stored in machine-local audit. All commands support `--format text|json`; mutations support `--dry-run`.
-- `begin --step-id <stable-id> --client <client> --surface <surface> [--plan <docs>]`: autoplan adds `--kind framework|detail|review [--target <doc>]`; autorun adds `--slug <package>`. Use the chain's `--max-passes`/`--max-rounds` or `--unbounded`; later current begins retain the recorded cap unless explicitly overridden. A repeated step resumes rather than re-spends budget; different work needs a new step after the previous one completed. Never invent a new step-id merely to bypass an error.
-- `finish`: attest only after actually doing the assigned work; the script validates its stage-specific evidence. Autoplan review requires `--review-mode main|independent --review-note <conclusion>`; `--outcome revise` records a review needing a repair pass, not readiness. Package finish proves archive acceptance, not commit or publication.
-- `pause --reason <reason>`: persist the stop, retaining unfinished work. Update package handoff when applicable. `resume` restores that same unit without another pass/round. A different owner must explicitly `--takeover` an active or unknown-owner unit, only after confirming the former session stopped; a paused unit is available for handoff.
-- Current models and permissions remain host-managed; CLI model/reasoning/bypass flags cannot configure the desktop host. Current mutations reject `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR` and `GIT_INDEX_FILE` overrides: resolve the environment explicitly, never silently redirect the target repository or edit Git configuration.
-- Journal persistence precedes the summary write. If the summary write fails, the transition may already be durable; persistent repair failures remain nonzero even on duplicate retries. Fix storage and retry the same identity/owner/revision, never reset state. Stale chain identities or revisions, conflicting owners, edited scope and unknown formats fail closed.
-- A torn final journal line is preserved verbatim in a machine-local `spawns.torn-<digest>.jsonl` backup before a valid mutation restores the complete prefix and appends its transition. Status/dry-run never repair files; malformed interior records still block.
-- `close` requires the same mutation arguments and a proven ready/complete chain. It preserves a history snapshot; autoplan verifies reviewed document identity and readiness with unchecked features, autorun verifies implemented scope and archived work. No force/reset and no session termination.
-- When implementation checkoffs have invalidated an old autoplan's review digest, `resume --takeover --reconcile-completed` and `close --reconcile-completed` provide an explicit recovery path. They require the same plan documents and feature fingerprint, a live complete autorun with every original feature checked, passed proof and intact archive hashes for every completed package, and no active Development Record. The close history records `reconciled_completed` and the matched autorun/package identities; this is implementation reconciliation, not a fresh review or a bypass for a new plan. Missing or divergent evidence still fails closed and ordinary close is unchanged.
-- After planning readiness, a newly authorized framework step may explicitly revise the same selected masters, preserving earlier review receipts. Changed ready documents cannot be closed as if the old review still applied; clarify the revision before replanning. Autorun's frozen scope is never relaxed this way.
-
-Tasks and acceptance remain in the task package. `.spec/<chain>/chain.json` stores the continuation summary; the journal and owner hash live in the actual Git-dir's `spec-chain/<chain>/`, including linked worktrees. New writes use v3; existing v2 current checkpoints remain readable and upgrade on the first valid identity-bound mutation, advancing revision once without spending a pass/round. Old rows remain intact; downgrade after v3 is refused. The transaction/owner protocol is not an OS-level workspace lock or background scheduler. Closing the client stops execution; new sessions resume explicitly. Active legacy fresh chains and their model locks are never automatically converted.
-
-### Fresh CLI transport
-
-Both existing spawn scripts accept `--terminal auto|terminal|tmux`: macOS selects Terminal.app, Linux/WSL2 selects tmux (tmux ≥3.2 + ps). The worker remains a full interactive session — visible TUI, persisted, never headless. Native Windows uses WSL2. A fresh spawn refuses an active current checkpoint rather than overwriting it. Failed launches keep the legacy rollback contract (交接未确认 = 不留进程); window/pane lifecycle policy: source `docs/adr/0001-terminal-spawn-window-lifecycle.md`. Fresh `--dry-run` prints the selected launch and attach instructions without launching.
-
-Legacy `scripts/autoplan_spawn.py close` / `scripts/autorun_spawn.py close` retain their historical implemented-feature proof and do not close active current checkpoints. They preserve `.spec/<chain>/history/`, refuse missing/changed plans, active packages or a held mutex, and never kill sessions. `close --independent-package <slug>` is the only exception: the slug must be the sole active package and Git history must show it was added after both the chain's final committed state and its recorded plans; the flag alone proves nothing, and any unproven case refuses with zero writes. A new closed-chain successor starts at 1 without inheriting the old model lock. Legacy states without a fingerprint remain readable but cannot be closed automatically.
-
-For a legacy state only, maintainers may supply **both** `--legacy-scope-commit <oid>` and `--legacy-completion-commit <oid>` to `close`, starting with `--dry-run`. This is evidence-based closeout, not a reset or fingerprint backfill. The scope commit must be the last committed change to this chain's state; scope, completion, and current HEAD must form an ancestor chain in the same local repository. Apart from the declared volatile fields, the chain identity must match at all three commits and in the live summary. Each recorded plan must exist as a regular file at both historical anchors, contain unique feature texts in the same order, and have every original feature checked at completion. Git evidence reads use the existing trusted-executable policy, ignore inherited Git repository overrides, and disable replacement objects. Live recorded plans must also be readable, fully checked, and match HEAD byte-for-byte with no staged changes; checkout EOL or filter conversions are explicitly unsupported by this recovery path, and no repository clean/textconv filter is run to reconcile them. Later plan additions are inspected separately, never counted as completed work of the old chain. The immutable close archive preserves the original legacy state, both full commit OIDs, state/plan blob identities and texts, the reconstructed historical-scope digest, and the separate live observation. Ordinary close, lock, active-package, audit, and crash-retry checks remain in effect; absent or contradictory evidence refuses without changing the chain. Neither the historical plans nor their checkbox states are rewritten.
-
-## Script working-directory conventions
-
-Task-package script examples run from the skill package root by default; to operate on another project, pass `--root <project>` to the scripts that support it, or replace `scripts/` with the absolute path of the installed/exported skill. `--specs-dir <dir>` must be a trusted relative directory under root — never empty, absolute, or containing `..` — and its real resolution must stay under root. `push_spec_package.py` is the Git handoff script; it also runs from the skill package root with `--root <git-repo>` pointing at the target repository.
-
-Output channel contract: every script prints its contract output — the rendered dashboard, the `--format json` payload, generated summaries — to stdout, and every diagnostic (argument errors, missing files, branch/environment failures, stack traces) to stderr. stdout must stay parseable: gates, hooks, and machine consumers read it, so debug prints and warnings belong on stderr (`print(..., file=sys.stderr)`), never interleaved with contract output. New scripts follow this split by construction; `/spec:doctor` covers this contract via the periodic `skill.channels` probe spot-check.
+Autoplan and autorun run in the current session and record progress with `scripts/chain_state.py`. To continue in a new session, open it yourself and resume from disk.

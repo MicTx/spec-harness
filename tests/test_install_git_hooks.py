@@ -380,7 +380,7 @@ def test_refuses_to_overwrite_project_owned_hook(tmp_path):
 # --- Branch-aware gate routing (AUD-07): WIP lint channel vs full gate ---
 
 # Records the full argv tail of each checker invocation so tests can assert
-# which channel (--lint-only vs --legacy-baseline/--index) actually ran.
+# which channel (--lint-only vs full gate/--index) actually ran.
 ARGS_CHECKER = """import os
 import sys
 from pathlib import Path
@@ -436,7 +436,7 @@ def test_pre_commit_lint_only_on_spec_branch_wip(tmp_path):
     invocations = gate_invocations(marker)
     assert len(invocations) == 1
     assert "--lint-only" in invocations[0]
-    assert "--legacy-baseline" not in invocations[0]
+    assert "--baseline" not in invocations[0]
     assert "--index" not in invocations[0]
 
 
@@ -453,9 +453,9 @@ def test_pre_commit_full_gate_on_main_branch(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert "WIP commit on integration branch" not in result.stderr
     invocations = gate_invocations(marker)
-    # Full gate: worktree + index dual run, both with the legacy baseline.
+    # Full gate: worktree + index dual run; no revision diff on a worktree commit.
     assert len(invocations) == 2
-    assert all("--legacy-baseline" in line for line in invocations)
+    assert all("--baseline" not in line for line in invocations)
     assert all("--lint-only" not in line for line in invocations)
 
 
@@ -493,7 +493,7 @@ def test_pre_commit_archive_paths_keep_full_gate_on_spec_branch(tmp_path):
     assert all("--lint-only" in line for line in invocations[:2])
     assert "--index" not in invocations[0] and "--index" in invocations[1]
     assert all("--lint-only" not in line for line in invocations[2:])
-    assert all("--legacy-baseline" in line for line in invocations[2:])
+    assert all("--baseline" not in line for line in invocations[2:])
     assert all("--slug 2026-01-01_probe" in line for line in invocations[2:])
     assert "--index" not in invocations[2] and "--index" in invocations[3]
 
@@ -646,7 +646,7 @@ def test_replay_exp05_main_gate_not_weakened(tmp_path):
     blocked_push = subprocess.run(["git", "push", "origin", "main"], cwd=repo, capture_output=True, text=True)
     assert blocked_push.returncode != 0
     combined = blocked_push.stdout + blocked_push.stderr
-    assert "active package must be archived" in combined
+    assert "check gates not passed" in combined
 
 
 # --- F9 (AUD-06): footer-attribution interval warnings (observation period) ---
@@ -737,7 +737,7 @@ def test_pre_push_passes_footer_window_base_in_footer_channel(tmp_path):
 
     assert result.returncode == 0, result.stdout + result.stderr
     invocations = gate_invocations(marker)
-    gate_calls = [line for line in invocations if "--require-archived" in line]
+    gate_calls = [line for line in invocations if "--revision" in line]
     assert len(gate_calls) == 1
     assert f"--slug {OLD_SLUG}" in gate_calls[0]
     assert f"--footer-window-base {initial}" in gate_calls[0]
@@ -757,7 +757,7 @@ def test_pre_push_touched_channel_omits_footer_window_base(tmp_path):
     result = run_hook(hook, repo, marker, push_input=push_input)
 
     assert result.returncode == 0, result.stdout + result.stderr
-    gate_calls = [line for line in gate_invocations(marker) if "--require-archived" in line]
+    gate_calls = [line for line in gate_invocations(marker) if "--revision" in line]
     assert gate_calls
     # The touched-package channel never enters the footer interval judge.
     assert all("--footer-window-base" not in line for line in gate_calls)
@@ -780,7 +780,7 @@ def test_pre_push_new_ref_footer_channel_omits_footer_window_base(tmp_path):
     result = run_hook(hook, repo, marker, push_input=push_input)
 
     assert result.returncode == 0, result.stdout + result.stderr
-    gate_calls = [line for line in gate_invocations(marker) if "--require-archived" in line]
+    gate_calls = [line for line in gate_invocations(marker) if "--revision" in line]
     assert gate_calls
     assert all("--footer-window-base" not in line for line in gate_calls)
 
@@ -816,7 +816,7 @@ def test_replay_exp11_footer_interval_warning_warn_only(tmp_path):
     assert f"- slug: {slug}" in combined
     assert f"- archive commit range: {initial}..{initial}" in combined
     assert f"- push window base: {archive_head}" in combined
-    assert "hard failure" in combined
+    assert "advisory only" in combined
     listed = subprocess.run(
         ["git", "ls-remote", "--heads", "origin"], cwd=repo, check=True, capture_output=True, text=True
     ).stdout

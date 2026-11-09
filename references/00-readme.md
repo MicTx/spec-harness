@@ -19,7 +19,6 @@ Open these only when the task shape calls for them:
 - [`engineering-philosophy.md`](engineering-philosophy.md) — on principle conflicts
 - [`changelog-guide.md`](changelog-guide.md) — before generating release notes from Git history
 - [`stages/goal.md`](stages/goal.md) and the script working-directory conventions at the end of [`commands.md`](commands.md)
-- [`update-recovery.md`](update-recovery.md) — safe update recovery examples (loaded on demand by the update stage)
 
 ## Sources of truth
 
@@ -31,9 +30,8 @@ Open these only when the task shape calls for them:
 - Directories and archiving: [`storage-and-archive.md`](storage-and-archive.md)
 - Handoff document: [`handoff.md`](handoff.md) + `scripts/spec_handoff.py`
 - Slot contract: [`slots.md`](slots.md) + `scripts/slot_registry.py validate`
-- Structure-audit facts: `scripts/organize_project_structure.py` (`--check` is the hard architecture-consistency gate)
-- Autorun chain facts: `scripts/autorun_spawn.py` (planning-document discovery, default round cap, permission mode, feature fingerprint, single-chain lock)
+- Structure-audit facts: `slots/organize/scripts/organize_project_structure.py` (`--check` is the hard architecture-consistency gate)
+- Chain state and plan discovery: `scripts/chain_state.py` (`.spec/<chain>/chain.json`, default autorun cap 5)
 - Autoplan cluster facts: `scripts/autoplan_gate.py` (planning-document discovery, structural readiness gate for the cluster)
-- Autoplan pass-chain spawn: `scripts/autoplan_spawn.py` (serial pass windows for autoplan: opt-in pass cap, single-chain lock, window recycling, `.spec/autoplan/` summary + `.git/spec-chain/` runtime)
 
 Other carriers should point here instead of copying gate lists. The public guides explain the ideas; `.spec/` records project state; neither replaces the runtime contracts above.

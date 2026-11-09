@@ -24,7 +24,7 @@ Exit codes are part of the contract:
 Contract output goes to stdout (text, or JSON with ``--format json``);
 diagnostics go to stderr. The gate reads only and never writes project
 state; planning-document discovery and checkbox counting are reused from
-``autorun_spawn.py`` so both commands share one truth. Semantic
+``chain_state.py`` so both commands share one truth. Semantic
 consistency (business/data/flow contradictions across documents) belongs
 to the reviewer sidecar pass of ``/spec:autoplan``, not this script.
 """
@@ -38,10 +38,10 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-from autorun_spawn import (
+from chain_state import (
     PLAN_ARCHIVE_DIR_NAME,
     PLAN_ROOT,
-    AutorunError,
+    ChainError,
     NoPlanError,
     count_features,
     discover_plan_docs,
@@ -57,7 +57,7 @@ IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp")
 SKIP_LINK_PREFIXES = ("http://", "https://", "mailto:", "#", "/")
 
 
-class AutoplanError(AutorunError):
+class AutoplanError(ChainError):
     """Operational refusal or failure with a user-facing message."""
 
 
@@ -346,7 +346,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     except NoPlanError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_NOT_READY
-    except AutorunError as exc:
+    except ChainError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_FAILURE
     return EXIT_OK

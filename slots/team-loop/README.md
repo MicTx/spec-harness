@@ -12,7 +12,7 @@ execution segment only; the main session still owns routing, acceptance, and `do
 
 | Gap | Solution |
 |---|---|
-| (1) No code-level trigger or convergence guard | `loop_route.py` (callable from any session) decides loop shape; the Stop / TeammateIdle guards only enforce an already-registered run. They do not start a loop or adopt an existing team; whether work needs a record at all is the separate admission layer (`scripts/assess_spec_activation.py`) |
+| (1) No code-level trigger or convergence guard | `loop_route.py` (callable from any session) decides loop shape; the Stop / TeammateIdle guards only enforce an already-registered run. They do not start a loop or adopt an existing team; whether work needs a record at all is decided by the `SKILL.md` admission rule |
 | (2) Loops not generic (bound to one domain) | Domain-agnostic run/round/task state machine with three modes: `until-converged / fixed-rounds / batch-fanout` |
 | (3) No retry/concurrency/heartbeat/interrupt primitives | `loop_control.py`: exponential backoff with jitter, concurrency admission, staleness watchdog with reap, cooperative interrupt recovery, composable termination conditions (including an external STOP) |
 
@@ -33,7 +33,8 @@ in-session, then drive the loop per this README's protocol.
 ## Hard preconditions
 
 1. The `agents-team` skill (the tool surface) must be loaded first. Missing surfaces produce an explicit error — never a silent downgrade to a single-session loop.
-2. All scripts are pure stdlib Python 3.9+; nothing to install.
+2. All scripts are pure stdlib Python 3.9+; nothing to install. State mutations require POSIX `flock`
+   (Linux, macOS or WSL). Without it, routing and state inspection remain available, but mutations fail explicitly.
 
 ## Trigger paths (gap 1: hook + code dual triggering)
 
@@ -49,6 +50,8 @@ in-session, then drive the loop per this README's protocol.
 
 ## Core protocol (the main session must follow this)
 
+`scripts/loop_state.py` holds the command entry, the state machine and the shared
+validators; `scripts/loop_control.py` adds termination, admission and recovery helpers.
 Commands are relative to the slot root (`slots/team-loop/`):
 
 1. **init** — `python3 scripts/loop_state.py init --goal "<goal>" --mode <until-converged|fixed-rounds|batch-fanout> [--config '{"maxRounds":8,...}']`.
@@ -56,24 +59,34 @@ Commands are relative to the slot root (`slots/team-loop/`):
    `scripts/loop_state.py round start --run-dir <dir> --goal "<round goal>"`;
    `scripts/loop_state.py task add --run-dir <dir> --round N --id t1 --agent-type worker --description "<delivery + verify>"`.
 3. **Reserve before host spawn** — `scripts/loop_state.py task reserve --run-dir <dir> --round N --id t1`.
-   Only after this succeeds may the caller ask the host to spawn. Save the returned `reservation` token;
-   pass it as the host's idempotency/correlation key **only if the host actually supports that**. Reservation
-   atomically checks the disk concurrency cap, budget, max attempts and recorded backoff via flock + revision
-   CAS. A conflict is a rejection: reload and retry the decision, not the host spawn. Reservation consumes one
-   task budget/attempt even if the host never starts. It remains occupied indefinitely until reconciled.
+   Only after this succeeds may the caller ask the host to spawn. Reservation checks the disk concurrency
+   cap, budget, max attempts and recorded backoff, then persists the in_flight intent before the host call.
+   State writes are serialized per run: every write re-reads the existing `_revision` field under an exclusive
+   lock and refuses to overwrite a run that changed since this process loaded it. Worker reports and
+   coordinator writes share this check. Any rejection (including that stale snapshot) means reload and retry
+   the decision, not the host spawn. Reservation consumes one task
+   budget/attempt even if the host never starts. It remains occupied indefinitely until reconciled.
 4. **Attach** — once the host returns its actual identifiers, immediately run
    `scripts/loop_state.py task spawn --run-dir <dir> --round N --id t1 --agent <agent_id> --submission <submission_id> --reservation <token>`.
-   Retrying this same attach with the same token and IDs is idempotent. A worker finishing before attach must
-   hold its result until attachment. Do not invent IDs or claim the worker is tracked before attachment.
+   The token ties the attach to the reservation; retrying the same attach with the same token and IDs is
+   idempotent while that attachment is still current on disk. Submission IDs must be distinct across attempts
+   of one task; reusing an earlier ID is rejected even with a new reservation. A worker finishing before attach
+   must hold its result until attachment. Do not invent IDs or claim the worker is tracked before attachment.
 5. **Observe, don't invent liveness** — bounded `wait` alone is not a heartbeat. A real worker report or a
-   host-confirmed liveness observation may be recorded with `task heartbeat ... --source worker --submission <submission_id> --reservation <token>` (use `--source host` only for a host-confirmed observation).
-   The CLI relies on the caller's truthfulness; neither the token nor the source flag authenticates the host.
-   The old heartbeat without a source records only coordinator activity and does not extend worker liveness.
+   host-confirmed liveness observation may be recorded with `task heartbeat ... --source worker` (use
+   `--source host` only for a host-confirmed observation). A heartbeat for a retried attempt must carry the
+   current `--submission` or `--reservation`; an old attempt's heartbeat is rejected. The CLI relies on the
+   caller's truthfulness; the source flag does not authenticate the host. A heartbeat without a source is
+   ignored: coordinator activity does not extend worker liveness.
    `loop_control.py stale --run-dir <dir>` identifies suspects, not dead workers. Only after independently
    verifying a particular host worker stopped, use `stale --reap --run-dir <dir> --task rN/t1 --confirmed-stopped`.
-6. **Record result** — `task result ... --outcome ok --result '{"evidence":"<verification>"}' --reservation <token> --confirmed-stopped`,
-   or `--outcome fail --error "<reason>" --reservation <token> --confirmed-stopped`. Both outcomes require
+6. **Record result** — `task result ... --outcome ok --result '{"evidence":"<verification>"}' --confirmed-stopped`,
+   or `--outcome fail --error "<reason>" --confirmed-stopped`. Both outcomes require
    the `--confirmed-stopped` assertion (the main session must first confirm the host worker stopped).
+   A result for a retried attempt must carry the current `--submission` or `--reservation` so an old CLI replay
+   cannot overwrite a newer attempt. `task report` follows the same identity rule: a retried attempt's report
+   must carry the current `--submission` or `--reservation`, and a stale report is rejected instead of
+   overwriting the active attempt's handoff.
    A failed attempt atomically records its computed backoff; an optional `task backoff --until <epoch>`
    may extend but never shorten it. Do not re-reserve until it expires. At maxAttempts the task becomes failed.
 7. **Close and terminate** — after every task in the current round is terminal, record
@@ -86,13 +99,13 @@ Commands are relative to the slot root (`slots/team-loop/`):
    allowed round and in-flight budgeted attempts may finish normally; explicit STOP or run timeout remains a hard stop.
 
 `loop_control.py admit` remains a **non-reserving advisory snapshot**, not permission to spawn; it cannot
-check a particular task's backoff. The old `task spawn` without a reservation is accepted for compatibility
+check a particular task's backoff. `task spawn` without a reservation is accepted for compatibility
 and checks disk limits when it registers, but it happens *after* host spawn and cannot prevent an untracked
 or over-cap host worker if registration fails. Its CLI output warns about this; do not use it for managed dispatch.
-Legacy first-attempt results remain accepted without identity; legacy retries require the current, unique
-`--submission`. Newly reserved attempts require their token for results and verified heartbeats. For an old
-pending failed task with a recorded error but no backoff deadline, first set a conservative deadline with
-`task backoff`; an older state lacking both error and deadline cannot establish past backoff evidence.
+First-attempt results remain accepted without identity; retried attempts require the current
+`--submission` or `--reservation` for result, report and heartbeat alike.
+A pending failed task whose recorded error lacks a backoff deadline (state written before automatic backoff
+existed) gets that deadline computed and persisted on the next dispatch — it is not a dead end.
 All callers must record a terminal result only after the corresponding host execution has actually ended:
 the local state machine cannot verify that claim or cap physical workers launched outside this protocol.
 
@@ -107,14 +120,15 @@ After independently confirming no worker was started or the specific worker has 
 `task abandon ... --reservation <token> --confirmed-stopped` to enter the retry/exhaustion path. The flag is
 an assertion, not proof. If the host cannot identify or stop the worker, no safe automatic compensation exists:
 escalate and keep the reservation. A reservation whose response was lost can be recovered from the task's
-`reservationToken` in run.json; protect that file and token. On platforms without flock, reserve fails closed.
-State and event writes are separate; a crash can leave a state change without its matching event. Malformed UTF-8
-or missing run/attempt counters are corrupt state, not zero counters, and the guards block for manual repair.
-STOP is atomically replaced, never truncated in place. The event log rejects a pre-existing multi-link inode and
-uses copy-on-write replacement under the run lock, so it never appends to an outside hard link even if the pathname
-changes after inspection. Each event copies the existing log (linear in its current size and requiring temporary
-disk space); readers following changes must reopen the pathname after replacement, not hold the old inode open.
-This does not make an adversarially writable run directory trustworthy or make state and events transactional.
+`reservationToken` in run.json.
+State and event writes are separate; a crash can leave a state change without its matching event. Malformed
+run.json content, missing run/attempt counters or malformed task reports are corrupt state,
+not empty values, and the guards block for manual repair. Event append and lock access reject symlinks,
+hardlinks and non-regular files before writing; the append-only log no longer needs copy-on-write.
+The link check is a point-in-time check at open: a process that can create links inside the run directory
+while a writer is active is out of scope, because the same access already allows editing run.json directly.
+This does not make an adversarially writable run directory trustworthy: revision checks reject stale writers,
+but state and events are still not transactional.
 
 ## Interrupts and recovery (gap 3: cooperative interruption)
 
@@ -151,7 +165,7 @@ Anti-deadlock invariants (every host must satisfy them):
 | Host | Tool surface | Action mapping | Anti-deadlock notes |
 |---|---|---|---|
 | **Pi** (primary) | The pi-intercom extension's `intercom` tool (send/ask/reply/pending/cancel/supersedes; local broker) | handoff=send; decision Q&A=ask (10-minute default timeout, immediate failure on disconnect, no queueing); answer=reply (auto-targeted); waiters=pending | Disconnected targets fall back to send (broker mailbox redelivers on reconnect); with pi-subagents installed, workers additionally get `contact_supervisor` (need_decision/interview_request/progress_update) via the dedicated channel |
-| **Claude Code** (primary) | Native agent teams: teammate sessions + the `SendMessage` tool surface (needs `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`) | handoff=SendMessage notification to a teammate; decision Q&A=main session waits at the teammate's turn boundary (bounded via the wait timeout); answer=the teammate's reply in its idle turn; waiters=run-state reads + TeammateIdle/TaskCompleted hook gates | Teammate idle triggers the gate (no release while an in_flight task lacks a recorded ok); team messages are never fabricated, and unconsumed verification lands on disk first |
+| **Claude Code** (primary) | Native agent teams: teammate sessions + the `SendMessage` tool surface (needs `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`) | handoff=SendMessage notification to a teammate; decision Q&A=main session waits at the teammate's turn boundary (bounded via the wait timeout); answer=the teammate's reply in its idle turn; waiters=run-state reads + TeammateIdle/TaskCompleted hook gates | Teammate idle requires a nonterminal handoff report; the coordinator records a terminal result only after confirming host exit. Team messages are never fabricated, and unconsumed verification lands on disk first |
 | **Codex** (primary) | `codex agents` (shared app-server daemon sessions) + `codex exec` (headless) + `exec resume/fork` (continuation) | handoff=write the task description then dispatch with `codex exec`, products handed off on disk; decision Q&A=no native ask equivalent — the decision request is written into the run.json/events.jsonl disk truth and answered by the main session or the next exec; answer=injected when resuming with `exec resume`; waiters=read `.agents/runtime/loop/<run-id>/events.jsonl` | Communication is disk: the absence of realtime Q&A is not a defect — the staleness watchdog and backoff cover it; never invent polling loops for "realtime-ness" |
 | Other hosts | Whatever messaging surface the host ships | With inter-session messaging tools, map per the Pi row's semantics; without, follow the Codex row's disk handoff | The same three invariants; missing capabilities are stated truthfully — communication semantics are never fabricated |
 
@@ -172,12 +186,14 @@ Anti-deadlock invariants (every host must satisfy them):
 | Hook | Event | Behavior |
 |---|---|---|
 | `hooks/loop_stop_guard.py` | Stop | Active unconverged run -> block with the next step; no active run (including interrupted) -> release; silent while stop_hook_active |
-| `hooks/loop_teammate_gate.py` | TeammateIdle / TaskCompleted | Teammate in_flight task without a recorded ok -> exit 2 feedback telling it to continue |
+| `hooks/loop_teammate_gate.py` | TeammateIdle / TaskCompleted | Teammate in_flight task without a nonterminal handoff report -> exit 2; with a report -> let the worker end without freeing its capacity |
 
 ## Boundaries and discipline
 
 - Disk state is the scheduling record, not proof of host state. Reservation and attachment are separate from host spawn; state and events are separate writes. Wait itself is not worker evidence.
-- Never bypass the concurrency cap; never fabricate a task result (no `outcome ok` without a run verify).
+- Never bypass the concurrency cap; it is enforced against the on-disk revision, so two coordinators sharing
+  a run directory cannot both reserve past it (the stale writer gets a reload error). Never fabricate a task
+  result (no `outcome ok` without a run verify).
 - Retry backoff waits for real (no spawn before the backoff expires).
 - The Stop hook is advisory to its host: it deliberately emits nothing when `stop_hook_active=true`, and the host may impose its own block limit. It cannot guarantee continued execution or prevent external process exit.
 - One run per directory (project `.agents/runtime/loop/<run-id>/`); with multiple runs in parallel, guards fail closed.

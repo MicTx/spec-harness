@@ -47,13 +47,13 @@ Do not commit generated release archives, local credentials, private task record
 
 Run the checks that match the change. The full suite is:
 
-    python3 -m compileall -q scripts server hooks slots tests
+    python3 -m compileall -q scripts hooks slots tests
     python3 scripts/slot_registry.py validate
     python3 scripts/smoke_test_spec_skill.py
     python3 -m pytest -q
-    ruff check scripts/ server/ hooks/ slots/ tests/
-    ruff format --check scripts/ server/ hooks/ slots/ tests/
-    python3 scripts/organize_project_structure.py --root . --check
+    ruff check scripts/ hooks/ slots/ tests/
+    ruff format --check scripts/ hooks/ slots/ tests/
+    python3 slots/organize/scripts/organize_project_structure.py --root . --check
     python3 scripts/check_all_spec_packages.py --root .
     git diff --check
 

@@ -17,22 +17,22 @@
 
 - [Git 工作流（中文）](git-workflow.md)
 - [Git workflow (English)](git-workflow.en.md)
-- [客户端执行矩阵](../README.md#执行形态与支持边界)：区分 CLI、IDE agent 插件、桌面端与实际验证边界。
-- [深度推理请求](../references/commands.md#mandatory-ultrathink)与[自主调查](../references/templates.md#autonomous-inquiry)：最高档启动、当前宿主限制、问题分流及结论证据。
-- 根目录 [README（中文）](../README.md)：安装、宿主选择、导出运行时包和回归命令。
+- [会话后端契约](../references/commands.md#session-backends)：CLI、IDE agent 插件与桌面端的执行边界。
+- [待确认问题](../references/templates.md#pending-questions)：开放问题的统一收口标记与用户授权要求。
+- 根目录 [README（中文）](../README.md)：安装、宿主选择与导出运行时包。
 - Root [README (English)](../README-en.md): installation, host selection, runtime export, and regression commands.
 
 ## 我想维护或发布它
 
 - [Contributing](../CONTRIBUTING.md)：开发环境、分支、测试和提交。
 - [Releases](../RELEASE.md)：版本、归档、校验和回滚。
-- [Security](../SECURITY.md)：漏洞报告和 server-mode 安全边界。
+- [Security](../SECURITY.md)：漏洞报告。
 - [Support](../SUPPORT.md)：安装或运行失败时应提供哪些信息。
 - 架构决策记录（ADR，`adr/` 目录）：[会话生成与窗口生命周期](adr/0001-terminal-spawn-window-lifecycle.md)、[阶段契约拆分](adr/0002-stage-contracts-by-file.md)、[推送门禁归属区间](adr/0003-push-gate-attribution-and-inflight-split.md)、[Adapt SDD workflow semantics](adr/0004-adapt-sdd-workflow-semantics.md)、[External facts in package planning](adr/0005-external-facts.md)、[Evidence-based correction stopping](adr/0006-evidence-based-correction-stopping.md)、[Bash write coverage gap](adr/0007-bash-write-gap.md)；不进运行时导出树。
 
 ## 入口归类
 
-- **public / user entry**：根 [README（中文）](../README.md) 与 [README (English)](../README-en.md)、本索引与[英文索引](README-en.md)、本目录的引导/教程/Git 工作流，以及 [server-mode 部署说明](../server/README.md)。
+- **public / user entry**：根 [README（中文）](../README.md) 与 [README (English)](../README-en.md)、本索引与[英文索引](README-en.md)，以及本目录的引导/教程/Git 工作流。
 - **runtime reference**：[`SKILL.md`](../SKILL.md) 与 [`references/`](../references/00-readme.md)：命令、模板、编排、槽位和归档的运行时契约。
 - **maintainer-only**：[`agent-plugin/README.md`](../agent-plugin/README.md)——源码库独有的插件清单打包模板说明，不进运行时导出树。
 

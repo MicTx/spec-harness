@@ -7,7 +7,6 @@ Export a clean runtime skill package from this authoring repository.
 from __future__ import annotations
 
 import argparse
-import os
 import shutil
 import sys
 from pathlib import Path
@@ -39,21 +38,6 @@ def _collect_script_files() -> tuple[str, ...]:
 
 SCRIPT_FILES = _collect_script_files()
 
-#: Carrier for the invisible distribution signature (AUD-17): a file hosts
-#: never load into model context, keeping the entry SKILL.md plain text.
-#: The visible text is public-safe; the identity rides only in the mark.
-NOTICE_TEXT = (
-    "Spec Harness — distribution notice\n"
-    "\n"
-    "This package carries an invisible distribution signature (see\n"
-    "scripts/skill_watermark.py in the authoring repository): a U+2063 mark\n"
-    "with a PAD-encoded bitstream binding the release holder and contact.\n"
-    "The signature lives in this file so entry documents (SKILL.md) stay\n"
-    "plain text and are never loaded into model context. Commercial use\n"
-    "requires separate written authorization; see LICENSE.\n"
-)
-NOTICE_CARRIER = "NOTICE"
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Export a clean runtime skill package from this authoring repository.")
@@ -71,11 +55,6 @@ def parse_args() -> argparse.Namespace:
         "--root",
         default=".",
         help="Authoring repository root (default: current directory)",
-    )
-    parser.add_argument(
-        "--skip-signing",
-        action="store_true",
-        help="Export without signing. Tests and keyless checkouts must opt in; release paths must not.",
     )
     parser.add_argument(
         "--profile",
@@ -128,16 +107,6 @@ def main() -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    identity = Path(os.environ.get("SPEC_SIGNING_IDENTITY", root / ".watermark-identity.json"))
-    key = Path(os.environ.get("SPEC_SIGNING_KEY", root / ".watermark-key"))
-    if not args.skip_signing and (not identity.is_file() or not key.is_file()):
-        print(
-            "error: signing identity and key are required unless --skip-signing is set "
-            "(install.sh applies it automatically on keyless source trees; release builds always sign)",
-            file=sys.stderr,
-        )
-        return 1
-
     if output.exists():
         if not args.force:
             print(f"error: output already exists: {output}", file=sys.stderr)
@@ -159,13 +128,6 @@ def main() -> int:
     scripts_output.mkdir(parents=True, exist_ok=True)
     for name in script_files:
         copy_file(root / "scripts" / name, scripts_output / name)
-
-    if not args.skip_signing:
-        from skill_watermark import load_identity, load_key, stamp_tree
-
-        # The signature rides in NOTICE, never the entry SKILL.md (AUD-17).
-        (output / NOTICE_CARRIER).write_text(NOTICE_TEXT, encoding="utf-8")
-        stamp_tree(output, (NOTICE_CARRIER,), load_identity(identity), load_key(key))
 
     print(f"exported: {output}")
     if args.profile == "core":

@@ -88,5 +88,7 @@ def test_dependency_cycle_is_visible_to_route_and_stop_guard(tmp_path):
         )
     )
     assert "cycle" in route["dependencyErrors"][0]
+    # Dependency errors are advisory for the Stop hook: it only blocks on
+    # unfinished tasks or open [decision] questions.
     code, output = run_hook(stop_payload(tmp_path))
-    assert code == 0 and "cycle" in json.loads(output)["reason"]
+    assert code == 0 and output.strip() == ""

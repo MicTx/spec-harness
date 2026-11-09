@@ -3,13 +3,30 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 HOOK = ROOT / "hooks" / "claude_stop_guard.py"
 
 CONVERGED_PACKAGE = "2026-09-01_fix-guard-converged"
 UNCONVERGED_PACKAGE = "2026-09-02_add-guard-unconverged"
 
-CONVERGED_SPEC = "# Guard Test - 项目范围\n"
+CONVERGED_SPEC = """# Guard Test - 项目范围
+
+## 1. 问题定义
+- **项目目标**：guard test
+## 2. 假设与待确认
+### 2.2 关键假设
+- 无
+### 2.3 待确认问题
+- 无
+## 3. 功能范围
+### 3.3 不在范围内
+- 无
+## 4. 最小实现路径
+- one task
+"""
+
 CONVERGED_TASKS = """\
 ## Phase
 - [x] Task A
@@ -72,11 +89,46 @@ def test_unconverged_package_blocks_with_gap_list(tmp_path):
     decision = json.loads(stdout)
     assert decision["decision"] == "block"
     assert UNCONVERGED_PACKAGE in decision["reason"]
-    assert "未勾任务 1 项" in decision["reason"]
+    assert "任务完成 1/2" in decision["reason"]
 
 
 def test_converged_package_allows_stop(tmp_path):
     make_package(tmp_path, CONVERGED_PACKAGE, converged=True)
+    code, stdout = run_hook(stop_payload(tmp_path))
+    assert code == 0
+    assert stdout.strip() == ""
+
+
+def test_open_decision_blocks_even_when_tasks_done(tmp_path):
+    package = make_package(tmp_path, CONVERGED_PACKAGE, converged=True)
+    spec = package / "spec.md"
+    contents = spec.read_text(encoding="utf-8")
+    contents = contents.replace("### 2.3 待确认问题\n- 无", "### 2.3 待确认问题\n- [ ] [decision] 是否批准交付？")
+    spec.write_text(contents, encoding="utf-8")
+    payload = stop_payload(tmp_path)
+    # The host Stop payload never carries checker state; the hook reads the
+    # checker JSON instead.
+    assert "openDecisions" not in payload
+    code, stdout = run_hook(payload)
+    assert code == 0
+    decision = json.loads(stdout)
+    assert decision["decision"] == "block"
+    assert CONVERGED_PACKAGE in decision["reason"]
+
+
+@pytest.mark.parametrize("gap", ["success", "runs", "scope"])
+def test_non_task_gate_gaps_are_advisory(tmp_path, gap):
+    package = make_package(tmp_path, CONVERGED_PACKAGE, converged=True)
+    spec = package / "spec.md"
+    contents = spec.read_text(encoding="utf-8")
+    if gap == "success":
+        contents += "\n## 6. 成功标准与验证方式\n- [ ] 验收 -> verify: task_0001\n"
+    elif gap == "runs":
+        contents += "\nevidence: runs\n"
+        (package / "tasks.md").write_text("- [x] Machine\n  - boundary: source\n  - verify: `true`\n", encoding="utf-8")
+    else:
+        contents += "\n### 5.1 验证策略\n- 范围级别：invalid\n- 快速检查：pytest\n"
+    spec.write_text(contents, encoding="utf-8")
     code, stdout = run_hook(stop_payload(tmp_path))
     assert code == 0
     assert stdout.strip() == ""

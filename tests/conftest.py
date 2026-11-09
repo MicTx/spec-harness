@@ -1,15 +1,4 @@
-"""Suite-wide fixtures for tests/.
-
-AUD-20 (planning F5): host CLI session markers inherit into pytest runs and
-flip environment-sensitive assertions — e.g. inside a Claude Code session the
-inherited ``CLAUDECODE`` makes the nearest-ancestor walk in
-``autorun_spawn.detect_session_host`` resolve ``claude`` and breaks
-``test_session_detection_selects_running_host``. The autouse fixture clears
-exactly the four named variables before each test so suite results depend
-only on the tests themselves. Tests that deliberately set a marker via
-``monkeypatch.setenv`` are unaffected: the fixture ``delenv`` runs first,
-the test's ``setenv`` after.
-"""
+"""Suite-wide fixtures for tests/."""
 
 from __future__ import annotations
 
@@ -18,34 +7,6 @@ import json
 from pathlib import Path
 
 import pytest
-
-#: Exactly the host session markers from ``autorun_spawn.HOST_ENV_MARKERS``
-#: plus the ``SPEC_AUTORUN_HOST`` override. Keep in sync deliberately; do not
-#: widen the list without a failing-test anchor.
-CLEARED_HOST_ENV_VARS = (
-    "CLAUDECODE",
-    "CODEX_SANDBOX",
-    "PI_CODING_AGENT",
-    "SPEC_AUTORUN_HOST",
-)
-
-
-@pytest.fixture(autouse=True)
-def clean_host_session_markers(monkeypatch: pytest.MonkeyPatch):
-    """Clear inherited host-session markers for every test in tests/."""
-    for var in CLEARED_HOST_ENV_VARS:
-        monkeypatch.delenv(var, raising=False)
-    yield
-
-
-@pytest.fixture
-def codex_reasoning_catalog(monkeypatch):
-    import reasoning_policy
-
-    catalog = reasoning_policy.CodexCatalog(
-        "/test/codex", "codex-cli test", {"test-model": ("high", "max"), "gpt-5.5": ("high", "xhigh")}
-    )
-    monkeypatch.setattr(reasoning_policy, "load_codex_catalog", lambda: catalog)
 
 
 def historical_checkpoint_document(package_name: str, intent: str) -> dict:

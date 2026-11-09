@@ -1,10 +1,10 @@
 # Output Contracts
 
-This page separates two audiences: scripts need stable field names; people need a short answer about the project they asked to change. Read only the current stage section. Keep internal stages, package paths, and gate counts in machine output; the human-facing reply starts with the goal, actual progress, concrete risk, and delivered evidence.
+Users read project facts; scripts read stage names. Reply with the goal, real progress, concrete problems and delivered results. Stages, slugs, branches and gate counts stay in machine output (`--format json`).
 
-Entries with a script use that script's output directly; entries without one use the same project-update structure. Do not make the user relay commands or choose a stage the agent can execute itself.
+## Project-update schema
 
-## Project-update schema (the only user-visible skeleton; section names are the machine contract emitted by `dashboard_support.py` — keep them verbatim)
+Section names are emitted by `scripts/dashboard_support.py`; keep them verbatim.
 
 ```markdown
 # <可读项目名称>
@@ -42,141 +42,26 @@ Entries with a script use that script's output directly; entries without one use
 - 完成总结：<path>
 ```
 
-Only the title always appears; omit any whole section with no effective content. Single-project section order is fixed: 项目进展 (progress) / 任务 (tasks) / 正在处理 (working on) / 需要关注 (needs attention) / 本轮完成 (completed this round) / 接下来 (next) / 交付信息 (delivery). Multi-project status uses `项目概览` (project overview) in place of `交付信息`. When `接下来` duplicates a `正在处理` item, keep only the latter.
+Only the title always appears; omit empty sections. Order is fixed as above; multi-project status uses `项目概览` instead of `交付信息`.
 
-### Content sources
+- 项目进展 / 任务: real counts and tasks from `tasks.md`, in order; status is one of 完成 / 进行 / 阻塞 / 待办.
+- 正在处理: only work actually in progress. 接下来: the next action the agent will take — never a `/spec:*` command or user homework the agent can do.
+- 需要关注: only facts that affect scope, delivery, quality or an external dependency, with their impact.
+- 本轮完成 / 交付信息: verified results, commit or publication state, paths. Never write unverified work as done, a preflight as published, or a local commit as pushed.
+- Keep at most 20 tasks and 5 attention items, then point to the package. Mark decisive conclusions 已核验 / 推断 / 未核验.
 
-- Title: the readable project name from `spec.md`; never a slug, stage, or command name.
-- 项目进展: the real completed-task count from `tasks.md`; never process stages, gate counts, agent counts, or Git action counts.
-- 任务: only the concrete project tasks from `tasks.md`, order unchanged. Status vocabulary is closed: `完成` (done), `进行` (in progress), `阻塞` (blocked), `待办` (pending). Preserve every explicit `[>]` as `进行`, including parallel tasks; completed and blocked states take precedence. A `[ ]` task remains `待办`, even if it is the next ready candidate.
-- 正在处理: all real active project tasks, consistent with the `进行` task rows and in the same order; no `boundary`, internal stage, or execution role. When the task record provides no explicit active evidence, omit this section; a ready/pending task may instead appear under 接下来. Outside a task-record projection, state actual work only, never a planned action as already in progress.
-- 需要关注: only concrete facts affecting requirements, delivery, quality, or external dependencies; normal states, zero values, out-of-scope notes, and purely internal fixes are not listed.
-- 本轮完成: only implemented, verified, or delivered project outcomes; never process actions like "entered check" or "gates completed".
-- 接下来: the project action the agent will actually execute next — never `/spec:*`, script commands, or "waiting for the user to start the next stage"; actions the agent can execute are executed this round, not listed as user homework.
-- 交付信息: final results, verification conclusions, delivery paths, commit or publish status; technical detail only when it helps locate a problem or verify the delivery.
+## Per command
 
-### Hard rules
-
-1. Spec stages, slugs, branches, gates, and evidence counts are internal control information, not the user's narrative; machine consumers read them from the task-package disk state or `route_spec_package.py --format json`.
-2. Never show the `new → run → check → done → push` pipeline; never substitute stage completion for project completion.
-3. Never hand internal gates, package maintenance, test fixes, or command relays to the user; code, documentation, test, or gate fixes executable this round are never user to-dos.
-4. Only a project-shaping constraint, a decision that cannot be reasonably assumed, or an external dependency the agent cannot complete may request user input under `需要关注`, stating the impact and the completed work alongside.
-5. Incomplete verification is never written as project completion; a passed preflight is never written as published.
-6. With more than 20 tasks keep the first 20 plus a package pointer; with more than 5 attention items keep the first 5 plus an on-disk pointer.
-7. The output must let a user who knows nothing about the spec workflow answer directly: where things stand, what is being done, what the problems are, and what was delivered.
-8. No empty-value placeholders or filler: `无`, `n/a`, `看起来` (seems), `整体` (overall), `顺利` (smooth), `建议可以` (maybe suggest), `温馨提示` (friendly tip), `如下所示` (as shown below), `让我` (let me), `我们来` (let's).
-9. For decisive uncertain conclusions, distinguish 已核验 / 推断 / 未核验 and report the conclusion, decisive evidence, remaining doubt and next check; these are not five new output sections. Name missing material and blocking uncertainty even in a short answer; test execution or static contract checks never certify model compliance.
-
-## Invocation compatibility layer
-
-The user-visible entries are the `/spec:*` commands (inventory: `SKILL.md` Commands). They only decide how the background advances; they never change the project-update structure. `route` is the internal state resolver; the `tasks` view merges into `/spec:status`. Command names and stages may appear in error diagnostics or machine JSON, never as the title, tasks, or next step of a normal user reply.
-
-## `/spec`
-
-Run directly:
-
-```bash
-python3 scripts/route_spec_package.py --root <project> [--slug YYYY-MM-DD_<slug>] [--ascii] [--compact]
-```
-
-Route picks the follow-up action in the background. Show only the current project name, task completion, actual tasks, and real problems; with no active package, ask the user to describe the goal — never ask them to pick an internal stage.
-
-## `/spec:new`
-
-The agent fills the project update itself: title = the project the user wants done; tasks = the decomposed real development tasks; 项目进展 = `0/N`; 正在处理 names a task only after work actually starts; otherwise the first executable task is 接下来. A pending-decision item shows only when scope would reshape the project and cannot be reasonably assumed; slugs, branches, and package paths stay off the main view.
-
-## `/spec:run`
-
-项目进展 and 任务 come from `tasks.md`; 正在处理 = the explicitly active project tasks, or omitted when there are none; 本轮完成 = completed and verified results; 接下来 = the next real project action. On a blocker, state the concrete impact, the completed work, and the external dependency — never boundary or internal stages. The main session executes tasks in dependency order in this session, verifying item by item; self-reported results are not acceptance — run the task's `verify`-described verification before checking off, and on verification failure report the real cause and recovery conditions, never user homework the agent can fix.
-
-## `/spec:check`
-
-Run directly:
-
-```bash
-python3 scripts/check_spec_package.py --root <project> --slug YYYY-MM-DD_<slug> [--ascii] [--compact]
-```
-
-Translate failures into project facts ("2 acceptance items remain unfinished", "regression-test evidence missing"); fixes are written back and completed this round. On success, write the acceptance conclusion and valid evidence into 交付信息 — no gate counts.
-
-## `/spec:done`
-
-Run directly:
-
-```bash
-python3 scripts/complete_spec_package.py --root <project> --slug YYYY-MM-DD_<slug> --archive
-```
-
-Output the delivered content, the acceptance conclusion, and the completion-summary location. `遗留事项` (open items) never lists code, documentation, test, or gate fixes executable this round, and never stores free-text risks or external dependencies. Archiving, committing, and the later publishing continue by the agent.
-
-## `/spec:push`
-
-Run directly:
-
-```bash
-python3 scripts/push_spec_package.py --root <git-repo> [--branch <working-branch>]
-```
-
-Output the publication result only after the Git actions actually complete: the merged target, remote sync state, and branch cleanup state. When the remote is unreachable, write "local merge done, not yet synced to the remote, working branch kept" plus the impact; the preflight itself is never the delivery result.
-
-## `/spec:update`
-
-The agent fills the project update itself: tasks stay in real project order; 本轮完成 records the actual changes to requirements, scope, or acceptance criteria; 正在处理 and 接下来 record the affected project tasks. Never just report "updated the spec".
-
-## `/spec:status`
-
-Run directly:
-
-```bash
-python3 scripts/report_spec_package.py --root <project> --view status [--slug YYYY-MM-DD_<slug>] [--ascii] [--compact]
-```
-
-Single packages follow the unified project-update output. With multiple packages, each item uses `- <project name>: completed <done>/<total>; current <task>; blocked <impact>`, attaching only fields that exist; never show package stages or slugs, and never ask the user to pick the flow with `--slug`.
-
-## `/spec:goal`
-
-Plan, execute, accept, and archive automatically from one goal sentence; the chain stops at the local commit by default. Intermediate updates always follow actual task progress, never the sub-stage chain. The final reply centers on delivered functionality, actual verification, and the local commit outcome. Never push without explicit user authorization; report publication only after an authorized push has actually completed. Give a push command only when the user explicitly requests one, not by default; stop only for real external blockers.
-
-## `/spec:doctor`
-
-Run directly:
-
-```bash
-python3 scripts/doctor_spec_environment.py --root <project> [--fix] [--format json] [--host claude]
-```
-
-The output is an environment health report, not the project-update schema: group by "needs repair / needs attention / auto-fixed / passed / info", each item listing its check id, factual conclusion, and (when present) the repair action. Needs-attention lists only concrete availability-impacting facts (missing command files, dangling symlinks, hooks pointing at paths that no longer exist); normal items get no prose. Repairs run via `--fix` and are logged; executable fixes are never user homework — only genuinely manual decisions (replacing a foreign same-name skill, no bash environment) state the impact and the equivalent command.
-
-## `/spec:organize`
-
-Run directly:
-
-```bash
-python3 scripts/organize_project_structure.py --root <project> [--check | --update-baseline] [--format json]
-```
-
-The output is a structure-audit report, not the project-update schema: list inventory, references, candidates, finding classes, architecture consistency, contracts and summary without preset conclusions. Report contract scope, new violations, baseline hits, stale entries and incomplete scans; do not claim unsupported imports were checked. Default audit and `--check` are read-only. Only an explicit `--update-baseline` freezes all current violations and prunes fixed entries; review its diff. Applying (`--apply` or an explicit instruction) creates a new package before moves or doc fixes, never appends to another package. Verdicts are keep / archive / merge / migrate; never delete, archive confirmed orphans under `archive/retired`. Disposition every member of a confirmed class and report failed checks truthfully.
-
-## `/spec:autorun`
-
-Facts come from the scripts; run directly:
-
-```bash
-python3 scripts/autorun_spawn.py plan --root <project> [--plan <path[,path...]>]
-python3 scripts/autorun_spawn.py status --root <project>
-```
-
-Round replies follow the project-update schema: 本轮完成 reports delivered functionality and actual verification; 正在处理 identifies active work and 接下来 identifies the next feature. Add a compact chain line with `<checked>/<total>` features, round and effective cap, execution mode and either current-session continuation, a confirmed fresh handoff, or the concrete stop reason. Current checkpoints use `scripts/chain_session.py status --chain autorun`; never display a fabricated window/worker or claim background execution. Re-entry resumes the recorded task, not a new round. Distinguish archive acceptance, local commit, local-only merge and verified remote publication; none implies the next. Keep owner hashes, revisions and launch plumbing in machine output.
-
-## `/spec:autoplan`
-
-Facts come from the scripts; run directly:
-
-```bash
-python3 scripts/autoplan_gate.py discover --root <project> [--plan <path[,path...]>]
-python3 scripts/autoplan_gate.py gate --root <project> [--plan <path[,path...]>]
-python3 scripts/autoplan_spawn.py status --root <project>
-python3 scripts/autorun_spawn.py plan --root <project>
-```
-
-The output is a planning report: project start/phase boundary, clarified facts and assumptions, pass progress and effective cap, current-session work or a confirmed fresh handoff, or the concrete stop reason. Current checkpoints use `scripts/chain_session.py status --chain autoplan`. Report selected documents, the structural gate and semantic review conclusion. Name the actual review mode: independent only when an independent reviewer ran, otherwise main-session review. Readiness is not feature implementation: preserve unchecked features and stop with the suggested `/spec:autorun`, never start it. On failure or noninteractive entry, report the unresolved decision and durable recovery point. Distinguish automated profile/contract tests from live client verification; never claim untested clients are live-verified.
+| Command | Output source |
+| --- | --- |
+| `/spec` | `route_spec_package.py --root <project>`; with no package, ask for the goal |
+| `/spec:new` · `/spec:run` · `/spec:update` | The schema above, filled from `tasks.md` |
+| `/spec:check` | `check_spec_package.py --root <project> --slug <slug>`; failures become project facts and new tasks |
+| `/spec:done` | `complete_spec_package.py --root <project> --slug <slug> --archive`; report delivery and the summary path |
+| `/spec:push` | `push_spec_package.py --root <repo>`; report merge target, remote state and branch cleanup after they happen |
+| `/spec:status` | `report_spec_package.py --root <project> --view status`; one line per project when several exist |
+| `/spec:goal` | The schema; it stops at the local commit unless push was explicitly authorized |
+| `/spec:doctor` | `doctor_spec_environment.py --root <project> [--fix]`; an environment report grouped by needs repair / attention / fixed / passed |
+| `/spec:organize` | `slots/organize/scripts/organize_project_structure.py --root <project>`; a read-only structure report unless `--apply` |
+| `/spec:autoplan` | `autoplan_gate.py discover|gate`; a planning report that ends with readiness and stops |
+| `/spec:autorun` | `chain_state.py plan|status`; the schema plus one chain line: checked/total features, round, cap, stop reason |

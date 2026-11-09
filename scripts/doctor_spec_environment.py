@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-"""
-Environment self-check and repair for the spec skill.
+"""Environment self-check for the spec skill.
 
-Verifies the host foundations the skill depends on (Python, git), the
-integrity of the installed skill package, every agent-host installation,
-the Claude Code stage command files (including legacy layout leftovers),
-the target project's `.spec` skeleton, and rendered Git hook drift.
-`--fix` applies the repairs that are safe
-to automate: only paths owned by this skill's installer are ever touched,
-and anything removed is moved under the shared backup root first.
+Five probes, each owned by exactly one check:
 
-Exit codes: 0 = no failing check, 1 = at least one failing check
-(after fixes), 2 = usage error.
+  python.runtime  Python >= 3.9 on PATH
+  git.available   git on PATH
+  skill.layout    installed package carries the runtime files its profile needs
+  project.hooks   the rendered Git gate hooks point at this skill's checker
+  hooks.stop      the host's Stop hook is wired (Claude settings reference)
+
+Plus two advisories that never fail the run:
+  a leftover ``update-checkpoint.json`` from the retired update mechanism
+  (safe to delete), and a retired ``claude_activation_guard`` hook entry still
+  referenced by a Claude settings file (safe to remove).
+
+Host install directories are read from each install's own
+``install-manifest.json`` (written by install.sh), not re-derived here.
+
+Exit codes: 0 = no failing check, 1 = at least one failing check, 2 = usage error.
 """
 
 from __future__ import annotations
@@ -21,253 +27,61 @@ import argparse
 import json
 import os
 import re
-import shlex
-import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
-
-try:
-    from slot_registry import discover_slots, validate_slot
-except ImportError:  # pragma: no cover - direct source invocation always succeeds
-    discover_slots = None  # type: ignore[assignment]
-    validate_slot = None  # type: ignore[assignment]
+from typing import ClassVar, List, Optional, Sequence
 
 SKILL_ROOT_DEFAULT = Path(__file__).resolve().parent.parent
 MINIMUM_PYTHON = (3, 9)
-MARKER_FILENAME = ".spec-skill-install"
-BACKUP_ROOT_ENV = "BACKUP_ROOT"
-STALE_STAGE_ALIASES = ("route", "tasks")
-# Sidecar agent contracts published into Claude Code's native agent registry
-# (agents live in ~/.claude/agents, not inside the skill directory).
-NATIVE_AGENT_NAMES = ("orchestrator", "planner", "reviewer", "confirmer")
-BUILTIN_SLOT_NAMES = ("team-loop", "workflow-runner")
-HOST_ALIASES = {"devin-desktop": "devin", "cursor-cli": "cursor"}
-
-# Install profiles (planning F16 sub-step 2, AUD-18): the marker's profile=
-# stamp selects the audit face. Markers predating the split carry no stamp
-# and audit as full — behavior unchanged for existing installs. The faces
-# are hardcoded here (payload_contract is maintainer-side and never ships);
-# alignment with the contract is pinned by tests/test_install_profile.py.
-PROFILE_VALUES = ("core", "full")
-CORE_STAGE_COMMANDS = ("new", "run", "check", "done", "push", "doctor")
-EXTENSION_FILE_PREFIXES = ("agents/", "server/", "scripts/chain_session.py")
-#: Files core keeps from an otherwise excluded prefix (host discovery metadata).
-#: Mirrors payload_contract.CORE_KEPT_FILES; pinned by tests/test_doctor_spec_environment.py.
-CORE_KEPT_FILES = ("agents/openai.yaml",)
-
-
-def claude_agents_dir() -> Path:
-    override = os.environ.get("CLAUDE_AGENTS_DIR")
-    if override:
-        return Path(override)
-    return _home() / ".claude" / "agents"
-
-
-# Retired stages that once shipped as commands/spec/<stage>.md in the current
-# subdirectory layout. The swarm stages were removed with the multi-session
-# worker machinery; upgrades and doctor --fix must sweep them like any other
-# retired layout artifact.
-STALE_SUBDIR_STAGES = ("assemble", "combat", "marshal")
-HOOK_CHECKER_FINGERPRINT = "SPEC_CHECK_ALL_SCRIPT_PLACEHOLDER"
-# install_git_hooks.py renders the template placeholder into the real checker
-# path, so an installed gate hook no longer carries the fingerprint. Claim a
-# hook when it still holds the placeholder (unrendered template) or when it
-# points at the gate checker by name; anything else stays project-owned.
-HOOK_CHECKER_NAME = "check_all_spec_packages.py"
+MANIFEST_NAME = "install-manifest.json"
+CHECKER_NAME = "check_all_spec_packages.py"
 HOOK_CHECKER_RE = re.compile(r'^checker="([^"]+)"', re.MULTILINE)
+ACTIVATION_HOOK = "hooks/claude_activation_guard.py"
 
-
-def spec_owned_hook(content: str) -> bool:
-    """True when hook content belongs to the Spec gate (rendered or template)."""
-    match = HOOK_CHECKER_RE.search(content)
-    if match is None:
-        return False
-    return HOOK_CHECKER_FINGERPRINT in content or Path(match.group(1)).name == HOOK_CHECKER_NAME
-
-
-# Runtime files every healthy install must carry. Mirrors the layout
-# assertion in smoke_test_spec_skill.py; export/build scripts are
-# authoring-repo only and intentionally absent from installed copies.
-# The orchestration assets (route_decision, orchestration contract, the four
-# sidecar agent contracts) are part of the runtime surface since the
-# orchestration migration: an install without them cannot route.
-REQUIRED_RUNTIME_FILES: Tuple[str, ...] = (
+# Runtime files every healthy install must carry. The profile stamped into the
+# manifest selects the face: core drops the extension components.
+REQUIRED_RUNTIME_FILES: tuple[str, ...] = (
     "SKILL.md",
     "install.sh",
     "agents/openai.yaml",
-    "agents/orchestrator.md",
-    "agents/planner.md",
-    "agents/reviewer.md",
-    "agents/confirmer.md",
     "hooks/pre-commit",
     "hooks/pre-push",
-    "references/00-readme.md",
     "references/commands.md",
     "references/output-contracts.md",
     "references/orchestration.md",
     "references/templates.md",
-    "references/storage-and-archive.md",
     "scripts/check_all_spec_packages.py",
-    "scripts/chain_session.py",
     "scripts/check_spec_package.py",
     "scripts/complete_spec_package.py",
-    "scripts/dashboard_support.py",
     "scripts/doctor_spec_environment.py",
-    "scripts/generate_changelog.py",
     "scripts/init_spec_package.py",
     "scripts/install_git_hooks.py",
-    "scripts/issue_closure_support.py",
+    "scripts/payload_contract.py",
     "scripts/push_spec_package.py",
-    "scripts/report_spec_package.py",
     "scripts/read_version.py",
     "scripts/route_spec_package.py",
     "scripts/route_decision.py",
-    "scripts/safe_open_support.py",
-    "scripts/smoke_test_spec_skill.py",
     "scripts/slot_registry.py",
     "scripts/spec_package_support.py",
-    "scripts/update_checkpoint.py",
-    "scripts/update_checkpoint_support.py",
-    "server/README.md",
-    "server/install.sh",
-    "server/server.py",
+    "scripts/spec_verify.py",
 )
+CORE_DROP_PREFIXES = ("agents/orchestrator", "agents/planner", "agents/reviewer", "agents/confirmer", "slots/")
 
-# Bounded stdout/stderr channel-contract spot-check sample (skill.channels).
-# Invariant: every member is a REQUIRED_RUNTIME_FILES entry (pinned by Gate E
-# in tests/test_truth_source_gates.py). The probe runs on installed copies,
-# where only REQUIRED_RUNTIME_FILES members are guaranteed present once
-# skill.layout passes; a script joins this sample only after joining the
-# runtime manifest first (R9 ruling, plans/02 §F6).
-CHANNEL_SPOT_CHECK_SCRIPTS: Tuple[str, ...] = (
-    "scripts/doctor_spec_environment.py",
-    "scripts/route_spec_package.py",
-    "scripts/check_spec_package.py",
-    "scripts/slot_registry.py",
-    "scripts/generate_changelog.py",
-)
-CHANNEL_PROBE_TIMEOUT_SECONDS = 15
-
-# Ordered registry of every probe id the doctor can record — the single
-# truth source for the /spec:doctor check catalog in references/commands.md
-# and the machine anchor for the truth-source gates (Gate A/B, F8). Order is
-# run() execution order, with skill.drift immediately after skill.marker
-# because its branch lives inside check_skill_marker. Declarative only:
-# probes still self-record; nothing at runtime consumes this constant —
-# consistency is pinned by tests and the gates, not by lookup.
-PROBE_IDS: Tuple[str, ...] = (
+PROBE_IDS: tuple[str, ...] = (
     "python.runtime",
     "git.available",
     "skill.layout",
-    "skill.scripts",
-    "skill.channels",
-    "skill.marker",
-    "skill.drift",
-    "hosts.installed",
-    "claude.commands",
-    "claude.agents",
-    "claude.activation",
-    "pi.prompts",
-    "migration.wrappers",
-    "zcode.symlink",
-    "project.git",
-    "project.spec",
     "project.hooks",
+    "hooks.stop",
+    "advice.checkpoint",
+    "advice.activation",
 )
-
-# Host matrix mirrors install.sh: the same env override names and the same
-# default directories, so doctor finds exactly what the installer writes.
-# (host_id, label, env_var, default_dir_resolver)
-HostSpec = Tuple[str, str, str, Callable[[], Path]]
 
 
 def _home() -> Path:
     return Path.home()
-
-
-def _xdg_config() -> Path:
-    return Path(os.environ.get("XDG_CONFIG_HOME", str(_home() / ".config")))
-
-
-def _hermes_home() -> Path:
-    hermes_home = os.environ.get("HERMES_HOME")
-    if hermes_home:
-        return Path(hermes_home)
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    if local_app_data:
-        return Path(local_app_data) / "hermes"
-    return _home() / ".hermes"
-
-
-def _dsh_home() -> Path:
-    """dsh home: $DSH_HOME (blank ignored) else ~/.dsh."""
-    override = os.environ.get("DSH_HOME", "").strip()
-    return Path(override) if override else _home() / ".dsh"
-
-
-def _pi_home() -> Path:
-    return Path(os.environ.get("PI_DIR", str(_home() / ".pi")))
-
-
-def _host_specs() -> List[HostSpec]:
-    return [
-        ("claude", "Claude Code", "CLAUDE_SKILLS_DIR", lambda: _home() / ".claude" / "skills"),
-        (
-            "claude-desktop",
-            "Claude Desktop",
-            "CLAUDE_DESKTOP_SKILLS_DIR",
-            lambda: _home() / ".claude-desktop" / "skills",
-        ),
-        ("codex", "Codex", "CODEX_SKILLS_DIR", lambda: _home() / ".codex" / "skills"),
-        ("devin", "Devin", "DEVIN_SKILLS_DIR", lambda: _home() / ".config" / "devin" / "skills"),
-        ("cursor", "Cursor", "CURSOR_SKILLS_DIR", lambda: _home() / ".cursor" / "skills"),
-        ("gemini", "Gemini CLI", "GEMINI_SKILLS_DIR", lambda: _home() / ".gemini" / "skills"),
-        ("grok", "Grok Build", "GROK_SKILLS_DIR", lambda: _home() / ".grok" / "skills"),
-        ("opencode", "OpenCode", "OPENCODE_SKILLS_DIR", lambda: _xdg_config() / "opencode" / "skills"),
-        ("openclaw", "OpenClaw", "OPENCLAW_SKILLS_DIR", lambda: _home() / ".openclaw" / "skills"),
-        ("hermes", "Hermes", "HERMES_SKILLS_DIR", lambda: _hermes_home() / "skills"),
-        ("pi", "Pi", "PI_SKILLS_DIR", lambda: _pi_home() / "agent" / "skills"),
-        ("zcode", "ZCode", "ZCODE_SKILLS_DIR", lambda: _home() / ".zcode" / "skills"),
-        ("dsh", "DeepSeek Harness", "DSH_SKILLS_DIR", lambda: _dsh_home() / "skills"),
-    ]
-
-
-def claude_commands_dir() -> Path:
-    override = os.environ.get("CLAUDE_COMMANDS_DIR")
-    if override:
-        return Path(override)
-    return _home() / ".claude" / "commands"
-
-
-def pi_prompts_dir() -> Path:
-    """Pi prompt-template dir (F4): same override pattern as the installer."""
-    override = os.environ.get("PI_PROMPTS_DIR")
-    if override:
-        return Path(override)
-    return _pi_home() / "agent" / "prompts"
-
-
-def agents_skills_dir() -> Path:
-    """Cross-host Agent Skills scan dir; override for sandbox tests only."""
-    override = os.environ.get("AGENTS_SKILLS_DIR")
-    if override:
-        return Path(override)
-    return _home() / ".agents" / "skills"
-
-
-def backup_root() -> Path:
-    override = os.environ.get(BACKUP_ROOT_ENV)
-    if override:
-        return Path(override)
-    return _home() / ".spec-skill-backups"
-
-
-class DoctorError(ValueError):
-    """A user-actionable doctor argument or path error."""
 
 
 @dataclass
@@ -283,28 +97,9 @@ class Check:
 
 @dataclass
 class Doctor:
-    skill_root: Path
-    project_root: Path
-    fix: bool = False
-    host_filter: Optional[Sequence[str]] = None
-    checks: List[Check] = field(default_factory=list)
-    fix_log: List[str] = field(default_factory=list)
-
-    # ------------------------------------------------------------------ utils
-
-    def record(self, check_id: str, title: str, status: str, detail: str, fix_note: str = "") -> None:
-        # Same-id checks replace: a post-fix re-scan must not stack a stale
-        # duplicate entry on top of the pre-fix one.
-        for index, existing in enumerate(self.checks):
-            if existing.id == check_id:
-                self.checks[index] = Check(check_id, title, status, detail, fix_note)
-                return
-        self.checks.append(Check(check_id, title, status, detail, fix_note))
-
-    def failing(self) -> List[Check]:
-        return [check for check in self.checks if check.status == "fail"]
-
-    USER_STAGES: Tuple[str, ...] = (
+    # Consulted copy of install.sh USER_STAGES; tests/test_stage_inventory.py
+    # fails when either list drifts.
+    USER_STAGES: ClassVar[tuple[str, ...]] = (
         "new",
         "goal",
         "autoplan",
@@ -319,1222 +114,269 @@ class Doctor:
         "organize",
     )
 
-    def user_stages(self) -> List[str]:
-        if self.install_profile() == "core":
-            return list(CORE_STAGE_COMMANDS)
-        return list(self.USER_STAGES)
+    skill_root: Path
+    project_root: Path
+    fix: bool = False
+    checks: List[Check] = field(default_factory=list)
+
+    def record(self, check_id: str, title: str, status: str, detail: str, fix_note: str = "") -> None:
+        for index, existing in enumerate(self.checks):
+            if existing.id == check_id:
+                self.checks[index] = Check(check_id, title, status, detail, fix_note)
+                return
+        self.checks.append(Check(check_id, title, status, detail, fix_note))
+
+    def failing(self) -> List[Check]:
+        return [check for check in self.checks if check.status == "fail"]
+
+    # -------------------------------------------------------------- manifest
+
+    def install_manifest(self, root: Path | None = None) -> dict:
+        """Read install-manifest.json; {} when absent or unreadable."""
+        root = root or self.skill_root
+        try:
+            data = json.loads((root / MANIFEST_NAME).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
 
     def install_profile(self) -> str:
-        """The marker's profile= stamp; a marker without one is a full install."""
-        profile = self.read_marker(self.skill_root).get("profile", "full")
-        return profile if profile in PROFILE_VALUES else "full"
+        profile = str(self.install_manifest().get("profile", "full")).lower()
+        return profile if profile in ("core", "full") else "full"
 
-    def required_runtime_files(self) -> Tuple[str, ...]:
-        """The layout face this install's profile must carry (F16: core drops
-        agents/, server/, and the slot manifests)."""
-        if self.install_profile() == "core":
-            return tuple(
-                name
-                for name in REQUIRED_RUNTIME_FILES
-                if not name.startswith(EXTENSION_FILE_PREFIXES) or name in CORE_KEPT_FILES
-            )
-        return REQUIRED_RUNTIME_FILES
-
-    def _pyproject_version(self, root: Path) -> str:
-        pyproject = root / "pyproject.toml"
+    def _version(self, root: Path) -> str:
         try:
-            for line in pyproject.read_text(encoding="utf-8").splitlines():
-                match = re.match(r'^version\s*=\s*"([^"]+)"', line.strip())
-                if match:
-                    return match.group(1)
-        except (OSError, ValueError):
-            pass
-        return "unknown"
-
-    def skill_version(self) -> str:
-        return self._pyproject_version(self.skill_root)
-
-    def host_skill_dir(self, host: HostSpec) -> Path:
-        host_id, _label, env_var, default_resolver = host
-        override = os.environ.get(env_var)
-        if override:
-            return Path(override) / "spec"
-        return default_resolver() / "spec"
-
-    def active_hosts(self) -> List[HostSpec]:
-        hosts = _host_specs()
-        if not self.host_filter:
-            return hosts
-        wanted = {HOST_ALIASES.get(name.strip(), name.strip()) for name in self.host_filter if name.strip()}
-        unknown = wanted - {host[0] for host in hosts}
-        if unknown:
-            raise DoctorError(
-                "unknown --host entries: "
-                + ", ".join(sorted(unknown))
-                + "; valid: "
-                + ", ".join(host[0] for host in hosts)
+            match = re.search(
+                r'^version\s*=\s*"([^"]+)"',
+                (root / "pyproject.toml").read_text(encoding="utf-8"),
+                re.MULTILINE,
             )
-        return [host for host in hosts if host[0] in wanted]
-
-    def backup_path(self, target: Path) -> Path:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        root = backup_root() / f"doctor-{stamp}"
-        safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", str(target.name))
-        candidate = root / safe_name
-        counter = 0
-        while candidate.exists():
-            counter += 1
-            candidate = root / f"{safe_name}-{counter}"
-        candidate.mkdir(parents=True, exist_ok=True)
-        return candidate
-
-    def move_to_backup(self, target: Path) -> Path:
-        destination = self.backup_path(target)
-        shutil.move(str(target), str(destination / target.name))
-        # File targets carry their ownership marker as a sidecar; move it too
-        # so no orphan .spec-skill-install is left behind at the live path.
-        sidecar = target.with_name(target.name + MARKER_FILENAME)
-        if sidecar.is_file() and not sidecar.is_symlink():
-            shutil.move(str(sidecar), str(destination / sidecar.name))
-        return destination / target.name
-
-    # ------------------------------------------------------------- ownership
-
-    @staticmethod
-    def read_marker(target: Path) -> dict:
-        """Parse the installer ownership marker for a directory or file target."""
-        marker = target / MARKER_FILENAME if target.is_dir() else target.with_name(target.name + ".spec-skill-install")
-        if not marker.is_file():
-            return {}
-        values: dict = {}
-        try:
-            for line in marker.read_text(encoding="utf-8").splitlines():
-                if "=" in line:
-                    key, _, value = line.partition("=")
-                    values[key.strip()] = value.strip()
         except OSError:
-            return {}
-        return values
+            return "unknown"
+        return match.group(1) if match else "unknown"
 
-    def is_installer_owned(self, target: Path) -> bool:
-        if not (target.exists() or target.is_symlink()):
-            return False
-        marker = self.read_marker(target)
-        return marker.get("installed_by") == "spec/install.sh"
-
-    def is_foreign_skill(self, target: Path) -> bool:
-        """A same-name skill from a different source: own SKILL.md, no marker."""
-        if target.is_symlink() or not target.is_dir():
-            return False
-        return (target / "SKILL.md").is_file() and not self.is_installer_owned(target)
-
-    # ---------------------------------------------------------------- checks
+    # ---------------------------------------------------------------- probes
 
     def check_python_runtime(self) -> None:
         version = ".".join(str(part) for part in sys.version_info[:3])
         if sys.version_info >= MINIMUM_PYTHON:
-            self.record(
-                "python.runtime",
-                "Python 运行时",
-                "ok",
-                f"Python {version}（要求 ≥ {'.'.join(str(p) for p in MINIMUM_PYTHON)}）",
-            )
+            self.record("python.runtime", "Python 运行时", "ok", f"Python {version}")
         else:
             self.record(
                 "python.runtime",
                 "Python 运行时",
                 "fail",
-                f"Python {version} 低于最低要求 {'.'.join(str(p) for p in MINIMUM_PYTHON)}；安装新版 Python 后重试",
-                "安装 Python ≥ 3.9 并确保 python3 在 PATH 上（Windows 注意 Store 存根问题；"
-                "脚本使用 3.9 的 str.removeprefix 等特性）",
+                f"Python {version} 低于最低要求 {'.'.join(str(p) for p in MINIMUM_PYTHON)}",
+                "安装 Python >= 3.9 并确保 python3 在 PATH 上",
             )
 
     def check_git_available(self) -> None:
-        git_path = shutil.which("git")
-        if git_path:
-            completed = subprocess.run(["git", "--version"], capture_output=True, text=True, env=self.clean_env())
-            description = completed.stdout.strip() or "git"
-            self.record("git.available", "Git 可用性", "ok", description)
+        import shutil
+
+        if shutil.which("git"):
+            completed = subprocess.run(["git", "--version"], capture_output=True, text=True, env=self._clean_env())
+            self.record("git.available", "Git 可用性", "ok", completed.stdout.strip() or "git")
         else:
             self.record(
                 "git.available",
                 "Git 可用性",
                 "fail",
                 "PATH 上没有 git；done/push 与 Git hooks 门禁都依赖它",
-                "安装 Git（https://git-scm.com）后重跑 doctor",
+                "安装 Git 后重跑 doctor",
             )
 
     @staticmethod
-    def clean_env() -> dict:
+    def _clean_env() -> dict:
         return {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
 
-    def check_skill_layout(self) -> bool:
-        required_files = self.required_runtime_files()
-        missing = [name for name in required_files if not (self.skill_root / name).is_file()]
-        slots_root = self.skill_root / "slots"
-        if self.install_profile() == "full":
-            for slot_name in BUILTIN_SLOT_NAMES:
-                if not (slots_root / slot_name / "manifest.json").is_file():
-                    missing.append(f"slots/{slot_name}/manifest.json")
+    def required_runtime_files(self) -> tuple[str, ...]:
+        if self.install_profile() == "core":
+            return tuple(name for name in REQUIRED_RUNTIME_FILES if not name.startswith(CORE_DROP_PREFIXES))
+        return REQUIRED_RUNTIME_FILES
+
+    def check_skill_layout(self) -> None:
+        missing = [name for name in self.required_runtime_files() if not (self.skill_root / name).is_file()]
+        version = self._version(self.skill_root)
+        profile = self.install_profile()
         if missing:
             self.record(
                 "skill.layout",
                 "Skill 安装完整性",
                 "fail",
-                "缺少运行时文件：" + "、".join(missing),
-                "从源码检出重新执行 bash install.sh，或按 README 远程安装一次",
+                "缺少运行时文件：" + "、".join(missing[:8]) + ("…" if len(missing) > 8 else ""),
+                "从源码检出重新执行 bash install.sh",
             )
-            return False
-        slot_problems: List[str] = []
-        if discover_slots is not None and validate_slot is not None:
-            for slot_dir in discover_slots(self.skill_root):
-                slot_problems.extend(f"{slot_dir.name}: {problem}" for problem in validate_slot(slot_dir))
-        if slot_problems:
+            return
+        # Compile-check every shipped script in memory (no bytecode written).
+        broken: List[str] = []
+        for script in sorted((self.skill_root / "scripts").glob("*.py")):
+            try:
+                compile(script.read_bytes(), str(script), "exec", dont_inherit=True)
+            except (OSError, SyntaxError, ValueError):
+                broken.append(script.name)
+        if broken:
             self.record(
                 "skill.layout",
                 "Skill 安装完整性",
                 "fail",
-                "slot 资产无效：" + "；".join(slot_problems[:8]) + ("…" if len(slot_problems) > 8 else ""),
-                "重新导出运行时包，确保 slots/<name>/manifest.json、scripts、hooks、tests 全部随包分发",
-            )
-            return False
-        if self.install_profile() == "full":
-            detail = f"{len(required_files)} 个运行时文件与 {len(BUILTIN_SLOT_NAMES)} 个 slot 资产齐全（profile=full）"
-        else:
-            detail = f"{len(required_files)} 个核对面运行时文件齐全（profile=core，不含 slot/扩展组件）"
-        self.record("skill.layout", "Skill 安装完整性", "ok", detail)
-        return True
-
-    def check_skill_scripts(self) -> None:
-        scripts_dir = self.skill_root / "scripts"
-        failures: List[str] = []
-        script_paths = sorted(scripts_dir.glob("*.py"))
-        script_paths.extend(sorted((self.skill_root / "slots").rglob("*.py")))
-        for script in script_paths:
-            try:
-                # Compile source bytes in memory: honor encoding cookies without
-                # creating or replacing __pycache__ in a read-only install.
-                compile(script.read_bytes(), str(script), "exec", dont_inherit=True)
-            except (OSError, SyntaxError, ValueError) as exc:
-                failures.append(f"{script.name}: {str(exc).splitlines()[-1] if str(exc) else 'compile error'}")
-        if failures:
-            self.record(
-                "skill.scripts",
-                "脚本可编译",
-                "fail",
-                "编译失败：" + "；".join(failures[:5]) + ("…" if len(failures) > 5 else ""),
+                "脚本编译失败：" + "、".join(broken[:5]),
                 "安装可能被截断；重新执行 bash install.sh",
             )
-        else:
-            script_count = len(script_paths)
-            self.record("skill.scripts", "脚本可编译", "ok", f"{script_count} 个脚本全部编译通过")
-
-    def check_skill_channels(self) -> None:
-        """Spot-check the stdout/stderr channel contract on a bounded sample.
-
-        The output-channel contract (references/commands.md) promises contract
-        output on stdout and diagnostics on stderr. This probe turns that
-        wording into periodic behavioral evidence: every sample script runs
-        ``--help`` as a subprocess (clean env, cwd=skill_root, bounded by
-        CHANNEL_PROBE_TIMEOUT_SECONDS) and the observed channel shape maps
-        onto the decision table: exit 0 + stdout + clean stderr = ok; exit 0
-        with empty stdout = deterministic contract defect (fail); stderr
-        bleed on a successful run, non-zero exit, or timeout = warn
-        (environment-shaped, not conclusive). Missing sample files are
-        skill.layout's verdict, never this probe's.
-        """
-        statuses: List[str] = []
-        findings: List[str] = []  # per-sample observations, non-ok samples only
-        present = 0
-        for name in CHANNEL_SPOT_CHECK_SCRIPTS:
-            script = self.skill_root / name
-            if not script.is_file():
-                continue
-            present += 1
-            try:
-                completed = subprocess.run(
-                    [sys.executable, str(script), "--help"],
-                    capture_output=True,
-                    text=True,
-                    timeout=CHANNEL_PROBE_TIMEOUT_SECONDS,
-                    cwd=str(self.skill_root),
-                    env=self.clean_env(),
-                )
-            except subprocess.TimeoutExpired:
-                statuses.append("warn")
-                findings.append(f"{name}: --help 超时（>{CHANNEL_PROBE_TIMEOUT_SECONDS}s）")
-                continue
-            if completed.returncode != 0:
-                first_stderr_line = next((line for line in completed.stderr.strip().splitlines() if line.strip()), "")
-                note = f"（{first_stderr_line}）" if first_stderr_line else ""
-                statuses.append("warn")
-                findings.append(f"{name}: 退出码 {completed.returncode}{note}")
-            elif not completed.stdout.strip():
-                statuses.append("fail")
-                findings.append(f"{name}: --help 成功但 stdout 为空（契约输出缺位）")
-            elif completed.stderr.strip():
-                statuses.append("warn")
-                findings.append(f"{name}: 成功路径 stderr 非空（疑似诊断泄漏）")
-            else:
-                statuses.append("ok")
-        if present == 0:
-            self.record(
-                "skill.channels",
-                "输出通道契约抽查",
-                "info",
-                "样本脚本全部缺失，由 skill.layout 判定",
-            )
             return
-        summary = f"{present}/{len(CHANNEL_SPOT_CHECK_SCRIPTS)} 个样本在位"
-        if "fail" in statuses:
-            self.record(
-                "skill.channels",
-                "输出通道契约抽查",
-                "fail",
-                summary + "；" + "；".join(findings),
-                "对照 references/commands.md 的输出通道契约修复（契约输出走 stdout、诊断走 stderr）后重跑 doctor",
-            )
-        elif "warn" in statuses:
-            self.record(
-                "skill.channels",
-                "输出通道契约抽查",
-                "warn",
-                summary + "；" + "；".join(findings),
-            )
-        else:
-            self.record(
-                "skill.channels",
-                "输出通道契约抽查",
-                "ok",
-                summary + f"：--help 全部 stdout 非空、stderr 干净（单样本 {CHANNEL_PROBE_TIMEOUT_SECONDS}s 上限）",
-            )
-
-    def check_skill_marker(self) -> None:
-        marker = self.read_marker(self.skill_root)
-        if not marker:
-            self.record(
-                "skill.marker",
-                "安装所有权标记",
-                "warn",
-                "没有 .spec-skill-install 标记（手工复制或第三方分发）；升级与覆盖保护不可用",
-                "从源码检出执行 bash install.sh 转为安装器接管",
-            )
-            return
-        source = marker.get("source", "")
         self.record(
-            "skill.marker",
-            "安装所有权标记",
+            "skill.layout",
+            "Skill 安装完整性",
             "ok",
-            f"安装器接管；source={source or '未知'}；profile={self.install_profile()}",
-        )
-        source_dir = Path(source) if source else None
-        if source_dir and source_dir.is_dir() and (source_dir / "SKILL.md").is_file():
-            drifted = self._drifted_files(source_dir)
-            if drifted:
-                self.record(
-                    "skill.drift",
-                    "与源码差异",
-                    "warn",
-                    f"{len(drifted)} 个文件与 source 检出不一致："
-                    + "、".join(drifted[:5])
-                    + ("…" if len(drifted) > 5 else ""),
-                    "在源码检出重跑 bash install.sh 刷新安装",
-                )
-            else:
-                self.record("skill.drift", "与源码差异", "ok", "与 source 检出逐文件一致")
-
-    def _drifted_files(self, source_dir: Path) -> List[str]:
-        drifted: List[str] = []
-        for name in self.required_runtime_files():
-            installed = self.skill_root / name
-            origin = source_dir / name
-            if not origin.is_file():
-                continue
-            if not installed.is_file():
-                drifted.append(f"{name}（缺失）")
-                continue
-            if origin.read_bytes() != installed.read_bytes():
-                drifted.append(name)
-        return drifted
-
-    def check_hosts_installed(self) -> None:
-        findings: List[str] = []
-        collisions: List[str] = []
-        versions: List[str] = []
-        self_dir = self.skill_root.resolve()
-        for host in self.active_hosts():
-            host_id, label, _env, _default = host
-            skill_dir = self.host_skill_dir(host).resolve()
-            if skill_dir == self_dir:
-                versions.append(f"{label}（当前运行副本，{self.skill_version()}）")
-                continue
-            if self.is_foreign_skill(skill_dir):
-                collisions.append(f"{label}：{skill_dir} 是外来同名 skill")
-                continue
-            if not skill_dir.is_dir():
-                continue
-            if (
-                not (skill_dir / "SKILL.md").is_file()
-                or not (skill_dir / "scripts" / "spec_package_support.py").is_file()
-            ):  # noqa: E501
-                findings.append(f"{label}：{skill_dir} 目录存在但缺少 SKILL.md/脚本（残缺安装）")
-                continue
-            version = self._pyproject_version(skill_dir)
-            marker = self.read_marker(skill_dir)
-            if version == "unknown" and marker.get("version"):
-                version = str(marker["version"])
-            owned = "安装器接管" if marker else "无标记"
-            versions.append(f"{label} {version}（{owned}）")
-            changed = []
-            for name in self.required_runtime_files():
-                source, installed = self.skill_root / name, skill_dir / name
-                if source.is_file() and (not installed.is_file() or source.read_bytes() != installed.read_bytes()):
-                    changed.append(name)
-            if changed:
-                findings.append(f"{label}：安装内容与当前源码漂移：" + "、".join(changed[:6]))
-        if not versions and not collisions and not findings:
-            self.record(
-                "hosts.installed",
-                "宿主安装面",
-                "warn",
-                "未在任何已知宿主目录发现 spec skill 安装（当前副本可能是导出包）",
-                "需要宿主集成时执行 bash install.sh",
-            )
-            return
-        status = "ok"
-        if collisions:
-            status = "warn"
-        if findings:
-            status = "warn"
-        detail = "；".join(versions + findings + collisions)
-        fix_note = ""
-        if collisions:
-            fix_note = "外来同名 skill 需人工确认：FORCE=1 bash install.sh 会先备份再替换"
-        if findings:
-            fix_note = (fix_note + "；" if fix_note else "") + "残缺安装请重跑 bash install.sh"
-        self.record("hosts.installed", "宿主安装面", status, detail, fix_note)
-
-    def check_claude_commands(self) -> bool:
-        # A --host that excludes claude must scope this probe away, same rule
-        # as check_claude_agents: never scan (or fail on) a host out of scope.
-        if self.host_filter is not None and "claude" not in {name.strip() for name in self.host_filter}:
-            return None
-        claude_dir = self.host_skill_dir(self._find_host("claude"))
-        commands_dir = claude_commands_dir()
-        has_skill = claude_dir.exists() or claude_dir.is_symlink()
-        has_command_files = (commands_dir / "spec").is_dir()
-        if not has_skill and not has_command_files:
-            # Host not in use: nothing owned by us to verify or repair.
-            return True
-        if self.is_foreign_skill(claude_dir):
-            self.record(
-                "claude.commands",
-                "Claude 命令文件",
-                "info",
-                f"{claude_dir} 被外来同名 skill 占用；命令文件检查跳过",
-            )
-            return True
-        stages = self.user_stages()
-        command_files = [commands_dir / "spec" / f"{stage}.md" for stage in stages]
-        missing = [path.name for path in command_files if not path.is_file()]
-        empty = [path.name for path in command_files if path.is_file() and path.stat().st_size == 0]
-        stale = self._stale_claude_artifacts(stages)
-
-        problems: List[str] = []
-        if missing:
-            problems.append(f"缺少阶段命令文件：{', '.join(missing)}（/spec:<stage> 无法触发）")
-        if empty:
-            problems.append(f"阶段命令文件为空：{', '.join(empty)}")
-        if stale:
-            stale_list = "、".join(str(item) for item in stale[:5]) + ("…" if len(stale) > 5 else "")
-            problems.append("发现旧版布局残留：" + stale_list)
-
-        if not problems:
-            self.record(
-                "claude.commands",
-                "Claude 命令文件",
-                "ok",
-                f"{len(stages)} 个阶段命令文件齐全，无旧版残留",
-            )
-            return True
-
-        if self.fix:
-            fixed_parts: List[str] = []
-            remaining = list(problems)
-            if stale:
-                removed, skipped = self._remove_stale_artifacts(stale)
-                if removed:
-                    fixed_parts.append(f"清除残留 {len(removed)} 项（已备份）")
-                if skipped:
-                    remaining.append(f"非安装器所有的残留需手工清理：{', '.join(str(item) for item in skipped)}")
-                else:
-                    remaining = [item for item in remaining if not item.startswith("发现旧版布局残留")]
-            if missing or empty:
-                reinstalled = self._reinstall_claude_host()
-                if reinstalled:
-                    fixed_parts.append("已重跑 install.sh 再生 Claude 命令文件")
-                    remaining = [
-                        item
-                        for item in remaining
-                        if not item.startswith("缺少阶段命令文件") and not item.startswith("阶段命令文件为空")
-                    ]
-            if fixed_parts and not remaining:
-                self.record("claude.commands", "Claude 命令文件", "fixed", "；".join(fixed_parts))
-                return True
-            if fixed_parts:
-                combined = "；".join(fixed_parts) + "；" + "；".join(remaining)
-                self.record("claude.commands", "Claude 命令文件", "warn", combined)
-                return False
-            self.record(
-                "claude.commands",
-                "Claude 命令文件",
-                "warn" if stale else "fail",
-                "；".join(remaining),
-                self._claude_fix_command(),
-            )
-            return False
-
-        self.record(
-            "claude.commands",
-            "Claude 命令文件",
-            "fail" if (missing or empty) else "warn",
-            "；".join(problems),
-            self._claude_fix_command(),
-        )
-        return False
-
-    def _claude_fix_command(self) -> str:
-        return f"INSTALL_HOSTS=claude bash {self.skill_root / 'install.sh'}"
-
-    def check_claude_agents(self) -> None:
-        """Verify the native ~/.claude/agents copies of the sidecar contracts.
-
-        Claude Code discovers named subagents from its own agents directory,
-        not from a skill's bundled `agents/` folder. The skill copy stays the
-        portable contract source; the installer publishes installer-owned
-        copies into the native registry so lanes can be spawned by name.
-
-        Activation matches ``check_claude_commands``: only an installer-owned
-        Claude skill install is in scope. Leftover user files in
-        ``~/.claude/agents``, a ``--host`` that excludes claude, and a foreign
-        same-name skill must not fail the doctor.
-        """
-        if self.host_filter is not None and "claude" not in {name.strip() for name in self.host_filter}:
-            return
-        # Core installs do not publish native agents (F16: agents/ is
-        # extension surface); leftover files from a former full install are
-        # swept by the installer's downgrade path, not audited here.
-        if self.install_profile() == "core":
-            return
-        skills_claude_dir = self.host_skill_dir(self._find_host("claude"))
-        if self.is_foreign_skill(skills_claude_dir):
-            self.record(
-                "claude.agents",
-                "Claude native agents",
-                "info",
-                f"{skills_claude_dir} 被外来同名 skill 占用；native agent 检查跳过",
-            )
-            return
-        if not self.is_installer_owned(skills_claude_dir):
-            return
-        agents_dir = claude_agents_dir()
-        problems: List[str] = []
-        for name in NATIVE_AGENT_NAMES:
-            source = self.skill_root / "agents" / f"{name}.md"
-            target = agents_dir / f"{name}.md"
-            if not target.is_file():
-                problems.append(f"缺少 native agent：{target}")
-                continue
-            if not self.is_installer_owned(target):
-                problems.append(f"{target} 是用户自有文件（无安装器标记），未接管")
-                continue
-            if source.is_file() and target.read_bytes() != source.read_bytes():
-                problems.append(f"{name}.md 与当前 skill 源不一致（安装内容漂移）")
-        if not problems:
-            self.record(
-                "claude.agents",
-                "Claude native agents",
-                "ok",
-                f"{len(NATIVE_AGENT_NAMES)} 个编排 sidecar agent 已发布：orchestrator、planner、reviewer、confirmer",
-            )
-            return
-        if self.fix:
-            reinstalled = self._reinstall_claude_host()
-            if reinstalled:
-                remaining: List[str] = []
-                for name in NATIVE_AGENT_NAMES:
-                    source = self.skill_root / "agents" / f"{name}.md"
-                    target = agents_dir / f"{name}.md"
-                    if not target.is_file():
-                        remaining.append(f"缺少 native agent：{target}")
-                    elif not self.is_installer_owned(target):
-                        remaining.append(f"{target} 是用户自有文件（无安装器标记），未接管")
-                    elif source.is_file() and target.read_bytes() != source.read_bytes():
-                        remaining.append(f"{name}.md 与当前 skill 源不一致（安装内容漂移）")
-                if not remaining:
-                    self.record(
-                        "claude.agents",
-                        "Claude native agents",
-                        "fixed",
-                        "已重跑 install.sh 发布 Claude native agents",
-                    )
-                    return
-                self.record(
-                    "claude.agents",
-                    "Claude native agents",
-                    "warn",
-                    "已尝试重装；" + "；".join(remaining),
-                    self._claude_fix_command(),
-                )
-                return
-        self.record(
-            "claude.agents",
-            "Claude native agents",
-            "fail",
-            "；".join(problems),
-            self._claude_fix_command(),
+            f"{len(self.required_runtime_files())} 个运行时文件齐全，版本 {version}（profile={profile}）",
         )
 
-    def _stale_claude_artifacts(self, stages: Sequence[str]) -> List[Path]:
-        stale: List[Path] = []
-        commands_dir = claude_commands_dir()
-        skills_dir = self.host_skill_dir(self._find_host("claude"))
-        base_command = commands_dir / "spec.md"
-        if base_command.exists() or base_command.is_symlink():
-            stale.append(base_command)
-        for stage in (*stages, *STALE_STAGE_ALIASES):
-            colon_command = commands_dir / f"spec:{stage}.md"
-            if colon_command.exists() or colon_command.is_symlink():
-                stale.append(colon_command)
-            alias_dir = skills_dir / f"spec:{stage}"
-            if alias_dir.exists() or alias_dir.is_symlink():
-                stale.append(alias_dir)
-        for stage in STALE_SUBDIR_STAGES:
-            subdir_command = commands_dir / "spec" / f"{stage}.md"
-            if subdir_command.exists() or subdir_command.is_symlink():
-                stale.append(subdir_command)
-        return stale
-
-    def _find_host(self, host_id: str) -> HostSpec:
-        for host in _host_specs():
-            if host[0] == host_id:
-                return host
-        raise DoctorError(f"unknown host: {host_id}")
-
-    def _remove_stale_artifacts(self, stale: List[Path]) -> Tuple[List[Path], List[Path]]:
-        removed: List[Path] = []
-        skipped: List[Path] = []
-        for target in stale:
-            if self.is_installer_owned(target):
-                backed_up = self.move_to_backup(target)
-                self.fix_log.append(f"removed stale {target} -> {backed_up}")
-                removed.append(target)
-            else:
-                skipped.append(target)
-        return removed, skipped
-
-    def _reinstall_claude_host(self) -> bool:
-        install_sh = self.skill_root / "install.sh"
-        if not install_sh.is_file():
-            self.fix_log.append("reinstall skipped: install.sh missing from skill root")
-            return False
-        bash = shutil.which("bash")
-        if not bash:
-            self.fix_log.append("reinstall skipped: no bash on PATH; run manually: " + self._claude_fix_command())
-            return False
-        env = dict(os.environ, INSTALL_HOSTS="claude", SPEC_SKIP_SIGNING="1")
-        # Preserve the audited install's profile: a markerless reinstall
-        # would silently downgrade a full install to the core default.
-        env["INSTALL_PROFILE"] = self.install_profile()
+    def _resolve_hooks_dir(self, toplevel: Path) -> Path:
         completed = subprocess.run(
-            [bash, str(install_sh)], capture_output=True, text=True, env=env, cwd=str(self.skill_root)
+            ["git", "rev-parse", "--git-path", "hooks"],
+            cwd=str(toplevel),
+            capture_output=True,
+            text=True,
+            env=self._clean_env(),
         )
-        self.fix_log.append(
-            "reinstall claude host: exit "
-            + str(completed.returncode)
-            + (("\n" + completed.stdout[-500:]) if completed.stdout else "")
-            + (("\n" + completed.stderr[-500:]) if completed.stderr else "")
-        )
-        if completed.returncode != 0:
-            return False
-        stages = self.user_stages()
-        commands_dir = claude_commands_dir()
-        return all((commands_dir / "spec" / f"{stage}.md").is_file() for stage in stages)
+        if completed.returncode != 0 or not completed.stdout.strip():
+            return toplevel / ".git" / "hooks"
+        hooks_dir = Path(completed.stdout.strip())
+        if not hooks_dir.is_absolute():
+            hooks_dir = (toplevel / hooks_dir).resolve()
+        return hooks_dir
 
-    ACTIVATION_MARKER = "hooks/claude_activation_guard.py"
-    ACTIVATION_FILES = (
-        "hooks/claude_activation_guard.py",
-        "scripts/assess_spec_activation.py",
-        "scripts/activation_state.py",
-    )
-    ACTIVATION_EVENTS = ("UserPromptSubmit", "PreToolUse")
-
-    def _activation_scopes(self) -> List[Tuple[str, Path, str]]:
-        """(label, settings file, enabling command) for each settings file the installer can wire."""
-        enable = f"python3 {shlex.quote(str(self.skill_root / 'scripts' / 'install_activation_hooks.py'))} --mode on"
-        user = _home() / ".claude" / "settings.json"
-        project = self.project_root / ".claude" / "settings.json"
-        scopes = [("用户级", user, enable)]
-        if project.resolve() != user.resolve():
-            project_root = shlex.quote(str(self.project_root))
-            scopes.append(("项目级", project, f"{enable} --scope project --project-root {project_root}"))
-        return scopes
-
-    def _activation_entries(self, payload: dict) -> Dict[str, List[str]]:
-        hooks = payload.get("hooks") if isinstance(payload.get("hooks"), dict) else {}
-        found: Dict[str, List[str]] = {}
-        for event in self.ACTIVATION_EVENTS:
-            groups = hooks.get(event) if isinstance(hooks.get(event), list) else []
-            for group in groups:
-                entries = group.get("hooks") if isinstance(group, dict) and isinstance(group.get("hooks"), list) else []
-                for entry in entries:
-                    command = entry.get("command") if isinstance(entry, dict) else None
-                    if self._activation_command(command):
-                        found.setdefault(event, []).append(command)
-        return found
-
-    def _activation_command(self, command: object) -> bool:
-        """install_activation_hooks._is_ours: exactly `python3 <path>/hooks/claude_activation_guard.py`.
-
-        A command that merely mentions the guard (or chains more after it) is not wiring that
-        `--mode off` would remove, so it is never reported as wired.
-        """
-        if not isinstance(command, str):
-            return False
-        try:
-            words = shlex.split(command)
-        except ValueError:
-            return False
-        return len(words) == 2 and words[0] == "python3" and words[1].endswith("/" + self.ACTIVATION_MARKER)
-
-    def _activation_compile_errors(self) -> List[str]:
-        # builtin compile(): unlike py_compile it writes no bytecode into the skill tree
-        errors: List[str] = []
-        for rel in self.ACTIVATION_FILES:
-            path = self.skill_root / rel
-            try:
-                compile(path.read_bytes(), str(path), "exec", dont_inherit=True)
-            except (OSError, SyntaxError, ValueError) as exc:
-                errors.append(f"{rel}（{type(exc).__name__}）")
-        return errors
-
-    def check_claude_activation(self) -> None:
-        """Read-only: files present, wired in user or project settings, compilable, and (never inferred) live.
-
-        Wiring is the user's one-time choice, so this check never repairs it:
-        `--fix` leaves settings untouched. Like the other claude probes it is
-        skipped when --host excludes claude.
-        """
-        if self.host_filter is not None and "claude" not in {name.strip() for name in self.host_filter}:
-            return
-        title = "主动启用接线"
-        missing = [rel for rel in self.ACTIVATION_FILES if not (self.skill_root / rel).is_file()]
-        scopes = self._activation_scopes()
-        wired: List[Tuple[str, str, Dict[str, List[str]]]] = []
-        unreadable = ""
-        for label, settings, hint in scopes:
-            if not settings.is_file():
-                continue
-            try:
-                payload = json.loads(settings.read_text(encoding="utf-8"))
-                if not isinstance(payload, dict):
-                    raise ValueError("top level is not an object")
-            except (OSError, ValueError, RecursionError) as exc:
-                unreadable = unreadable or f"无法解析{label} Claude settings（{settings}），未能判断接线状态：{exc}"
-                continue
-            found = self._activation_entries(payload)
-            if found:
-                wired.append((label, hint, found))
-        if missing and not wired:
-            self.record(
-                "claude.activation",
-                title,
-                "info",
-                "启用守卫未安装（缺少 " + "、".join(missing) + "）；技能本身不受影响",
-            )
-            return
-        if unreadable:
-            self.record("claude.activation", title, "warn", unreadable)
-            return
-        if not wired:
-            self.record(
-                "claude.activation",
-                title,
-                "info",
-                "启用守卫文件已安装，但未接线：新任务不会自动评估（启用是一次性选择，默认保留现有设置）",
-                scopes[0][2],
-            )
-            return
-        expected = str(self.skill_root / self.ACTIVATION_MARKER)
-
-        def points_here(command: str) -> bool:
-            try:
-                return expected in shlex.split(command)
-            except ValueError:
-                return False
-
-        problems: List[str] = []
-        hints: List[str] = []
-        for label, hint, found in wired:
-            absent = [event for event in self.ACTIVATION_EVENTS if event not in found]
-            stale = [event for event, commands in found.items() if not any(points_here(c) for c in commands)]
-            if absent:
-                problems.append(f"{label}接线不完整，缺少事件：" + "、".join(absent) + "；先 off 再 on 以修复")
-            elif stale:
-                problems.append(
-                    f"{label}接线指向其他安装根（与当前技能目录不一致）：" + "、".join(stale) + "；重新执行 on 以迁移"
-                )
-            else:
-                continue
-            hints.append(hint)
-        if problems:
-            self.record("claude.activation", title, "warn", "；".join(problems), "；".join(hints))
-            return
-        labels = "、".join(label for label, _hint, _found in wired)
-        wired_hints = "；".join(hint for _label, hint, _found in wired)
-        if missing:
-            self.record(
-                "claude.activation",
-                title,
-                "warn",
-                f"已接线（{labels}）但守卫不可执行（目标文件缺失：" + "、".join(missing) + "）；"
-                "钩子触发时会报错而不是评估",
-                wired_hints,
-            )
-            return
-        errors = self._activation_compile_errors()
-        if errors:
-            self.record(
-                "claude.activation",
-                title,
-                "warn",
-                f"已接线（{labels}）但守卫文件无法编译：" + "、".join(errors) + "；钩子触发时会报错而不是评估",
-                "重新执行 bash install.sh 恢复技能文件",
-            )
-            return
-        self.record(
-            "claude.activation",
-            title,
-            "info",
-            f"已接线（{labels}）且守卫可执行；未经 live 验证：文件存在与钩子退出码不能证明模型实际主动采用，"
-            "该状态只由已记录的真实对照运行改变",
-        )
-
-    def check_pi_prompts(self) -> Optional[bool]:
-        """Native Pi prompt templates (F4): /spec + /spec:<stage> forwarders.
-
-        Pi registers <pi-root>/agent/prompts/*.md as slash commands; the
-        installer owns spec.md and spec:<stage>.md with sidecar markers.
-        This probe reports presence, stage-set/profile consistency, markers,
-        and the thin-forwarder shape (quoted frontmatter, literal $@,
-        contract-index pointer). Repair is an installer rerun (fix_note),
-        never an inline patch.
-        """
-        if self.host_filter is not None and "pi" not in {name.strip() for name in self.host_filter}:
-            return None
-        pi_dir = self.host_skill_dir(self._find_host("pi"))
-        prompts_dir = pi_prompts_dir()
-        stages = self.user_stages()
-        expected = [prompts_dir / "spec.md"] + [prompts_dir / f"spec:{stage}.md" for stage in stages]
-        has_skill = pi_dir.exists() or pi_dir.is_symlink()
-        has_templates = any(path.exists() or path.is_symlink() for path in expected)
-        if not has_skill and not has_templates and not prompts_dir.exists():
-            # Host not in use: nothing owned by us to verify.
-            return True
-        if self.is_foreign_skill(pi_dir):
-            self.record(
-                "pi.prompts",
-                "Pi 命令模板",
-                "info",
-                f"{pi_dir} 被外来同名 skill 占用；模板检查跳过",
-            )
-            return True
-
-        problems: List[str] = []
-        for path in expected:
-            if not path.is_file():
-                problems.append(f"缺少模板：{path.name}（/{path.stem} 无法触发）")
-                continue
-            if path.stat().st_size == 0:
-                problems.append(f"模板为空：{path.name}")
-                continue
-            marker = Path(f"{path}.spec-skill-install")
-            if not marker.is_file():
-                problems.append(f"缺少安装器 marker：{path.name}")
-            text = path.read_text(encoding="utf-8", errors="replace")
-            if 'description: "' not in text:
-                problems.append(f"frontmatter description 缺失或未加引号：{path.name}")
-            if "argument-hint:" not in text:
-                problems.append(f"argument-hint 缺失：{path.name}")
-            if "$@" not in text:
-                problems.append(f"正文缺少参数透传 $@：{path.name}")
-            if "references/commands.md" not in text:
-                problems.append(f"正文未指向阶段契约索引：{path.name}")
-
-        # Installer-owned templates beyond the current profile/stage set:
-        # downgrade (full->core) and stage retirement both leave these
-        # behind. Ownership evidence is the sidecar marker; user-authored
-        # same-shape files are never flagged.
-        expected_names = {path.name for path in expected}
-        stale: List[str] = []
-        if prompts_dir.is_dir():
-            for candidate in sorted(prompts_dir.glob("spec:*.md")):
-                if candidate.name in expected_names:
-                    continue
-                if Path(f"{candidate}.spec-skill-install").is_file():
-                    stale.append(candidate.name)
-        if stale:
-            problems.append("阶段集外安装器残留模板：" + "、".join(stale[:5]) + ("…" if len(stale) > 5 else ""))
-
-        if not problems:
-            self.record(
-                "pi.prompts",
-                "Pi 命令模板",
-                "ok",
-                f"{len(expected)} 个模板齐全（/spec + {len(stages)} 阶段），形状与 marker 一致",
-            )
-            return True
-        blocking = any(item.startswith(("缺少模板", "模板为空")) for item in problems)
-        self.record(
-            "pi.prompts",
-            "Pi 命令模板",
-            "fail" if blocking else "warn",
-            "；".join(problems),
-            f"INSTALL_HOSTS=pi bash {self.skill_root / 'install.sh'}（阶段集随 INSTALL_PROFILE core/full）",
-        )
-        return False
-
-    def check_migration_wrappers(self) -> bool:
-        """Report foreign source-command-spec-* migration wrappers (F4).
-
-        Codex CLI's command_migration plugin once converted spec-<stage>
-        command sources into Agent Skills under ~/.agents/skills. The sources
-        are gone, the wrappers embed stale stage semantics, and Pi surfaces
-        them as duplicate /skill:source-command-spec-<stage> commands.
-        Report-only by design, --fix included: removal belongs to the F5
-        explicit checklist, never to the doctor.
-        """
-        base = agents_skills_dir()
-        if not base.is_dir():
-            return True
-        wrappers = sorted(entry for entry in base.glob("source-command-spec-*") if entry.is_dir())
-        if not wrappers:
-            return True
-        matched: List[str] = []
-        unmatched: List[str] = []
-        for wrapper in wrappers:
-            try:
-                text = (wrapper / "SKILL.md").read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                text = ""
-            stage = wrapper.name.removeprefix("source-command-spec-")
-            if f"Migrated source command `spec-{stage}`" in text:
-                matched.append(wrapper.name)
-            else:
-                unmatched.append(wrapper.name)
-        detail = (
-            f"发现 {len(matched)} 个 spec 迁移包装（Codex CLI command_migration 产物，"
-            "内嵌旧阶段语义，在 Pi 补全面重复暴露）"
-        )
-        if matched:
-            shown = "、".join(matched[:6]) + ("…" if len(matched) > 6 else "")
-            detail += f"：{shown}"
-        if unmatched:
-            detail += f"；指纹不匹配需人工确认：{'、'.join(unmatched[:4])}"
-        self.record(
-            "migration.wrappers",
-            "迁移包装",
-            "warn",
-            detail,
-            "只报告不删除；处置走 F5 显式清单（逐目录指纹核对后移除，本检查永不自动清理）",
-        )
-        return False
-
-    def check_zcode_symlink(self) -> None:
-        zcode_dir = self.host_skill_dir(self._find_host("zcode"))
-        if not zcode_dir.is_symlink():
-            return
-        target = Path(os.readlink(str(zcode_dir)))
-        if not target.is_absolute():
-            target = zcode_dir.parent / target
-        if target.exists():
-            self.record("zcode.symlink", "ZCode 链接", "info", f"{zcode_dir} -> {target}")
-        else:
-            self.record(
-                "zcode.symlink",
-                "ZCode 链接",
-                "fail",
-                f"悬空符号链接：{zcode_dir} -> {target}（目标已不存在）",
-                f"删除悬空链接后重跑 INSTALL_HOSTS=zcode bash {self.skill_root / 'install.sh'}",
-            )
-
-    def check_project_git(self) -> Optional[Path]:
-        completed = subprocess.run(
+    def check_project_hooks(self) -> None:
+        toplevel_run = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
             cwd=str(self.project_root),
             capture_output=True,
             text=True,
-            env=self.clean_env(),
+            env=self._clean_env(),
         )
-        if completed.returncode == 0:
-            toplevel = Path(completed.stdout.strip())
-            self.record("project.git", "项目 Git 仓库", "ok", f"{toplevel}")
-            return toplevel
-        self.record(
-            "project.git",
-            "项目 Git 仓库",
-            "warn",
-            f"{self.project_root} 不是 Git 工作树；done/push 与 hooks 门禁不可用",
-            "git init 并完成首次提交，或对已托管仓库运行 doctor",
-        )
-        return None
-
-    def check_project_spec(self) -> None:
-        spec_root = self.project_root / ".spec"
-        specs_dir = spec_root / "specs"
-        archive_dir = specs_dir / "archive"
-        if not spec_root.is_dir():
-            if self.fix:
-                specs_dir.mkdir(parents=True, exist_ok=True)
-                archive_dir.mkdir(parents=True, exist_ok=True)
-                self.record("project.spec", "项目 .spec 结构", "fixed", f"已创建 {specs_dir} 与 {archive_dir}")
-            else:
-                self.record(
-                    "project.spec",
-                    "项目 .spec 结构",
-                    "info",
-                    "尚未初始化 .spec（还没有任务包属于正常状态）",
-                    "需要时运行带 --fix 的 doctor 创建骨架，或直接开始第一个任务包",
-                )
-            return
-        missing: List[Path] = [path for path in (specs_dir, archive_dir) if not path.is_dir()]
-        if missing:
-            if self.fix:
-                for path in missing:
-                    path.mkdir(parents=True, exist_ok=True)
-                    self.fix_log.append(f"created {path}")
-                self.record(
-                    "project.spec",
-                    "项目 .spec 结构",
-                    "fixed",
-                    "已补建：" + "、".join(str(path) for path in missing),
-                )
-            else:
-                self.record(
-                    "project.spec",
-                    "项目 .spec 结构",
-                    "warn",
-                    "缺少目录：" + "、".join(str(path) for path in missing),
-                    "带 --fix 运行 doctor 自动补建",
-                )
-            return
-        package_count = sum(1 for child in specs_dir.iterdir() if child.is_dir() and child.name != "archive")
-        self.record(
-            "project.spec",
-            "项目 .spec 结构",
-            "ok",
-            f"结构齐全；活跃任务包 {package_count} 个" + ("（尚无任务包）" if package_count == 0 else ""),
-        )
-
-    def check_project_hooks(self, git_toplevel: Optional[Path]) -> None:
-        if git_toplevel is None:
+        if toplevel_run.returncode != 0:
             self.record(
                 "project.hooks",
                 "Git hooks 指针",
                 "info",
-                "非 Git 仓库，跳过（适用外）",
+                f"{self.project_root} 不是 Git 工作树，跳过（适用外）",
             )
             return
-        hooks_dir = self.resolve_hooks_dir(git_toplevel)
+        toplevel = Path(toplevel_run.stdout.strip())
+        hooks_dir = self._resolve_hooks_dir(toplevel)
+        current_checker = (self.skill_root / "scripts" / CHECKER_NAME).resolve()
         managed: List[str] = []
-        other_copy: List[str] = []
-        unmanaged: List[str] = []
         problems: List[str] = []
-        current_checker = (self.skill_root / "scripts" / "check_all_spec_packages.py").resolve()
         for name in ("pre-commit", "pre-push"):
             hook = hooks_dir / name
             if not hook.is_file():
                 continue
-            # hooks may carry any encoding; ownership is decided on the ASCII checker line
             content = hook.read_text(encoding="utf-8", errors="replace")
-            if not spec_owned_hook(content):
-                unmanaged.append(f"{name}：项目自有 hook（未接管）")
-                continue
             match = HOOK_CHECKER_RE.search(content)
-            rendered = Path(match.group(1)) if match else None
-            if rendered is None or "__SPEC_CHECK_ALL_" in str(rendered):
-                problems.append(f"{name}：模板未渲染，checker 占位符仍在")
-            elif not rendered.is_file():
-                problems.append(f"{name}：指向不存在的 {rendered}（skill 已移动/删除）")
+            if match is None or Path(match.group(1)).name != CHECKER_NAME:
+                continue  # project-owned hook, not ours
+            rendered = Path(match.group(1))
+            if not rendered.is_file():
+                problems.append(f"{name}：指向不存在的 {rendered}")
             elif not os.access(hook, os.X_OK):
-                problems.append(f"{name}：缺少执行权限，Git 会跳过它，门禁不生效")
+                problems.append(f"{name}：缺少执行权限")
             elif rendered.resolve() != current_checker:
-                other_copy.append(f"{name}：可用但指向另一份 skill 副本（{rendered}）")
+                problems.append(f"{name}：指向另一份 skill 副本（{rendered}）")
             else:
-                managed.append(f"{name}：指向当前 skill")
+                managed.append(name)
         if problems:
-            if self.fix:
-                fixed = self._reinstall_hooks(git_toplevel, problems)
-                if fixed:
-                    self.record("project.hooks", "Git hooks 指针", "fixed", "已备份旧 hook 并重新渲染指针")
-                    return
             self.record(
                 "project.hooks",
                 "Git hooks 指针",
                 "fail",
                 "；".join(problems),
-                self.install_hint(git_toplevel, hooks_dir),
+                f"python3 {self.skill_root / 'scripts' / 'install_git_hooks.py'} --root {toplevel}",
             )
-            return
-        detail_parts = managed + other_copy + unmanaged
-        if not detail_parts:
-            # AUD-07: hooks are the disk-truth gate surface; a repository
-            # without them silently loses commit/push enforcement, so the
-            # missing-hook finding is a warning, not an optional note.
+        elif managed:
+            self.record("project.hooks", "Git hooks 指针", "ok", "、".join(managed) + "：指向当前 skill")
+        else:
             self.record(
                 "project.hooks",
                 "Git hooks 指针",
                 "warn",
                 f"未安装磁盘真源 hooks（门禁不生效；hooks 目录 {hooks_dir}）",
-                self.install_hint(git_toplevel, hooks_dir),
+                f"python3 {self.skill_root / 'scripts' / 'install_git_hooks.py'} --root {toplevel}",
             )
-            return
-        if other_copy:
-            self.record("project.hooks", "Git hooks 指针", "warn", "；".join(detail_parts))
-        elif managed:
-            self.record("project.hooks", "Git hooks 指针", "ok", "；".join(detail_parts))
-        else:
-            self.record("project.hooks", "Git hooks 指针", "info", "；".join(detail_parts))
 
-    def resolve_hooks_dir(self, git_toplevel: Path) -> Path:
-        # Git's own resolution honors core.hooksPath (local or global) and
-        # linked worktrees; a hardcoded .git/hooks misses both.
-        completed = subprocess.run(
-            ["git", "rev-parse", "--git-path", "hooks"],
-            cwd=str(git_toplevel),
-            capture_output=True,
-            text=True,
-            env=self.clean_env(),
-        )
-        if completed.returncode != 0 or not completed.stdout.strip():
-            return git_toplevel / ".git" / "hooks"
-        hooks_dir = Path(completed.stdout.strip())
-        if not hooks_dir.is_absolute():
-            hooks_dir = (git_toplevel / hooks_dir).resolve()
-        return hooks_dir
-
-    def hooks_dir_installable(self, git_toplevel: Path, hooks_dir: Path) -> bool:
-        """Whether install_git_hooks.py would accept this repository, decided by its own ``git_paths``.
-
-        ``hooks_dir`` is doctor's (resolved) view, used only in messages; the installer compares paths
-        lexically, so a reimplemented rule disagrees on symlinked hooksPath values.
-        """
-        try:
-            from install_git_hooks import git_paths
-        except ImportError:
-            return False
-        try:
-            git_paths(git_toplevel)
-        except (OSError, ValueError):
-            return False
-        return True
-
-    def install_hint(self, git_toplevel: Path, hooks_dir: Path) -> str:
-        installer = (
-            f"python3 {shlex.quote(str(self.skill_root / 'scripts' / 'install_git_hooks.py'))} "
-            f"--root {shlex.quote(str(git_toplevel))}"
-        )
-        if self.hooks_dir_installable(git_toplevel, hooks_dir):
-            return f"需要时运行 {installer}"
-        # install_git_hooks refuses hooks dirs outside the repository, so the
-        # hint must not suggest a command that cannot take effect.
-        return (
-            f"core.hooksPath 指向仓库外的 {hooks_dir}，安装器拒绝写入；"
-            f"请在该目录自行放置门禁，或取消 core.hooksPath 后运行 {installer}"
-        )
-
-    def _reinstall_hooks(self, git_toplevel: Path, problems: List[str]) -> bool:
-        hooks_dir = self.resolve_hooks_dir(git_toplevel)
-        # Decide everything the installer would refuse BEFORE moving a hook: a repair that
-        # backs up the gate and then fails leaves the repository (or a shared hooks dir) ungated.
-        if not self.hooks_dir_installable(git_toplevel, hooks_dir):
-            self.fix_log.append(f"skipped hook repair: {hooks_dir} is outside the repository; the installer refuses it")
-            return False
-        owned: List[Path] = []
-        for name in ("pre-commit", "pre-push"):
-            hook = hooks_dir / name
-            if not hook.is_file():
+    def check_stop_hook(self) -> None:
+        """The Stop hook converges unfinished packages; it must be wired."""
+        settings_files = [
+            _home() / ".claude" / "settings.json",
+            self.project_root / ".claude" / "settings.json",
+        ]
+        wired: List[str] = []
+        for settings in settings_files:
+            try:
+                if "claude_stop_guard" in settings.read_text(encoding="utf-8"):
+                    wired.append(str(settings))
+            except OSError:
                 continue
-            if not spec_owned_hook(hook.read_text(encoding="utf-8", errors="replace")):
-                self.fix_log.append(f"skipped hook repair: {hook} is project-owned; chain the Spec gate manually")
-                return False
-            owned.append(hook)
-        moved: List[Tuple[Path, Path]] = []
-        repaired = False
-        try:
-            for hook in owned:
-                backed_up = self.move_to_backup(hook)
-                moved.append((hook, backed_up))
-                self.fix_log.append(f"backed up stale {hook} -> {backed_up}")
-            installer = self.skill_root / "scripts" / "install_git_hooks.py"
-            completed = subprocess.run(
-                [sys.executable, str(installer), "--root", str(git_toplevel)],
-                capture_output=True,
-                text=True,
+        if wired:
+            self.record("hooks.stop", "Stop hook 接线", "ok", "已接线：" + "、".join(sorted(wired)))
+        else:
+            self.record(
+                "hooks.stop",
+                "Stop hook 接线",
+                "warn",
+                "Claude settings 未引用 claude_stop_guard；任务未完成时不会有停止守卫",
+                "在 Claude settings 的 Stop hook 中登记 hooks/claude_stop_guard.py",
             )
-            self.fix_log.append(
-                "install_git_hooks: exit "
-                + str(completed.returncode)
-                + (("\n" + completed.stdout[-300:]) if completed.stdout else "")
-                + (("\n" + completed.stderr[-300:]) if completed.stderr else "")
+
+    # ------------------------------------------------------------ advisories
+
+    def check_checkpoint_leftover(self) -> None:
+        """A retired update-checkpoint.json is safe to delete; advisory only."""
+        leftovers = sorted(self.project_root.rglob("update-checkpoint.json"))
+        if leftovers:
+            self.record(
+                "advice.checkpoint",
+                "遗留 update-checkpoint",
+                "info",
+                "发现已退役的 update-checkpoint.json：" + "、".join(str(p) for p in leftovers[:3]),
+                "确认无需恢复后删除这些文件",
             )
-            repaired = completed.returncode == 0 and all(
-                (hooks_dir / name).is_file() for name in ("pre-commit", "pre-push")
+
+    def check_activation_leftover(self) -> None:
+        """A retired claude_activation_guard settings entry is safe to remove."""
+        settings_files = [
+            _home() / ".claude" / "settings.json",
+            self.project_root / ".claude" / "settings.json",
+        ]
+        wired: List[str] = []
+        for settings in settings_files:
+            try:
+                if ACTIVATION_HOOK in settings.read_text(encoding="utf-8"):
+                    wired.append(str(settings))
+            except OSError:
+                continue
+        if wired:
+            self.record(
+                "advice.activation",
+                "已退役的启用守卫",
+                "info",
+                "Claude settings 仍引用 claude_activation_guard.py：" + "、".join(sorted(wired)),
+                "删除这些 settings 中引用该 hook 的条目",
             )
-        except OSError as exc:
-            self.fix_log.append(f"hook repair stopped: {exc.__class__.__name__}: {exc}")
-        finally:
-            if not repaired:
-                for hook, backed_up in moved:  # a failed repair must never remove a gate
-                    if not hook.exists():
-                        shutil.move(str(backed_up), str(hook))
-                        self.fix_log.append(f"restored {hook} after the failed reinstall")
-        return repaired
 
     # ------------------------------------------------------------------- run
 
     def run(self) -> int:
         self.check_python_runtime()
         self.check_git_available()
-        layout_ok = self.check_skill_layout()
-        self.check_skill_scripts()
-        # Not gated by layout_ok: missing sample files are absorbed by the
-        # per-sample skip rule (all missing -> info), never re-reported here.
-        self.check_skill_channels()
-        self.check_skill_marker()
-        self.check_hosts_installed()
-        if layout_ok:
-            self.check_claude_commands()
-            self.check_claude_agents()
-        # Independent of layout: "files missing" is itself one of the states it reports.
-        self.check_claude_activation()
-        if layout_ok:
-            self.check_pi_prompts()
-        self.check_migration_wrappers()
-        self.check_zcode_symlink()
-        git_toplevel = self.check_project_git()
-        self.check_project_spec()
-        self.check_project_hooks(git_toplevel)
-        if self.fix and self.fix_log:
-            # Repairs (installer re-runs) can change host versions; refresh the
-            # host scan so one report never mixes pre-fix and post-fix facts.
-            self.check_hosts_installed()
+        self.check_skill_layout()
+        self.check_project_hooks()
+        self.check_stop_hook()
+        self.check_checkpoint_leftover()
+        self.check_activation_leftover()
         return 1 if self.failing() else 0
 
     # ---------------------------------------------------------------- output
 
     STATUS_ORDER = ("fail", "warn", "fixed", "ok", "info")
-
     STATUS_TITLES = {
         "fail": "需要修复",
         "warn": "需要关注",
@@ -1545,9 +387,8 @@ class Doctor:
 
     def render_markdown(self) -> str:
         lines: List[str] = ["# Spec 环境体检", ""]
-        lines.append(f"- skill 版本：{self.skill_version()}（{self.skill_root}）")
+        lines.append(f"- skill 版本：{self._version(self.skill_root)}（{self.skill_root}）")
         lines.append(f"- 项目根：{self.project_root}")
-        lines.append(f"- 修复模式：{'开（--fix）' if self.fix else '关'}")
         lines.append("")
         for status in self.STATUS_ORDER:
             group = [check for check in self.checks if check.status == status]
@@ -1560,35 +401,28 @@ class Doctor:
                 if check.fix_note:
                     lines.append(f"  - 修复：{check.fix_note}")
             lines.append("")
-        if self.fix_log:
-            lines.append("## 修复日志")
-            lines.append("")
-            for entry in self.fix_log:
-                for line in entry.splitlines():
-                    lines.append(f"- {line}")
-            lines.append("")
         return "\n".join(lines).rstrip() + "\n"
 
     def render_json(self) -> str:
-        summary = {status: sum(1 for check in self.checks if check.status == status) for status in self.STATUS_ORDER}
+        from datetime import datetime, timezone
+
+        summary = {status: sum(1 for c in self.checks if c.status == status) for status in self.STATUS_ORDER}
         payload = {
             "generatedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-            "fix": self.fix,
             "skillRoot": str(self.skill_root),
-            "skillVersion": self.skill_version(),
+            "skillVersion": self._version(self.skill_root),
             "projectRoot": str(self.project_root),
             "checks": [
                 {
-                    "id": check.id,
-                    "title": check.title,
-                    "status": check.status,
-                    "detail": check.detail,
-                    "fixNote": check.fix_note,
+                    "id": c.id,
+                    "title": c.title,
+                    "status": c.status,
+                    "detail": c.detail,
+                    "fixNote": c.fix_note,
                 }
-                for check in self.checks
+                for c in self.checks
             ],
             "summary": summary,
-            "fixLog": self.fix_log,
             "exitCode": 1 if self.failing() else 0,
         }
         return json.dumps(payload, ensure_ascii=False, indent=2)
@@ -1597,7 +431,8 @@ class Doctor:
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Self-check and repair the spec environment (skill install, host mounts, project skeleton, git hooks)."
+            "Self-check the spec environment (Python, git, installed skill package, "
+            "rendered Git hooks, Stop hook wiring)."
         )
     )
     parser.add_argument("--root", default=".", help="Target project root (default: current directory)")
@@ -1610,7 +445,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--host",
         default=None,
-        help="Comma-separated host ids to scan (default: all known hosts)",
+        help="Accepted for backwards compatibility; host scan is manifest-driven now",
     )
     parser.add_argument("--format", choices=("markdown", "json"), default="markdown")
     return parser.parse_args(argv)
@@ -1626,18 +461,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not project_root.is_dir():
         print(f"error: project root is not a directory: {project_root}", file=sys.stderr)
         return 2
-    host_filter = [name for name in (args.host.split(",") if args.host else [])]
-    doctor = Doctor(
-        skill_root=skill_root,
-        project_root=project_root,
-        fix=args.fix,
-        host_filter=host_filter or None,
-    )
-    try:
-        exit_code = doctor.run()
-    except DoctorError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
+    doctor = Doctor(skill_root=skill_root, project_root=project_root, fix=args.fix)
+    exit_code = doctor.run()
     output = doctor.render_json() if args.format == "json" else doctor.render_markdown()
     print(output)
     return exit_code

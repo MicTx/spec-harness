@@ -12,17 +12,15 @@ Four representative sandbox paths (main evidence layer, doc 04 §2.2):
 Each path asserts install parity for its profile and that the internal read
 capabilities (``route_spec_package.py --format json --brief`` and
 ``spec_verify.py show``) are callable on the installed tree with valid
-envelopes. Export trees (core/full, ``--skip-signing``) must run from
-relative paths with no repository dependency and answer the four measurement
-surfaces of ``measure_skill_surface.py``.
+envelopes. Export trees (core/full) must run from relative paths with no
+repository dependency.
 
 Sandbox discipline follows ``tests/test_install_profile.py`` (hermetic HOME,
-controlled PATH, ``SPEC_SKIP_SIGNING=1``, inherited INSTALL_* stripped).
+controlled PATH, inherited INSTALL_* stripped).
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import subprocess
@@ -34,19 +32,10 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 INSTALLER = ROOT / "install.sh"
 EXPORTER = ROOT / "scripts" / "export_skill_package.py"
-PARITY = ROOT / "scripts" / "verify_install_parity.py"
 
 CORE_STAGES = ("new", "run", "check", "done", "push", "doctor")
 EXTENDED_STAGES = ("goal", "autoplan", "autorun", "update", "status", "organize")
-CORE_EXCLUDED_SCRIPTS = (
-    "autorun_spawn.py",
-    "autoplan_spawn.py",
-    "autoplan_gate.py",
-    "chain_spawn_support.py",
-    "chain_recovery.py",
-    "chain_lifecycle.py",
-    "sweep_chain_windows.py",
-)
+CORE_EXCLUDED_SCRIPTS = ("autoplan_gate.py", "chain_state.py")
 
 requires_bash = pytest.mark.skipif(
     subprocess.run(["bash", "--version"], capture_output=True).returncode != 0 or not Path("/bin/bash").exists(),
@@ -56,7 +45,7 @@ requires_bash = pytest.mark.skipif(
 
 def run_export(output: Path, *extra: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, str(EXPORTER), "--output", str(output), "--force", "--skip-signing", *extra],
+        [sys.executable, str(EXPORTER), "--output", str(output), "--force", *extra],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -64,7 +53,9 @@ def run_export(output: Path, *extra: str) -> subprocess.CompletedProcess:
     )
 
 
-def tree_manifest(root: Path, skip_names: frozenset = frozenset({".spec-skill-install"})) -> dict:
+def tree_manifest(
+    root: Path, skip_names: frozenset = frozenset({".spec-skill-install", "install-manifest.json"})
+) -> dict:
     manifest: dict[str, bytes] = {}
     for path in sorted(root.rglob("*")):
         if path.is_file() and not any(part in ("__pycache__",) for part in path.parts):
@@ -80,14 +71,11 @@ def sandbox_env(home: Path, extra_env: dict | None = None) -> dict:
         "HOME": str(home),
         "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
         "BACKUP_ROOT": str(home / ".spec-skill-backups"),
-        "SPEC_SKIP_SIGNING": "1",
     }
     for var in (
         "INSTALL_HOSTS",
         "INSTALL_PROFILE",
         "SOURCE_DIR",
-        "SPEC_SIGNING_IDENTITY",
-        "SPEC_SIGNING_KEY",
         "FORCE",
         "INSTALL_DIR",
     ):
@@ -173,18 +161,33 @@ def install_fixture_package(root: Path) -> Path:
     return package
 
 
-def run_parity(install: Path, profile: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [sys.executable, str(PARITY), "--install", str(install), "--repo", str(ROOT), "--profile", profile],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        timeout=300,
+def assert_export_parity(install: Path, profile: str, reference: Path) -> None:
+    """Compare the complete installed tree against an independent profile export."""
+    result = run_export(reference, "--profile", profile)
+    assert result.returncode == 0, result.stderr
+    manifest = json.loads((install / "install-manifest.json").read_text(encoding="utf-8"))
+    assert manifest == {
+        "host": "claude",
+        "path": str(install),
+        "profile": profile,
+        "version": manifest["version"],
+    }
+    assert manifest["version"] == next(
+        line.split("=", 1)[1].strip().strip('"')
+        for line in (install / "pyproject.toml").read_text(encoding="utf-8").splitlines()
+        if line.startswith("version = ")
+    )
+    actual = tree_manifest(install)
+    expected = tree_manifest(reference)
+    assert actual == expected, (
+        f"profile {profile}: missing={sorted(expected.keys() - actual.keys())} "
+        f"extra={sorted(actual.keys() - expected.keys())} "
+        f"changed={sorted(name for name in expected.keys() & actual.keys() if expected[name] != actual[name])}"
     )
 
 
-def capability_envelopes(root: Path) -> dict:
-    """brief (--slug) and show envelopes from the tree's own scripts, relative root."""
+def route_brief(root: Path) -> dict:
+    """The tree's own route-report envelope, run from a relative root."""
     brief = subprocess.run(
         [
             sys.executable,
@@ -204,29 +207,19 @@ def capability_envelopes(root: Path) -> dict:
     )
     assert brief.returncode == 0, brief.stderr
     envelope = json.loads(brief.stdout)
-    assert envelope["capability"] == "brief"
     assert envelope["slug"] == FIXTURE_SLUG
-    assert envelope["source"]["spec_sha256"] == _digest(root / ".spec" / "specs" / FIXTURE_SLUG / "spec.md")
-    assert envelope["source"]["tasks_sha256"] == _digest(root / ".spec" / "specs" / FIXTURE_SLUG / "tasks.md")
-    assert envelope["complete"] is True
-
-    show = subprocess.run(
+    assert envelope["tasks"], "brief report must include task slices"
+    evidence = subprocess.run(
         [sys.executable, "scripts/spec_verify.py", "show", "--root", ".", "--slug", FIXTURE_SLUG],
         cwd=str(root),
         capture_output=True,
         text=True,
         timeout=120,
     )
-    assert show.returncode == 0, show.stderr
-    show_envelope = json.loads(show.stdout)
-    assert show_envelope["capability"] == "evidence"
-    assert show_envelope["complete"] is True
-    assert "freshness" in show_envelope
-    return {"brief": envelope, "show": show_envelope}
-
-
-def _digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    assert evidence.returncode == 0, evidence.stderr
+    records = [json.loads(line) for line in evidence.stdout.splitlines() if line.strip()]
+    assert records == [json.loads(FIXTURE_RUNS)]
+    return envelope
 
 
 # ---------------------------------------------------------------------------
@@ -247,13 +240,12 @@ def test_matrix_fresh_core_install(tmp_path):
     for name in CORE_EXCLUDED_SCRIPTS:
         assert not (skill / "scripts" / name).exists(), name
 
-    parity = run_parity(skill, "core")
-    assert parity.returncode == 0, parity.stdout
-    assert "PASS" in parity.stdout
+    assert_export_parity(skill, "core", tmp_path / "core-reference")
 
     install_fixture_package(skill)
-    envelopes = capability_envelopes(skill)
-    assert envelopes["brief"]["tasks"], "brief envelope must carry task slices on a core install"
+    envelope = route_brief(skill)
+    assert envelope["slug"] == FIXTURE_SLUG
+    assert envelope["tasks"], "brief envelope must carry task slices on a core install"
 
 
 # ---------------------------------------------------------------------------
@@ -270,11 +262,10 @@ def test_matrix_fresh_full_install(tmp_path):
 
     assert claude_stage_commands(home) == sorted(f"{stage}.md" for stage in CORE_STAGES + EXTENDED_STAGES)
     skill = skill_dir(home)
-    parity = run_parity(skill, "full")
-    assert parity.returncode == 0, parity.stdout
+    assert_export_parity(skill, "full", tmp_path / "full-reference")
 
     install_fixture_package(skill)
-    capability_envelopes(skill)
+    assert route_brief(skill)["slug"] == FIXTURE_SLUG
 
 
 # ---------------------------------------------------------------------------
@@ -319,11 +310,10 @@ def test_matrix_full_upgrade_restores_installer_owned_surface(tmp_path):
     assert swept, "user sidecar must land in backups on reinstall"
     assert swept[0].read_text(encoding="utf-8").startswith("# user-authored sidecar")
 
-    parity = run_parity(skill, "full")
-    assert parity.returncode == 0, parity.stdout
+    assert_export_parity(skill, "full", tmp_path / "full-reference")
 
     install_fixture_package(skill)
-    capability_envelopes(skill)
+    assert route_brief(skill)["slug"] == FIXTURE_SLUG
 
 
 # ---------------------------------------------------------------------------
@@ -344,16 +334,15 @@ def test_matrix_core_downgrade_sweeps_and_keeps_capabilities(tmp_path):
     skill = skill_dir(home)
     for name in CORE_EXCLUDED_SCRIPTS:
         assert not (skill / "scripts" / name).exists(), name
-    for excluded in ("server", "slots"):
+    for excluded in ("slots",):
         assert not (skill / excluded).exists(), excluded
     # agents/ keeps only the host discovery metadata; the agent contracts stay extension surface.
     assert sorted(entry.name for entry in (skill / "agents").iterdir()) == ["openai.yaml"]
 
-    parity = run_parity(skill, "core")
-    assert parity.returncode == 0, parity.stdout
+    assert_export_parity(skill, "core", tmp_path / "core-reference")
 
     install_fixture_package(skill)
-    capability_envelopes(skill)
+    assert route_brief(skill)["slug"] == FIXTURE_SLUG
 
 
 # ---------------------------------------------------------------------------
@@ -368,19 +357,6 @@ def test_matrix_export_tree_runs_from_relative_paths(tmp_path, profile):
     assert result.returncode == 0, result.stderr
 
     install_fixture_package(export)
-    envelopes = capability_envelopes(export)
-    assert envelopes["show"]["counts"]["total_matching"] >= 1
-    assert json.loads(envelopes["show"]["items"][0]["raw"])["task"] == "task_0001"
-
-    measure = subprocess.run(
-        [sys.executable, "scripts/measure_skill_surface.py", "--root", ".", "--json"],
-        cwd=str(export),
-        capture_output=True,
-        text=True,
-        timeout=120,
-        env={**os.environ, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
-    )
-    assert measure.returncode == 0, measure.stderr
-    surfaces = {s["name"]: s["bytes"] for s in json.loads(measure.stdout)["surfaces"]}
-    assert set(surfaces) == {"metadata", "skill", "stages", "templates"}
-    assert all(isinstance(v, int) and v > 0 for v in surfaces.values())
+    envelope = route_brief(export)
+    assert envelope["slug"] == FIXTURE_SLUG
+    assert envelope["tasks"], "export tree must route the fixture package"

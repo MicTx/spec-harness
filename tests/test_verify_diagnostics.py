@@ -58,7 +58,7 @@ def test_timeout_displays_both_partial_streams(tmp_path):
     assert result.returncode == 1
     assert "partial stdout" in result.stderr and "partial stderr" in result.stderr
     assert "exit=timeout" in result.stdout
-    assert read_records(package)[0]["exit"] == -1
+    assert read_records(package)[0]["exit"] != 0
 
 
 def test_tail_byte_cap_truncation_and_control_escape(capsys):

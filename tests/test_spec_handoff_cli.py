@@ -208,7 +208,8 @@ def test_route_and_status_surface_handoff():
         assert "handoff agent/" in status.stdout
 
 
-def test_check_gate_fails_on_invalid_handoff():
+def test_check_gate_ignores_handoff_advisories():
+    """handoff.md is session-boundary memory, never a delivery gate (C-series)."""
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         package = _package(root)
@@ -230,8 +231,9 @@ def test_check_gate_fails_on_invalid_handoff():
             text=True,
             cwd=root,
         )
-        assert broken.returncode == 1
-        assert "invalid handoff document" in broken.stderr
+        assert broken.returncode == 1  # unfinished task, not the handoff
+        assert "handoff" not in broken.stderr
+        assert "handoff" not in broken.stdout
 
 
 def test_archive_closes_handoff_and_moves_it():
@@ -252,24 +254,6 @@ def test_archive_closes_handoff_and_moves_it():
                 "--slug",
                 package.name,
                 "--archive",
-                "--verified-assumption",
-                "假设成立",
-                "--delivered",
-                "交付内容",
-                "--simplification",
-                "最小实现",
-                "--out-of-scope",
-                "不做扩展",
-                "--touched-area",
-                "scripts",
-                "--untouched-area",
-                "docs",
-                "--manual-evidence",
-                "手工验证通过",
-                "--effect-metric",
-                "检查项=1",
-                "--consistency-evidence",
-                "一致",
             ],
             capture_output=True,
             text=True,
@@ -343,9 +327,10 @@ def test_oversized_handoff_fails_clean_across_lifecycle():
             text=True,
             cwd=root,
         )
-        assert checked.returncode == 1
-        assert "unreadable handoff document" in checked.stderr
+        assert checked.returncode == 1  # unfinished task; handoff never gates
+        assert "handoff" not in checked.stderr
         assert "Traceback" not in checked.stderr
+        assert "Traceback" not in checked.stdout
 
         route_script = SCRIPTS / "route_spec_package.py"
         routed = subprocess.run(
@@ -355,7 +340,7 @@ def test_oversized_handoff_fails_clean_across_lifecycle():
             cwd=root,
         )
         assert routed.returncode == 0, routed.stderr
-        assert "不可读" in json.loads(routed.stdout)["handoff"]
+        assert "结构非法" in json.loads(routed.stdout)["handoff"]
 
         report_script = SCRIPTS / "report_spec_package.py"
         status = subprocess.run(
@@ -365,4 +350,4 @@ def test_oversized_handoff_fails_clean_across_lifecycle():
             cwd=root,
         )
         assert status.returncode == 0, status.stderr
-        assert "不可读" in status.stdout
+        assert "结构非法" in status.stdout

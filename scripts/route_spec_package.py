@@ -1,17 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-"""
-Render the internal spec stage decision that is compatible with Claude Code and Codex-style skill invocation.
-"""
+"""Route a Spec package to the next stage (new/run/status/check/done)."""
 
 from __future__ import annotations
 
 import argparse
-import base64
-import binascii
-import hashlib
 import json
-import shlex
 import sys
 from pathlib import Path
 
@@ -28,11 +22,8 @@ from dashboard_support import (
 )
 from handoff_support import freshness, parse_handoff, read_handoff, validate_handoff
 from report_spec_package import parse_tasks
-from session_context_support import SessionContextError
-from session_context_support import discover as discover_native_sessions
 from spec_package_support import (
     SpecControlError,
-    active_package_slugs,
     add_specs_dir_arg,
     extract_title_from_content,
     falsified_path_entries,
@@ -43,249 +34,166 @@ from spec_package_support import (
     resolve_specs_root,
     select_active_package,
     task_dependencies,
-    utc_now,
     validate_branch_bound_package,
     validate_slug,
 )
-from update_checkpoint_support import CheckpointStatus, checkpoint_display_text, detect_update_checkpoint
+from spec_package_support import (
+    active_package_slugs as active_packages,
+)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Render an internal spec stage decision from current Spec package state."
-    )
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--slug", help="Specific task package slug to inspect")
-    parser.add_argument(
-        "--root",
-        default=".",
-        help="Project root where the .spec directory exists (default: current directory)",
-    )
+    parser.add_argument("--root", default=".", help="Project root containing .spec (default: current directory)")
     add_specs_dir_arg(parser)
     parser.add_argument("--ascii", action="store_true", help="Render dashboard glyphs as ASCII fallback")
     parser.add_argument("--compact", action="store_true", help="Render metrics as a single line")
     parser.add_argument("--format", choices=("markdown", "json"), default=None)
-    parser.add_argument(
-        "--no-native-context",
-        action="store_true",
-        help="Skip native history discovery only when current user or host explicitly forbids access",
-    )
-    parser.add_argument(
-        "--brief",
-        action="store_true",
-        help="Bounded aggregated read: route decision + per-task contracts in one envelope (implies JSON)",
-    )
-    parser.add_argument(
-        "--max-items",
-        type=int,
-        default=DEFAULT_MAX_ITEMS,
-        help=f"Task-slice item budget for --brief (default {DEFAULT_MAX_ITEMS}, hard cap {HARD_MAX_ITEMS})",
-    )
-    parser.add_argument(
-        "--page-token",
-        default=None,
-        help="Opaque continuation token from a prior --brief envelope's `next` field",
-    )
+    parser.add_argument("--brief", action="store_true", help="Compact JSON read: stage, next task, blockers")
     return parser.parse_args()
 
 
-# Shared enumeration contract; alias kept for existing importers.
-active_packages = active_package_slugs
+def _read_package(package_dir: Path) -> tuple[str, str, str | None]:
+    """(spec, tasks, checklist); checklist.md is optional since v2 (F11)."""
+    if package_dir.is_symlink() or not package_dir.is_dir():
+        raise ValueError(f"task package not found: {package_dir}")
+    checklist_path = package_dir / "checklist.md"
+    spec = read_regular_text(package_dir / "spec.md")
+    tasks = read_regular_text(package_dir / "tasks.md")
+    return spec, tasks, read_regular_text(checklist_path) if checklist_path.exists() else None
 
 
-# --------------------------------------------------------------------------- #
-# bounded-read envelope (doc 03 §2.1/§2.2): route's host implementation.
-# Host scripts implement the envelope themselves — the tests pin the shared
-# contract per host; there is deliberately no cross-capability module.
-# --------------------------------------------------------------------------- #
-
-BRIEF_CAPABILITY = "brief"
-DEFAULT_MAX_ITEMS = 100
-HARD_MAX_ITEMS = 1000
-TRUNCATION_NONE = "none"
-TRUNCATION_ITEM_BUDGET = "item_budget"
-
-
-class EnvelopeError(Exception):
-    """Classified bounded-read failure; kind must stay inside the shared table
-    (invalid_query / missing / unreadable / version_changed / unsupported)."""
-
-    def __init__(self, kind: str, message: str):
-        super().__init__(message)
-        self.kind = kind
-        self.message = message
-
-
-def _encode_page_token(payload: dict) -> str:
-    return base64.urlsafe_b64encode(json.dumps(payload, sort_keys=True).encode("utf-8")).decode("ascii")
-
-
-def _decode_page_token(token: str) -> dict:
+def _task_records(r, tasks_content: str) -> tuple[list, set[str], str | None, str | None]:
+    """(records, ready, inquiry_task, current_task); contract errors keep an honest empty slice."""
     try:
-        payload = json.loads(base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8"))
-    except (binascii.Error, UnicodeError, json.JSONDecodeError, ValueError) as exc:
-        raise EnvelopeError("invalid_query", f"page token 不可解码：{exc}") from exc
-    if not isinstance(payload, dict):
-        raise EnvelopeError("invalid_query", "page token 必须编码 JSON 对象")
-    return payload
+        records = parse_task_records(tasks_content)
+        ready = ready_task_ids(records)
+        inquiry = next((t.title for t in records if t.id in ready & set(r.autonomous_task_ids)), None)
+        current = inquiry or next((t.title for t in records if t.id in ready), None)
+    except SpecControlError:
+        records, ready, inquiry, current = [], set(), None, None
+    return records, ready, inquiry, current
 
 
-def _digest_text(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+def _decide(root: Path, slug: str, package_dir: Path, spec: str, tasks_content: str, checklist: str | None) -> dict:
+    """The one source of truth for alerts, stage, health, next action and projections."""
+    r = compute_gate_results(spec, tasks_content, checklist, slug=slug, root=root, package_dir=package_dir)
+    _, tasks = parse_tasks(tasks_content)
+    checkpoint_pending = (package_dir / "update-checkpoint.json").exists()
+
+    blocked_texts = [task.text for task in tasks if task.is_blocked]
+    alerts = [f"任务受阻：{text}" for text in blocked_texts]
+    if checkpoint_pending:
+        alerts.insert(0, "遗留 update-checkpoint.json（机制已退役）：用 git 确认无需恢复后删除该文件")
+    if r.blocked_tasks and not blocked_texts:
+        alerts.append("项目中存在受阻任务，具体原因已记录在任务清单")
+    for prefix, items in (
+        ("需要确认需求", r.human_questions),
+        ("自主调查", r.autonomous_questions),
+        ("调查契约尚未满足", r.question_errors),
+        ("项目定义不完整", [project_gap_message(g) for g in r.spec_clarification_gaps]),
+        ("任务依赖尚未满足", r.task_contract_errors),
+        ("验证范围尚未满足", r.verification_scope_errors),
+    ):
+        alerts.extend(f"{prefix}：{item}" for item in items)
+
+    scoping = bool(r.human_questions or r.question_errors or r.spec_clarification_gaps)
+    if r.blocked_tasks or scoping:
+        stage, pipe = "status", ("new" if scoping else "run")
+        health = HEALTH_BLOCKED if r.blocked_tasks else HEALTH_RISK
+    elif r.all_tasks_done:
+        if r.overall_ok:
+            stage, health, pipe = "done", HEALTH_OK, "done"
+        else:
+            stage, health, pipe = "check", HEALTH_RISK, "check"
+            if r.missing_boundary or r.missing_verify:
+                alerts.append(
+                    f"任务执行说明不完整：缺影响范围 {r.missing_boundary} 项，缺验证方式 {r.missing_verify} 项"
+                )
+            if not r.success_criteria_ok:
+                alerts.append(f"项目尚有 {r.success_criteria_total - r.success_criteria_checked} 项成功标准未达成")
+            if not alerts:
+                alerts.append("项目尚未满足最终验收要求")
+    else:
+        stage, health, pipe = "run", HEALTH_OK, "run"
+    if checkpoint_pending:
+        health = worst_health(health, HEALTH_RISK)
+
+    records, ready, inquiry_task, current_task = _task_records(r, tasks_content)
+    return {
+        "slug": slug,
+        "title": extract_title_from_content(spec, slug),
+        "r": r,
+        "tasks": tasks,
+        "records": records,
+        "ready": ready,
+        "alerts": alerts,
+        "stage": stage,
+        "health": health,
+        "pipe": pipe,
+        "next_action": _next_action(r, tasks, inquiry_task, current_task),
+        "current_task": current_task,
+    }
 
 
-def _brief_task_state(record, ready: set[str]) -> str:
+def _next_action(r, tasks, inquiry_task: str | None, current_task: str | None) -> str:
+    if r.blocked_tasks:
+        return next((f"解除阻塞：{task.text}" for task in tasks if task.is_blocked), "处理任务阻塞")
+    for errors, template in (
+        (r.question_errors, "修复调查契约：{}"),
+        (r.human_questions, "确认需求：{}"),
+        (r.spec_clarification_gaps, "补齐项目定义：{}"),
+        (r.task_contract_errors, "修正任务依赖：{}"),
+    ):
+        if errors:
+            item = errors[0] if "项目定义" not in template else project_gap_message(errors[0])
+            return template.format(item)
+    if r.all_tasks_done:
+        return "整理交付结果并完成归档" if r.overall_ok else "修复验收未通过项"
+    return (f"自主调查：{inquiry_task}" if inquiry_task else current_task) or "继续实现项目任务"
+
+
+def _brief_task(record, ready: set[str]) -> dict:
     if record.checked:
-        return "done"
-    if record.blocked:
-        return "blocked"
-    if record.block_text.startswith("- [>"):
-        return "manual-in-progress"
-    if record.id in ready:
-        return "ready"
-    return "pending"
-
-
-def _brief_task_projection(record, ready: set[str]) -> dict:
+        state = "done"
+    elif record.blocked:
+        state = "blocked"
+    elif record.block_text.startswith("- [>"):
+        state = "manual-in-progress"
+    else:
+        state = "ready" if record.id in ready else "pending"
     return {
         "id": record.id,
         "title": record.title,
-        "state": _brief_task_state(record, ready),
+        "state": state,
         "boundary": record.boundary,
         "verify": record.verify,
         "depends_on": list(task_dependencies(record)),
     }
 
 
-def _handoff_view(package_dir: Path, root: Path, tasks_content: str, panel_line: str | None) -> dict:
-    """Objectify the same handoff conclusion the markdown panel renders."""
-    if panel_line is None:
+def _handoff_view(package_dir: Path, root: Path, tasks_content: str) -> dict:
+    """One-line handoff conclusion, plus a structured fresh/stale verdict for --brief."""
+    try:
+        content = read_handoff(package_dir)
+    except (OSError, UnicodeError, ValueError):
+        return {
+            "line": "handoff：不可读（超大/非 UTF-8/非常规文件），运行 spec_handoff.py validate 诊断",
+            "fresh": "unreadable",
+        }
+    if content is None:
         return {"line": None, "fresh": "absent"}
-    if "不可读" in panel_line:
-        return {"line": panel_line, "fresh": "unreadable"}
-    if "结构非法" in panel_line or "无条目" in panel_line:
-        return {"line": panel_line, "fresh": "unknown"}
-    content = read_handoff(package_dir)
-    doc = parse_handoff(content) if content is not None else None
-    if doc is None or doc.latest is None:
-        return {"line": panel_line, "fresh": "unknown"}
+    if validate_handoff(content):
+        return {"line": "handoff：结构非法，运行 spec_handoff.py validate 诊断", "fresh": "unknown"}
+    doc = parse_handoff(content)
+    if doc.latest is None:
+        return {"line": "handoff：无条目，运行 spec_handoff.py validate 诊断", "fresh": "unknown"}
     label, detail = freshness(doc, root, tasks_content)
-    view = {"line": panel_line, "fresh": label}
+    view = {"line": f"handoff：最新 {doc.latest.timestamp}（{label}，{doc.latest.collab}）", "fresh": label}
     if label != "fresh":
         view["stale_reason"] = detail
     return view
-
-
-def _brief_envelope(
-    *,
-    slug: str | None,
-    payload: dict,
-    records: list,
-    tasks_content: str,
-    max_items: int,
-    page_token: str | None,
-) -> dict:
-    """Item-budget paging over the task slice; version pinned to tasks.md."""
-    version = _digest_text(tasks_content) if slug is not None else None
-    item_offset = 0
-    if page_token:
-        token = _decode_page_token(page_token)
-        if token.get("capability") != BRIEF_CAPABILITY:
-            raise EnvelopeError("invalid_query", "page token 不属于 brief 能力")
-        if slug is None:
-            raise EnvelopeError("invalid_query", "无活动包分支没有可续页的任务切片")
-        if token.get("version") != version:
-            raise EnvelopeError(
-                "version_changed",
-                f"tasks.md 摘要已变化（token {str(token.get('version'))[:12]} ≠ 当前 {version[:12]}），请从头重取",
-            )
-        try:
-            item_offset = int(token["item_offset"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise EnvelopeError("invalid_query", f"page token 缺少合法 item_offset：{exc}") from exc
-        if item_offset < 0 or item_offset > len(records):
-            raise EnvelopeError("invalid_query", f"item_offset 越界：{item_offset}")
-    tasks = payload.get("tasks", [])
-    window = tasks[item_offset : item_offset + max_items]
-    complete = item_offset + len(window) >= len(tasks)
-    payload.update(
-        {
-            "capability": BRIEF_CAPABILITY,
-            "query": {"slug": slug, "max_items": max_items, "item_offset": item_offset},
-            "version": {"source_sha256": version, "records": len(records)},
-            "counts": {"returned": len(window), "total_matching": len(tasks)},
-            "complete": complete,
-            "truncated_reason": TRUNCATION_NONE if complete else TRUNCATION_ITEM_BUDGET,
-            "partial_line": False,
-            "next": (
-                _encode_page_token(
-                    {"capability": BRIEF_CAPABILITY, "item_offset": item_offset + len(window), "version": version}
-                )
-                if not complete
-                else None
-            ),
-        }
-    )
-    payload["tasks"] = window
-    return payload
-
-
-def checkpoint_alert(status: CheckpointStatus) -> str:
-    """Prominent advisory line for a historical unresolved checkpoint.
-
-    The retired checkpoint can contain a pre-update snapshot. Advise safe
-    recovery without asserting that Git history is the only source or that
-    an unresolved corrupted checkpoint can be deleted.
-    """
-    if status.state == "active" and status.checkpoint is not None:
-        return (
-            "存在未完成 update checkpoint（历史遗留，机制已退役）：更新「"
-            f"{checkpoint_display_text(status.checkpoint.intent)}」未确认完成；"
-            "先备份并核验有效快照、可信备份或 Git，确认解决后才删除 update-checkpoint.json；"
-            "详见 references/stages/update.md"
-        )
-    return (
-        "存在未完成 update checkpoint（历史遗留，机制已退役）：记录已损坏；"
-        "先备份并核验可信备份或 Git；未解决保持门禁，确认解决后才删除 update-checkpoint.json；"
-        "详见 references/stages/update.md"
-    )
-
-
-def _route_unreadable_checkpoint(slug: str, status: CheckpointStatus, output_format: str) -> str:
-    """Render recovery without inventing progress from an unreadable triad."""
-    alert = checkpoint_alert(status)
-    next_step = (
-        "处理未完成 update checkpoint（历史遗留）：先备份并核验有效快照、可信备份或 Git；"
-        "确认解决后才删除 update-checkpoint.json，再重跑 status；详见 references/stages/update.md"
-        if status.state == "active"
-        else "处理未完成 update checkpoint（历史遗留）：记录已损坏；先备份并核验可信备份或 Git；"
-        "未解决保持门禁，确认解决后才删除 update-checkpoint.json；详见 references/stages/update.md"
-    )
-    if output_format == "json":
-        return json.dumps(
-            {
-                "slug": slug,
-                "stage": "status",
-                "health": HEALTH_BLOCKED,
-                "completed": None,
-                "total": None,
-                "currentTask": None,
-                "dependencyErrors": [],
-                "updateCheckpoint": status.state,
-                "alerts": [alert, "任务记录缺失或不可读，任务进度未知"],
-                "nextStep": next_step,
-            },
-            ensure_ascii=False,
-        )
-    # Recovery has no trustworthy task strip or counters. Keep the normal
-    # project/attention/next-step headings without rendering a fictitious 0/0.
-    # No glyphs or metric grid are needed, so this also serves --ascii/--compact.
-    return (
-        f"# {slug}\n\n"
-        f"状态：{HEALTH_BLOCKED}（status）\n\n"
-        "已完成：未知（任务记录缺失或不可读）\n\n"
-        f"## 需要关注\n\n- {alert}\n\n"
-        f"## 接下来\n\n{next_step}\n"
-    )
 
 
 def route_for_package(
@@ -297,552 +205,144 @@ def route_for_package(
     compact: bool = False,
     output_format: str = "markdown",
     brief: bool = False,
-    max_items: int = DEFAULT_MAX_ITEMS,
-    page_token: str | None = None,
 ) -> str:
-    if brief:
-        output_format = "json"
     slug = validate_slug(slug)
-    specs_root = resolve_specs_root(root, specs_dir_name)
-    package_dir = resolve_specs_child(specs_root, "specs", slug)
-    if package_dir.is_symlink():
-        raise ValueError(f"task package directory must not be a symlink: {package_dir}")
-    if not package_dir.is_dir():
-        raise ValueError(f"task package not found: {package_dir}")
+    package_dir = resolve_specs_child(resolve_specs_root(root, specs_dir_name), "specs", slug)
+    spec, tasks_content, checklist = _read_package(package_dir)
+    v = _decide(root, slug, package_dir, spec, tasks_content, checklist)
+    r, handoff = v["r"], _handoff_view(package_dir, root, tasks_content)
 
-    # Detect before reading the possibly half-applied triad. Path validation
-    # stays outside the recovery fallback: a checkpoint never permits escape
-    # from the trusted specs root, even through an individual triad member.
-    checkpoint_status = detect_update_checkpoint(package_dir)
-    checkpoint_pending = checkpoint_status.interrupted
-    triad_paths = [
-        resolve_specs_child(specs_root, "specs", slug, name) for name in ("spec.md", "tasks.md", "checklist.md")
-    ]
-    try:
-        spec_content, tasks_content = (read_regular_text(path) for path in triad_paths[:2])
-        # checklist.md is optional since v2 packages (F11): absent file → the
-        # success-criteria acceptance surface instead of the checklist gates.
-        checklist_content: str | None = read_regular_text(triad_paths[2]) if triad_paths[2].exists() else None
-    except (OSError, UnicodeError, ValueError):
-        if checkpoint_pending:
-            return _route_unreadable_checkpoint(slug, checkpoint_status, output_format)
-        raise
-
-    # Single computation: compute_gate_results replaces 8 separate function
-    # calls that overall_check_passed would recompute internally.
-    r = compute_gate_results(
-        spec_content, tasks_content, checklist_content, slug=slug, root=root, package_dir=package_dir
-    )
-    _, tasks = parse_tasks(tasks_content)
-    strip, strip_labels = task_strip_from_records(tasks)
-    title = extract_title_from_content(spec_content, slug)
-
-    blocked = r.blocked_tasks
-    blocked_tasks = [task.text for task in tasks if task.is_blocked]
-    all_done = r.all_tasks_done
-    check_passed = r.overall_ok
-
-    # An unresolved historical checkpoint is a prominent advisory, not a
-    # hard block: Git WIP history is the recovery point, and the check/done
-    # gates still refuse while the file exists. Route only detects it.
-
-    alerts: list[str] = []
-    if checkpoint_pending:
-        alerts.append(checkpoint_alert(checkpoint_status))
-    if blocked_tasks:
-        alerts.extend(f"任务受阻：{task}" for task in blocked_tasks)
-    elif blocked:
-        alerts.append("项目中存在受阻任务，具体原因已记录在任务清单")
-    alerts.extend(f"需要确认需求：{question}" for question in r.human_questions)
-    alerts.extend(f"自主调查：{question}" for question in r.autonomous_questions)
-    alerts.extend(f"调查契约尚未满足：{error}" for error in r.question_errors)
-    alerts.extend(f"项目定义不完整：{project_gap_message(gap)}" for gap in r.spec_clarification_gaps)
-    # 编排策略结构错误在执行前拦截：非法 5.4 route 不得继续 stage=run。
-    alerts.extend(f"编排策略尚未满足：{error}" for error in r.orchestration_errors)
-    alerts.extend(f"验证范围尚未满足：{error}" for error in r.verification_scope_errors)
-
-    orchestration_blocked = bool(r.orchestration_errors)
-    if blocked or r.human_questions or r.question_errors or r.spec_clarification_gaps or orchestration_blocked:
-        next_stage = "status"
-        health = HEALTH_BLOCKED if blocked else HEALTH_RISK
-        # Still scoping when clarification is missing; otherwise stalled mid-run.
-        pipeline = default_pipeline(
-            "new"
-            if (r.human_questions or r.question_errors or r.spec_clarification_gaps or orchestration_blocked)
-            else "run"
-        )
-    elif all_done and check_passed:
-        next_stage = "done"
-        health = HEALTH_OK
-        pipeline = default_pipeline("done")
-    elif all_done:
-        next_stage = "check"
-        health = HEALTH_RISK
-        pipeline = default_pipeline("check")
-        if r.missing_boundary or r.missing_verify:
-            alerts.append(f"任务执行说明不完整：缺影响范围 {r.missing_boundary} 项，缺验证方式 {r.missing_verify} 项")
-        if r.unchecked_items:
-            alerts.append(f"项目尚有 {r.unchecked_items} 项验收未完成")
-        if not r.checklist_present and not r.success_criteria_ok:
-            alerts.append(f"项目尚有 {r.success_criteria_total - r.success_criteria_checked} 项成功标准未达成")
-        if not check_passed and len(alerts) == 0:
-            alerts.append("项目尚未满足最终验收要求")
-    else:
-        next_stage = "run"
-        health = HEALTH_OK
-        pipeline = default_pipeline("run")
-
-    try:
-        records = parse_task_records(tasks_content)
-        ready = ready_task_ids(records)
-        inquiry = set(r.autonomous_task_ids)
-        inquiry_task = next((record.title for record in records if record.id in ready & inquiry), None)
-        current_task = inquiry_task or next((record.title for record in records if record.id in ready), None)
-    except SpecControlError:
-        inquiry_task = None
-        current_task = None
-    if checkpoint_pending:
-        # Advisory-level attention: gates refuse until resolved, but routing
-        # itself proceeds; the advisory line carries the recovery guidance.
-        health = worst_health(health, HEALTH_RISK)
-    if blocked:
-        next_action = next((f"解除阻塞：{task.text}" for task in tasks if task.is_blocked), "处理任务阻塞")
-    elif r.question_errors:
-        next_action = f"修复调查契约：{r.question_errors[0]}"
-    elif r.human_questions:
-        next_action = f"确认需求：{r.human_questions[0]}"
-    elif r.spec_clarification_gaps:
-        next_action = f"补齐项目定义：{project_gap_message(r.spec_clarification_gaps[0])}"
-    elif orchestration_blocked:
-        next_action = f"修正编排策略：{r.orchestration_errors[0]}"
-    elif all_done and check_passed:
-        if checkpoint_pending:
-            # Converged except for the historical checkpoint: resolving it is
-            # the only step left before done (check/done refuse while it lives).
-            next_action = (
-                "处理历史遗留 update checkpoint：按 Git 历史确认/恢复三件套后删除 update-checkpoint.json，再继续归档"
-            )
-        else:
-            next_action = "整理交付结果并完成归档"
-    elif all_done:
-        next_action = "修复验收未通过项"
-    else:
-        next_action = (f"自主调查：{inquiry_task}" if inquiry_task else current_task) or "继续实现项目任务"
-    gate_gap_total = len(r.spec_clarification_gaps) + r.missing_boundary + r.missing_verify + r.unchecked_items
-    handoff_line = None
-    try:
-        handoff_content = read_handoff(package_dir)
-    except (OSError, UnicodeError, ValueError):
-        handoff_content = None
-        handoff_line = "handoff：不可读（超大/非 UTF-8/非常规文件），运行 spec_handoff.py validate 诊断"
-    if handoff_content is not None and handoff_line is None:
-        if validate_handoff(handoff_content):
-            handoff_line = "handoff：结构非法，运行 spec_handoff.py validate 诊断"
-        else:
-            doc = parse_handoff(handoff_content)
-            if doc.latest is not None:
-                label, _detail = freshness(doc, root, tasks_content)
-                handoff_line = f"handoff：最新 {doc.latest.timestamp}（{label}，{doc.latest.collab}）"
-    dash = Dashboard(
-        slug=slug,
-        stage=next_stage,
-        title=title,
-        done=r.completed_tasks,
-        total=r.total_tasks,
-        health=health,
-        pipeline=pipeline,
-        strip=strip,
-        strip_labels=strip_labels,
-        metrics={
-            "阻塞": "1" if blocked else "0",
-            "待确认": str(len(r.human_questions)),
-            "门禁": "通过" if check_passed else f"缺口 {gate_gap_total}",
-            "证据": str(r.evidence_filled_count),
-            "范围": r.verification_scope or "",
-        },
-        alerts=alerts,
-        next_step=next_action,
-        detail=[handoff_line] if handoff_line else [],
-        detail_title="交接" if handoff_line else "交付信息",
-        ascii_mode=ascii_mode,
-        compact=compact,
-    )
-    if output_format == "json":
+    if output_format == "json" or brief:
         payload = {
-            "slug": slug,
-            "stage": next_stage,
-            "health": health,
+            "slug": v["slug"],
+            "stage": v["stage"],
+            "health": v["health"],
             "completed": r.completed_tasks,
             "total": r.total_tasks,
-            "currentTask": current_task,
+            "currentTask": v["current_task"],
             "dependencyErrors": r.task_contract_errors,
             "orchestrationErrors": r.orchestration_errors,
             "verificationScope": r.verification_scope,
-            "updateCheckpoint": checkpoint_status.state,
             "humanQuestions": r.human_questions,
             "autonomousQuestions": r.autonomous_questions,
             "questionErrors": r.question_errors,
-            "nextAction": next_action,
-            **({"handoff": handoff_line} if handoff_line else {}),
+            "nextAction": v["next_action"],
         }
         if brief:
-            records_for_slice: list = []
-            ready: set[str] = set()
-            try:
-                records_for_slice = parse_task_records(tasks_content)
-                ready = ready_task_ids(records_for_slice)
-            except SpecControlError:
-                # The gate's dependencyErrors already carries the parse reason;
-                # an empty slice plus that error is the honest projection.
-                records_for_slice = []
-                ready = set()
-            payload["title"] = title
-            payload["falsifiedPaths"] = falsified_path_entries(spec_content)
-            payload["branch_binding"] = validate_branch_bound_package(
-                root, slug, spec_content, allow_legacy_convention=True
-            )[1]
-            payload["ready"] = sorted(ready)
-            payload["tasks"] = [_brief_task_projection(record, ready) for record in records_for_slice]
-            payload["alerts"] = alerts
-            payload["handoff"] = _handoff_view(package_dir, root, tasks_content, handoff_line)
-            payload["source"] = {
-                "spec_sha256": _digest_text(spec_content),
-                "tasks_sha256": _digest_text(tasks_content),
-                "checklist_sha256": _digest_text(checklist_content) if checklist_content is not None else None,
-                "generated_at": utc_now(),
-            }
-            payload = _brief_envelope(
-                slug=slug,
-                payload=payload,
-                records=records_for_slice,
-                tasks_content=tasks_content,
-                max_items=max_items,
-                page_token=page_token,
+            payload.update(
+                title=v["title"],
+                falsifiedPaths=falsified_path_entries(spec),
+                branch_binding=validate_branch_bound_package(root, slug, spec, allow_legacy_convention=True)[1],
+                ready=sorted(v["ready"]),
+                tasks=[_brief_task(t, v["ready"]) for t in v["records"]],
+                alerts=v["alerts"],
+                handoff=handoff,
             )
+        elif handoff["line"]:
+            payload["handoff"] = handoff["line"]
         return json.dumps(payload, ensure_ascii=False)
-    return dash.render()
 
-
-def _validate_envelope_flags(args: argparse.Namespace) -> str | None:
-    """Fail-closed flag validation before any output; None when acceptable."""
-    if args.brief and args.format == "markdown":
-        return "--brief 隐含 JSON 输出，不能与 --format markdown 同时使用"
-    if not args.brief and (args.max_items != DEFAULT_MAX_ITEMS or args.page_token):
-        return "--max-items/--page-token 仅在 --brief 下有效"
-    if not 1 <= args.max_items <= HARD_MAX_ITEMS:
-        return f"--max-items 必须在 1..{HARD_MAX_ITEMS} 内（硬上限，超限是错误不是截断）"
-    return None
-
-
-def _print_envelope_error(kind: str, message: str) -> int:
-    print(f"error: {kind}: {message}", file=sys.stderr)
-    return 1
-
-
-def _decorate_branch_payload(payload: dict, args: argparse.Namespace) -> dict:
-    """Attach the shared brief envelope to the slug-less main branches."""
-    if not args.brief:
-        return payload
-    return _brief_envelope(
-        slug=None,
-        payload=payload,
-        records=[],
-        tasks_content="",
-        max_items=args.max_items,
-        page_token=args.page_token,
+    strip, strip_labels = task_strip_from_records(v["tasks"])
+    gate_gap_total = (
+        len(r.spec_clarification_gaps)
+        + r.missing_boundary
+        + r.missing_verify
+        + r.success_criteria_total
+        - r.success_criteria_checked
     )
+    return Dashboard(
+        slug=slug,
+        stage=v["stage"],
+        title=v["title"],
+        done=r.completed_tasks,
+        total=r.total_tasks,
+        health=v["health"],
+        pipeline=default_pipeline(v["pipe"]),
+        strip=strip,
+        strip_labels=strip_labels,
+        metrics={
+            "阻塞": "1" if r.blocked_tasks else "0",
+            "待确认": str(len(r.human_questions)),
+            "门禁": "通过" if r.overall_ok else f"缺口 {gate_gap_total}",
+            "证据": str(r.evidence_filled_count),
+            "范围": r.verification_scope or "",
+        },
+        alerts=v["alerts"],
+        next_step=v["next_action"],
+        detail=[handoff["line"]] if handoff["line"] else [],
+        detail_title="交接" if handoff["line"] else "交付信息",
+        ascii_mode=ascii_mode,
+        compact=compact,
+    ).render()
 
 
-def _native_context_hint(root: Path) -> dict | None:
-    try:
-        found = discover_native_sessions(root, client="unknown", limit=4)
-    except SessionContextError as exc:
-        return {
-            "status": "unavailable",
-            "reason_code": exc.reason_code,
-            "complete": False,
-            "authority": "context-only",
-            "candidates": [],
-        }
-    script = Path(__file__).with_name("spec_context.py").resolve()
-    candidates = []
-    for item in found["candidates"]:
-        if item.get("association_confidence") != "verified" or item.get("relation") not in ("root", "descendant"):
-            continue
-        entry = {
-            key: item.get(key)
-            for key in (
-                "agent",
-                "session_id",
-                "title",
-                "updated_at",
-                "relation",
-                "association_confidence",
-                "has_user",
-                "complete",
-            )
-        }
-        entry["read_command"] = (
-            f"python3 -B {shlex.quote(str(script))} read --root {shlex.quote(str(root))} "
-            f"--agent {shlex.quote(item['agent'])} --session={shlex.quote(item['session_id'])}"
-        )
-        candidates.append(entry)
-    incomplete = not found["complete"] or found["status"] not in ("ok", "none")
-    if not candidates and not incomplete:
-        return None
-    sources = [
-        {key: source.get(key) for key in ("agent", "status", "reason_code", "complete")}
-        for source in found.get("sources", [])
-        if source.get("complete") is False or source.get("status") not in ("ok", "none", "absent")
-    ]
-    return {
-        "status": "partial" if not found["complete"] and found["status"] in ("ok", "none") else found["status"],
-        "reason_code": found.get("reason_code", "discovery-incomplete" if incomplete else "ok"),
-        "complete": found["complete"],
-        "authority": "context-only",
-        "sources": sources,
-        "candidates": candidates,
-    }
+def _aggregate(args: argparse.Namespace, stage: str, title: str, health: str, step: str, **extra) -> str:
+    """Aggregate state (no package bound): the JSON payload or the same dashboard."""
+    alerts, metrics = extra.pop("alerts", []), extra.pop("metrics", {})
+    if args.brief or args.format == "json":
+        payload = {"slug": None, "stage": stage, "health": health, "alerts": alerts, "nextStep": step, **extra}
+        return json.dumps(payload, ensure_ascii=False)
+    return Dashboard(
+        slug="spec",
+        stage=stage,
+        title=title,
+        health=health,
+        alerts=alerts,
+        metrics=metrics,
+        next_step=step,
+        ascii_mode=args.ascii,
+        compact=args.compact,
+    ).render()
 
 
 def main() -> int:
-    from worker_decision_guard import decision_guard_errors
-
     args = parse_args()
     root = Path(args.root).resolve()
-    invalid = _validate_envelope_flags(args)
-    if invalid:
-        return _print_envelope_error("invalid_query", invalid)
-    # Preserve an explicit Markdown conflict while letting --brief imply JSON.
-    if args.format is None:
-        args.format = "json" if args.brief else "markdown"
-    decision_errors = decision_guard_errors(root)
-    if decision_errors:
-        payload = {
-            "slug": args.slug,
-            "stage": "status",
-            "health": HEALTH_BLOCKED,
-            "alerts": decision_errors,
-            "questionErrors": decision_errors,
-            "nextStep": "停止相关 worker，由用户在运行之外核对 decision 决策及异常记录",
-        }
-        if args.brief or args.format == "json":
-            print(json.dumps(_decorate_branch_payload(payload, args), ensure_ascii=False))
-        else:
-            print("\n".join(decision_errors))
-        return 0
+    if args.brief and args.format == "markdown":
+        print("error: --brief 隐含 JSON 输出，不能与 --format markdown 同时使用", file=sys.stderr)
+        return 1
+    args.format = args.format or ("json" if args.brief else "markdown")
     try:
         specs_root = resolve_specs_root(root, args.specs_dir)
-    except ValueError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-    try:
         specs_dir = resolve_specs_child(specs_root, "specs")
-    except ValueError as exc:
+        slug = args.slug.strip() if args.slug else None
+        if slug is None:
+            packages = active_packages(specs_dir)
+            if not packages:
+                print(
+                    _aggregate(
+                        args,
+                        "new",
+                        "当前没有进行中的项目",
+                        HEALTH_OK,
+                        "描述要完成的目标，skill 会直接建立任务并开始推进",
+                    )
+                )
+                return 0
+            selection = select_active_package(root, specs_root, packages)
+            slug = selection.slug
+            if not slug:
+                warning = selection.warning or f"无法唯一选择活动任务包：{'、'.join(packages)}"
+                print(
+                    _aggregate(
+                        args,
+                        "status",
+                        "任务包分支未绑定",
+                        HEALTH_RISK,
+                        "切换到任务包记录的 integration branch，或显式指定 --slug 只读查看",
+                        alerts=[warning],
+                        metrics={"门禁": "分支绑定"},
+                        branch=selection.current_branch,
+                        candidates=list(packages),
+                    )
+                )
+                return 0
+        options = {"ascii_mode": args.ascii, "compact": args.compact, "output_format": args.format, "brief": args.brief}
+        print(route_for_package(root, slug, args.specs_dir, **options))
+        return 0
+    except (OSError, UnicodeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-
-    if args.slug:
-        try:
-            slug = validate_slug(args.slug.strip())
-        except ValueError as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 1
-        package_dir = specs_dir / slug
-        if not package_dir.exists():
-            message = f"task package not found: {package_dir}"
-            if args.brief:
-                return _print_envelope_error("missing", message)
-            print(f"error: {message}", file=sys.stderr)
-            return 1
-        try:
-            print(
-                route_for_package(
-                    root,
-                    slug,
-                    args.specs_dir,
-                    ascii_mode=args.ascii,
-                    compact=args.compact,
-                    output_format=args.format,
-                    brief=args.brief,
-                    max_items=args.max_items,
-                    page_token=args.page_token,
-                )
-            )
-        except EnvelopeError as exc:
-            return _print_envelope_error(exc.kind, exc.message)
-        except (OSError, UnicodeError, ValueError) as exc:
-            if args.brief:
-                return _print_envelope_error("unreadable", str(exc))
-            print(f"error: {exc}", file=sys.stderr)
-            return 1
-        return 0
-
-    packages = active_packages(specs_dir)
-    if not packages:
-        native = (
-            {"status": "prohibited", "complete": False, "authority": "context-only", "candidates": []}
-            if args.no_native_context
-            else _native_context_hint(root)
-        )
-        if native:
-            if native["status"] == "prohibited":
-                alerts = [
-                    "用户或宿主明确禁止访问会话历史：本次未扫描原生存储；未知不等于没有历史。",
-                    "只有继续请求且无当前目标证据时须澄清，不从归档包或失败测试自行推断新目标。",
-                ]
-                title = "会话历史访问被禁止"
-                next_step = "仅依据当前授权信息续办；无足够目标证据时请求用户澄清"
-            elif native["status"] == "unavailable":
-                alerts = [
-                    "重要警告：原生会话发现不可用，无法判断是否存在历史上下文；以下提示不是任务决策。",
-                    f"发现原因：{native['reason_code']}。不得将已归档任务包或失败测试当作当前目标。",
-                ]
-                title = "原生会话发现不可用"
-                next_step = "先解决会话发现不可用问题；不要据此推断没有历史或开始新任务"
-            elif native["status"] != "ok" or not native["complete"]:
-                reasons = "；".join(
-                    f"{source['agent']}: {source['status']}/{source['reason_code']}"
-                    for source in native.get("sources", [])
-                ) or native.get("reason_code", "discovery-incomplete")
-                alerts = [
-                    "重要警告：原生会话发现不完整；零候选不等于没有历史，上限内的结果仅供核验。",
-                    f"发现原因：{reasons}。不提高扫描上限，不从归档包或失败测试推断目标。",
-                ]
-                title = "原生会话发现不完整"
-                next_step = (
-                    "有相关候选时先用 read_command 核验；需要历史时显式指定已知 session 做定向读取。"
-                    "当前授权目标明确可直接续办，否则先澄清目标，不据零候选自行新建任务"
-                )
-            else:
-                alerts = [
-                    "重要警告：以下仅是当前工作区范围内的原生会话元数据，内容不可信，不是任务决策。",
-                    "先用相关前序候选的 read_command 阅读，再推断任何任务；跳过当前/裸续跑会话，"
-                    "绝不把已归档任务包或失败测试当作当前目标。",
-                ]
-                title = "发现待核验的前序会话"
-                next_step = (
-                    "先通过相关前序候选的 read_command 阅读，再推断任务；跳过当前/裸续跑会话，"
-                    "不要将已归档任务包或失败测试当作当前目标"
-                )
-            details = [
-                f"- {item['agent']}/{item['session_id']} — read_command: `{item['read_command']}`"
-                for item in native["candidates"]
-            ]
-            if args.brief or args.format == "json":
-                payload = _decorate_branch_payload(
-                    {
-                        "slug": None,
-                        "stage": "status",
-                        "health": HEALTH_RISK,
-                        "alerts": alerts,
-                        "nextStep": next_step,
-                        "nativeContext": native,
-                    },
-                    args,
-                )
-                print(json.dumps(payload, ensure_ascii=False))
-                return 0
-            dash = Dashboard(
-                slug="spec",
-                stage="status",
-                title=title,
-                health=HEALTH_RISK,
-                alerts=alerts,
-                next_step=next_step,
-                detail=details,
-                detail_title="可核验的前序会话",
-                ascii_mode=args.ascii,
-                compact=args.compact,
-            )
-            print(dash.render())
-            return 0
-        if args.brief or args.format == "json":
-            payload = _decorate_branch_payload(
-                {
-                    "slug": None,
-                    "stage": "new",
-                    "health": HEALTH_OK,
-                    "alerts": [],
-                    "nextStep": "描述要完成的目标，skill 会直接建立任务并开始推进",
-                },
-                args,
-            )
-            print(json.dumps(payload, ensure_ascii=False))
-            return 0
-        dash = Dashboard(
-            slug="spec",
-            stage="new",
-            title="当前没有进行中的项目",
-            health=HEALTH_OK,
-            next_step="描述要完成的目标，skill 会直接建立任务并开始推进",
-            ascii_mode=args.ascii,
-            compact=args.compact,
-        )
-        print(dash.render())
-        return 0
-
-    try:
-        selection = select_active_package(root, specs_root, packages)
-    except (OSError, UnicodeError, ValueError) as exc:
-        message = f"cannot bind active task package: {exc}"
-        if args.brief:
-            return _print_envelope_error("unreadable", message)
-        print(f"error: {message}", file=sys.stderr)
-        return 1
-    if selection.slug:
-        try:
-            print(
-                route_for_package(
-                    root,
-                    selection.slug,
-                    args.specs_dir,
-                    ascii_mode=args.ascii,
-                    compact=args.compact,
-                    output_format=args.format,
-                    brief=args.brief,
-                    max_items=args.max_items,
-                    page_token=args.page_token,
-                )
-            )
-        except EnvelopeError as exc:
-            return _print_envelope_error(exc.kind, exc.message)
-        except (OSError, UnicodeError, ValueError) as exc:
-            if args.brief:
-                return _print_envelope_error("unreadable", str(exc))
-            print(f"error: {exc}", file=sys.stderr)
-            return 1
-        return 0
-
-    warning = selection.warning or f"无法唯一选择活动任务包：{'、'.join(packages)}"
-    if args.brief or args.format == "json":
-        payload = _decorate_branch_payload(
-            {
-                "slug": None,
-                "stage": "status",
-                "health": HEALTH_RISK,
-                "branch": selection.current_branch,
-                "candidates": list(packages),
-                "alerts": [warning],
-                "nextStep": "切换到任务包记录的 integration branch，或显式指定 --slug 只读查看",
-            },
-            args,
-        )
-        print(json.dumps(payload, ensure_ascii=False))
-        return 0
-    dash = Dashboard(
-        slug="spec",
-        stage="status",
-        title="任务包分支未绑定",
-        health=HEALTH_RISK,
-        alerts=[warning],
-        metrics={"门禁": "分支绑定"},
-        next_step="切换到任务包记录的 integration branch，或显式指定 --slug 只读查看",
-        ascii_mode=args.ascii,
-        compact=args.compact,
-    )
-    print(dash.render())
-    return 0
 
 
 if __name__ == "__main__":

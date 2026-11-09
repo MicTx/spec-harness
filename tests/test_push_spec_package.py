@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import http.server
-import importlib.util
 import os
 import subprocess
 import sys
-import threading
 from pathlib import Path
 from typing import Optional
 
@@ -14,14 +11,6 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "push_spec_package.py"
 TEST_SPEC_SLUG = "2026-07-13_fix-push-fixture"
-
-
-def load_push_module():
-    """Import scripts/push_spec_package.py as a module for unit tests."""
-    module_spec = importlib.util.spec_from_file_location("push_spec_package_under_test", SCRIPT)
-    module = importlib.util.module_from_spec(module_spec)
-    module_spec.loader.exec_module(module)
-    return module
 
 
 def write_archived_spec(repo: Path, slug: str = TEST_SPEC_SLUG) -> Path:
@@ -139,7 +128,7 @@ def test_push_default_merges_and_deletes_branch(tmp_path):
 
     result = run_push(repo, "--branch", branch, "--main-branch", "main")
 
-    assert result.returncode == 0
+    assert result.returncode == 0, result.stderr
     assert "mode: execute" in result.stdout
     assert "Core prechecks" in result.stdout or "Safety" in result.stdout
     assert "hard-block by default" in result.stdout
@@ -272,6 +261,8 @@ def test_push_blocks_unarchived_spec_package_by_default(tmp_path):
 - a
 - b
 - c
+## 6. 成功标准与验证方式
+- [x] 门禁通过 -> verify: task_0001
 """,
         encoding="utf-8",
     )
@@ -461,21 +452,20 @@ def test_push_rejects_non_spec_branch_started_after_enforcement(tmp_path):
     assert git(repo, "rev-parse", "refs/heads/main") == main_before
 
 
-def test_push_allows_legacy_branch_with_pre_enforcement_work(tmp_path):
+def test_push_rejects_non_spec_branch_started_before_enforcement(tmp_path):
     repo, _ = init_repo(tmp_path)
     git(repo, "checkout", "-b", "feature/legacy-work", "main")
-    write_archived_spec(repo)
     (repo / "legacy.txt").write_text("legacy\n", encoding="utf-8")
-    git(repo, "add", "legacy.txt", ".spec")
+    git(repo, "add", "legacy.txt")
     commit_dated(repo, "legacy work", f"Spec: {TEST_SPEC_SLUG}", "2026-08-20T12:00:00+00:00")
+    main_before = git(repo, "rev-parse", "refs/heads/main")
 
     result = run_push(repo, "--branch", "feature/legacy-work", "--main-branch", "main")
 
-    assert result.returncode == 0, result.stderr
-    assert "legacy branch feature/legacy-work predates" in result.stdout
-    assert "rename recommended" in result.stdout
-    assert git(repo, "branch", "--show-current") == "main"
-    assert "feature/legacy-work" not in git(repo, "branch", "--list")
+    assert result.returncode != 0
+    assert "refusing to push non-spec branch" in result.stderr
+    assert git(repo, "rev-parse", "refs/heads/main") == main_before
+    assert git(repo, "branch", "--show-current") == "feature/legacy-work"
 
 
 def test_push_rejects_tag_when_local_branch_missing(tmp_path):
@@ -593,32 +583,6 @@ def test_push_rejects_remote_main_race_before_branch_delete(tmp_path):
     assert "origin/spec/test" in git(repo, "branch", "-r", "--list", "origin/spec/test")
 
 
-def test_push_rejects_broken_git_hooks_warning_and_keeps_branch(tmp_path):
-    repo, branch = init_repo(tmp_path)
-    remote = Path(git(repo, "remote", "get-url", "origin"))
-    hook = remote / "hooks" / "post-receive"
-    hook.write_text(
-        "#!/bin/sh\n"
-        "cat >/dev/null\n"
-        "printf '%s\\n' \"Remote repository Git hooks seem to be broken.\n"
-        "Please repair server-side hooks, then push a new commit to refresh\n"
-        'status." >&2\n'
-        "exit 0\n",
-        encoding="utf-8",
-    )
-    hook.chmod(0o755)
-
-    result = run_push(repo, "--branch", branch, "--main-branch", "main")
-
-    assert result.returncode != 0
-    assert "Remote reported broken repository Git hooks during push" in result.stderr
-    assert "Resynchronize or reinstall the repository server-side hooks" in result.stderr
-    assert "push a new commit to refresh repository activity" in result.stderr
-    assert git(repo, "branch", "--show-current") == branch
-    assert "spec/test" in git(repo, "branch", "--list", "spec/test")
-    assert "origin/spec/test" in git(repo, "branch", "-r", "--list", "origin/spec/test")
-
-
 def test_push_rejects_missing_remote_main_branch(tmp_path):
     repo, branch = init_repo(tmp_path)
     remote = Path(git(repo, "remote", "get-url", "origin"))
@@ -658,6 +622,41 @@ def test_push_rejects_protected_long_lived_branch(tmp_path):
     assert "refusing to delete protected branch" in result.stderr
 
 
+@pytest.mark.parametrize("protected_branch", ["develop", "release/1.0", "spec/test"])
+def test_protected_main_branch_cannot_be_merge_target(tmp_path, protected_branch):
+    repo, branch = init_repo(tmp_path)
+    if protected_branch != branch:
+        git(repo, "checkout", "-b", protected_branch, "main")
+        git(repo, "push", "origin", protected_branch)
+        git(repo, "checkout", branch)
+    protected_tip = git(repo, "rev-parse", f"refs/heads/{protected_branch}")
+    remote_protected_tip = git(repo, "ls-remote", "origin", f"refs/heads/{protected_branch}").split()[0]
+
+    result = run_push(repo, "--branch", branch, "--main-branch", protected_branch)
+
+    assert result.returncode != 0
+    assert "refusing to write protected branch" in result.stderr or (
+        protected_branch == branch and "refusing to delete protected branch" in result.stderr
+    )
+    assert git(repo, "rev-parse", f"refs/heads/{protected_branch}") == protected_tip
+    assert git(repo, "ls-remote", "origin", f"refs/heads/{protected_branch}").split()[0] == remote_protected_tip
+    assert git(repo, "ls-remote", "origin", f"refs/heads/{branch}")
+
+
+def test_remote_default_branch_is_never_deleted(tmp_path):
+    repo, branch = init_repo(tmp_path)
+    remote = Path(git(repo, "remote", "get-url", "origin"))
+    git(remote, "symbolic-ref", "HEAD", f"refs/heads/{branch}")
+    branch_tip = git(repo, "rev-parse", f"refs/heads/{branch}")
+
+    result = run_push(repo, "--branch", branch)
+
+    assert result.returncode != 0
+    assert "refusing to delete protected branch" in result.stderr
+    assert git(repo, "ls-remote", "origin", f"refs/heads/{branch}").split()[0] == branch_tip
+    assert git(repo, "branch", "--show-current") == branch
+
+
 def test_push_publishes_local_only_branch(tmp_path):
     repo, _ = init_repo(tmp_path)
     git(repo, "checkout", "main")
@@ -676,62 +675,272 @@ def test_push_publishes_local_only_branch(tmp_path):
     assert "spec/local-only" not in git(repo, "branch", "--list")
 
 
-def test_push_falls_back_to_local_only_when_remote_unreachable(tmp_path):
+def test_push_stops_before_mutations_when_remote_unreachable(tmp_path):
+    """An unreachable remote stops the run before any mutation: no local
+    merge, no branch deletion — the operator fixes connectivity and reruns."""
     repo, branch = init_repo(tmp_path)
+    main_tip = git(repo, "rev-parse", "refs/heads/main")
+    branch_tip = git(repo, "rev-parse", f"refs/heads/{branch}")
+    remote_main_tip = git(repo, "rev-parse", "refs/remotes/origin/main")
+    remote_branch_tip = git(repo, "rev-parse", f"refs/remotes/origin/{branch}")
     git(repo, "remote", "set-url", "origin", str(tmp_path / "missing-remote.git"))
 
     result = run_push(repo, "--branch", branch, "--main-branch", "main")
 
-    assert result.returncode == 0, result.stderr
-    assert "mode: local-only" in result.stdout
-    assert "remote unavailable" in result.stdout
-    assert "项目变更已合并到本地" in result.stdout
-    assert "变更尚未同步到远端，工作分支已保留" in result.stdout
-    assert "网络恢复后同步远端并清理工作分支" in result.stdout
-    assert git(repo, "branch", "--show-current") == "main"
-    assert "spec/test" in git(repo, "branch", "--list", "spec/test")
-    assert (repo / "feature.txt").read_text(encoding="utf-8") == "feature\n"
+    assert result.returncode != 0
+    assert "remote unavailable" in result.stderr
+    assert git(repo, "branch", "--show-current") == branch
+    assert git(repo, "rev-parse", "refs/heads/main") == main_tip
+    assert git(repo, "rev-parse", f"refs/heads/{branch}") == branch_tip
+    assert git(repo, "rev-parse", "refs/remotes/origin/main") == remote_main_tip
+    assert git(repo, "rev-parse", f"refs/remotes/origin/{branch}") == remote_branch_tip
+    assert git(repo, "status", "--porcelain") == ""
 
 
-def test_push_recovers_after_local_only_run_when_remote_returns(tmp_path):
+def test_dry_run_reports_plan_without_local_or_remote_mutations(tmp_path):
     repo, branch = init_repo(tmp_path)
-    main_tip = git(repo, "rev-parse", "main")
-    package = repo / ".spec" / "specs" / "archive" / TEST_SPEC_SLUG
-    _write_summary_with_interval(package, TEST_SPEC_SLUG, main_tip, main_tip)
-    git(repo, "add", ".spec")
-    git(repo, "commit", "-m", "record delivery interval", "-m", f"Spec: {TEST_SPEC_SLUG}")
-    git(repo, "push", "origin", branch)
-    remote_url = git(repo, "remote", "get-url", "origin")
-    git(repo, "remote", "set-url", "origin", str(tmp_path / "missing-remote.git"))
-
-    offline = run_push(repo, "--branch", branch, "--main-branch", "main")
-    assert offline.returncode == 0, offline.stderr
-    assert "mode: local-only" in offline.stdout
-    assert git(repo, "branch", "--show-current") == "main"
-
-    git(repo, "remote", "set-url", "origin", remote_url)
-    recovered = run_push(repo, "--branch", branch, "--main-branch", "main")
-
-    assert recovered.returncode == 0, recovered.stderr
-    assert "mode: execute" in recovered.stdout
-    assert "mode: local-only" not in recovered.stdout
-    assert "spec gate warning" not in recovered.stdout + recovered.stderr
-    assert f"changed-package attribution: {TEST_SPEC_SLUG}" in recovered.stdout
-    assert git(repo, "branch", "--show-current") == "main"
-    assert "spec/test" not in git(repo, "branch", "--list", "spec/test")
-    assert "origin/spec/test" not in git(repo, "branch", "-r", "--list", "origin/spec/test")
+    before = {ref: git(repo, "rev-parse", ref) for ref in ("main", branch, "origin/main", f"origin/{branch}")}
+    result = run_push(repo, "--branch", branch, "--dry-run")
+    assert result.returncode == 0, result.stderr
+    assert "dry-run" in result.stdout.lower()
+    assert "git merge" in result.stdout
+    assert git(repo, "branch", "--show-current") == branch
+    assert {ref: git(repo, "rev-parse", ref) for ref in before} == before
+    assert git(repo, "ls-remote", "origin", "refs/heads/main").split()[0] == before["origin/main"]
+    assert git(repo, "ls-remote", "origin", f"refs/heads/{branch}").split()[0] == before[f"origin/{branch}"]
 
 
-def test_remote_unavailable_does_not_treat_repository_not_found_as_network_error():
-    sys.path.insert(0, str(ROOT / "scripts"))
-    try:
-        import push_spec_package
-    finally:
-        sys.path.pop(0)
+def test_dry_run_reports_plan_when_remote_main_has_unfetched_commits(tmp_path):
+    repo, branch = init_repo(tmp_path)
+    other = tmp_path / "other"
+    subprocess.run(["git", "clone", str(tmp_path / "remote.git"), str(other)], check=True, capture_output=True)
+    git(other, "config", "user.email", "other@example.com")
+    git(other, "config", "user.name", "Other User")
+    git(other, "checkout", "main")
+    (other / "advance.txt").write_text("remote advance\n", encoding="utf-8")
+    git(other, "add", "advance.txt")
+    git(other, "commit", "-m", "remote advances")
+    git(other, "push", "origin", "main")
+    before = {ref: git(repo, "rev-parse", ref) for ref in ("main", branch, "origin/main", f"origin/{branch}")}
+    fetch_head_path = repo / ".git" / "FETCH_HEAD"
+    fetch_head_path.write_text("preserve fetch state\n", encoding="utf-8")
+    fetch_head_before = fetch_head_path.read_bytes()
 
-    assert not push_spec_package.remote_unavailable_detected(
-        "ERROR: repository not found\nfatal: Could not read from remote repository."
+    result = run_push(repo, "--branch", branch, "--dry-run")
+
+    assert result.returncode == 0, result.stderr
+    assert "dry-run" in result.stdout.lower()
+    assert git(repo, "branch", "--show-current") == branch
+    assert {ref: git(repo, "rev-parse", ref) for ref in before} == before
+    assert fetch_head_path.read_bytes() == fetch_head_before
+    assert git(repo, "ls-remote", "origin", "refs/heads/main").split()[0] != before["origin/main"]
+
+
+def test_dry_run_reports_publish_lease_for_missing_remote_branch(tmp_path):
+    repo, _ = init_repo(tmp_path)
+    branch = "spec/missing-remotely"
+    git(repo, "checkout", "-b", branch)
+    branch_tip = git(repo, "rev-parse", f"refs/heads/{branch}")
+
+    result = run_push(repo, "--branch", branch, "--dry-run")
+
+    assert result.returncode == 0, result.stderr
+    assert f"--force-with-lease=refs/heads/{branch}: " in result.stdout
+    assert f"--force-with-lease=refs/heads/{branch}:{branch_tip}" in result.stdout
+    assert f"origin {branch_tip}:refs/heads/{branch}" in result.stdout
+    assert git(repo, "ls-remote", "origin", f"refs/heads/{branch}") == ""
+    assert git(repo, "branch", "--show-current") == branch
+
+
+def test_dry_run_reports_locally_ahead_branch_and_exact_deletion_lease(tmp_path):
+    repo, branch = init_repo(tmp_path)
+    (repo / "extra.txt").write_text("local work\n", encoding="utf-8")
+    git(repo, "add", "extra.txt")
+    git(repo, "commit", "-m", "local extra")
+    local_tip = git(repo, "rev-parse", f"refs/heads/{branch}")
+    remote_tip = git(repo, "rev-parse", f"refs/remotes/origin/{branch}")
+
+    result = run_push(repo, "--branch", branch, "--dry-run")
+
+    assert result.returncode == 0, result.stderr
+    assert f"--force-with-lease=refs/heads/{branch}:{remote_tip}" in result.stdout
+    assert f"origin {local_tip}:refs/heads/{branch}" in result.stdout
+    assert f"git merge --no-ff {local_tip}" in result.stdout
+    assert f"--force-with-lease=refs/heads/{branch}:{local_tip}" in result.stdout
+    assert git(repo, "ls-remote", "origin", f"refs/heads/{branch}").split()[0] == remote_tip
+    assert git(repo, "branch", "--show-current") == branch
+
+
+def test_remote_lease_race_preserves_both_working_branches(tmp_path):
+    repo, branch = init_repo(tmp_path)
+    remote = Path(git(repo, "remote", "get-url", "origin"))
+    git(repo, "checkout", "--detach", "main")
+    (repo / "competing.txt").write_text("competing commit\n", encoding="utf-8")
+    git(repo, "add", "competing.txt")
+    git(repo, "commit", "-qm", "competing")
+    competing_sha = git(repo, "rev-parse", "HEAD")
+    git(repo, "push", "origin", f"{competing_sha}:refs/heads/competitor")
+    git(repo, "checkout", branch)
+    hook = remote / "hooks" / "post-receive"
+    hook.write_text(
+        "#!/bin/sh\n"
+        "while read old new ref; do\n"
+        '  if [ "$ref" = "refs/heads/main" ]; then\n'
+        f"    git update-ref refs/heads/{branch} {competing_sha}\n"
+        "  fi\n"
+        "done\n",
+        encoding="utf-8",
     )
+    hook.chmod(0o755)
+    result = run_push(repo, "--branch", branch)
+    assert result.returncode != 0
+    assert git(repo, "show-ref", "--verify", f"refs/heads/{branch}").split()[1] == f"refs/heads/{branch}"
+    assert git(repo, "ls-remote", "origin", f"refs/heads/{branch}").split()[0] == competing_sha
+
+
+def test_remote_push_rejected_even_when_error_mentions_up_to_date(tmp_path):
+    repo, branch = init_repo(tmp_path)
+    remote = Path(git(repo, "remote", "get-url", "origin"))
+    hook = remote / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\nprintf 'Everything up-to-date\\n' >&2\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    main_tip = git(repo, "ls-remote", "origin", "refs/heads/main").split()[0]
+
+    result = run_push(repo, "--branch", branch)
+
+    assert result.returncode != 0
+    assert "Everything up-to-date" in result.stderr
+    assert git(repo, "ls-remote", "origin", "refs/heads/main").split()[0] == main_tip
+    assert git(repo, "ls-remote", "origin", f"refs/heads/{branch}")
+
+
+@pytest.mark.parametrize("status", ["=\trefs/heads/x:refs/heads/x\t[aktuell]", "fatal: no status line"])
+def test_publish_without_porcelain_update_status_fails_closed(tmp_path, monkeypatch, status):
+    monkeypatch.syspath_prepend(str(ROOT / "scripts"))
+    import push_spec_package as push
+
+    result = subprocess.CompletedProcess(["git", "push"], 0, stdout=status, stderr="")
+    monkeypatch.setattr(push, "git", lambda *args, **kwargs: result)
+    command = ["git", "push", "-u", "--porcelain", "--force-with-lease=refs/heads/x:", "origin", "x:x"]
+
+    with pytest.raises(push.PushError, match="did not update"):
+        push.run_checked(tmp_path, command)
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        " \trefs/heads/x:refs/heads/x\t1a..2b",
+        "+\trefs/heads/x:refs/heads/x\t1a...2b (forced update)",
+        "*\trefs/heads/x:refs/heads/x\t[new branch]",
+    ],
+)
+def test_publish_accepts_porcelain_update_statuses(tmp_path, monkeypatch, status):
+    monkeypatch.syspath_prepend(str(ROOT / "scripts"))
+    import push_spec_package as push
+
+    result = subprocess.CompletedProcess(["git", "push"], 0, stdout=status, stderr="")
+    monkeypatch.setattr(push, "git", lambda *args, **kwargs: result)
+
+    push.run_checked(
+        tmp_path, ["git", "push", "-u", "--porcelain", "--force-with-lease=refs/heads/x:", "origin", "x:x"]
+    )
+
+
+def test_publish_never_sends_local_ref_drift(tmp_path, monkeypatch):
+    """A ref moved after review must not be force-published under the review's lease."""
+    monkeypatch.syspath_prepend(str(ROOT / "scripts"))
+    import argparse
+
+    import push_spec_package as push
+
+    repo, branch = init_repo(tmp_path)
+    (repo / "reviewed.txt").write_text("reviewed\n", encoding="utf-8")
+    git(repo, "add", "reviewed.txt")
+    git(repo, "commit", "-m", "reviewed work")
+    reviewed_sha = git(repo, "rev-parse", f"refs/heads/{branch}")
+    remote_branch_tip = git(repo, "ls-remote", "origin", f"refs/heads/{branch}").split()[0]
+    remote_main_tip = git(repo, "ls-remote", "origin", "refs/heads/main").split()[0]
+    drifted = {}
+    run_checked = push.run_checked
+
+    def drift_before_publish(root, command):
+        if command[:2] == ["git", "push"] and "--porcelain" in command:
+            (repo / "drift.txt").write_text("unreviewed\n", encoding="utf-8")
+            git(repo, "add", "drift.txt")
+            git(repo, "commit", "-m", "unreviewed drift")
+            drifted["sha"] = git(repo, "rev-parse", f"refs/heads/{branch}")
+        run_checked(root, command)
+
+    monkeypatch.setattr(push, "run_checked", drift_before_publish)
+    monkeypatch.setattr(push, "run_spec_gate", lambda *args, **kwargs: [])
+    args = argparse.Namespace(
+        remote="origin",
+        main_branch="main",
+        dry_run=False,
+        slugs=[],
+        all_packages=False,
+        allow_unarchived=True,
+        specs_dirs=[],
+    )
+
+    with pytest.raises(push.PushError, match="local branch moved"):
+        push._run_push_plan(args, repo, branch)
+
+    assert drifted["sha"] != reviewed_sha
+    assert remote_branch_tip != reviewed_sha
+    assert git(repo, "ls-remote", "origin", f"refs/heads/{branch}").split()[0] == reviewed_sha
+    assert git(repo, "ls-remote", "origin", "refs/heads/main").split()[0] == remote_main_tip
+    assert git(repo, "rev-parse", "refs/heads/main") == remote_main_tip
+    assert git(repo, "rev-parse", f"refs/heads/{branch}") == drifted["sha"]
+    assert git(repo, "status", "--porcelain") == ""
+
+
+@pytest.mark.parametrize("same_commit", [False, True])
+def test_remote_branch_created_during_publish_is_not_deleted(tmp_path, monkeypatch, same_commit):
+    monkeypatch.syspath_prepend(str(ROOT / "scripts"))
+    import push_spec_package as push
+
+    repo, _ = init_repo(tmp_path)
+    branch = "spec/newly-created"
+    git(repo, "checkout", "-b", branch)
+    local_tip = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "--detach", "main")
+    (repo / "competing.txt").write_text("concurrent branch\n", encoding="utf-8")
+    git(repo, "add", "competing.txt")
+    git(repo, "commit", "-m", "competing branch")
+    competing_sha = local_tip if same_commit else git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", branch)
+    main_tip = git(repo, "ls-remote", "origin", "refs/heads/main").split()[0]
+    run_checked = push.run_checked
+
+    def create_remote_branch_at_publish(root, command):
+        if command[:3] == ["git", "push", "-u"]:
+            git(repo, "push", "origin", f"{competing_sha}:refs/heads/{branch}")
+        run_checked(root, command)
+
+    monkeypatch.setattr(push, "run_checked", create_remote_branch_at_publish)
+    with pytest.raises(push.PushError):
+        push.execute_plan(repo, "origin", branch, "main", None, main_tip, push_branch_first=True, publish_sha=local_tip)
+
+    assert git(repo, "ls-remote", "origin", f"refs/heads/{branch}").split()[0] == competing_sha
+    assert git(repo, "ls-remote", "origin", "refs/heads/main").split()[0] == main_tip
+    assert git(repo, "show-ref", "--verify", f"refs/heads/{branch}").split()[0] == local_tip
+
+
+def test_push_reports_remote_auth_error_without_offline_fallback(monkeypatch, tmp_path):
+    monkeypatch.syspath_prepend(str(ROOT / "scripts"))
+    import push_spec_package as push
+
+    result = subprocess.CompletedProcess(
+        args=["git", "ls-remote"],
+        returncode=128,
+        stdout="",
+        stderr="ERROR: repository not found\nfatal: Could not read from remote repository.",
+    )
+    monkeypatch.setattr(push, "git", lambda *args, **kwargs: result)
+    with pytest.raises(push.PushError, match="repository not found"):
+        push.remote_default_branch(tmp_path, "origin")
 
 
 def test_remote_default_branch_fail_closed_for_non_network_rejection(monkeypatch, tmp_path):
@@ -756,6 +965,28 @@ def test_remote_default_branch_fail_closed_for_non_network_rejection(monkeypatch
         assert "permission denied by policy" in str(exc)
     else:
         raise AssertionError("remote_default_branch should fail closed")
+
+
+def test_rejected_main_push_reports_local_merge_state(tmp_path):
+    repo, branch = init_repo(tmp_path)
+    remote = Path(git(repo, "remote", "get-url", "origin"))
+    hook = remote / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\nprintf 'denied\\n' >&2\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    main_tip = git(repo, "rev-parse", "refs/heads/main")
+    branch_tip = git(repo, "rev-parse", f"refs/heads/{branch}")
+
+    result = run_push(repo, "--branch", branch)
+
+    assert result.returncode != 0
+    assert "denied" in result.stderr
+    assert "local main" in result.stderr.lower() and "merge" in result.stderr.lower()
+    assert git(repo, "branch", "--show-current") == branch
+    assert git(repo, "rev-parse", "refs/heads/main") != main_tip
+    assert git(repo, "ls-remote", "origin", "refs/heads/main").split()[0] == main_tip
+    assert git(repo, "rev-parse", f"refs/heads/{branch}") == branch_tip
+    assert git(repo, "ls-remote", "origin", f"refs/heads/{branch}").split()[0] == branch_tip
+    assert git(repo, "status", "--porcelain") == ""
 
 
 def test_push_does_not_fallback_for_remote_rejection(tmp_path):
@@ -816,8 +1047,7 @@ def test_touched_spec_path_exempts_retired_archive_subtree():
     assert scope_from_changed_paths(paths) == []
 
 
-@pytest.mark.parametrize("operation", ["execute_plan", "execute_local_only_plan", "execute_recovery_plan"])
-def test_push_execution_paths_check_clean_tree_before_mutation(tmp_path, monkeypatch, operation):
+def test_push_execute_plan_checks_clean_tree_before_mutation(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(ROOT / "scripts"))
     import push_spec_package as push
 
@@ -829,285 +1059,26 @@ def test_push_execution_paths_check_clean_tree_before_mutation(tmp_path, monkeyp
 
     monkeypatch.setattr(push, "ensure_clean_tree", clean)
 
-    def fail_run_checked(root, argv, repair=None):
+    def fail_run_checked(root, argv):
         raise push.PushError("injected failure")
 
     monkeypatch.setattr(push, "current_branch", lambda root: "spec/test")
     monkeypatch.setattr(push, "git_stdout", lambda *args: "")
     monkeypatch.setattr(push, "run_checked", fail_run_checked)
     monkeypatch.setattr(push, "run_best_effort", lambda root, argv: calls.append(argv))
-    args = (
-        (tmp_path, "spec/test", "main")
-        if operation == "execute_local_only_plan"
-        else (tmp_path, "origin", "spec/test", "main", "branch-sha", "main-sha")
-    )
-    kwargs = {"push_branch_first": False} if operation == "execute_plan" else {}
     with pytest.raises(push.PushError, match="injected failure"):
-        getattr(push, operation)(*args, **kwargs)
+        push.execute_plan(
+            tmp_path,
+            "origin",
+            "spec/test",
+            "main",
+            "branch-sha",
+            "main-sha",
+            push_branch_first=False,
+            publish_sha="branch-sha",
+        )
     assert calls[0] == "clean"
     assert calls[-2:] == [["git", "merge", "--abort"], ["git", "checkout", "spec/test"]]
-
-
-# --- Gitea hook repair integration -----------------------------------------
-
-
-def _write_stateful_broken_hook(remote: Path, state_file: Path) -> None:
-    """Install a post-receive hook that emits the Gitea broken-hooks warning
-    while the state file says "broken", and stays silent once it says "ok"."""
-    hook = remote / "hooks" / "post-receive"
-    hook.write_text(
-        "#!/bin/sh\n"
-        f'if [ "$(cat "{state_file}")" = "broken" ]; then\n'
-        "  printf '%s\\n' \"Remote repository Git hooks seem to be broken.\"\n"
-        "fi\n"
-        "exit 0\n",
-        encoding="utf-8",
-    )
-    hook.chmod(0o755)
-
-
-class _GiteaStubHandler(http.server.BaseHTTPRequestHandler):
-    """Emulates POST /api/v1/admin/cron/{task}; flips hook state to ok."""
-
-    state_file: Path = Path("/nonexistent")
-    requests: list[str] = []
-    fail_task: str | None = None
-
-    def do_POST(self) -> None:  # noqa: N802
-        task = self.path.rsplit("/", 1)[-1]
-        type(self).requests.append(task)
-        if task == type(self).fail_task:
-            self.send_response(403)
-            self.end_headers()
-            return
-        type(self).state_file.write_text("ok", encoding="utf-8")
-        self.send_response(204)
-        self.end_headers()
-
-    def log_message(self, format: str, *args: object) -> None:  # noqa: A002
-        return
-
-
-@pytest.fixture()
-def gitea_stub(tmp_path):
-    state_file = tmp_path / "hook-state"
-    state_file.write_text("broken", encoding="utf-8")
-    _GiteaStubHandler.state_file = state_file
-    _GiteaStubHandler.requests = []
-    _GiteaStubHandler.fail_task = None
-    server = http.server.HTTPServer(("127.0.0.1", 0), _GiteaStubHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    yield f"http://127.0.0.1:{server.server_address[1]}", state_file
-    server.shutdown()
-    server.server_close()
-
-
-def test_push_repairs_gitea_hooks_and_reruns_plan(tmp_path, gitea_stub):
-    gitea_url, state_file = gitea_stub
-    repo, branch = init_repo(tmp_path)
-    remote = Path(git(repo, "remote", "get-url", "origin"))
-    _write_stateful_broken_hook(remote, state_file)
-
-    result = run_push(
-        repo,
-        "--branch",
-        branch,
-        "--main-branch",
-        "main",
-        "--repair-gitea-hooks",
-        "--gitea-url",
-        gitea_url,
-        env={**os.environ, "SPEC_GITEA_TOKEN": "admin-token"},
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert _GiteaStubHandler.requests == [
-        "sync_repo_branches",
-        "sync_repo_tags",
-        "resync_all_hooks",
-    ]
-    assert "retrying Spec push plan after Gitea hook repair" in result.stderr
-    assert git(repo, "branch", "--show-current") == "main"
-    assert "spec/test" not in git(repo, "branch", "--list")
-    assert "origin/spec/test" not in git(repo, "branch", "-r", "--list")
-
-
-def test_push_repair_failure_fails_closed_and_keeps_branch(tmp_path, gitea_stub):
-    gitea_url, state_file = gitea_stub
-    repo, branch = init_repo(tmp_path)
-    remote = Path(git(repo, "remote", "get-url", "origin"))
-    _write_stateful_broken_hook(remote, state_file)
-    _GiteaStubHandler.fail_task = "sync_repo_tags"
-    token_file = tmp_path / "gitea-token"
-    token_file.write_text("admin-token\n", encoding="utf-8")
-
-    result = run_push(
-        repo,
-        "--branch",
-        branch,
-        "--main-branch",
-        "main",
-        "--repair-gitea-hooks",
-        "--gitea-url",
-        gitea_url,
-        env={**os.environ, "SPEC_GITEA_TOKEN_FILE": str(token_file)},
-    )
-
-    assert result.returncode != 0
-    assert "Gitea hook repair failed" in result.stderr
-    assert "403" in result.stderr
-    assert git(repo, "branch", "--show-current") == branch
-    assert "spec/test" in git(repo, "branch", "--list")
-    # No retry happened after the failed repair: only two tasks attempted.
-    assert _GiteaStubHandler.requests == ["sync_repo_branches", "sync_repo_tags"]
-
-
-def test_push_repair_without_token_fails_closed(tmp_path, gitea_stub):
-    gitea_url, state_file = gitea_stub
-    repo, branch = init_repo(tmp_path)
-    remote = Path(git(repo, "remote", "get-url", "origin"))
-    _write_stateful_broken_hook(remote, state_file)
-
-    result = run_push(
-        repo,
-        "--branch",
-        branch,
-        "--main-branch",
-        "main",
-        "--repair-gitea-hooks",
-        "--gitea-url",
-        gitea_url,
-    )
-
-    assert result.returncode != 0
-    assert "credentials are incomplete" in result.stderr
-    assert _GiteaStubHandler.requests == []
-    assert git(repo, "branch", "--show-current") == branch
-
-
-def test_push_gitea_token_flag_is_refused_without_api_calls(tmp_path, gitea_stub):
-    """AUD-22 (planning F5): --gitea-token is refused loudly before any work."""
-    gitea_url, _state_file = gitea_stub
-    repo, branch = init_repo(tmp_path)
-
-    result = run_push(
-        repo,
-        "--branch",
-        branch,
-        "--main-branch",
-        "main",
-        "--repair-gitea-hooks",
-        "--gitea-url",
-        gitea_url,
-        "--gitea-token",
-        "admin-token",
-    )
-
-    assert result.returncode != 0
-    assert "--gitea-token is deprecated and refused" in result.stderr
-    assert "SPEC_GITEA_TOKEN" in result.stderr
-    assert "SPEC_GITEA_TOKEN_FILE" in result.stderr
-    # Refusal happens at argument parsing: no push, no Gitea admin API call.
-    assert _GiteaStubHandler.requests == []
-
-
-class TestGiteaTokenCarriers:
-    """AUD-22 (planning F5): token resolution via env/file, never argv."""
-
-    def test_token_file_resolves_stripped_value(self, tmp_path, monkeypatch):
-        push_module = load_push_module()
-        token_file = tmp_path / "token"
-        token_file.write_text("  tok-123\n", encoding="utf-8")
-        monkeypatch.delenv("SPEC_GITEA_TOKEN", raising=False)
-        monkeypatch.setenv("SPEC_GITEA_TOKEN_FILE", str(token_file))
-
-        assert push_module._resolve_gitea_token() == "tok-123"
-
-    def test_env_token_wins_over_file(self, tmp_path, monkeypatch):
-        push_module = load_push_module()
-        token_file = tmp_path / "token"
-        token_file.write_text("file-token", encoding="utf-8")
-        monkeypatch.setenv("SPEC_GITEA_TOKEN", "env-token")
-        monkeypatch.setenv("SPEC_GITEA_TOKEN_FILE", str(token_file))
-
-        assert push_module._resolve_gitea_token() == "env-token"
-
-    def test_missing_token_file_fails_loud(self, monkeypatch):
-        push_module = load_push_module()
-        monkeypatch.delenv("SPEC_GITEA_TOKEN", raising=False)
-        monkeypatch.setenv("SPEC_GITEA_TOKEN_FILE", "/nonexistent/spec-token")
-
-        with pytest.raises(push_module.PushError, match="missing file"):
-            push_module._resolve_gitea_token()
-
-    def test_unreadable_token_file_fails_loud(self, tmp_path, monkeypatch):
-        push_module = load_push_module()
-        # A directory path fails read_text() with an OSError regardless of
-        # the test user's privileges — deterministic on every host.
-        monkeypatch.delenv("SPEC_GITEA_TOKEN", raising=False)
-        monkeypatch.setenv("SPEC_GITEA_TOKEN_FILE", str(tmp_path))
-
-        with pytest.raises(push_module.PushError, match="not readable"):
-            push_module._resolve_gitea_token()
-
-    def test_empty_token_file_fails_loud(self, tmp_path, monkeypatch):
-        push_module = load_push_module()
-        token_file = tmp_path / "token"
-        token_file.write_text("   \n", encoding="utf-8")
-        monkeypatch.delenv("SPEC_GITEA_TOKEN", raising=False)
-        monkeypatch.setenv("SPEC_GITEA_TOKEN_FILE", str(token_file))
-
-        with pytest.raises(push_module.PushError, match="empty"):
-            push_module._resolve_gitea_token()
-
-    def test_no_carriers_resolve_to_none(self, monkeypatch):
-        push_module = load_push_module()
-        monkeypatch.delenv("SPEC_GITEA_TOKEN", raising=False)
-        monkeypatch.delenv("SPEC_GITEA_TOKEN_FILE", raising=False)
-
-        assert push_module._resolve_gitea_token() is None
-
-    def test_disabled_repair_resolves_no_token(self, monkeypatch):
-        push_module = load_push_module()
-        monkeypatch.setenv("SPEC_GITEA_TOKEN", "env-token")
-
-        settings = push_module.GiteaRepairSettings(enabled=False, base_url=None)
-
-        assert settings.token is None
-
-
-def test_push_without_repair_flag_keeps_legacy_fail_closed(tmp_path, gitea_stub):
-    gitea_url, state_file = gitea_stub
-    repo, branch = init_repo(tmp_path)
-    remote = Path(git(repo, "remote", "get-url", "origin"))
-    _write_stateful_broken_hook(remote, state_file)
-
-    result = run_push(repo, "--branch", branch, "--main-branch", "main")
-
-    assert result.returncode != 0
-    assert "Remote reported broken repository Git hooks during push" in result.stderr
-    assert "--repair-gitea-hooks" in result.stderr
-    assert _GiteaStubHandler.requests == []
-    assert git(repo, "branch", "--show-current") == branch
-
-
-def test_push_local_only_plan_keeps_legacy_branch_note(tmp_path):
-    """Legacy rename advisory must survive the local-only plan path too."""
-    repo, branch = init_repo(tmp_path)
-    git(repo, "checkout", "-b", "feature/legacy-work", "main")
-    write_archived_spec(repo)
-    (repo / "legacy.txt").write_text("legacy\n", encoding="utf-8")
-    git(repo, "add", "legacy.txt", ".spec")
-    commit_dated(repo, "legacy work", f"Spec: {TEST_SPEC_SLUG}", "2026-08-20T12:00:00+00:00")
-    git(repo, "remote", "set-url", "origin", str(tmp_path / "missing-remote.git"))
-
-    result = run_push(repo, "--branch", "feature/legacy-work", "--main-branch", "main")
-
-    assert result.returncode == 0, result.stderr
-    assert "mode: local-only" in result.stdout
-    assert "legacy branch feature/legacy-work predates" in result.stdout
-    assert "rename recommended" in result.stdout
 
 
 class TestSubprocessBoundedness:
@@ -1213,8 +1184,7 @@ def _footer_push_sandbox(tmp_path: Path) -> tuple[Path, str, str]:
     return repo, ancient, git(repo, "rev-parse", "HEAD")
 
 
-@pytest.mark.parametrize("premerged", [False, True])
-def test_push_warns_when_footer_cites_archive_before_window(tmp_path, premerged):
+def test_push_warns_when_footer_cites_archive_before_window(tmp_path):
     # EXP-04(c) replay: a code-only commit whose Spec footer cites an archived
     # package delivered long before this branch's window. Observation period:
     # the push succeeds and stderr names the evidence triple.
@@ -1223,9 +1193,6 @@ def test_push_warns_when_footer_cites_archive_before_window(tmp_path, premerged)
     (repo / "sneaky.py").write_text("import os\nos.system('echo pwned')\n", encoding="utf-8")
     git(repo, "add", "sneaky.py")
     git(repo, "commit", "-m", "feat: innocent change", "-m", f"Spec: {OLD_SPEC_SLUG}")
-    if premerged:
-        git(repo, "checkout", "main")
-        git(repo, "merge", "--no-ff", "spec/sneaky-reuse", "-m", "merge locally before recovery")
     result = run_push(repo, "--branch", "spec/sneaky-reuse")
     assert result.returncode == 0, result.stdout + result.stderr
     combined = result.stdout + result.stderr
@@ -1233,51 +1200,23 @@ def test_push_warns_when_footer_cites_archive_before_window(tmp_path, premerged)
     assert f"- slug: {OLD_SPEC_SLUG}" in combined
     assert f"- archive commit range: {ancient}..{ancient}" in combined
     assert f"- push window base: {main_tip}" in combined
-    assert "hard failure" in combined
+    assert "advisory only" in combined
 
 
-def test_push_recovery_checks_every_changed_package_in_remote_window(tmp_path):
+def test_push_rejects_main_already_merged_locally_without_remote_mutation(tmp_path):
     repo, branch = init_repo(tmp_path)
     remote_tip = git(repo, "rev-parse", "origin/main")
-    package = repo / ".spec" / "specs" / "archive" / TEST_SPEC_SLUG
-    (package / "checklist.md").write_text("- [ ] Not verified\n", encoding="utf-8")
-    final_slug = "2026-08-02_fix-recovery-fixture"
-    write_archived_spec(repo, final_slug)
-    git(repo, "add", ".spec")
-    git(repo, "commit", "-m", "archive another package", "-m", f"Spec: {final_slug}")
-    git(repo, "push", "origin", branch)
     git(repo, "checkout", "main")
-    git(repo, "merge", "--no-ff", branch, "-m", "merge locally before recovery")
+    git(repo, "merge", "--no-ff", branch, "-m", "pre-merge locally")
+    local_tip = git(repo, "rev-parse", "main")
 
     result = run_push(repo, "--branch", branch)
 
-    assert result.returncode != 0, result.stdout + result.stderr
-    assert TEST_SPEC_SLUG in result.stderr
+    assert result.returncode != 0
+    assert "local main branch does not fast-forward" in result.stderr
+    assert git(repo, "rev-parse", "main") == local_tip
     assert git(repo, "ls-remote", "origin", "refs/heads/main").split()[0] == remote_tip
-    assert git(repo, "branch", "--list", branch).strip() == branch
-
-
-def test_push_recovery_checks_every_footer_in_remote_window(tmp_path):
-    repo, _ancient, remote_tip = _footer_push_sandbox(tmp_path)
-    branch = "spec/recovery-footer"
-    git(repo, "checkout", "-b", branch)
-    (repo / "unattributed.txt").write_text("missing attribution\n", encoding="utf-8")
-    git(repo, "add", "unattributed.txt")
-    git(repo, "commit", "-m", "feat: missing footer")
-    unattributed_sha = git(repo, "rev-parse", "HEAD")
-    (repo / "attributed.txt").write_text("cites archive\n", encoding="utf-8")
-    git(repo, "add", "attributed.txt")
-    git(repo, "commit", "-m", "fix: attributed tail", "-m", f"Spec: {OLD_SPEC_SLUG}")
-    git(repo, "checkout", "main")
-    git(repo, "merge", "--no-ff", branch, "-m", "merge locally before recovery")
-
-    result = run_push(repo, "--branch", branch)
-
-    assert result.returncode != 0, result.stdout + result.stderr
-    assert "without `Spec: <slug>` attribution" in result.stderr
-    assert unattributed_sha[:12] in result.stderr
-    assert git(repo, "ls-remote", "origin", "refs/heads/main").split()[0] == remote_tip
-    assert git(repo, "branch", "--list", branch).strip() == branch
+    assert git(repo, "show-ref", "--verify", f"refs/heads/{branch}").split()[1] == f"refs/heads/{branch}"
 
 
 def test_push_footer_multi_theme_multi_package_delivery_no_warning(tmp_path):
@@ -1412,24 +1351,74 @@ def test_push_lite_channel_accepts_none_footer_without_active_package(tmp_path):
     assert "none (typo fix with test)" in result.stdout
 
 
-def test_push_lite_channel_refuses_none_footer_without_reason(tmp_path):
+def test_push_lite_channel_warns_on_missing_reason(tmp_path):
     repo, _ = _none_channel_repo(tmp_path, active_package=False)
     git(repo, "commit", "--allow-empty", "-m", "no reason", "-m", "Spec: none")
 
     result = run_push(repo, "--branch", "spec/lite", "--main-branch", "main")
 
-    assert result.returncode != 0
-    assert "requires a non-empty reason" in result.stderr
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "advisory" in result.stderr.lower()
+    assert "without" in result.stderr.lower()
 
 
-def test_push_lite_channel_refuses_when_active_package_exists(tmp_path):
+def test_push_lite_channel_warns_when_active_package_exists(tmp_path):
     repo, branch = _none_channel_repo(tmp_path, active_package=True)
 
     result = run_push(repo, "--branch", branch, "--main-branch", "main")
 
-    assert result.returncode != 0
-    assert "lite channel refuses" in result.stderr
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "advisory" in result.stderr.lower()
     assert "2026-07-13_fix-active" in result.stderr
+
+
+def test_explicit_slug_cannot_be_bypassed_when_no_spec_paths_changed(tmp_path):
+    repo, branch = _none_channel_repo(tmp_path, active_package=True)
+    remote_main = git(repo, "rev-parse", "origin/main")
+    result = run_push(repo, "--branch", branch, "--slug", "2026-07-13_fix-active")
+    assert result.returncode != 0
+    assert "2026-07-13_fix-active" in result.stderr
+    assert git(repo, "ls-remote", "origin", "refs/heads/main").split()[0] == remote_main
+    assert git(repo, "show-ref", "--verify", f"refs/heads/{branch}").split()[1] == f"refs/heads/{branch}"
+
+
+def test_all_packages_cannot_be_bypassed_when_no_spec_paths_changed(tmp_path):
+    repo, branch = _none_channel_repo(tmp_path, active_package=True)
+    remote_main = git(repo, "rev-parse", "origin/main")
+    result = run_push(repo, "--branch", branch, "--all-packages")
+    assert result.returncode != 0
+    assert "2026-07-13_fix-active" in result.stderr
+    assert git(repo, "ls-remote", "origin", "refs/heads/main").split()[0] == remote_main
+    assert git(repo, "show-ref", "--verify", f"refs/heads/{branch}").split()[1] == f"refs/heads/{branch}"
+
+
+def test_mixed_footerless_and_touched_package_still_warns(tmp_path):
+    repo, branch = init_repo(tmp_path)
+    (repo / "extra.txt").write_text("unattributed work\n", encoding="utf-8")
+    git(repo, "add", "extra.txt")
+    git(repo, "commit", "-m", "work without footer")
+    missing = git(repo, "rev-parse", "HEAD")[:12]
+
+    result = run_push(repo, "--branch", branch)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "advisory" in result.stderr.lower()
+    assert missing in result.stderr
+    assert "changed-package attribution" in result.stdout
+
+
+def test_unknown_footer_is_advisory_not_a_package_gate(tmp_path):
+    repo, _ = init_repo(tmp_path)
+    git(repo, "checkout", "-B", "spec/advisory", "main")
+    (repo / "change.txt").write_text("unpackaged work\n", encoding="utf-8")
+    git(repo, "add", "change.txt")
+    git(repo, "commit", "-m", "unpackaged", "-m", "Spec: 2099-01-01_missing")
+
+    result = run_push(repo, "--branch", "spec/advisory", "--dry-run")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "2099-01-01_missing" in result.stdout + result.stderr
+    assert "advisory" in (result.stdout + result.stderr).lower()
 
 
 def test_push_lite_channel_mixed_footers_gate_the_slug_commits(tmp_path):

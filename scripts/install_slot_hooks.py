@@ -22,7 +22,9 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -31,10 +33,33 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from safe_open_support import copy_private, replace_preserving_mode  # noqa: E402
 from slot_registry import REPO_ROOT, SlotError, load_manifest, validate_slot  # noqa: E402
 
 HOOK_TIMEOUT_SECONDS = 20
+
+
+def _atomic_write_private(path: Path, data: bytes, mode: int) -> None:
+    descriptor, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temp = Path(temp_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            os.fchmod(handle.fileno(), mode)
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
+
+
+def copy_private(source: Path, destination: Path) -> None:
+    _atomic_write_private(destination, source.read_bytes(), source.stat().st_mode & 0o777)
+
+
+def replace_preserving_mode(path: Path, data: bytes) -> None:
+    mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
+    _atomic_write_private(path, data, mode)
 
 
 class InstallError(Exception):

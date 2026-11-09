@@ -204,11 +204,30 @@ def test_pre_commit_blocks_git_alias_and_git_dir_redirection(tmp_path):
     assert redirected.returncode != 0
     assert "check gates not passed" in alias.stdout + alias.stderr
     assert "Spec Disk Truth" in redirected.stdout + redirected.stderr
-    assert "not a git repository" in redirected.stdout + redirected.stderr
+    assert "<git-index>" in redirected.stdout + redirected.stderr
     assert git(repo, "rev-parse", "--verify", "HEAD", check=False).returncode != 0
 
 
-def test_pre_push_blocks_alias_until_active_package_is_archived(tmp_path):
+def test_pre_commit_checks_git_commit_only_transaction_index(tmp_path):
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    slug = "2026-07-13_fix-git-hook"
+    package = make_archived_package(repo, slug)
+    git(repo, "add", ".spec")
+    git(repo, "commit", "-m", "baseline")
+    install_hook(repo, PRE_COMMIT)
+    tasks = package / "tasks.md"
+    tasks.write_text(tasks.read_text(encoding="utf-8").replace("[x]", "[ ]"), encoding="utf-8")
+
+    result = git(repo, "commit", "--only", "-m", "broken archive", "--", str(tasks), check=False)
+
+    assert result.returncode != 0
+    assert "check gates not passed" in result.stdout + result.stderr
+    status = git(repo, "status", "--short").stdout
+    assert " M .spec/specs/archive/2026-07-13_fix-git-hook/tasks.md" in status
+
+
+def test_pre_push_blocks_incomplete_active_package(tmp_path):
     remote = tmp_path / "remote.git"
     subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
     repo = tmp_path / "repo"
@@ -227,7 +246,7 @@ def test_pre_push_blocks_alias_until_active_package_is_archived(tmp_path):
     result = git(repo, "p", "origin", "HEAD:main", check=False)
 
     assert result.returncode != 0
-    assert "active package must be archived" in result.stdout + result.stderr
+    assert "check gates not passed" in result.stdout + result.stderr
     assert git(remote, "show-ref", "--verify", "refs/heads/main", check=False).returncode != 0
 
 
@@ -430,7 +449,7 @@ def test_pre_push_accepts_configured_custom_specs_root(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_pre_push_legacy_baseline_comes_from_remote_main_not_feature_tip(tmp_path, monkeypatch):
+def test_pre_push_does_not_regrade_archives_outside_remote_diff(tmp_path):
     remote = tmp_path / "remote.git"
     subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
     repo = tmp_path / "repo"
@@ -448,22 +467,44 @@ def test_pre_push_legacy_baseline_comes_from_remote_main_not_feature_tip(tmp_pat
     (archive / "completion-summary.md").write_text("# Feature-only legacy\n", encoding="utf-8")
     git(repo, "add", ".spec")
     git(repo, "commit", "-m", "feature legacy", "-m", f"Spec: {slug}")
-    feature_legacy_sha = git(repo, "rev-parse", "HEAD").stdout.strip()
     git(repo, "push", "-u", "origin", "feature/legacy")
 
     install_hook(repo, PRE_PUSH)
-    monkeypatch.setenv("SPEC_LEGACY_BASELINE", feature_legacy_sha)
     (repo / "next.txt").write_text("next\n", encoding="utf-8")
     git(repo, "add", "next.txt")
     git(repo, "commit", "-m", "next", "-m", f"Spec: {slug}")
     result = git(repo, "push", "origin", "feature/legacy", check=False)
 
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert git(remote, "rev-parse", "refs/heads/feature/legacy").stdout == git(repo, "rev-parse", "HEAD").stdout
+
+
+def test_pre_push_checks_archives_changed_earlier_in_remote_window(tmp_path):
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    (repo / "README.md").write_text("main\n", encoding="utf-8")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "main")
+    git(repo, "branch", "-M", "main")
+    base = git(repo, "rev-parse", "HEAD").stdout.strip()
+    slug = "2026-07-13_fix-earlier-window"
+    archive = make_archived_package(repo, slug)
+    (archive / "tasks.md").write_text("- [ ] Not done\n", encoding="utf-8")
+    git(repo, "add", ".spec")
+    git(repo, "commit", "-m", "archive", "-m", f"Spec: {slug}")
+    (repo / "later.txt").write_text("later\n", encoding="utf-8")
+    git(repo, "add", "later.txt")
+    git(repo, "commit", "-m", "later", "-m", f"Spec: {slug}")
+    tip = git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    result = _run_pre_push_hook(repo, f"refs/heads/main {tip} refs/heads/main {base}\n")
+
     assert result.returncode != 0
-    assert "not byte-identical to a baseline legacy summary" in result.stdout + result.stderr
+    assert "check gates not passed" in result.stdout + result.stderr
 
 
-def test_pre_push_all_mode_blocks_uncommitted_active_package(tmp_path):
-    """SPEC_PUSH_GATE=all restores legacy all-packages behavior."""
+def test_pre_push_all_mode_blocks_incomplete_active_package(tmp_path):
+    """The all-packages channel checks every active package in the pushed snapshot."""
     remote = tmp_path / "remote.git"
     subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
     repo = tmp_path / "repo"
@@ -492,7 +533,7 @@ def test_pre_push_all_mode_blocks_uncommitted_active_package(tmp_path):
     )
 
     assert result.returncode != 0
-    assert "active package must be archived" in result.stdout + result.stderr
+    assert "check gates not passed" in result.stdout + result.stderr
 
 
 def test_pre_push_lite_channel_releases_none_only_push(tmp_path):

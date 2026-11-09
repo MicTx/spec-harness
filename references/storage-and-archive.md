@@ -37,15 +37,15 @@ This page explains where a fact belongs after a task starts. The active package 
     └── module-dag.mmd
 ```
 
-Per-machine chain runtime state lives outside the tracked tree, under `.git/spec-chain/<chain>/` for each chain (`autorun`, `autoplan`): `volatile.json` (the spawn-moment facts — `prev_tty`, `window_recycle`), `chain.lock`, `spawns.jsonl`, `events.jsonl`. It is untracked by construction, machine-local, and never archived or plan-synced; a fresh clone starts with an empty runtime tree and the first status/spawn migrates any legacy files found beside the summary.
+Chain state is one tracked JSON file per chain, `.spec/<chain>/chain.json` for `autorun` and `autoplan`, written by `scripts/chain_state.py`; it never archives with a package.
 
 - Active packages live only at the `.spec/specs/` root; completed packages move wholesale into `archive/`.
 - A new task package has `spec.md` and `tasks.md`; an archive additionally has `completion-summary.md`. A legacy v1 package also keeps its `checklist.md`.
 - The optional `handoff.md` member is the session-boundary handoff document (`references/handoff.md`): generated snapshot head plus append-only entry log, validated by the check gate when present, closed with a terminal entry at `done`, archived wholesale with the package.
 - An active package may additionally carry `orchestration/` (workflow script + run ledger, written by the main session); it archives wholesale with the package.
-- A package may carry a historical `update-checkpoint.json` from the retired checkpoint mechanism: read-only recognized by `scripts/update_checkpoint.py status`, resolved using its recorded snapshot or Git history plus file deletion (`references/stages/update.md`); new updates never produce one, and the file archives as history.
-- `.spec/autoplan/` and `.spec/autorun/` hold the tracked chain summaries (`chain.json` only, volatile-free, never archived) for their spawn scripts; the per-machine runtime (volatile state, `spawns.jsonl` audit, `events.jsonl`, `chain.lock`) lives under `.git/spec-chain/<chain>/` and never archives with a package. Each autorun-planned package carries a final plan-sync task whose boundary covers the planning documents and this summary, so checkmarks and the chain summary land on `main` with the round's push and the tree is clean when the next round's `/spec:new` runs — the round's tty/window/pid details stay machine-local and out of every commit.
-- The planning-document tree (`.spec/plans/` root: index `README.md`, single-round `<YYYY-MM-DD>_<verb>-<object>.md` plans, multi-round `<slug>/` clusters holding `master.md` plus `NN-<slug>.md` phase details; delivered or retired units move to `.spec/plans/archive/` under the same name) is project content produced or reconciled by `/spec:autoplan` (`scripts/autoplan_gate.py`, pass chain via `scripts/autoplan_spawn.py`): it feeds the autorun chain's feature checkboxes and detail designs, is committed like normal project files, and is never task-package state — `autoplan` writes no `.spec/specs/` package and no `.spec/autorun/` chain state.
+- A leftover `update-checkpoint.json` comes from the retired update mechanism; it is advisory (route, status and doctor surface it), never a gate.
+- `.spec/autoplan/` and `.spec/autorun/` hold `chain.json` (written by `scripts/chain_state.py`) and a `history/` of closed chains; they never archive with a package.
+- The planning-document tree (`.spec/plans/` root: index `README.md`, single-round `<YYYY-MM-DD>_<verb>-<object>.md` plans, multi-round `<slug>/` clusters holding `master.md` plus `NN-<slug>.md` phase details; delivered or retired units move to `.spec/plans/archive/` under the same name) is project content produced or reconciled by `/spec:autoplan` (`scripts/autoplan_gate.py`, chain state via `scripts/chain_state.py`): it feeds the autorun chain's feature checkboxes and detail designs, is committed like normal project files, and is never task-package state — `autoplan` writes no `.spec/specs/` package and no `.spec/autorun/` chain state.
 - `.spec/architecture/` is the current module graph and belongs to no single package.
 - `--specs-dir` must be a trusted relative directory under root — never empty, absolute, or containing `..`.
 
@@ -64,7 +64,7 @@ One development loop, directory named `YYYY-MM-DD_slug`. The date lives in the s
 
 ## Archiving
 
-- `--archive` is allowed only when `check_spec_package.py` currently exits 0, and never combines with `--allow-incomplete`.
-- Archiving is atomic: quarantine → re-verify the snapshot → write the summary → switch; never write the summary into the source package first. Symlink/FIFO/oversize/concurrent-change conditions fail and restore the active package.
-- A new archive carries the v1 `## 问题处置` (issue dispositions) JSON; only legacy archives byte-identical to the authoritative baseline quartet stay read-only compatible.
+- `--archive` re-runs the package gates in-process before anything moves; a failing gate aborts the archive.
+- Archiving appends the terminal handoff entry, writes `completion-summary.md`, then moves the package into `specs/archive/` with `git mv`; a failed move keeps the active package and the generated summary (`--force` regenerates it).
+- A new archive carries the `## 问题处置` (issue dispositions) JSON; frozen archives are never regraded.
 - `done` produces the archive and finishes this round's commit; merging/pushing/branch deletion is left to `push`.

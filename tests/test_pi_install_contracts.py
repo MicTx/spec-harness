@@ -70,13 +70,11 @@ def sandbox_env(home: Path, extra_env: dict[str, str] | None = None) -> dict[str
         "HOME": str(home),
         "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
         "BACKUP_ROOT": str(home / ".spec-skill-backups"),
-        "SPEC_SKIP_SIGNING": "1",
     }
     for var in (
         "INSTALL_HOSTS",
         "INSTALL_PROFILE",
         "SOURCE_DIR",
-        "SPEC_SIGNING_IDENTITY",
         "PI_DIR",
         "PI_SKILLS_DIR",
         "PI_PROMPTS_DIR",
@@ -313,7 +311,7 @@ def test_export_tree_stays_free_of_pi_templates(tmp_path):
     set the precedent): the exporter must never ship them."""
     output = tmp_path / "export"
     result = subprocess.run(
-        [sys.executable, str(EXPORTER), "--output", str(output), "--force", "--skip-signing"],
+        [sys.executable, str(EXPORTER), "--output", str(output), "--force"],
         cwd=ROOT,
         capture_output=True,
         text=True,

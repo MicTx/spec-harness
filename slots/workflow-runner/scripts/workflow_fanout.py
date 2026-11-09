@@ -51,17 +51,6 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
-
-from reasoning_policy import (  # noqa: E402
-    ReasoningPolicyError,
-    reasoning_cache_identity,
-    reasoning_flags,
-    reasoning_record,
-    resolve_reasoning,
-)
-from worker_decision_guard import DecisionGuardError, guarded_decisions  # noqa: E402
-
 BACKENDS = ("pi", "codex")
 STDOUT_SUMMARY_CAP = 2000  # JSONL 内 stdout 摘要上限；完整输出另落文件
 MAX_PLAN_ITEMS = 1000
@@ -361,9 +350,7 @@ def build_command(backend: str, prompt: str, output_file: Optional[Path], model:
     prompt 否则会被 worker CLI 的参数解析器吞成选项（pi 与 codex 的
     解析器都支持 ``--`` 终止符）。
     """
-    flags = reasoning_flags(backend, model)
-    if model is not None:
-        flags = ["--model", model, *flags]
+    flags = ["--model", model] if model is not None else []
     if backend == "pi":
         return ["pi", "-p", "--no-session", "--mode", "text", *flags, "--", prompt]
     if backend == "codex":
@@ -544,7 +531,7 @@ def _cache_key(
 ) -> str:
     """Key by attested context and the complete execution-relevant item."""
     source = json.dumps(
-        ["v3", backend, item_id, prompt, context, requires_write, reasoning_cache_identity(backend, model)],
+        ["v4", backend, item_id, prompt, context, requires_write, model],
         ensure_ascii=False,
     )
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
@@ -665,7 +652,6 @@ def run_item(
         _validate_item(item)
         if backend == "codex" and item.get("requiresWrite") is True:
             raise ValueError("codex backend is read-only; item requires workspace writes")
-        policy_record = reasoning_record(backend, model)
         # Names do not include user ids: Unicode ids can exceed filesystem byte
         # limits even when they satisfy the character-count validation.
         invocation = uuid.uuid4().hex
@@ -693,18 +679,11 @@ def run_item(
         "outputFile": str(full_output),
         "stdoutSummary": "",
         "model": model,
-        **policy_record,
     }
 
     try:
         cmd = build_command(backend, prompt, full_output, model)
-        with guarded_decisions(Path.cwd()):
-            completed, timed_out, output_limited = _run_bounded(cmd, timeout)
-    except DecisionGuardError as exc:
-        record["error"] = str(exc)
-        record["returncode"] = -1
-        record["durationSec"] = round(time.time() - started, 2)
-        return record
+        completed, timed_out, output_limited = _run_bounded(cmd, timeout)
     except subprocess.TimeoutExpired:
         record["error"] = f"timeout after {timeout}s"
         record["durationSec"] = round(time.time() - started, 2)
@@ -836,12 +815,6 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # Unknown external context, worker identity or workspace is never cacheable.
     binary = resolve_binary(args.backend)
-    if binary is not None:
-        try:
-            resolve_reasoning(args.backend, args.model)
-        except ReasoningPolicyError as exc:
-            print(f"[fanout] reasoning policy: {exc}", file=sys.stderr)
-            return 2
     context = None if args.no_cache else _workspace_context(args.cache_context, binary)
     if args.cache_context and not args.no_cache and context is None:
         print("[fanout] cache disabled: workspace/context cannot be verified", file=sys.stderr)

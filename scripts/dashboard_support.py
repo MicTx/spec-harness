@@ -105,17 +105,25 @@ def fold_strip(kinds: list[str], ascii_mode: bool = False) -> str:
 
 
 def task_strip_from_records(tasks) -> tuple[list[str], list[str]]:
-    """Build dashboard task rows from tasks.md records, not pipeline stages."""
+    """Build dashboard task rows from tasks.md records, not pipeline stages.
+
+    Accepts both the report-layer ``Task`` objects (``text``/``is_completed``)
+    and ``spec_package_support.TaskRecord`` (``title``/``checked``/``blocked``).
+    """
     kinds: list[str] = []
     labels: list[str] = []
     for task in tasks:
-        label = str(getattr(task, "text", "") or "").strip()
+        label = str(getattr(task, "text", "") or getattr(task, "title", "") or "").strip()
         if not label:
             continue
         labels.append(label)
-        completed = bool(getattr(task, "is_completed", False) or getattr(task, "completed", False))
-        blocked = bool(getattr(task, "is_blocked", False))
-        in_progress = bool(getattr(task, "is_explicit_in_progress", False))
+        completed = bool(
+            getattr(task, "is_completed", False) or getattr(task, "completed", False) or getattr(task, "checked", False)
+        )
+        blocked = bool(getattr(task, "is_blocked", False) or getattr(task, "blocked", False))
+        in_progress = bool(
+            getattr(task, "is_explicit_in_progress", False) or str(getattr(task, "block_text", "")).startswith("- [>]")
+        )
         if completed:
             kinds.append(GLYPH_DONE)
         elif blocked:

@@ -12,46 +12,12 @@ on:
   pull_request:
 
 jobs:
-  keyless-install-smoke:
-    # AUD-04 regression guard: the public export tree must install with a
-    # bare `bash install.sh` — fresh checkout, empty HOME, no signing
-    # credentials anywhere (auto --skip-signing with a visible notice) —
-    # and the keyless smoke must pass without the ephemeral credentials
-    # the main job provisions for its release-parity steps.
-    if: github.repository == 'MicTx/spec-harness'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install from bare export with no signing credentials
-        run: |
-          set -eu
-          empty_home="$(mktemp -d)"
-          env -u SPEC_SIGNING_IDENTITY -u SPEC_SIGNING_KEY -u SPEC_SKIP_SIGNING \
-            HOME="$empty_home" INSTALL_HOSTS=claude bash install.sh > keyless-install.log 2>&1
-          grep -q "no signing credentials found" keyless-install.log
-          test -f "$empty_home/.claude/skills/spec/SKILL.md"
-      - name: Run smoke test (keyless)
-        run: python3 scripts/smoke_test_spec_skill.py
-
   verify:
     # GitHub-hosted runners exist only for the public repository. The
     # development Gitea instance shares this file through the public
     # export but must not dispatch it (it has no egress for `uses:`).
     if: github.repository == 'MicTx/spec-harness'
     runs-on: ubuntu-latest
-    env:
-      # Keyless CI semantics: the canonical release payload lives
-      # outside the public tree, and signing enforcement would reject
-      # the bare-export smoke without throwaway credentials. The
-      # credential paths are exported as GITHUB_ENV inside the
-      # provisioning step: the `runner` context is not valid in a
-      # job-level `env:` block and GitHub fails the workflow file at
-      # startup (observed as 0-second startup failures, runs
-      # 37254342812/37254344520).
-      SPEC_RELEASE_PARITY: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -59,33 +25,28 @@ jobs:
           python-version: "3.12"
       - name: Provision toolchain
         run: python3 -m pip install --quiet pytest ruff
-      - name: Ephemeral signing credentials
+      - name: Install from bare export
         run: |
-          printf '%s' '{"holder":"CI Smoke","contact":"ci@invalid","channel":"ci","commercial":"not-permitted"}' > "$RUNNER_TEMP/smoke-identity.json"
-          # Base64 keeps the key ASCII-clean; raw bytes can strip below
-          # the 32-byte minimum in skill_watermark.load_key.
-          head -c 64 /dev/urandom | base64 | tr -d '\n' > "$RUNNER_TEMP/smoke-key"
-          echo "SPEC_SIGNING_IDENTITY=$RUNNER_TEMP/smoke-identity.json" >> "$GITHUB_ENV"
-          echo "SPEC_SIGNING_KEY=$RUNNER_TEMP/smoke-key" >> "$GITHUB_ENV"
+          set -eu
+          empty_home="$(mktemp -d)"
+          HOME="$empty_home" INSTALL_HOSTS=claude bash install.sh > install.log 2>&1
+          test -f "$empty_home/.claude/skills/spec/SKILL.md"
       - name: Compile Python tree
-        run: python3 -m compileall -q scripts server hooks slots tests
+        run: python3 -m compileall -q scripts hooks slots tests
       - name: Check installer syntax
-        run: bash -n server/install.sh
+        run: bash -n install.sh
       - name: Run smoke test
         run: python3 scripts/smoke_test_spec_skill.py
       - name: Validate slots
         run: python3 scripts/slot_registry.py validate
       - name: Run pytest
         run: |
-          # The ignored files assert against the private `.spec/`
-          # history and the tracked `release/` payload; the public
-          # export excludes both by design, so they cannot run here.
+          # These tests assert against private `.spec/` history, which the
+          # public export excludes by design.
           python3 -m pytest tests/ slots/ \
-            --ignore=tests/test_release_payload.py \
             --ignore=tests/test_organize_project_structure.py \
-            --ignore=tests/test_check_spec_package.py \
-            --ignore=tests/test_build_release.py
+            --ignore=tests/test_check_spec_package.py
       - name: Ruff check
-        run: ruff check scripts/ server/ hooks/ slots/ tests/
+        run: ruff check scripts/ hooks/ slots/ tests/
       - name: Ruff format check
-        run: ruff format --check scripts/ server/ hooks/ slots/ tests/
+        run: ruff format --check scripts/ hooks/ slots/ tests/

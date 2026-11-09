@@ -79,10 +79,6 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 import workflow_fanout as wf
 root = Path(sys.argv[2])
-import reasoning_policy
-reasoning_policy.load_codex_catalog = lambda: reasoning_policy.CodexCatalog(
-    "/test/codex", "codex-cli test", {"test-model": ("high", "max")}
-)
 wf.build_command = lambda backend, prompt, output, model=None: [
     sys.executable, "-c", "import os,sys; os.mkfifo(sys.argv[1]); print('progress')", str(output)
 ]

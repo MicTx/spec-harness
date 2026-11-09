@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-"""
-Execute the post-done Spec Git push workflow.
-"""
+"""Merge and publish a completed Spec branch; delete it only after verification."""
 
 from __future__ import annotations
 
@@ -12,418 +10,70 @@ import re
 import shlex
 import subprocess
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
-from dashboard_support import HEALTH_OK, HEALTH_RISK, Dashboard
+import gitx
+from check_all_spec_packages import (
+    active_package_dirs,
+    check_git_revision,
+    discover_specs_roots,
+    footer_interval_warnings,
+    git_revision_snapshot,
+    render_failures,
+    render_footer_interval_warnings,
+)
+from dashboard_support import HEALTH_OK, Dashboard
 from spec_package_support import (
     PROTECTED_BRANCHES,
     PROTECTED_PREFIXES,
-    active_package_slugs,
     combined_process_output,
-    remote_unavailable_detected,
     scope_from_changed_paths,
 )
-
-try:
-    from check_all_spec_packages import (
-        CheckFailure,
-        check_all_packages,
-        footer_interval_warnings,
-        git_revision_snapshot,
-        legacy_archive_hashes,
-        render_failures,
-        render_footer_interval_warnings,
-    )
-except ImportError:  # pragma: no cover - optional until disk-truth lands
-    CheckFailure = None  # type: ignore[assignment]
-    check_all_packages = None  # type: ignore[assignment]
-    footer_interval_warnings = None  # type: ignore[assignment]
-    git_revision_snapshot = None  # type: ignore[assignment]
-    legacy_archive_hashes = None  # type: ignore[assignment]
-
-    def render_failures(root, failures):  # type: ignore[no-redef]
-        return f"spec check unavailable under {root}: {failures}"
-
-
-SAFE_SUBPROCESS_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin"
 
 
 class PushError(RuntimeError):
     pass
 
 
-class RemoteUnavailable(PushError):
-    pass
-
-
-GIT_HOOKS_BROKEN_MARKERS = (
-    "this repository's git hooks seem to be broken",
-    "this repository’s git hooks seem to be broken",
-    "repository git hooks seem to be broken",
-    "git hooks seem to be broken",
-    "server-side git hooks seem to be broken",
-    "push hook / webhook / actions aren't running",
-    "push hook / webhook / actions aren’t running",
-    "仓库的 git 钩子似乎已损坏",
-    "git 钩子似乎已损坏",
-    "服务端 git 钩子似乎已损坏",
-)
-
-GIT_HOOKS_FIX_GUIDANCE = """Remote reported broken repository Git hooks during push.
-
-Pushes may succeed while repository activity, webhooks, mirrors, or CI/Actions
-jobs do not run when server-side Git hooks are out of sync, missing, or cannot
-execute.
-
-Repair the remote Git hosting service before running Spec push cleanup again:
-1) Resynchronize or reinstall the repository server-side hooks
-   (pre-receive, update, post-receive)
-2) Resynchronize repository branch and tag metadata from Git data into the
-   hosting service database, when the platform provides that maintenance
-   action
-3) Verify the repository storage filesystem supports executable scripts
-   (`chmod a+x any-script`) and is not mounted with `noexec`
-4) Verify the hosting service/runtime version is compatible with executing
-   server-side hooks
-5) After repair, push a new commit to refresh repository activity, webhook,
-   mirror, and CI/Actions state
-
-Built-in Gitea repair: when the remote is a Gitea instance you administer,
-rerun push with `--repair-gitea-hooks --gitea-url <base-url>` and provide the
-site-admin token via the SPEC_GITEA_TOKEN environment variable or
-SPEC_GITEA_TOKEN_FILE=/path/to/token-file (SPEC_GITEA_TOKEN wins when both
-are set). The --gitea-token flag is deprecated and refused: a command-line
-token is visible in process listings and shell history. This runs the
-official FAQ maintenance actions (sync_repo_branches, sync_repo_tags,
-resync_all_hooks) via the site admin API and retries the push once.
-
-Spec push stopped before branch cleanup so the working branch remains available
-for retry after the remote Git hooks are repaired."""
-
-
-def is_git_push_command(command: list[str]) -> bool:
-    return len(command) >= 2 and command[0] == "git" and command[1] == "push"
-
-
-def git_hooks_broken_detected(output: str) -> bool:
-    normalized = output.lower()
-    return any(marker in normalized for marker in GIT_HOOKS_BROKEN_MARKERS)
-
-
-def _resolve_gitea_token() -> str | None:
-    """Resolve the Gitea admin token from env or token file (AUD-22).
-
-    SPEC_GITEA_TOKEN wins; SPEC_GITEA_TOKEN_FILE is read and stripped. A
-    missing, unreadable, or empty token file fails loudly instead of
-    degrading to a silent empty token.
-    """
-    env_token = (os.environ.get("SPEC_GITEA_TOKEN") or "").strip()
-    if env_token:
-        return env_token
-    token_file = (os.environ.get("SPEC_GITEA_TOKEN_FILE") or "").strip()
-    if not token_file:
-        return None
-    path = Path(token_file)
-    if not path.exists():
-        raise PushError(
-            f"SPEC_GITEA_TOKEN_FILE points to a missing file: {token_file}; "
-            "set SPEC_GITEA_TOKEN or write the token to the file"
-        )
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise PushError(
-            f"SPEC_GITEA_TOKEN_FILE is not readable: {token_file} ({exc}); set SPEC_GITEA_TOKEN or fix the file"
-        ) from exc
-    token = raw.strip()
-    if not token:
-        raise PushError(
-            f"SPEC_GITEA_TOKEN_FILE is empty: {token_file}; set SPEC_GITEA_TOKEN or write the token to the file"
-        )
-    return token
-
-
-class GiteaRepairSettings:
-    """Opt-in repair configuration resolved from env/file carriers (AUD-22).
-
-    The token never travels on argv: the ``--gitea-token`` flag is refused in
-    ``parse_args`` and resolution reads ``SPEC_GITEA_TOKEN`` or
-    ``SPEC_GITEA_TOKEN_FILE`` only. A disabled repair resolves no token so a
-    normal push grows no new failure surface from an unrelated env var.
-    """
-
-    def __init__(
-        self,
-        enabled: bool,
-        base_url: str | None,
-    ) -> None:
-        self.enabled = enabled
-        self.base_url = (base_url or os.environ.get("SPEC_GITEA_URL") or "").strip() or None
-        self.token = _resolve_gitea_token() if enabled else None
-
-
-class BrokenGitHooksError(PushError):
-    """Raised when a push reports broken remote Git hooks.
-
-    Carries the push command output so an opt-in repair attempt can decide
-    whether the failure is repairable and rerun the plan once.
-    """
-
-
-class HooksRepairedRetryNeeded(PushError):
-    """Raised after a successful repair; the plan must be rerun once."""
-
-
-def ensure_no_broken_git_hooks_warning(
-    command: list[str],
-    output: str,
-    repair: GiteaRepairSettings | None = None,
-) -> None:
-    """Fail closed on broken remote hooks, with one opt-in repair retry.
-
-    Without repair settings this matches the historical behavior: raise and
-    keep the working branch. With `repair.enabled`, run the Gitea admin
-    repair sequence first, then raise HooksRepairedRetryNeeded so the
-    caller reruns the plan once without repair (at most one repair). A
-    failed repair raises BrokenGitHooksError (fail closed).
-    """
-    if not (is_git_push_command(command) and git_hooks_broken_detected(output)):
-        return
-    if repair is not None and repair.enabled:
-        repair_gitea_hooks_once(repair)
-        raise HooksRepairedRetryNeeded(
-            f"Gitea hook repair completed; rerunning the push plan once.\nOriginal git output:\n{output.strip()}"
-        )
-    raise BrokenGitHooksError(f"{GIT_HOOKS_FIX_GUIDANCE}\n\nGit output:\n{output.strip()}")
-
-
-def repair_gitea_hooks_once(repair: GiteaRepairSettings) -> None:
-    """Run the Gitea hook repair sequence; raise on any failure."""
-    try:
-        from gitea_hook_repair import (
-            GiteaCredentialsMissing,
-            GiteaHookRepairError,
-            repair_gitea_hooks,
-        )
-    except ImportError as exc:  # pragma: no cover - module ships alongside
-        raise PushError(f"Gitea hook repair module unavailable: {exc}") from exc
-    if not repair.base_url or not repair.token:
-        raise BrokenGitHooksError(
-            "repair-gitea-hooks is enabled but credentials are incomplete; "
-            "provide --gitea-url plus SPEC_GITEA_TOKEN or SPEC_GITEA_TOKEN_FILE\n" + GIT_HOOKS_FIX_GUIDANCE
-        )
-    print(
-        f"Gitea hook repair: running official maintenance tasks on {repair.base_url} (site-wide operation)...",
-        file=sys.stderr,
-    )
-    try:
-        executed = repair_gitea_hooks(repair.base_url, repair.token)
-    except (GiteaHookRepairError, GiteaCredentialsMissing) as exc:
-        raise BrokenGitHooksError(f"Gitea hook repair failed: {exc}\n" + GIT_HOOKS_FIX_GUIDANCE) from exc
-    print(
-        f"Gitea hook repair completed: {', '.join(executed)}; retrying push plan once",
-        file=sys.stderr,
-    )
+SUBPROCESS_NETWORK_TIMEOUT_SECONDS = 300
+SAFE_SUBPROCESS_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin"
+SPEC_BRANCH_PREFIX = "spec/"
+SPEC_NONE_FOOTER_PATTERN = re.compile(r"^Spec:\s*none\s*\(([^()]+)\)\s*$")
+SPEC_SLUG_FOOTER_PATTERN = re.compile(r"^Spec:\s*([a-z0-9][a-z0-9_-]*[a-z0-9]|[a-z0-9])\s*$")
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Merge the current Spec branch into main and delete the merged branch."
-    )
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--branch", help="Working branch to merge and delete (default: current branch)")
+    parser.add_argument("--main-branch", default="main", help="Main branch to merge into (default: main)")
+    parser.add_argument("--remote", default="origin", help="Remote name (default: origin)")
+    parser.add_argument("--root", default=".", help="Git repository root (default: current directory)")
     parser.add_argument(
-        "--branch",
-        help="Working branch to merge and delete (default: current branch)",
+        "--specs-dir", action="append", default=[], dest="specs_dirs", help="Additional trusted Spec root"
     )
+    parser.add_argument("--slug", action="append", default=[], dest="slugs", help="Also gate this package; repeatable")
+    parser.add_argument("--all-packages", action="store_true", help="Gate all active packages and changed archives")
     parser.add_argument(
-        "--main-branch",
-        default="main",
-        help="Main branch to merge into (default: main)",
+        "--allow-unarchived", action="store_true", help="Allow selected active packages with an advisory"
     )
-    parser.add_argument(
-        "--remote",
-        default="origin",
-        help="Remote name (default: origin)",
-    )
-    parser.add_argument(
-        "--root",
-        default=".",
-        help="Git repository root (default: current directory)",
-    )
-    parser.add_argument(
-        "--specs-dir",
-        action="append",
-        default=[],
-        dest="specs_dirs",
-        help="Additional trusted Spec root relative to root; may be repeated",
-    )
-    parser.add_argument(
-        "--slug",
-        action="append",
-        default=[],
-        dest="slugs",
-        help=(
-            "Single-package mode: gate only the named Spec package; may be "
-            "repeated. Omit for touched-package detection."
-        ),
-    )
-    parser.add_argument(
-        "--all-packages",
-        action="store_true",
-        help=(
-            "All-packages mode: gate every active Spec package (legacy "
-            "behavior). Default gates only packages touched by this branch."
-        ),
-    )
-    parser.add_argument(
-        "--allow-unarchived",
-        action="store_true",
-        help=(
-            "Downgrade the unarchived-package check from hard block to advisory. "
-            "Use for retro-pack scenarios where archival happens after the push."
-        ),
-    )
-    parser.add_argument(
-        "--repair-gitea-hooks",
-        action="store_true",
-        help=(
-            "When a push reports broken remote Git hooks (Gitea FAQ), run the "
-            "official admin maintenance tasks via the Gitea API and retry the "
-            "push plan once. Site-wide operation; requires admin token."
-        ),
-    )
-    parser.add_argument(
-        "--gitea-url",
-        default=None,
-        help="Gitea base URL for hook repair (env: SPEC_GITEA_URL)",
-    )
-    parser.add_argument(
-        "--gitea-token",
-        default=None,
-        help="deprecated and refused: provide SPEC_GITEA_TOKEN or SPEC_GITEA_TOKEN_FILE instead",
-    )
-    args = parser.parse_args()
-    if args.gitea_token is not None:
-        # AUD-22: fail loud before any other work — a silent ignore would let
-        # "thought I passed the token" repair calls run without credentials.
-        print(
-            "error: --gitea-token is deprecated and refused: a command-line token "
-            "is visible in process listings and shell history. Provide the token "
-            "via the SPEC_GITEA_TOKEN environment variable or "
-            "SPEC_GITEA_TOKEN_FILE=/path/to/token-file instead.",
-            file=sys.stderr,
-        )
-        raise SystemExit(2)
-    return args
-
-
-def _temp_roots() -> list[str]:
-    """Lowercased, resolved temp roots considered attacker-controlled.
-
-    A PATH-injected fake git is placed under a temp dir (see
-    test_push_ignores_path_injected_git_binary); excluding temp roots keeps
-    such a fake off the sanitized PATH while preserving system and git dirs.
-    """
-    roots: list[str] = []
-    for var in ("TEMP", "TMP", "TMPDIR"):
-        value = os.environ.get(var)
-        if not value:
-            continue
-        try:
-            roots.append(str(Path(value).resolve()).lower())
-        except OSError:
-            continue
-    return roots
-
-
-def _windows_safe_path() -> str:
-    """Filter the inherited PATH to existing, non-temp directories.
-
-    Git for Windows needs its mingw64/bin (DLLs), usr/bin (MSYS runtime),
-    cmd and exec-path dirs on PATH for local-transport helpers to load; a
-    minimal hardcoded PATH crashes git (STATUS_ACCESS_VIOLATION), so on
-    Windows we filter the inherited PATH by location instead of replacing
-    it. Temp roots are dropped so a PATH-injected fake git never runs.
-    """
-    excluded = _temp_roots()
-
-    def under_temp(entry: str) -> bool:
-        try:
-            resolved = str(Path(entry).resolve()).lower()
-        except OSError:
-            return False
-        for root in excluded:
-            prefix = root.rstrip("\\") + "\\"
-            if resolved == root or resolved.startswith(prefix):
-                return True
-        return False
-
-    kept: list[str] = []
-    seen: set[str] = set()
-    for entry in os.environ.get("PATH", "").split(os.pathsep):
-        if not entry or entry.lower() in seen:
-            continue
-        if not Path(entry).exists() or under_temp(entry):
-            continue
-        seen.add(entry.lower())
-        kept.append(entry)
-    return os.pathsep.join(kept)
-
-
-def safe_subprocess_path() -> str:
-    """Return a hardened PATH for git subprocesses.
-
-    On POSIX, a fixed set of trusted system directories keeps a PATH-injected
-    fake git from running. On Windows that approach crashes git (git for
-    Windows needs several of its own dirs on PATH), so we instead filter the
-    inherited PATH down to existing, non-temp directories.
-    """
-    if sys.platform == "win32":
-        return _windows_safe_path()
-    return SAFE_SUBPROCESS_PATH
+    parser.add_argument("--dry-run", action="store_true", help="Show the plan without changing local or remote refs")
+    return parser.parse_args()
 
 
 def clean_git_env() -> dict[str, str]:
-    blocked_git_vars = {
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_INDEX_FILE",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    }
-    env = {
-        key: value
-        for key, value in os.environ.items()
-        if key not in blocked_git_vars and not key.startswith("GIT_CONFIG_") and key != "SSH_ASKPASS"
-    }
-    return {**env, "PATH": safe_subprocess_path()}
-
-
-# F21: every git/subprocess call in this gate is bounded — a stalled
-# network operation (fetch/push/ls-remote) must fail diagnosably inside the
-# bound instead of hanging the push gate forever.
-SUBPROCESS_NETWORK_TIMEOUT_SECONDS = 300
+    """Use the shared Git context filter plus the push command's bounded PATH."""
+    env = gitx.clean_env()
+    env.pop("GIT_ALTERNATE_OBJECT_DIRECTORIES", None)
+    return {**env, "PATH": SAFE_SUBPROCESS_PATH}
 
 
 def git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(
-            ["git", *args],
-            cwd=root,
-            env=clean_git_env(),
-            check=check,
-            capture_output=True,
-            text=True,
-            timeout=SUBPROCESS_NETWORK_TIMEOUT_SECONDS,
-        )
+        return gitx.git(root, *args, check=check, env=clean_git_env(), timeout=SUBPROCESS_NETWORK_TIMEOUT_SECONDS)
     except FileNotFoundError as exc:
         raise PushError("git is not available on the sanitized PATH") from exc
     except subprocess.TimeoutExpired as exc:
-        raise PushError(
-            "git {} timed out within {}s (stalled network or repository?)".format(
-                " ".join(args[:3]), SUBPROCESS_NETWORK_TIMEOUT_SECONDS
-            )
-        ) from exc
+        raise PushError(f"git {' '.join(args[:3])} timed out within {SUBPROCESS_NETWORK_TIMEOUT_SECONDS}s") from exc
 
 
 def git_stdout(root: Path, *args: str) -> str:
@@ -431,10 +81,9 @@ def git_stdout(root: Path, *args: str) -> str:
 
 
 def ensure_safe_ref_name(root: Path, name: str, label: str) -> None:
-    if not name or name.startswith("-") or name.startswith("refs/"):
+    if not name or name.startswith(("-", "refs/")):
         raise PushError(f"invalid {label}: {name}")
-    result = git(root, "check-ref-format", "--branch", name, check=False)
-    if result.returncode != 0:
+    if git(root, "check-ref-format", "--branch", name, check=False).returncode != 0:
         raise PushError(f"invalid {label}: {name}")
 
 
@@ -444,18 +93,16 @@ def ensure_safe_remote_name(name: str) -> None:
 
 
 def ensure_configured_remote(root: Path, remote: str) -> None:
-    remotes = set(git_stdout(root, "remote").splitlines())
-    if remote not in remotes:
+    if remote not in git_stdout(root, "remote").splitlines():
         raise PushError(f"remote is not configured: {remote}")
 
 
 def remote_default_branch(root: Path, remote: str) -> str | None:
     result = git(root, "ls-remote", "--symref", remote, "HEAD", check=False)
     if result.returncode != 0:
-        output = combined_process_output(result)
-        if remote_unavailable_detected(output):
-            return None
-        raise PushError(f"cannot determine remote default branch: {remote}\n{output}")
+        raise PushError(
+            f"remote unavailable or cannot determine remote default branch: {remote}\n{combined_process_output(result)}"
+        )
     for line in result.stdout.splitlines():
         if line.startswith("ref: refs/heads/") and line.endswith("\tHEAD"):
             return line.split("\t", 1)[0].removeprefix("ref: refs/heads/")
@@ -463,78 +110,26 @@ def remote_default_branch(root: Path, remote: str) -> str | None:
 
 
 def ensure_branch_is_deletable(root: Path, remote: str, branch: str, main_branch: str) -> None:
-    protected = branch in PROTECTED_BRANCHES or branch.startswith(PROTECTED_PREFIXES)
-    default_branch = remote_default_branch(root, remote)
-    if branch == main_branch or branch == default_branch or protected:
+    if branch == main_branch or branch in PROTECTED_BRANCHES or branch.startswith(PROTECTED_PREFIXES):
+        raise PushError(f"refusing to delete protected branch: {branch}")
+    if branch == remote_default_branch(root, remote):
         raise PushError(f"refusing to delete protected branch: {branch}")
 
 
-SPEC_BRANCH_PREFIX = "spec/"
-# Branches whose unique work started before this moment keep legacy
-# non-spec-prefix compatibility; strict enforcement applies afterwards.
-SPEC_PREFIX_ENFORCED_FROM = datetime(2026, 8, 27, tzinfo=timezone.utc)
-
-
-def _branch_work_predates_enforcement(root: Path, main_branch: str, branch: str) -> bool:
-    result = git(
-        root,
-        "log",
-        "--format=%aI%n%cI",
-        f"refs/heads/{main_branch}..refs/heads/{branch}",
-        check=False,
-    )
-    if result.returncode != 0:
-        # Undateable history stays compatible so old branches keep merging.
-        return True
-    stamps = result.stdout.split()
-    for stamp_text in stamps:
-        if stamp_text.endswith("Z"):
-            stamp_text = stamp_text[:-1] + "+00:00"
-        try:
-            stamp = datetime.fromisoformat(stamp_text)
-        except ValueError:
-            continue
-        if stamp.tzinfo is None:
-            stamp = stamp.replace(tzinfo=timezone.utc)
-        if stamp < SPEC_PREFIX_ENFORCED_FROM:
-            return True
-    # No unique commits cannot be dated; treat them as legacy (the merge
-    # itself is a no-op, so tolerating them only enables branch cleanup).
-    return not stamps
-
-
-def ensure_spec_branch_prefix(root: Path, branch: str, main_branch: str) -> str | None:
-    """Enforce the spec/ prefix; return an advisory note for tolerated legacy branches."""
-    if branch.startswith(SPEC_BRANCH_PREFIX):
-        return None
-    if branch in PROTECTED_BRANCHES or branch.startswith(PROTECTED_PREFIXES):
-        # Protected branches keep their precise refusal from
-        # ensure_branch_is_deletable below.
-        return None
-    if _branch_work_predates_enforcement(root, main_branch, branch):
-        return (
-            f"legacy branch {branch} predates `spec/` prefix enforcement "
-            f"(strict from {SPEC_PREFIX_ENFORCED_FROM.date().isoformat()} UTC); "
-            f"rename recommended: git branch -m {branch} {SPEC_BRANCH_PREFIX}<name>"
+def ensure_spec_branch_prefix(branch: str) -> None:
+    if not branch.startswith(SPEC_BRANCH_PREFIX):
+        raise PushError(
+            f"refusing to push non-spec branch: {branch}\n"
+            f"spec workflow branches must start with `{SPEC_BRANCH_PREFIX}`; "
+            f"rename this branch with `git branch -m {branch} {SPEC_BRANCH_PREFIX}<name>` and retry"
         )
-    raise PushError(
-        f"refusing to push non-spec branch: {branch}\n"
-        f"spec workflow branches must start with `{SPEC_BRANCH_PREFIX}`; "
-        f"rename this branch with `git branch -m {branch} {SPEC_BRANCH_PREFIX}<name>` and retry"
-    )
 
 
 def repository_root(root: Path) -> Path:
     result = git(root, "rev-parse", "--show-toplevel", check=False)
     if result.returncode != 0:
-        return root
-    return Path(result.stdout.strip()).resolve()
-
-
-def ensure_git_repo(root: Path) -> None:
-    result = git(root, "rev-parse", "--show-toplevel", check=False)
-    if result.returncode != 0:
         raise PushError("not a git repository")
+    return Path(result.stdout.strip()).resolve()
 
 
 def current_branch(root: Path) -> str:
@@ -544,275 +139,219 @@ def current_branch(root: Path) -> str:
     return branch
 
 
-def changed_files_against_main(
-    root: Path, branch: str, main_branch: str, *, baseline_revision: str | None = None
-) -> list[str] | None:
-    base = git(
-        root,
-        "merge-base",
-        baseline_revision or f"refs/heads/{main_branch}",
-        f"refs/heads/{branch}",
-        check=False,
-    )
-    if base.returncode != 0:
-        return None
-    base_sha = base.stdout.strip()
-    diff = git(root, "diff", "--name-only", base_sha, f"refs/heads/{branch}", check=False)
-    if diff.returncode != 0:
-        return None
-    return [line.strip() for line in diff.stdout.splitlines() if line.strip()]
-
-
-SPEC_NONE_FOOTER_PATTERN = re.compile(r"^Spec:\s*none\s*\(([^()]+)\)\s*$")
-
-
-def spec_footer_attribution(
-    root: Path, branch: str, main_branch: str, *, baseline_revision: str | None = None
-) -> tuple[list[str], list[str]]:
-    """Commit-footer attribution for a working branch (F11 lite channel).
-
-    Returns ``(slugs, none_reasons)``: ordinary ``Spec: <slug>`` footers
-    resolve to Development Record slugs; ``Spec: none (<非空理由>)`` footers
-    attribute a trivial unpackaged commit and carry their reason here. A
-    commit with neither footer is a push-blocking attribution gap.
-    """
-    base = git(
-        root,
-        "merge-base",
-        baseline_revision or f"refs/heads/{main_branch}",
-        f"refs/heads/{branch}",
-        check=False,
-    )
-    if base.returncode != 0:
-        return [], []
-    commits = git(
-        root,
-        "rev-list",
-        "--no-merges",
-        f"{base.stdout.strip()}..refs/heads/{branch}",
-        check=False,
-    )
-    if commits.returncode != 0:
-        return [], []
-    commit_shas = [line.strip() for line in commits.stdout.splitlines() if line.strip()]
-    if not commit_shas:
-        commit_shas = [git_stdout(root, "rev-parse", f"refs/heads/{branch}")]
-    slugs: set[str] = set()
-    none_reasons: list[str] = []
-    unattributed: list[str] = []
-    for sha in commit_shas:
-        message = git(root, "show", "-s", "--format=%B", sha, check=False)
-        if message.returncode != 0:
-            unattributed.append(sha[:12])
-            continue
-        lines = [line.strip() for line in message.stdout.splitlines()]
-        if any(re.match(r"^Spec:\s*none\s*(\(\s*\))?\s*$", line) for line in lines):
-            # The bare word would otherwise parse as a slug named "none" and
-            # die later with a confusing archive-not-found error.
-            raise PushError(
-                "`Spec: none` lite channel requires a non-empty reason: "
-                "write `Spec: none (<非空理由>)` in the commit footer"
-            )
-        commit_slugs = {
-            match.group(1)
-            for line in lines
-            if (match := re.match(r"^Spec:\s*([a-z0-9][a-z0-9_-]*[a-z0-9]|[a-z0-9])\s*$", line))
-        }
-        if not commit_slugs:
-            none_matches = [match.group(1).strip() for line in lines if (match := SPEC_NONE_FOOTER_PATTERN.match(line))]
-            if none_matches and any(none_matches):
-                none_reasons.extend(reason for reason in none_matches if reason)
-            else:
-                unattributed.append(sha[:12])
-        slugs.update(commit_slugs)
-    if unattributed:
-        raise PushError(
-            "working branch contains commit(s) without `Spec: <slug>` attribution: "
-            + ", ".join(unattributed)
-            + "; retro-pack and amend the commits before push, or attribute trivial "
-            "unpackaged work with `Spec: none (<非空理由>)`"
-        )
-    return sorted(slugs), none_reasons
-
-
-def spec_footer_slugs(root: Path, branch: str, main_branch: str) -> list[str]:
-    """Slug-only view of :func:`spec_footer_attribution` (compat wrapper)."""
-    slugs, _none_reasons = spec_footer_attribution(root, branch, main_branch)
-    return slugs
-
-
-def touched_spec_scope(
-    root: Path,
-    branch: str,
-    main_branch: str,
-    specs_dirs: list[str] | None = None,
-    *,
-    baseline_revision: str | None = None,
-) -> list[str] | None:
-    """Return Spec slugs touched by one branch diff; None when undeterminable."""
-    changed = changed_files_against_main(root, branch, main_branch, baseline_revision=baseline_revision)
-    if changed is None:
-        return None
-    return scope_from_changed_paths(changed, specs_dirs or [])
-
-
 def ensure_clean_tree(root: Path) -> None:
     dirty = git_stdout(root, "status", "--porcelain")
-    if not dirty:
-        return
-    changed = git_stdout(root, "diff", "--name-only", "HEAD")
-    untracked = git_stdout(root, "ls-files", "--others", "--exclude-standard")
-    lines = [
-        "working tree is not clean",
-        "triage required before push:",
-        "1) if an active Spec package exists: split boundary-related changes into that package commit",
-        "2) batch unrelated changes by theme into atomic commits, or create a temporary Development Record",
-        "3) if no active Spec package (discrete unscoped work then push): retro-pack first —",
-        "   either one Development Record per independent theme, or one whole Spec package when intent is coherent",
-        "4) never mix unrelated dirty files into the current package; never push unscoped dirty without retro-pack",
-        "dirty status:",
-        dirty,
-    ]
-    if changed:
-        lines.extend(["changed files:", changed])
-    if untracked:
-        lines.extend(["untracked files:", untracked])
-    raise PushError("\n".join(lines))
+    if dirty:
+        raise PushError(
+            "working tree is not clean\ntriage required before push:\n"
+            "1) if an active Spec package exists: split boundary-related changes into that package commit\n"
+            "2) batch unrelated changes by theme into atomic commits, or create a temporary Development Record\n"
+            "3) if no active Spec package (discrete unscoped work then push): retro-pack first\n"
+            "4) never mix unrelated dirty files into the current package; "
+            "never push unscoped dirty without retro-pack\n"
+            f"dirty status:\n{dirty}"
+        )
 
 
 def ensure_local_branch_exists(root: Path, branch: str, label: str) -> None:
-    result = git(root, "show-ref", "--verify", f"refs/heads/{branch}", check=False)
-    if result.returncode != 0:
+    if git(root, "show-ref", "--verify", f"refs/heads/{branch}", check=False).returncode != 0:
         raise PushError(f"required local {label} does not exist: {branch}")
 
 
-def remote_branch_sha(root: Path, remote: str, branch: str, label: str) -> str:
-    result = git(root, "ls-remote", "--exit-code", "--heads", remote, branch, check=False)
-    output = combined_process_output(result)
-    if result.returncode != 0 and remote_unavailable_detected(output):
-        raise RemoteUnavailable(f"remote unavailable while reading {remote}/{branch}: {output}")
+def remote_branch_sha(root: Path, remote: str, branch: str, *, required: bool) -> str | None:
+    result = git(root, "ls-remote", "--exit-code", "--heads", remote, f"refs/heads/{branch}", check=False)
+    if result.returncode == 2:
+        if required:
+            raise PushError(f"remote main branch not found: {remote}/{branch}")
+        return None
     if result.returncode != 0:
-        raise PushError(f"{label} not found: {remote}/{branch}")
+        raise PushError(f"remote unavailable while reading {remote}/{branch}: {combined_process_output(result)}")
     fields = result.stdout.strip().split()
     if not fields:
-        raise PushError(f"{label} not found: {remote}/{branch}")
+        raise PushError(f"remote returned no branch SHA for {remote}/{branch}")
     return fields[0]
 
 
-def optional_remote_branch_sha(root: Path, remote: str, branch: str) -> str | None:
-    result = git(root, "ls-remote", "--heads", remote, branch, check=False)
-    output = combined_process_output(result)
-    if result.returncode != 0 and remote_unavailable_detected(output):
-        raise RemoteUnavailable(f"remote unavailable while reading {remote}/{branch}: {output}")
-    if result.returncode != 0:
-        return None
-    fields = result.stdout.strip().split()
-    if not fields:
-        return None
-    return fields[0]
+def merge_base(root: Path, baseline: str, branch: str) -> str:
+    result = git(root, "merge-base", baseline, f"refs/heads/{branch}", check=False)
+    if result.returncode != 0 or not result.stdout.strip():
+        raise PushError(f"cannot determine merge-base for {baseline} and {branch}")
+    return result.stdout.strip()
 
 
-def ensure_remote_main_exists(root: Path, remote: str, main_branch: str) -> str:
-    return remote_branch_sha(root, remote, main_branch, "remote main branch")
+def changed_files_against_main(root: Path, branch: str, baseline: str) -> list[str]:
+    base = merge_base(root, baseline, branch)
+    return [
+        path
+        for path in git_stdout(root, "diff", "--name-only", "--no-renames", "-z", base, f"refs/heads/{branch}").split(
+            "\0"
+        )
+        if path
+    ]
+
+
+def spec_footer_attribution(root: Path, branch: str, baseline: str) -> tuple[list[str], list[str], list[str]]:
+    """Parse footer hints and report unattributed non-merge commits without blocking."""
+    base = merge_base(root, baseline, branch)
+    shas = git_stdout(root, "rev-list", "--no-merges", f"{base}..refs/heads/{branch}").splitlines()
+    slugs: set[str] = set()
+    none_reasons: list[str] = []
+    unattributed: list[str] = []
+    for sha in shas:
+        lines = git_stdout(root, "show", "-s", "--format=%B", sha).splitlines()
+        slugs_here = {
+            match.group(1)
+            for line in lines
+            if (match := SPEC_SLUG_FOOTER_PATTERN.match(line.strip())) and match.group(1) != "none"
+        }
+        reasons = [
+            match.group(1).strip()
+            for line in lines
+            if (match := SPEC_NONE_FOOTER_PATTERN.match(line.strip())) and match.group(1).strip()
+        ]
+        slugs.update(slugs_here)
+        none_reasons.extend(reasons)
+        if not slugs_here and not reasons:
+            unattributed.append(sha[:12])
+    return sorted(slugs), none_reasons, unattributed
+
+
+def run_spec_gate(
+    root: Path,
+    branch: str,
+    main_branch: str,
+    explicit_slugs: list[str],
+    all_packages: bool,
+    *,
+    allow_unarchived: bool = False,
+    specs_dirs: list[str] | None = None,
+    remote_baseline: str | None = None,
+) -> list[str]:
+    """Check the target revision and changed archives against the pinned remote baseline."""
+    baseline = remote_baseline or f"refs/heads/{main_branch}"
+    revision = f"refs/heads/{branch}"
+    base = merge_base(root, baseline, branch)
+    touched = scope_from_changed_paths(changed_files_against_main(root, branch, baseline), specs_dirs or [])
+    footers, reasons, unattributed = spec_footer_attribution(root, branch, baseline)
+    notes: list[str] = []
+    if unattributed:
+        print(
+            "spec gate advisory: commit(s) without `Spec: <slug>` attribution: " + ", ".join(unattributed),
+            file=sys.stderr,
+        )
+    if touched:
+        notes.append("changed-package attribution: " + ", ".join(touched))
+    elif footers:
+        notes.append("commit-footer attribution: " + ", ".join(footers))
+        warnings = footer_interval_warnings(root, footers, revision=revision, window_base=base, specs_dirs=specs_dirs)
+        if warnings:
+            print(render_footer_interval_warnings(warnings), file=sys.stderr)
+    elif reasons:
+        notes.append("lite-channel attribution: " + ", ".join(f"none ({reason})" for reason in reasons))
+    else:
+        notes.append("no Spec attribution found (advisory only)")
+
+    # Footers gate the packages they resolve to; an unknown slug stays advisory (not checkable).
+    try:
+        with git_revision_snapshot(root, revision) as snapshot:
+            roots = discover_specs_roots(snapshot, specs_dirs)
+            active = [package.name for specs_root in roots for package in active_package_dirs(specs_root)]
+            known = set(active)
+            for specs_root in roots:
+                archive = specs_root / "specs" / "archive"
+                if archive.is_dir():
+                    known.update(path.name for path in archive.iterdir() if path.is_dir() and not path.is_symlink())
+            unresolved = sorted(set(footers) - known)
+            if unresolved:
+                print("spec gate advisory: unknown footer slug (skipped): " + ", ".join(unresolved), file=sys.stderr)
+            selected = None if all_packages else sorted(set(touched) | set(explicit_slugs) | (set(footers) & known))
+        if all_packages or selected:
+            failures = check_git_revision(root, revision, specs_dirs, slugs=selected, baseline=base)
+            if failures:
+                raise PushError(render_failures(root, failures))
+        selected_active = sorted(name for name in active if all_packages or name in (selected or []))
+    except PushError:
+        raise
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        raise PushError(f"target-revision Spec check unavailable: {exc}") from exc
+    if selected_active:
+        detail = ", ".join(selected_active)
+        if not allow_unarchived:
+            raise PushError(f"unarchived active Spec package(s) block push: {detail}")
+        print(
+            f"# Spec Push Advisory\n\n- active Spec package(s): {detail}\n- action: continue (--allow-unarchived)",
+            file=sys.stderr,
+        )
+        notes.append("active Spec package(s) present; push continues (--allow-unarchived)")
+    elif active and not selected and reasons:
+        print(
+            "spec gate advisory: `Spec: none` push while active task package(s) exist: " + ", ".join(active),
+            file=sys.stderr,
+        )
+    if all_packages:
+        notes.append("all-packages gate")
+    elif selected:
+        notes.append("package gate: " + ", ".join(selected))
+    return notes
 
 
 def ensure_local_can_fast_forward_to_remote_main(
     root: Path, remote: str, main_branch: str, expected_remote_sha: str
 ) -> None:
-    local_ref = f"refs/heads/{main_branch}"
-    local_sha = git_stdout(root, "rev-parse", local_ref)
+    local = git_stdout(root, "rev-parse", f"refs/heads/{main_branch}")
     remote_ref = f"refs/remotes/{remote}/{main_branch}"
-    remote_sha = git_stdout(root, "rev-parse", remote_ref)
-    if remote_sha != expected_remote_sha:
+    if git_stdout(root, "rev-parse", remote_ref) != expected_remote_sha:
         raise PushError(f"remote main branch changed during execution: {remote}/{main_branch}")
-    merge_base = git_stdout(root, "merge-base", local_ref, remote_ref)
-    if merge_base != local_sha:
+    if git_stdout(root, "merge-base", f"refs/heads/{main_branch}", remote_ref) != local:
         raise PushError(
             f"local main branch does not fast-forward to remote main branch: {main_branch} != {remote}/{main_branch}"
         )
 
 
-def ensure_local_matches_or_ahead_of_remote_branch(
-    root: Path, remote: str, branch: str, expected_remote_sha: str
-) -> tuple[str, bool]:
-    """Return (remote_sha, needs_branch_push).
-
-    Local == remote: ok.
-    Local ahead of remote (remote is ancestor): ok, but publish first.
-    Remote has commits local lacks: hard fail (avoid clobbering).
-    """
-    local_sha = git_stdout(root, "rev-parse", f"refs/heads/{branch}")
-    remote_ref = f"refs/remotes/{remote}/{branch}"
-    remote_sha = git_stdout(root, "rev-parse", remote_ref)
-    if remote_sha != expected_remote_sha:
-        raise PushError(f"remote branch changed during execution: {remote}/{branch}")
-    if local_sha == remote_sha:
-        return remote_sha, False
-    merge_base = git_stdout(root, "merge-base", f"refs/heads/{branch}", remote_ref)
-    if merge_base == remote_sha:
-        # local is strictly ahead
-        return remote_sha, True
-    raise PushError(f"local branch does not match remote branch: {branch} != {remote}/{branch}")
+def ensure_local_matches_or_ahead_of_remote_branch(root: Path, branch: str, remote_sha: str) -> bool:
+    local = git_stdout(root, "rev-parse", f"refs/heads/{branch}")
+    if local == remote_sha:
+        return False
+    result = git(root, "merge-base", "--is-ancestor", remote_sha, local, check=False)
+    if result.returncode == 0:
+        return True
+    raise PushError(f"local branch does not match remote branch: {branch} != {remote_sha}")
 
 
 def ensure_remote_branch_merged(root: Path, remote_sha: str, main_branch: str) -> None:
-    merge_base = git_stdout(root, "merge-base", main_branch, remote_sha)
-    if merge_base != remote_sha:
+    if git_stdout(root, "merge-base", f"refs/heads/{main_branch}", remote_sha) != remote_sha:
         raise PushError("remote branch is not fully merged into main branch")
 
 
 def ensure_remote_main_contains_branch(root: Path, remote: str, main_branch: str, branch_sha: str) -> None:
-    remote_main_ref = f"refs/remotes/{remote}/{main_branch}"
-    merge_base = git_stdout(root, "merge-base", remote_main_ref, branch_sha)
-    if merge_base != branch_sha:
+    if git_stdout(root, "merge-base", f"refs/remotes/{remote}/{main_branch}", branch_sha) != branch_sha:
         raise PushError("remote main branch no longer contains merged branch")
-
-
-def ensure_branch_merged(root: Path, branch: str, main_branch: str) -> None:
-    main_ref = f"refs/heads/{main_branch}"
-    branch_ref = f"refs/heads/{branch}"
-    main_sha = git_stdout(root, "rev-parse", main_ref)
-    merge_base = git_stdout(root, "merge-base", main_ref, branch_ref)
-    branch_sha = git_stdout(root, "rev-parse", branch_ref)
-    if merge_base != branch_sha and main_sha != branch_sha:
-        raise PushError(f"branch is not fully merged into {main_branch}: {branch}")
 
 
 def plan_commands(
     remote: str,
     branch: str,
     main_branch: str,
-    expected_remote_sha: str | None = None,
+    expected_remote_sha: str | None,
     *,
     push_branch_first: bool = False,
+    branch_tip: str | None = None,
 ) -> list[list[str]]:
-    delete_command = ["git", "push", remote, "--delete", branch]
-    if expected_remote_sha:
-        delete_command = [
-            "git",
-            "push",
-            f"--force-with-lease=refs/heads/{branch}:{expected_remote_sha}",
-            remote,
-            ":" + branch,
-        ]
-    commands: list[list[str]] = [["git", "fetch", remote]]
+    branch_ref = f"refs/heads/{branch}"
+    source = branch_tip or branch_ref
+    commands = [["git", "fetch", remote]]
     if push_branch_first:
-        # Publish or update the working branch before merging main so local-only
-        # or locally-ahead feature branches are not blocked.
-        commands.append(["git", "push", "-u", remote, f"refs/heads/{branch}:refs/heads/{branch}"])
+        lease = f"--force-with-lease={branch_ref}:{expected_remote_sha or ''}"
+        commands.append(["git", "push", "-u", "--porcelain", lease, remote, f"{source}:{branch_ref}"])
+    deletion_sha = (branch_tip if push_branch_first else expected_remote_sha) or "<branch-tip>"
     commands.extend(
         [
             ["git", "checkout", main_branch],
             ["git", "merge", "--ff-only", f"refs/remotes/{remote}/{main_branch}"],
-            ["git", "merge", "--no-ff", f"refs/heads/{branch}"],
+            ["git", "merge", "--no-ff", source],
             ["git", "push", remote, main_branch],
-            [
-                "git",
-                "fetch",
-                remote,
-                f"+refs/heads/{main_branch}:refs/remotes/{remote}/{main_branch}",
-            ],
-            delete_command,
+            ["git", "fetch", remote, f"+refs/heads/{main_branch}:refs/remotes/{remote}/{main_branch}"],
+            ["git", "push", f"--force-with-lease={branch_ref}:{deletion_sha}", remote, ":" + branch],
             ["git", "branch", "-d", branch],
         ]
     )
@@ -827,16 +366,17 @@ def render_plan(
     remote: str,
     branch: str,
     main_branch: str,
-    expected_remote_sha: str | None = None,
+    expected_remote_sha: str | None,
     *,
-    push_branch_first: bool = False,
-    notes: list[str] | None = None,
-    mode: str = "execute",
+    push_branch_first: bool,
+    notes: list[str],
+    dry_run: bool,
+    branch_tip: str | None = None,
 ) -> str:
     lines = [
         "# Spec Push Plan",
         "",
-        f"- mode: {mode}",
+        f"- mode: {'dry-run' if dry_run else 'execute'}",
         f"- branch: {branch}",
         f"- main branch: {main_branch}",
         f"- remote: {remote}",
@@ -845,345 +385,56 @@ def render_plan(
         lines.append(f"- expected remote branch sha: {expected_remote_sha}")
     if push_branch_first:
         lines.append("- publish working branch first: yes")
-    if notes:
-        lines.extend(f"- note: {note}" for note in notes)
-    lines.extend(["", "## Commands"])
-    if mode == "local-only":
-        lines.extend(
-            [
-                f"- git checkout {shlex.quote(main_branch)}",
-                f"- git merge --no-ff refs/heads/{shlex.quote(branch)}",
-            ]
-        )
-    else:
-        lines.extend(
-            "- " + render_command(command)
-            for command in plan_commands(
-                remote,
-                branch,
-                main_branch,
-                expected_remote_sha,
-                push_branch_first=push_branch_first,
-            )
-        )
+    lines.extend(f"- note: {note}" for note in notes)
+    lines.extend(
+        [
+            "",
+            "## Commands",
+            *(
+                "- " + render_command(command)
+                for command in plan_commands(
+                    remote,
+                    branch,
+                    main_branch,
+                    expected_remote_sha,
+                    push_branch_first=push_branch_first,
+                    branch_tip=branch_tip,
+                )
+            ),
+        ]
+    )
     lines.extend(
         [
             "",
             "## Safety",
-            (
-                "- Core prechecks: clean tree, protected-branch refusal, and "
-                "merge/push only for a non-main working branch. "
-                "Unarchived active Spec packages hard-block by default; "
-                "only --allow-unarchived downgrades that gate to advisory. "
-                "Local-only or locally-ahead feature branches are published first."
-            ),
+            "- Core prechecks: clean tree and protected-branch refusal; "
+            "unarchived active Spec packages hard-block by default; "
+            "only --allow-unarchived downgrades that gate to advisory.",
         ]
     )
     return "\n".join(lines)
 
 
-def run_checked(
-    root: Path,
-    command: list[str],
-    repair: GiteaRepairSettings | None = None,
-) -> None:
-    try:
-        completed = subprocess.run(
-            command,
-            cwd=root,
-            env=clean_git_env(),
-            capture_output=True,
-            text=True,
-            timeout=SUBPROCESS_NETWORK_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise PushError(
-            "command timed out within {}s: {}".format(SUBPROCESS_NETWORK_TIMEOUT_SECONDS, render_command(command))
-        ) from exc
-    combined_output = combined_process_output(completed)
-    ensure_no_broken_git_hooks_warning(command, combined_output, repair)
+def run_checked(root: Path, command: list[str]) -> None:
+    if command[:1] != ["git"]:
+        raise PushError(f"not a Git command: {render_command(command)}")
+    completed = git(root, *command[1:], check=False)
+    output = combined_process_output(completed)
     if completed.returncode != 0:
-        if command[:2] in (["git", "fetch"], ["git", "push"]) and remote_unavailable_detected(combined_output):
-            raise RemoteUnavailable(f"remote unavailable while running {render_command(command)}\n{combined_output}")
-        detail = combined_output
-        raise PushError(f"command failed: {render_command(command)}\n{detail}")
+        raise PushError(f"command failed: {render_command(command)}\n{output}")
+    # Git skips lease checks when the advertised target already equals the source.
+    if "-u" in command and "--porcelain" in command:
+        if not any(line.startswith((" \t", "+\t", "*\t")) for line in completed.stdout.splitlines()):
+            raise PushError(f"lease push did not update remote branch: {render_command(command)}\n{output}")
+    if output:
+        print(output, file=sys.stderr)
 
 
 def run_best_effort(root: Path, command: list[str]) -> None:
     try:
-        subprocess.run(
-            command,
-            cwd=root,
-            env=clean_git_env(),
-            capture_output=True,
-            text=True,
-            timeout=SUBPROCESS_NETWORK_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired:
-        # best-effort by contract: a stalled command is skipped, not fatal —
-        # bounded so it cannot hang the gate either way
+        git(root, *command[1:], check=False)
+    except (PushError, OSError, subprocess.SubprocessError):
         return
-
-
-def run_spec_gate(
-    root: Path,
-    branch: str,
-    main_branch: str,
-    explicit_slugs: list[str],
-    all_packages: bool,
-    *,
-    allow_unarchived: bool = False,
-    specs_dirs: list[str] | None = None,
-    legacy_baseline: str | None = None,
-) -> list[str]:
-    """Run the Spec disk gate in the selected scope and return plan notes.
-
-    Modes:
-      explicit_slugs  - single-package mode: gate only the named slugs.
-      all_packages    - legacy all-packages mode.
-      (default)       - touched mode: gate only packages changed on this branch.
-
-    By default, unarchived active packages hard-block the push (the push
-    script enforces the same contract as the Git pre-push hook).
-    Pass ``allow_unarchived=True`` to downgrade to advisory (e.g. for
-    retro-pack scenarios where archival happens after the push).
-
-    Raises PushError when a gated package is broken or unarchived.
-    """
-    notes: list[str] = []
-    if check_all_packages is None or git_revision_snapshot is None or legacy_archive_hashes is None:
-        notes.append("check_all_spec_packages not installed; disk advisory skipped")
-        return notes
-
-    baseline_revision = legacy_baseline or f"refs/heads/{main_branch}"
-    attribution_slugs = touched_spec_scope(root, branch, main_branch, specs_dirs, baseline_revision=baseline_revision)
-    if attribution_slugs is None:
-        raise PushError("cannot determine target-branch Spec attribution from Git diff")
-    if not attribution_slugs:
-        footer_slugs, none_reasons = spec_footer_attribution(
-            root, branch, main_branch, baseline_revision=baseline_revision
-        )
-        if none_reasons and not footer_slugs:
-            # F11 lite channel: trivial unpackaged work. The footer itself
-            # (non-empty reason) is mandatory and already verified; the
-            # channel stays closed while any active package exists — its
-            # executable issues are unverified by definition and must land
-            # through their own slug gates, not around them.
-            active = []
-            for specs_dir_name in specs_dirs or [".spec"]:
-                active.extend(active_package_slugs(root / specs_dir_name / "specs"))
-            if active:
-                raise PushError(
-                    "`Spec: none` lite channel refuses: active task package(s) "
-                    + ", ".join(active)
-                    + " still have unverified executable work; land through `Spec: <slug>` "
-                    "after check/done, or archive the package first"
-                )
-            notes.append("lite-channel attribution: " + ", ".join(f"none ({reason})" for reason in none_reasons))
-            return notes
-        if not footer_slugs:
-            raise PushError(
-                "working branch has no Spec attribution; retro-pack the change, archive its Development Record, "
-                "and add `Spec: <slug>` to each implementation commit"
-            )
-        attribution_slugs = footer_slugs
-        notes.append(f"commit-footer attribution: {', '.join(attribution_slugs)}")
-        # F9 (AUD-06): footer-attributed pushes get the interval-attribution
-        # warning from the same single judge the pre-push hook calls. A cited
-        # archive whose recorded 提交区间 predates this branch's delivery
-        # window is named with evidence; warn-only during the observation
-        # period, so this never blocks the push.
-        if footer_interval_warnings is not None and render_footer_interval_warnings is not None:
-            window = git(
-                root,
-                "merge-base",
-                baseline_revision,
-                f"refs/heads/{branch}",
-                check=False,
-            )
-            window_base = window.stdout.strip() if window.returncode == 0 else ""
-            if window_base:
-                interval_warnings = footer_interval_warnings(
-                    root,
-                    attribution_slugs,
-                    revision=f"refs/heads/{branch}",
-                    window_base=window_base,
-                    specs_dirs=specs_dirs,
-                )
-                if interval_warnings:
-                    print(render_footer_interval_warnings(interval_warnings), file=sys.stderr)
-                    notes.append(
-                        "footer interval warning: cited archive range predates the push window "
-                        "(see stderr; observation period)"
-                    )
-    else:
-        notes.append(f"changed-package attribution: {', '.join(attribution_slugs)}")
-
-    if all_packages:
-        slugs: list[str] | None = None
-        notes.append("all-packages gate: every active/archive package")
-    elif explicit_slugs:
-        slugs = sorted(set(attribution_slugs).union(explicit_slugs))
-        notes.append(f"explicit + attribution gate: {', '.join(slugs)}")
-    else:
-        slugs = attribution_slugs
-        notes.append(f"touched-package gate: {', '.join(slugs)}")
-    revision = f"refs/heads/{branch}"
-    baseline_hashes = legacy_archive_hashes(root, legacy_baseline, specs_dirs)
-    archive_gate_reason = "active package must be archived"
-    try:
-        with git_revision_snapshot(root, revision) as snapshot:
-            # One pass with the archive gate on; classify failures instead of
-            # re-running the whole validation a second time on the same snapshot.
-            failures = check_all_packages(
-                snapshot,
-                explicit=specs_dirs,
-                require_archived=True,
-                slugs=slugs,
-                legacy_hashes=baseline_hashes,
-            )
-            broken = [f for f in failures if f.reason != archive_gate_reason]
-            active_unarchived = [f for f in failures if f.reason == archive_gate_reason]
-            if broken:
-                raise PushError(render_failures(root, broken))
-
-            if active_unarchived:
-                if allow_unarchived:
-                    notes.append("active Spec package(s) present; push continues (--allow-unarchived)")
-                    print(
-                        "# Spec Push Advisory\n\n"
-                        + render_failures(root, active_unarchived)
-                        + "\n\n- action: continue (--allow-unarchived set)\n",
-                        file=sys.stderr,
-                    )
-                else:
-                    raise PushError(
-                        "unarchived active Spec package(s) block push; "
-                        "archive the completed delivery record first, or use --allow-unarchived for retro-pack\n\n"
-                        + render_failures(root, active_unarchived)
-                    )
-    except PushError:
-        raise
-    except Exception as exc:  # pragma: no cover - defensive
-        raise PushError(f"target-revision Spec check unavailable: {exc}") from exc
-    return notes
-
-
-def return_to_branch_if_clean(root: Path, branch: str) -> None:
-    if branch and not git_stdout(root, "status", "--porcelain"):
-        run_best_effort(root, ["git", "checkout", branch])
-
-
-def ensure_execute_not_from_main(root: Path, main_branch: str, target_branch: str) -> None:
-    """Refuse only when the *target* branch is main.
-
-    Being checked out on main is fine if ``--branch`` names a deletable
-    working branch; the plan will switch as needed.
-    """
-    if target_branch == main_branch:
-        raise PushError("refusing to execute against main branch as the working branch")
-    _ = root  # root reserved for future checkout validation
-
-
-def execute_local_only_plan(
-    root: Path,
-    branch: str,
-    main_branch: str,
-    repair: GiteaRepairSettings | None = None,
-) -> None:
-    ensure_clean_tree(root)
-    original_branch = current_branch(root)
-    try:
-        run_checked(root, ["git", "checkout", main_branch], repair)
-        run_checked(root, ["git", "merge", "--no-ff", f"refs/heads/{branch}"], repair)
-        ensure_branch_merged(root, branch, main_branch)
-    except HooksRepairedRetryNeeded:
-        # Repair retry is handled at the plan boundary; skip merge cleanup so
-        # the rerun starts from the exact pre-merge state.
-        raise
-    except PushError:
-        run_best_effort(root, ["git", "merge", "--abort"])
-        return_to_branch_if_clean(root, original_branch)
-        raise
-
-
-def local_main_contains_branch_and_remote_main(root: Path, remote: str, branch: str, main_branch: str) -> bool:
-    main_ref = f"refs/heads/{main_branch}"
-    branch_ref = f"refs/heads/{branch}"
-    remote_main_ref = f"refs/remotes/{remote}/{main_branch}"
-    branch_sha = git_stdout(root, "rev-parse", branch_ref)
-    remote_main_sha = git_stdout(root, "rev-parse", remote_main_ref)
-    main_contains_branch = git_stdout(root, "merge-base", main_ref, branch_ref) == branch_sha
-    main_contains_remote = git_stdout(root, "merge-base", main_ref, remote_main_ref) == remote_main_sha
-    return main_contains_branch and main_contains_remote
-
-
-def local_main_ahead_only_by_branch(
-    root: Path, remote: str, branch: str, main_branch: str, expected_remote_main_sha: str
-) -> bool:
-    remote_ref = f"refs/remotes/{remote}/{main_branch}"
-    local_ref = f"refs/heads/{main_branch}"
-    if git_stdout(root, "rev-parse", remote_ref) != expected_remote_main_sha:
-        raise PushError(f"remote main branch changed during execution: {remote}/{main_branch}")
-    if git_stdout(root, "merge-base", local_ref, remote_ref) != expected_remote_main_sha:
-        return False
-    return local_main_contains_branch_and_remote_main(root, remote, branch, main_branch)
-
-
-def execute_recovery_plan(
-    root: Path,
-    remote: str,
-    branch: str,
-    main_branch: str,
-    expected_remote_sha: str | None,
-    expected_remote_main_sha: str,
-    repair: GiteaRepairSettings | None = None,
-) -> None:
-    ensure_clean_tree(root)
-    original_branch = current_branch(root)
-    try:
-        run_checked(root, ["git", "fetch", remote], repair)
-        if not local_main_ahead_only_by_branch(root, remote, branch, main_branch, expected_remote_main_sha):
-            raise PushError(
-                "local main branch does not fast-forward to remote main branch:"
-                f" {main_branch} != {remote}/{main_branch}"
-            )
-        if expected_remote_sha:
-            ensure_local_matches_or_ahead_of_remote_branch(root, remote, branch, expected_remote_sha)
-        run_checked(root, ["git", "push", remote, main_branch], repair)
-        tip_sha = git_stdout(root, "rev-parse", f"refs/heads/{branch}")
-        run_checked(
-            root,
-            [
-                "git",
-                "fetch",
-                remote,
-                f"+refs/heads/{main_branch}:refs/remotes/{remote}/{main_branch}",
-            ],
-            repair,
-        )
-        ensure_remote_main_contains_branch(root, remote, main_branch, tip_sha)
-        if expected_remote_sha:
-            run_checked(
-                root,
-                [
-                    "git",
-                    "push",
-                    f"--force-with-lease=refs/heads/{branch}:{tip_sha}",
-                    remote,
-                    ":" + branch,
-                ],
-                repair,
-            )
-        run_checked(root, ["git", "branch", "-d", branch])
-    except HooksRepairedRetryNeeded:
-        # Repair retry is handled at the plan boundary; skip merge cleanup so
-        # the rerun starts from the exact pre-merge state.
-        raise
-    except PushError:
-        run_best_effort(root, ["git", "merge", "--abort"])
-        return_to_branch_if_clean(root, original_branch)
-        raise
 
 
 def execute_plan(
@@ -1195,143 +446,71 @@ def execute_plan(
     expected_remote_main_sha: str,
     *,
     push_branch_first: bool,
-    repair: GiteaRepairSettings | None = None,
+    publish_sha: str,
 ) -> None:
     ensure_clean_tree(root)
     original_branch = current_branch(root)
     try:
-        run_checked(root, ["git", "fetch", remote], repair)
+        run_checked(root, ["git", "fetch", remote])
         ensure_local_can_fast_forward_to_remote_main(root, remote, main_branch, expected_remote_main_sha)
-
-        needs_publish = push_branch_first
-        lease_sha = expected_remote_sha
+        if git_stdout(root, "rev-parse", f"refs/heads/{branch}") != publish_sha:
+            raise PushError(f"local branch moved after review: {branch}")
         if expected_remote_sha:
-            lease_sha, ahead = ensure_local_matches_or_ahead_of_remote_branch(root, remote, branch, expected_remote_sha)
-            needs_publish = needs_publish or ahead
+            remote_ref = f"refs/remotes/{remote}/{branch}"
+            if git_stdout(root, "rev-parse", remote_ref) != expected_remote_sha:
+                raise PushError(f"remote branch changed during execution: {remote}/{branch}")
+            needs_publish = ensure_local_matches_or_ahead_of_remote_branch(root, branch, expected_remote_sha)
         else:
             needs_publish = True
-
         if needs_publish:
-            run_checked(
-                root,
-                [
-                    "git",
-                    "push",
-                    "-u",
-                    remote,
-                    f"refs/heads/{branch}:refs/heads/{branch}",
-                ],
-                repair,
-            )
-            # After publish, local tip is the lease for remote delete.
-            lease_sha = git_stdout(root, "rev-parse", f"refs/heads/{branch}")
-            run_checked(root, ["git", "fetch", remote], repair)
-
-        # Merge path: checkout main, ff remote main, merge feature, push main.
-        run_checked(root, ["git", "checkout", main_branch], repair)
-        run_checked(root, ["git", "merge", "--ff-only", f"refs/remotes/{remote}/{main_branch}"], repair)
-        run_checked(root, ["git", "merge", "--no-ff", f"refs/heads/{branch}"], repair)
-        run_checked(root, ["git", "push", remote, main_branch], repair)
-        ensure_branch_merged(root, branch, main_branch)
-        ensure_remote_branch_merged(
-            root,
-            lease_sha or git_stdout(root, "rev-parse", f"refs/heads/{branch}"),
-            main_branch,
-        )
-        tip_sha = lease_sha or git_stdout(root, "rev-parse", f"refs/heads/{branch}")
+            ref = f"refs/heads/{branch}"
+            lease = f"--force-with-lease={ref}:{expected_remote_sha or ''}"
+            # Push the reviewed object, never the mutable branch name.
+            run_checked(root, ["git", "push", "-u", "--porcelain", lease, remote, f"{publish_sha}:{ref}"])
+            if git_stdout(root, "rev-parse", ref) != publish_sha:
+                raise PushError(f"local branch moved during publish: {branch}")
+            run_checked(root, ["git", "fetch", remote])
+        run_checked(root, ["git", "checkout", main_branch])
+        run_checked(root, ["git", "merge", "--ff-only", f"refs/remotes/{remote}/{main_branch}"])
+        run_checked(root, ["git", "merge", "--no-ff", publish_sha])
+        try:
+            run_checked(root, ["git", "push", remote, main_branch])
+        except PushError as exc:
+            raise PushError(
+                f"{exc}\nlocal {main_branch} contains the merge; remote state may be unchanged or unknown"
+            ) from exc
+        ensure_remote_branch_merged(root, publish_sha, main_branch)
+        run_checked(root, ["git", "fetch", remote, f"+refs/heads/{main_branch}:refs/remotes/{remote}/{main_branch}"])
+        ensure_remote_main_contains_branch(root, remote, main_branch, publish_sha)
         run_checked(
-            root,
-            [
-                "git",
-                "fetch",
-                remote,
-                f"+refs/heads/{main_branch}:refs/remotes/{remote}/{main_branch}",
-            ],
-            repair,
+            root, ["git", "push", f"--force-with-lease=refs/heads/{branch}:{publish_sha}", remote, ":" + branch]
         )
-        ensure_remote_main_contains_branch(root, remote, main_branch, tip_sha)
-        if tip_sha:
-            run_checked(
-                root,
-                [
-                    "git",
-                    "push",
-                    f"--force-with-lease=refs/heads/{branch}:{tip_sha}",
-                    remote,
-                    ":" + branch,
-                ],
-                repair,
-            )
-        else:
-            run_checked(root, ["git", "push", remote, "--delete", branch], repair)
         run_checked(root, ["git", "branch", "-d", branch])
-    except HooksRepairedRetryNeeded:
-        # Repair retry is handled at the plan boundary; skip merge cleanup so
-        # the rerun starts from the exact pre-merge state.
-        raise
     except PushError:
         run_best_effort(root, ["git", "merge", "--abort"])
-        return_to_branch_if_clean(root, original_branch)
+        if original_branch and not git_stdout(root, "status", "--porcelain"):
+            run_best_effort(root, ["git", "checkout", original_branch])
         raise
 
 
-def _run_push_plan(
-    args: argparse.Namespace,
-    root: Path,
-    branch: str,
-    repair: GiteaRepairSettings | None,
-    legacy_note: str | None = None,
-) -> tuple[list[str], str, str]:
-    """Run gate + one push plan; return (args-notes, plan_text, mode).
-
-    mode is "recovery", "execute", or "local-only". Raises the plan's
-    PushError subclasses untouched for the caller to disposition.
-    """
-    try:
-        expected_remote_main_sha = ensure_remote_main_exists(root, args.remote, args.main_branch)
-        run_checked(
-            root,
-            [
-                "git",
-                "fetch",
-                args.remote,
-                f"+refs/heads/{args.main_branch}:refs/remotes/{args.remote}/{args.main_branch}",
-            ],
-            repair,
-        )
-        fetched_remote_main = git_stdout(root, "rev-parse", f"refs/remotes/{args.remote}/{args.main_branch}")
-        if fetched_remote_main != expected_remote_main_sha:
-            raise PushError(f"remote main changed while establishing legacy baseline: {args.remote}/{args.main_branch}")
-        expected_remote_sha = optional_remote_branch_sha(root, args.remote, branch)
-    except RemoteUnavailable as exc:
-        local_main_sha = git_stdout(root, "rev-parse", f"refs/heads/{args.main_branch}")
-        notes = run_spec_gate(
-            root,
-            branch,
-            args.main_branch,
-            args.slugs,
-            args.all_packages,
-            allow_unarchived=args.allow_unarchived,
-            specs_dirs=args.specs_dirs,
-            legacy_baseline=local_main_sha,
-        )
-        if legacy_note:
-            notes.append(legacy_note)
-        notes.append(f"remote unavailable: {exc}")
-        notes.append("local main selected explicitly as the local-only legacy baseline")
-        notes.append("publish to the remote when it is reachable")
-        plan_text = render_plan(
-            args.remote,
-            branch,
-            args.main_branch,
-            None,
-            push_branch_first=False,
-            notes=notes,
-            mode="local-only",
-        )
-        execute_local_only_plan(root, branch, args.main_branch, repair)
-        return notes, plan_text, "local-only"
-
+def _run_push_plan(args: argparse.Namespace, root: Path, branch: str) -> str:
+    remote_main = remote_branch_sha(root, args.remote, args.main_branch, required=True)
+    assert remote_main is not None
+    remote_branch = remote_branch_sha(root, args.remote, branch, required=False)
+    if args.dry_run:
+        # Download objects without updating tracking refs or FETCH_HEAD.
+        for name, sha in ((args.main_branch, remote_main), (branch, remote_branch)):
+            if sha and git(root, "cat-file", "-e", f"{sha}^{{commit}}", check=False).returncode != 0:
+                run_checked(
+                    root,
+                    ["git", "fetch", "--refmap=", "--no-write-fetch-head", args.remote, f"refs/heads/{name}"],
+                )
+    else:
+        refspec = f"+refs/heads/{args.main_branch}:refs/remotes/{args.remote}/{args.main_branch}"
+        run_checked(root, ["git", "fetch", args.remote, refspec])
+        if git_stdout(root, "rev-parse", f"refs/remotes/{args.remote}/{args.main_branch}") != remote_main:
+            raise PushError(f"remote main changed while establishing baseline: {args.remote}/{args.main_branch}")
+    branch_tip = git_stdout(root, "rev-parse", f"refs/heads/{branch}")
     notes = run_spec_gate(
         root,
         branch,
@@ -1340,128 +519,78 @@ def _run_push_plan(
         args.all_packages,
         allow_unarchived=args.allow_unarchived,
         specs_dirs=args.specs_dirs,
-        legacy_baseline=expected_remote_main_sha,
+        remote_baseline=remote_main,
     )
-    if legacy_note:
-        notes.append(legacy_note)
-
-    push_branch_first = expected_remote_sha is None
-    if push_branch_first:
-        notes.append(f"remote branch missing; will publish {branch} first")
-
-    recovery_mode = local_main_contains_branch_and_remote_main(root, args.remote, branch, args.main_branch)
-    if recovery_mode:
-        notes.append("local-only recovery: local main already contains branch")
-
-    plan_text = render_plan(
+    if git_stdout(root, "rev-parse", f"refs/heads/{branch}") != branch_tip:
+        raise PushError(f"local branch moved during review: {branch}")
+    publish_first = remote_branch is None or ensure_local_matches_or_ahead_of_remote_branch(root, branch, remote_branch)
+    if publish_first:
+        notes.append(f"working branch will be published first: {branch}")
+    plan = render_plan(
         args.remote,
         branch,
         args.main_branch,
-        expected_remote_sha,
-        push_branch_first=push_branch_first,
+        remote_branch,
+        push_branch_first=publish_first,
         notes=notes,
+        dry_run=args.dry_run,
+        branch_tip=branch_tip,
     )
-    if recovery_mode:
-        execute_recovery_plan(
+    if not args.dry_run:
+        execute_plan(
             root,
             args.remote,
             branch,
             args.main_branch,
-            expected_remote_sha,
-            expected_remote_main_sha,
-            repair,
+            remote_branch,
+            remote_main,
+            push_branch_first=publish_first,
+            publish_sha=branch_tip,
         )
-        return notes, plan_text, "recovery"
-    execute_plan(
-        root,
-        args.remote,
-        branch,
-        args.main_branch,
-        expected_remote_sha,
-        expected_remote_main_sha,
-        push_branch_first=push_branch_first,
-        repair=repair,
-    )
-    return notes, plan_text, "execute"
+    return plan
 
 
 def main() -> int:
     args = parse_args()
-    requested_root = Path(args.root).resolve()
+    # In-process helpers (shared Spec checkers) spawn git through gitx, so pin
+    # the PATH for the whole process instead of only for this module's calls.
+    os.environ["PATH"] = SAFE_SUBPROCESS_PATH
     try:
-        # Inside the try so a bad SPEC_GITEA_TOKEN_FILE fails through the
-        # standard PushError path instead of an unhandled traceback.
-        repair = GiteaRepairSettings(
-            enabled=args.repair_gitea_hooks,
-            base_url=args.gitea_url,
-        )
-        root = repository_root(requested_root)
-        ensure_git_repo(root)
+        root = repository_root(Path(args.root).resolve())
         branch = args.branch or current_branch(root)
         ensure_safe_ref_name(root, branch, "branch")
         ensure_safe_ref_name(root, args.main_branch, "main branch")
+        if args.main_branch != "main" and (
+            args.main_branch in PROTECTED_BRANCHES or args.main_branch.startswith(PROTECTED_PREFIXES)
+        ):
+            raise PushError(f"refusing to write protected branch: {args.main_branch}")
         ensure_safe_remote_name(args.remote)
         ensure_configured_remote(root, args.remote)
         ensure_branch_is_deletable(root, args.remote, branch, args.main_branch)
+        ensure_spec_branch_prefix(branch)
         ensure_clean_tree(root)
-        ensure_execute_not_from_main(root, args.main_branch, branch)
         ensure_local_branch_exists(root, branch, "branch")
         ensure_local_branch_exists(root, args.main_branch, "main branch")
-        legacy_branch_note = ensure_spec_branch_prefix(root, branch, args.main_branch)
-
-        try:
-            notes, plan_text, mode = _run_push_plan(args, root, branch, repair, legacy_note=legacy_branch_note)
-        except HooksRepairedRetryNeeded:
-            # One repair was performed by ensure_no_broken_git_hooks_warning;
-            # rerun the plan with repair disabled so at most one repair and
-            # one retry can ever happen (a second broken-hooks failure on
-            # rerun fails closed as BrokenGitHooksError).
-            print(
-                "retrying Spec push plan after Gitea hook repair...",
-                file=sys.stderr,
-            )
-            notes, plan_text, mode = _run_push_plan(args, root, branch, None, legacy_note=legacy_branch_note)
-        if mode == "local-only":
-            if legacy_branch_note:
-                notes.append(legacy_branch_note)
-            dash = Dashboard(
+        plan = _run_push_plan(args, root, branch)
+        if args.dry_run:
+            print(plan)
+            return 0
+        print(
+            Dashboard(
                 slug="spec",
                 stage="push",
-                title="项目变更已合并到本地",
-                health=HEALTH_RISK,
-                alerts=[
-                    "远端暂时不可达",
-                    "变更尚未同步到远端，工作分支已保留",
+                title="项目变更已发布",
+                health=HEALTH_OK,
+                delta=[
+                    f"已合并到 {args.main_branch}",
+                    f"已同步到 {args.remote}/{args.main_branch}",
+                    f"已删除工作分支 {branch}",
                 ],
-                delta=[f"已合并到本地 {args.main_branch}"],
-                next_step="网络恢复后同步远端并清理工作分支",
-                detail=plan_text.splitlines(),
-            )
-            print(dash.render())
-            return 0
-
-        dash = Dashboard(
-            slug="spec",
-            stage="push",
-            title="项目变更已发布",
-            health=HEALTH_OK,
-            delta=[
-                f"已合并到 {args.main_branch}",
-                f"已同步到 {args.remote}/{args.main_branch}",
-                f"已删除工作分支 {branch}",
-            ],
-            detail=plan_text.splitlines(),
+                detail=plan.splitlines(),
+            ).render()
         )
-        print(dash.render())
         return 0
-    except BrokenGitHooksError as exc:
-        # When repair is enabled, the repair sequence already ran before this
-        # error propagated (see ensure_no_broken_git_hooks_warning); a second
-        # broken-hooks failure means repair did not restore hooks: one
-        # repair attempt only, then fail closed with the branch preserved.
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-    except (subprocess.CalledProcessError, PushError) as exc:
+    except (PushError, ValueError, subprocess.SubprocessError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

@@ -4,7 +4,7 @@
 
 缺口3 的答案。设计对齐（见 references/prior-art.md）：
 - 指数退避 + 抖动：业界标准（AWS Architecture Blog "Exponential Backoff and Jitter"）。
-- 并发上限：admit 仅为快照，实际磁盘预约由 loop_state 的 CAS 完成。
+- 并发上限：admit 仅为快照，实际磁盘预约由 loop_state 的 reserve 完成。
 - 心跳 staleness：只识别疑似失联；须先确认宿主已停止才能回收。
 - 可组合终止：直接采纳 AutoGen TerminationCondition 的组合思想
   （AND 组合：maxRounds / runTimeout / budgetTasks / external STOP / allDone）。
@@ -153,11 +153,8 @@ def external_stop_requested(run_dir: Path) -> bool:
     target = run_dir / STOP_FILENAME
     if not target.exists() and not target.is_symlink():
         return False
-    # LoopState's no-follow boundary treats a symlink as corrupt state rather
-    # than silently following an attacker-controlled stop target.
-    from loop_state import _assert_regular_nosymlink
-
-    _assert_regular_nosymlink(target)
+    if target.is_symlink() or not target.is_file():
+        raise LoopStateError(f"STOP 哨兵必须是普通文件: {target}")
     return True
 
 
@@ -295,13 +292,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     try:
         if args.command == "backoff":
             rng = random.Random(args.seed)
-            from loop_state import default_config
+            from loop_state import CONFIG
 
-            retry_cfg = default_config()["retry"]
+            retry_cfg = CONFIG["retry"]
             config_source = "default"
             if args.run_dir:
                 store = LoopStore(Path(args.run_dir))
-                if not store.exists():
+                if not store.state_path.is_file():
                     raise LoopStateError(f"run 不存在: {args.run_dir}")
                 store.load()
                 retry_cfg = store.state["config"]["retry"]
@@ -319,7 +316,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             _emit_json({"active": [str(p) for p in active], "corrupt": [str(p) for p in corrupt]})
         else:
             store = LoopStore(Path(args.run_dir))
-            if not store.exists():
+            if not store.state_path.is_file():
                 raise LoopStateError(f"run 不存在: {args.run_dir}")
             store.load()
             now = utc_now()

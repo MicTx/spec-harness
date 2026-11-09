@@ -13,7 +13,7 @@ A manual helper that turns Git history into standardized changelog entries — n
 5. **只写已落地行为**：不写承诺、计划或未验证的效果。
 6. **一屏为限**：单版发布说明以约 15 条为上限；跨版本总结可按主题合并多版本条目，但每条仍须一行一个能力。
 
-`build_release.py` 的 `RELEASE_NOTES_EDITOR_PROMPT` 与本节同源，二者须同步修改。
+`.maintainer/tools/release/build_release.py` 的 `RELEASE_NOTES_EDITOR_PROMPT` 与本节同源，二者须同步修改。
 
 示例（节选）：
 

@@ -14,8 +14,15 @@ from pathlib import Path
 
 import pytest
 
-SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
-sys.path.insert(0, str(SCRIPTS_DIR))
+ROOT = Path(__file__).resolve().parent.parent
+SCRIPTS_DIR = ROOT / "slots" / "organize" / "scripts"
+SUPPORT_SCRIPTS = (
+    ROOT / "scripts" / "spec_package_support.py",
+    ROOT / "scripts" / "gitx.py",
+)
+for _p in (str(ROOT / "scripts"), str(SCRIPTS_DIR)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from organize_project_structure import (  # noqa: E402
     build_archive_plan,
@@ -26,8 +33,6 @@ from organize_project_structure import (  # noqa: E402
     parse_mermaid,
     parse_module_index,
 )
-
-ROOT = Path(__file__).resolve().parent.parent
 
 
 def run_audit(root: Path, *args: str) -> subprocess.CompletedProcess:
@@ -111,11 +116,30 @@ def make_fixture_repo(tmp_path: Path, *, consistent_architecture: bool = True) -
     return root
 
 
+def test_organize_slot_manifest_lists_all_runtime_files():
+    slot = SCRIPTS_DIR.parent
+    manifest = json.loads((slot / "manifest.json").read_text(encoding="utf-8"))
+    scripts = {path.relative_to(slot).as_posix() for path in SCRIPTS_DIR.glob("*.py")}
+    assert (
+        set(manifest["scripts"])
+        == scripts
+        == {
+            "scripts/organize_project_structure.py",
+            "scripts/structure_contracts.py",
+        }
+    )
+    assert set(manifest["docs"]) == {"README.md"}
+    assert all((slot / rel).is_file() for rel in manifest["scripts"] + manifest["docs"])
+
+
 def test_is_historical_path_classifies_governance_text():
     assert is_historical_path("CHANGELOG.md", ".spec")
+    assert is_historical_path("release/RELEASE_NOTES.md", ".spec")
+    assert not is_historical_path("release/RELEASE_NOTES_archive.md", ".spec")
     assert is_historical_path(".spec/docs/history.md", ".spec")
     assert is_historical_path(".spec/specs/2026-01-01_x/spec.md", ".spec")
     assert is_historical_path(".maintainer/incidents/2026-11-08_public-secret-leak/README.md", ".spec")
+    assert is_historical_path("docs/adr/0001-terminal-spawn-window-lifecycle.md", ".spec")
     assert not is_historical_path(".maintainer/verify_release.py", ".spec")
     assert not is_historical_path("README.md", ".spec")
     assert not is_historical_path("scripts/tool.py", ".spec")
@@ -445,28 +469,6 @@ def test_relative_import_keeps_live_module_and_still_flags_unused(tmp_path):
     assert "pkg/unused_mod.py" in report.unreferenced_code
 
 
-def test_organize_command_contract_defaults_to_audit_only():
-    """F17 / AUD-19: organize defaults to audit-only; applying is explicit."""
-    section = (ROOT / "references" / "stages" / "organize.md").read_text(encoding="utf-8")
-    for phrase in ("audit-only", "`--apply`", "explicit opt-in", "never delete", "archive/retired", "every member"):
-        assert phrase in section, f"organize.md lost contract phrase: {phrase!r}"
-    assert "deprecate and clean" not in section
-    # The pre-F17 default (create a package by default) is the reversion marker.
-    assert "Audit-only is an explicit opt-out" not in section
-    assert "(default new package)" not in section
-    live_files = (
-        ROOT / "SKILL.md",
-        ROOT / "install.sh",
-        ROOT / "README.md",
-        ROOT / "README-en.md",
-        ROOT / "references" / "output-contracts.md",
-    )
-    for path in live_files:
-        text = path.read_text(encoding="utf-8")
-        assert "archive/retired" in text or "never delete" in text
-        assert "deprecate and clean" not in text
-
-
 def test_organize_command_contract_reports_next_step_and_freezes_disk(tmp_path):
     """The default organize run outputs a report and touches nothing on disk."""
     root = make_fixture_repo(tmp_path)
@@ -485,50 +487,6 @@ def test_organize_command_contract_reports_next_step_and_freezes_disk(tmp_path):
     after = working_tree_snapshot()
     assert completed.returncode == 0
     assert before == after, "the facts script must not create or modify files in the default run"
-
-
-def test_installer_organize_command_defaults_to_audit_only(tmp_path):
-    if subprocess.run(["bash", "--version"], capture_output=True).returncode != 0:
-        pytest.skip("bash not available")
-    home = tmp_path / "home"
-    home.mkdir()
-    env = dict(os.environ)
-    env.update(
-        {
-            "HOME": str(home),
-            "INSTALL_HOSTS": "claude",
-            # The organize stage command exists only under full (core is the
-            # default since F16).
-            "INSTALL_PROFILE": "full",
-            "CLAUDE_SKILLS_DIR": str(home / ".claude" / "skills"),
-            "CLAUDE_COMMANDS_DIR": str(home / ".claude" / "commands"),
-            "CLAUDE_AGENTS_DIR": str(home / ".claude" / "agents"),
-            "BACKUP_ROOT": str(home / ".spec-skill-backups"),
-            "SPEC_SKIP_SIGNING": "1",
-        }
-    )
-    env.pop("SOURCE_DIR", None)
-    result = subprocess.run(
-        ["bash", str(ROOT / "install.sh")],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=180,
-    )
-    assert result.returncode == 0, result.stderr
-    command = home / ".claude" / "commands" / "spec" / "organize.md"
-    text = command.read_text(encoding="utf-8")
-    assert "audit-only" in text
-    assert "--apply" in text
-    assert "never delete" in text
-    assert "deprecate and clean" not in text
-    # The pre-F17 default wording must not survive into installed copies.
-    assert "Audit-only is an explicit opt-out" not in text
-    assert "(default new package)" not in text
-
-
-# -- Base-relative resolution and wiring sources (fixes mass false "dangling").
 
 
 def test_normalize_bare_name_resolves_nearest_existing_base(tmp_path):
@@ -1106,7 +1064,7 @@ def test_scenario_prepackages_are_fixture_content_not_repo_wiring(tmp_path):
     ``boundary: app/users.py`` for the throwaway repo the benchmark builds. Those
     files never exist here, and "fixing" them would break the fixture.
     """
-    from scripts.organize_project_structure import is_retired_candidate_excluded
+    from organize_project_structure import is_retired_candidate_excluded
 
     assert is_retired_candidate_excluded("bench/activation/scenarios/P3/prepackage/tasks.md", set(), set())
     assert is_retired_candidate_excluded("bench/activation/scenarios/P1/seed/app/users.py", set(), set())
@@ -1312,22 +1270,36 @@ def test_contract_invalid_python_source_is_incomplete(tmp_path, content):
     assert run_audit(root, "--update-baseline").returncode != 0
 
 
+def make_slot_runtime(tmp_path: Path) -> Path:
+    """Copy the slot and its shared dependencies into an installed-style tree."""
+    runtime = tmp_path / "runtime"
+    slot_scripts = runtime / "slots" / "organize" / "scripts"
+    shutil.copytree(SCRIPTS_DIR, slot_scripts, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    support_dir = runtime / "scripts"
+    support_dir.mkdir()
+    for source in SUPPORT_SCRIPTS:
+        shutil.copy2(source, support_dir / source.name)
+    return runtime
+
+
 def test_contract_cli_read_only_does_not_create_bytecode(tmp_path):
     root = make_contract_repo(tmp_path)
-    runtime = tmp_path / "runtime"
-    shutil.copytree(SCRIPTS_DIR, runtime, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    runtime = make_slot_runtime(tmp_path)
+    script = runtime / "slots" / "organize" / "scripts" / "organize_project_structure.py"
     env = dict(os.environ)
     env.pop("PYTHONDONTWRITEBYTECODE", None)
     env.pop("PYTHONPYCACHEPREFIX", None)
+    env.pop("PYTHONPATH", None)
     before_root = contract_tree_snapshot(root)
     before_runtime = contract_tree_snapshot(runtime)
     result = subprocess.run(
-        [sys.executable, str(runtime / "organize_project_structure.py"), "--root", str(root), "--check"],
+        [sys.executable, str(script), "--root", str(root), "--check"],
         capture_output=True,
         text=True,
         env=env,
     )
     assert result.returncode == 2, result.stderr
+    assert "forbidden-import" in result.stdout
     assert contract_tree_snapshot(root) == before_root
     assert contract_tree_snapshot(runtime) == before_runtime
 
@@ -1345,11 +1317,15 @@ def test_contract_self_hosted_rule_rejects_new_reverse_dependency(tmp_path):
     contracts = json.loads(clean.stdout)["contracts"]
     assert (contracts["baseline_hits"], contracts["violations"]) == (0, [])
 
-    support = root / "scripts" / "safe_open_support.py"
-    support.write_text(support.read_text(encoding="utf-8") + "\nimport route_spec_package\n", encoding="utf-8")
+    support = root / "slots" / "organize" / "scripts" / "structure_contracts.py"
+    support.write_text(support.read_text(encoding="utf-8") + "\nimport organize_project_structure\n", encoding="utf-8")
     result = run_audit(root, "--check", "--format", "json")
     assert result.returncode == 2, result.stderr
     new_violations = json.loads(result.stdout)["contracts"]["new_violations"]
     assert [(v["rule"], v["importer"], v["target"]) for v in new_violations] == [
-        ("forbidden-import", "scripts/safe_open_support.py", "scripts/route_spec_package.py")
+        (
+            "forbidden-import",
+            "slots/organize/scripts/structure_contracts.py",
+            "slots/organize/scripts/organize_project_structure.py",
+        )
     ]

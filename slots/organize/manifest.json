@@ -1,0 +1,13 @@
+{
+  "name": "organize",
+  "version": "1.0.0",
+  "summary": "项目结构审计：清单、引用图、架构一致性和导入契约（仅 full 安装）",
+  "description": "对目标项目做结构审计；默认只读，--update-baseline 显式更新基线。",
+  "triggers": ["结构审计", "架构契约"],
+  "scripts": [
+    "scripts/organize_project_structure.py",
+    "scripts/structure_contracts.py"
+  ],
+  "hooks": {},
+  "docs": ["README.md"]
+}

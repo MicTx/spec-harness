@@ -18,13 +18,15 @@ Spec Harness follows [Semantic Versioning](https://semver.org/) with an explicit
 
 Pacing: a minor is not minted for a single round. User-visible changes accumulate to the next natural release window (the close of a stage that changed user-visible behavior); pure fixes may ship as a patch at any time.
 
+Compatibility window: a format change ships with a one-shot migration script, and the old read path plus the script are removed in the next minor. Archived packages are frozen and never regraded. Compatibility code without a removal version is a defect.
+
 The exit from 0.x to 1.0.0 is deliberate: the skill command surface, the install surface, and the event contract are frozen (no `BREAKING` minor across a sustained window) before 1.0.0 is tagged. Historical tags before this policy was written are evidence, not precedents — they are not rewritten.
 
 ## Install from a Release Archive
 
 Download the archive and checksum file from the release page:
 
-    VERSION=0.27.0
+    VERSION=0.28.0
     curl -LO "https://github.com/MicTx/spec-harness/releases/download/v$VERSION/spec-harness-$VERSION.tar.gz"
     curl -LO "https://github.com/MicTx/spec-harness/releases/download/v$VERSION/SHA256SUMS"
     sha256sum -c SHA256SUMS --ignore-missing
@@ -34,13 +36,13 @@ Download the archive and checksum file from the release page:
 
 On macOS, use shasum -a 256 -c SHA256SUMS when sha256sum is unavailable. On Windows, use Get-FileHash and compare the result with SHA256SUMS before extracting the ZIP archive.
 
-The archive root contains the local skill installer. server/install.sh is optional and only applies when the self-hosted server adapter is deployed.
+The archive root contains the local skill installer.
 
 ## Install from Source
 
     git clone https://github.com/MicTx/spec-harness.git
     cd spec-harness
-    git checkout v0.27.0
+    git checkout v0.28.0
     bash install.sh
 
 A tagged checkout is preferable to an unpinned main checkout when reproducibility matters. Replace the tag with a full commit SHA for an exact source revision.

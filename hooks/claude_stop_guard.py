@@ -12,9 +12,10 @@ Protocol (https://code.claude.com/docs/en/hooks.md, Stop event):
 
 Behavior: locate the nearest ancestor of ``cwd`` that has a ``.spec/specs``
 tree, select the package bound to the current branch (or the sole package
-outside Git), run ``scripts/check_spec_package.py --format json``, and block
-with the gap list when ``converged`` is false. Ambiguous bindings fail closed;
-projects without a Spec tree are never touched.
+outside Git), and run ``scripts/check_spec_package.py --format json``.
+Block only while tasks are unfinished or an open ``[decision]`` awaits the
+user; other gate gaps stay in the reason as advisory. Ambiguous bindings fail
+closed; projects without a Spec tree are never touched.
 """
 
 from __future__ import annotations
@@ -65,10 +66,10 @@ def active_slug_for_worktree(project_root: Path) -> tuple[str | None, str]:
     return None, selection.warning
 
 
-def run_convergence_check(project_root: Path, slug: str) -> tuple[bool, list[str], str]:
-    """Return (checkable, converged, gaps-or-error-detail)."""
+def run_convergence_check(project_root: Path, slug: str) -> tuple[dict[str, object] | None, str]:
+    """Return the checker's convergence payload, or an error detail."""
     if not CHECK_SCRIPT.is_file():
-        return False, False, f"check script missing: {CHECK_SCRIPT}"
+        return None, f"check script missing: {CHECK_SCRIPT}"
     command = [
         sys.executable,
         str(CHECK_SCRIPT),
@@ -87,20 +88,25 @@ def run_convergence_check(project_root: Path, slug: str) -> tuple[bool, list[str
             timeout=CHECK_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        return False, False, f"checker error: {exc}"
+        return None, f"checker error: {exc}"
     # Exit code reflects the overall gate, not convergence; parse the JSON
-    # body either way and trust only the converged/gaps fields.
+    # body either way and trust only the structured convergence fields.
     try:
         payload = json.loads(completed.stdout)
     except (json.JSONDecodeError, ValueError):
         detail = (completed.stderr or completed.stdout).strip()
-        return False, False, f"checker produced no json (exit {completed.returncode}): {detail[:400]}"
+        return None, f"checker produced no json (exit {completed.returncode}): {detail[:400]}"
     if not isinstance(payload, dict) or not isinstance(payload.get("converged"), bool):
-        return False, False, "checker json missing boolean converged field"
+        return None, "checker json missing boolean converged field"
     gaps = payload.get("gaps")
     if not isinstance(gaps, list) or not all(isinstance(gap, str) for gap in gaps):
-        return False, False, "checker json gaps field is not a string list"
-    return True, payload["converged"], gaps
+        return None, "checker json gaps field is not a string list"
+    decisions = payload.get("openDecisions")
+    if not isinstance(decisions, list) or not all(isinstance(item, str) for item in decisions):
+        return None, "checker json openDecisions field is not a string list"
+    if not isinstance(payload.get("tasksDone"), bool):
+        return None, "checker json missing boolean tasksDone field"
+    return payload, ""
 
 
 def emit_stop_block(reason: str) -> None:
@@ -131,8 +137,8 @@ def main() -> int:
             emit_stop_block(binding_error)
         return 0
 
-    checkable, converged, detail = run_convergence_check(project_root, slug)
-    if not checkable:
+    state, detail = run_convergence_check(project_root, slug)
+    if state is None:
         # A Spec project whose convergence checker cannot run is treated as
         # not converged: block once with the failure so the agent surfaces it.
         emit_stop_block(
@@ -141,14 +147,16 @@ def main() -> int:
             f"请修复检查环境或运行 python3 {CHECK_SCRIPT} --root {project_root} --slug {slug} --format json 排查。"
         )
         return 0
-    if converged:
-        # Converged packages are never blocked; terminal assignment state is
-        # already part of the convergence gate via check_spec_package.
+    if state["converged"] is True:
+        return 0
+    # Block only on unfinished/blocked tasks or an open [decision] that needs
+    # user authority; every other gate gap is advisory in the reason list.
+    if state["tasksDone"] is True and not state["openDecisions"]:
         return 0
 
-    gaps = "；".join(detail)
+    gaps = state["gaps"]
     emit_stop_block(
-        f"Spec 收敛门禁未通过（slug {slug}）：差距：{gaps}。"
+        f"Spec 收敛门禁未通过（slug {slug}）：差距：{'；'.join(gaps)}。"
         f"请继续完成上述未收敛项后再次结束，或运行 "
         f"python3 {CHECK_SCRIPT} --root {project_root} --slug {slug} 查看详情。"
     )

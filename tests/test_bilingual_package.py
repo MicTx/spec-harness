@@ -21,7 +21,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from check_spec_package import compute_gate_results
+from check_spec_package import compute_gate_results, gate_rows
 from spec_package_support import (
     PACKAGE_SECTION_KEYS,
     SECTION_CONFIRMED_FACTS,
@@ -196,21 +196,6 @@ def test_bare_anchor_line_is_never_a_heading_itself():
     assert not section_exists(doc, SECTION_CONFIRMED_FACTS)
 
 
-def test_anchor_inside_code_fence_is_prose():
-    doc = "\n".join(
-        [
-            "```markdown",
-            "<!-- spec:verification-strategy -->",
-            "### 5.1 Verification Strategy",
-            "- scope: package",
-            "```",
-        ]
-    )
-    # Only a real (non-fenced) 5.1 counts; a fenced template quote does not.
-    _, headings = verification_scope_errors.__globals__["_verification_scope_section_lines"](doc)
-    assert headings == 0
-
-
 def test_fold_restores_stray_anchor_and_tolerates_fences():
     content = "\n".join(
         [
@@ -256,24 +241,6 @@ def test_mixed_language_document_resolves_each_section_independently():
     assert len(extract_section_bullets(doc, SECTION_MINIMAL_PATH)) == 3
 
 
-def test_duplicate_verification_strategy_across_languages_still_fails_uniqueness():
-    doc = "\n".join(
-        [
-            "### 5.1 验证策略",
-            "- 范围级别：package",
-            "- 变更对象：x",
-            "- 快速检查：`cmd`",
-            "- 集成检查：适用外：无跨模块路径",
-            "- 全项目检查：仅在收口执行",
-            "- 升级触发：见模板",
-            "### 5.1 Verification Strategy",
-            "- scope: package",
-        ]
-    )
-    errors = verification_scope_errors(doc)
-    assert any("必须唯一" in error for error in errors)
-
-
 # --------------------------------------------------------------------------- #
 # Bilingual verdict vocabulary
 # --------------------------------------------------------------------------- #
@@ -306,13 +273,13 @@ def test_checklist_complete_bilingual():
 def test_task_title_blocked_markers_are_bilingual():
     tasks = "\n".join(
         [
-            "- [ ] blocked on upstream API decision",
+            "- [ ] blocked: upstream API decision",
             "  - boundary: x",
             "  - verify: `true`",
             "- [ ] Blocker: needs user input",
             "  - boundary: x",
             "  - verify: `true`",
-            "- [ ] blocked-in-name-only 已完成的阻塞描述",
+            "- [ ] blocked on upstream API decision",
             "  - boundary: x",
             "  - verify: `true`",
             "- [ ] unblocked flows are normal work",
@@ -324,18 +291,20 @@ def test_task_title_blocked_markers_are_bilingual():
             "- [ ] 中文阻塞：等待授权",
             "  - boundary: x",
             "  - verify: `true`",
+            "- [ ] 阻塞：等待授权",
+            "  - boundary: x",
+            "  - verify: `true`",
         ]
     )
     records = {record.title: record for record in parse_task_records(tasks)}
-    assert records["blocked on upstream API decision"].blocked is True
-    assert records["Blocker: needs user input"].blocked is True
+    # Only anchored declarations are blockers; prose mentioning "blocked" is not.
+    assert records["blocked: upstream API decision"].blocked is True
+    assert records["Blocker: needs user input"].blocked is False
+    assert records["blocked on upstream API decision"].blocked is False
     assert records["unblocked flows are normal work"].blocked is False
-    # Checked tasks describing resolved blocking are not blocked.
     assert records["resolved blocker: done and recorded"].blocked is False
-    assert records["中文阻塞：等待授权"].blocked is True
-    # "blocked-in-name-only" title still matches: title semantics unchanged
-    # for Chinese packages, and English word boundaries hold.
-    assert records["blocked-in-name-only 已完成的阻塞描述"].blocked is True
+    assert records["中文阻塞：等待授权"].blocked is False
+    assert records["阻塞：等待授权"].blocked is True
 
 
 # --------------------------------------------------------------------------- #
@@ -360,7 +329,6 @@ def test_verification_scope_english_fields_normalize_to_canonical_keys():
     )
     fields = verification_scope_fields(doc)
     assert fields["范围级别"] == "integration"
-    assert fields["变更对象"] == "parsing layer and gates"
     assert verification_scope_errors(doc) == []
 
 
@@ -375,23 +343,7 @@ def test_verification_scope_missing_english_field_fails_with_canonical_message()
         ]
     )
     errors = verification_scope_errors(doc)
-    assert any("缺少字段：快速检查" in error for error in errors)
-
-
-def test_verification_scope_cross_language_duplicate_field_fails():
-    doc = _scope_doc(
-        [
-            "范围级别：package",
-            "scope: package",
-            "changed surface: x",
-            "quick check: `cmd`",
-            "integration check: 适用外：无",
-            "full-project check: 仅在收口",
-            "escalation trigger: 模板",
-        ]
-    )
-    errors = verification_scope_errors(doc)
-    assert any("字段 范围级别 出现 2 次" in error for error in errors)
+    assert any("SPEC-VERIFY-001" in error for error in errors)
 
 
 def test_orchestration_english_heading_and_route():
@@ -436,10 +388,11 @@ def test_problem_definition_english_labels_and_placeholders():
         ]
     )
     gaps = clarification_gaps(template_doc)
-    # The unfilled English template is placeholder content in every slot.
-    assert len(gaps) == 3 + 4 + 1
+    # Current definition gate: goal + assumptions/open questions/out-of-scope/
+    # minimal path (confirmed-facts inventory is no longer gated).
+    assert len(gaps) == 1 + 4
     assert "`spec.md` 缺少有效项目目标" in gaps
-    assert "`spec.md` 缺少有效区块：### 2.1 已确认事实" in gaps
+    assert "`spec.md` 缺少有效区块：### 2.1 已确认事实" not in gaps
     assert "`spec.md` 缺少有效区块：## 4. 最小实现路径" in gaps
 
 
@@ -609,12 +562,7 @@ def _gate_summary(spec: str, tasks: str, checklist: str | None = None, slug: str
     results = compute_gate_results(spec, tasks, checklist, slug=slug)
     return {
         "overall_ok": results.overall_ok,
-        "base_ok": results.base_ok,
-        "assumptions_ok": results.assumptions_ok,
-        "simplicity_ok": results.simplicity_ok,
-        "boundary_ok": results.boundary_ok,
-        "function_ok": results.function_ok,
-        "passed_checklist": results.passed_checklist,
+        "rows": [(label, passed) for label, passed, _detail in gate_rows(results)],
         "gaps": results.spec_clarification_gaps,
         "pending": results.pending_questions,
         "orchestration_errors": results.orchestration_errors,
@@ -633,22 +581,24 @@ def test_full_gate_verdicts_are_identical_across_localizations():
 
 
 def test_full_gate_failures_are_identical_across_localizations():
-    broken_zh = CHINESE_V2_SPEC.replace("- 现有归档全部为中文标题包，历史归档永不改写", "- 事实 A")
+    broken_zh = CHINESE_V2_SPEC.replace(
+        "- **项目目标**：验证中英两种标题的任务包获得同等的门禁结论",
+        "- **项目目标**：一句话描述项目要解决什么问题",
+    )
     broken_en = ENGLISH_V2_SPEC.replace(
-        "- every existing archive is Chinese-titled and archives are never rewritten",
-        "- Fact A",
+        "- **Goal**: prove Chinese- and English-titled packages get identical gate verdicts",
+        "- **Goal**: one sentence describing the problem this project solves",
     )
     chinese = _gate_summary(broken_zh, FIXTURE_TASKS)
     english = _gate_summary(broken_en, FIXTURE_TASKS_EN)
     assert chinese["overall_ok"] is False
     assert chinese == english
-    assert "`spec.md` 缺少有效区块：### 2.1 已确认事实" in chinese["gaps"]
+    assert "`spec.md` 缺少有效项目目标" in chinese["gaps"]
 
 
-def test_mixed_v1_checklist_with_english_headings_keeps_legacy_gates():
-    """Legacy checklists are frozen-Chinese field contracts; their *headings*
-    still localize (keyed), which is what an English-titled archive render
-    would exercise. Canonical field keys keep the historical gates intact."""
+def test_checklist_headings_do_not_change_the_gate_verdict():
+    """With §6 present, checklist headings (legacy or English) are not a gate
+    input; the verdict must be identical for both localizations."""
     spec = CHINESE_V2_SPEC.replace("<!-- spec-format: 2 -->\n\n", "")
     checklist_zh = "\n".join(
         [

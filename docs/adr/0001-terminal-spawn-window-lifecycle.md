@@ -1,6 +1,6 @@
 # ADR 0001：无人值守链的会话生成与 Terminal 窗口生命周期
 
-- 状态：已接受（2026-10-13 记录；机制自 2026-10-06 起演进）
+- 状态：已废止（0.27 删除 fresh CLI 传输与窗口管理，链式执行只保留当前会话 `scripts/chain_state.py`）；原文保留作沿革
 - 范围：`scripts/autorun_spawn.py`、`scripts/autoplan_spawn.py`、`scripts/sweep_chain_windows.py`
 - 关联运行时契约：`references/stages/autorun.md`、`references/stages/autoplan.md`（本文件承载设计依据与政策沿革，运行时文档只留契约）
 

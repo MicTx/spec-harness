@@ -4,6 +4,45 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [0.28.0] - 2026-11-09
+
+### Changed
+
+- **BREAKING — 默认轻量任务包**：`init_spec_package.py` 默认生成 LITE 模板（目标、关键假设、待确认问题、不做什么、最小路径、验证命令、成功标准）；完整意图与方案台账改由 `--workflow full` 显式启用，只对 FULL 包校验。`### 5.1` 只要求范围级别与快速检查，更高级别再要求对应检查；最小实现路径至少一条。
+- **BREAKING — Lightweight default package**: `init_spec_package.py` renders the LITE template by default (goal, key assumptions, open questions, exclusions, minimal path, verification command, success criteria); intent and option ledgers move behind `--workflow full` and are validated only for FULL packages. `### 5.1` requires only the scope level and quick check, plus the checks a higher level needs; the minimal path needs one item.
+- **精简技能文档**：`SKILL.md`、阶段页与参考文档按「防御准入四问」重写；`references/` 从 228 KB 降至约 62 KB，新增 `tests/test_budget.py` 与 `tests/test_ceremony.py` 卡住体积与仪式成本。
+- **Leaner skill documents**: `SKILL.md`, stage pages and references were rewritten under the defense admission test; `references/` shrank from 228 KB to about 62 KB, and `tests/test_budget.py` plus `tests/test_ceremony.py` now hold size and ceremony budgets.
+- **BREAKING — 链式执行只保留当前会话**：autoplan/autorun 改由新的 `scripts/chain_state.py` 记录进度（单个 `.spec/<chain>/chain.json`，autorun 默认 5 轮上限，同一步重入不计轮）。0.27 之前的链状态会被拒绝并提示删除后重开。
+- **BREAKING — Current-session chains only**: autoplan/autorun record progress with the new `scripts/chain_state.py` (one `.spec/<chain>/chain.json`, default 5-round autorun cap, re-entering the same step spends no round). Chain state from before 0.27 is refused with an instruction to delete it and begin again.
+- **证据只绑定命令与工作树**：`spec_verify.py` 不再记录包内辅助文件指纹，不再拒绝“空洞命令”，也不再因验证期间改动问题而作废记录；`check` 前跑一次 `run --all` 即可定稿。
+- **Evidence binds to the command and the worktree only**: `spec_verify.py` no longer fingerprints auxiliary package files, refuses "hollow" commands, or voids a run whose questions changed meanwhile; one `run --all` before `check` settles the evidence.
+- **路由只看包结构**：`route_decision.py` 删除 `--text` 文本启发式与 `channel_profile`，只在准备委派时调用。
+- **Routing reads package structure only**: `route_decision.py` drops the `--text` heuristic and `channel_profile`; call it only before delegating.
+
+### Removed
+
+- **BREAKING — 原生会话发现**：删除 `spec_context.py` 及各宿主会话适配器；路由不再扫描宿主私有历史，续跑以任务包、`handoff.md` 与 Git 历史为准。
+- **BREAKING — Native session discovery**: `spec_context.py` and the host session adapters are gone; routing no longer scans private host histories, and resumption reads the package, `handoff.md` and Git history.
+- **BREAKING — server 模式**：删除 `server/` 适配器及其部署脚本。
+- **BREAKING — Server mode**: the `server/` adapter and its deployment script are removed.
+- **BREAKING — fresh CLI 链与窗口管理**：删除 `chain_session.py`、`chain_spawn_support.py`、`autorun_spawn.py`、`autoplan_spawn.py`、`chain_recovery.py`、`chain_lifecycle.py`、`sweep_chain_windows.py`；不再打开 Terminal.app/tmux 会话。
+- **BREAKING — Fresh CLI chains and window management**: `chain_session.py`, `chain_spawn_support.py`, `autorun_spawn.py`, `autoplan_spawn.py`, `chain_recovery.py`, `chain_lifecycle.py` and `sweep_chain_windows.py` are removed; no Terminal.app/tmux sessions are opened.
+- **BREAKING — 强制最高推理与决策守卫**：删除 `reasoning_policy.py` 与 `worker_decision_guard.py`；已关闭的 `[decision]` 仍须带 `authority: user:`，由 check 一处校验。
+- **BREAKING — Forced maximum reasoning and decision guards**: `reasoning_policy.py` and `worker_decision_guard.py` are removed; a closed `[decision]` still needs `authority: user:`, checked once by `check`.
+- **BREAKING — 激活守卫**：删除 `assess_spec_activation.py`、`activation_state.py`、`install_activation_hooks.py`；`hooks/claude_activation_guard.py` 保留为空操作至 0.28，`/spec:doctor` 会列出需要从 Claude settings 删除的旧条目。
+- **BREAKING — Activation guard**: `assess_spec_activation.py`, `activation_state.py` and `install_activation_hooks.py` are removed; `hooks/claude_activation_guard.py` stays as a no-op until 0.28, and `/spec:doctor` lists the old entries to delete from Claude settings.
+- **BREAKING — update-checkpoint 与机器回写**：删除 `update_checkpoint.py`、`update_checkpoint_support.py`、`check_issue_writeback.py` 与 `references/update-recovery.md`；遗留的 `update-checkpoint.json` 由 check/done 提示删除。
+- **BREAKING — update-checkpoint and machine writeback**: `update_checkpoint.py`, `update_checkpoint_support.py`, `check_issue_writeback.py` and `references/update-recovery.md` are removed; check/done ask you to delete any leftover `update-checkpoint.json`.
+- **push 精简**：删除 Gitea hook 修复（`--repair-gitea-hooks`、`--gitea-url`、`gitea_hook_repair.py`）、原生 Windows PATH 过滤和已到期的 2026-08-27 分支宽限；非 `spec/` 分支一律拒绝。
+- **Leaner push**: Gitea hook repair (`--repair-gitea-hooks`, `--gitea-url`, `gitea_hook_repair.py`), native-Windows PATH filtering and the expired 2026-08-27 branch grace window are gone; non-`spec/` branches are always refused.
+- 删除只断言文档措辞的测试与常驻面积测量脚本；保留的文档测试只检查链接与标题可解析。
+- Tests that asserted documentation wording and the skill-surface measurement script are removed; the remaining documentation test checks only that links and headings resolve.
+
+### Fixed
+
+- **发布说明审计分类**：`release/RELEASE_NOTES.md` 与 `CHANGELOG.md` 一样按历史记录处理；版本说明记录的是该版本的树（含该版本移除的文件），organize 结构审计不再把其中的文件枚举误报为断链文档引用。
+- **Release-notes audit classification**: `release/RELEASE_NOTES.md` is treated as history like `CHANGELOG.md`; the canonical notes describe the tree of that release, including files it removed, so the organize structure audit no longer reports those enumerations as dangling documentation references.
+
 ## [0.27.0] - 2026-11-09
 
 ### Added

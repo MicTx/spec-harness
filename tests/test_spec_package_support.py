@@ -16,6 +16,7 @@ from spec_package_support import (
     active_package_slugs,
     checklist_passed,
     clarification_gaps,
+    count_task_detail_gaps,
     count_tasks,
     count_unchecked_checkboxes,
     current_git_branch,
@@ -289,6 +290,35 @@ def test_count_tasks_empty():
     assert completed == 0
 
 
+def test_count_tasks_recognizes_full_width_task_spacing():
+    # count_tasks and parse_task_records must agree on what a task marker is;
+    # a full-width space must not be silently dropped from the gate's total.
+    content = "- [ ]　尚未完成\n- [x]　已完成\n"
+    assert count_tasks(content) == (2, 1)
+
+
+def test_count_task_detail_gaps_counts_fields_on_their_own_line():
+    # A bare "-" followed by an indented "boundary:" on the next line is not a
+    # boundary field; the field must appear on the same line as the bullet.
+    missing = "- [ ] Task\n  -\n    boundary: src/\n  - verify: x\n"
+    assert count_task_detail_gaps(missing) == (1, 0)
+    normal = "- [ ] Task\n  - boundary: src/\n  - verify: x\n"
+    assert count_task_detail_gaps(normal) == (0, 0)
+
+
+# -- _section_lines / extract_section_bullets --
+
+
+def test_extract_section_bullets_recovers_later_duplicate_heading():
+    # A second same-level heading resets the section; bullets after it must not
+    # be hidden by an earlier "none" declaration.
+    content = (
+        "### 2.3 待确认问题\n- 无\n### 2.3 待确认问题（补充）\n- [ ] [decision] 是否授权发布？\n### 2.4 其他\n- y\n"
+    )
+    assert extract_section_bullets(content, "### 2.3 待确认问题") == ["无", "[ ] [decision] 是否授权发布？"]
+    assert extract_pending_questions(content) == ["[decision] 是否授权发布？"]
+
+
 # -- count_unchecked_checkboxes --
 
 
@@ -402,12 +432,17 @@ def test_extract_structured_fields_keeps_first_top_level_route():
 # -- extract_pending_questions --
 
 
-def test_extract_pending_questions_allows_explicit_no_pending_declaration():
+def test_extract_pending_questions_allows_exact_no_pending_declaration():
+    assert extract_pending_questions("### 2.3 待确认问题\n- 无\n") == []
+    assert extract_pending_questions("### 2.3 待确认问题\n- none\n") == []
+
+
+def test_extract_pending_questions_keeps_annotated_no_declarations():
     spec = """\
 ### 2.3 待确认问题
 - 无（已澄清：本轮没有开放问题）
 """
-    assert extract_pending_questions(spec) == []
+    assert extract_pending_questions(spec) == ["无（已澄清：本轮没有开放问题）"]
 
 
 def test_extract_pending_questions_keeps_real_questions_starting_with_no():
@@ -422,24 +457,8 @@ def test_extract_pending_questions_keeps_real_questions_starting_with_no():
     ]
 
 
-# G1: full-line 无（...） declarations outside the legacy vocabulary are
-# declarations, not pending questions (live case: 均可合理假设 was blocked).
-@pytest.mark.parametrize(
-    "declaration",
-    [
-        "无（均已解决）",
-        "无（可合理假设）",
-        "无（均可合理假设，不阻塞执行）。",
-        "无（无需用户决策：两项关键假设均可合理假定，见 2.2/2.4）。",
-        "无（无阻塞）",
-        "无(已用半角括号声明)",
-        "无（已澄清：本轮没有开放问题）",
-        "无",
-        "无：本轮为审查修复型任务，无改变项目形态的决策点",
-        "无: 本轮为审查修复型任务，发现的问题按能修则修处理",
-    ],
-)
-def test_extract_pending_questions_accepts_full_line_no_pending_declarations(declaration):
+@pytest.mark.parametrize("declaration", ["无", "无。", "none", "None."])
+def test_extract_pending_questions_accepts_plain_no_declarations(declaration):
     spec = f"### 2.3 待确认问题\n- {declaration}\n"
     assert extract_pending_questions(spec) == []
 
@@ -917,14 +936,10 @@ def test_git_head_sha_empty_outside_git(tmp_path):
     assert git_head_sha(plain) == ""
 
 
-def _verification_scope(level: str = "package", full_project: str = "适用外：发布门禁") -> str:
+def _verification_scope(level: str = "package", quick_check: str = "pytest tests/test_changed.py") -> str:
     return f"""### 5.1 验证策略
 - 范围级别：{level}
-- 变更对象：changed module
-- 快速检查：pytest tests/test_changed.py
-- 集成检查：适用外：无直接受影响链路
-- 全项目检查：{full_project}
-- 升级触发：共享基础设施或跨模块契约变化
+- 快速检查：{quick_check}
 """
 
 
@@ -939,73 +954,22 @@ def test_verification_scope_accepts_parenthetical_heading_suffix():
     assert verification_scope_errors(text) == []
 
 
-def test_verification_scope_ignores_code_fenced_examples():
-    example = """```markdown
-### 5.1 验证策略
-- 范围级别：project
-```\n"""
-    text = example + _verification_scope()
-    assert verification_scope(text) == "package"
-    assert verification_scope_errors(text) == []
-
-
 @pytest.mark.parametrize("level", ["unknown", "package integration", ""])
 def test_verification_scope_rejects_unknown_or_missing_level(level):
     errors = verification_scope_errors(_verification_scope(level))
     assert errors
-    if level:
-        assert "范围级别必须是单 token" in errors[0]
-    else:
-        assert any("缺少字段：范围级别" in error for error in errors)
+    assert any("范围级别" in error for error in errors)
 
 
-def test_verification_scope_rejects_placeholder_and_unjustified_full_project_check():
-    text = _verification_scope(full_project="pytest -q")
-    errors = verification_scope_errors(text.replace("pytest tests/test_changed.py", "<command>"))
+def test_verification_scope_rejects_placeholder_quick_check():
+    text = _verification_scope(quick_check="<command>")
+    errors = verification_scope_errors(text)
     assert any("快速检查" in error for error in errors)
-    assert any("升级条件或适用外理由" in error for error in errors)
 
 
 def test_verification_scope_is_optional_for_legacy_spec():
     assert verification_scope("## 5. 技术决策\n- 技术栈：legacy\n") is None
     assert verification_scope_errors("## 5. 技术决策\n- 技术栈：legacy\n") == []
-
-
-def test_verification_scope_rejects_duplicate_top_level_fields():
-    text = _verification_scope() + "- 范围级别：project\n"
-    errors = verification_scope_errors(text)
-    assert any("范围级别" in error and "必须唯一" in error for error in errors)
-
-
-def test_verification_scope_rejects_duplicate_sections():
-    errors = verification_scope_errors(_verification_scope() + "\n" + _verification_scope())
-    assert any("出现 2 次" in error and "必须唯一" in error for error in errors)
-
-
-@pytest.mark.parametrize(
-    ("level", "field"),
-    [("package", "快速检查"), ("integration", "集成检查"), ("project", "集成检查"), ("project", "全项目检查")],
-)
-def test_verification_scope_requires_real_checks_for_declared_level(level, field):
-    text = _verification_scope(level).replace(f"- {field}：", f"- {field}：适用外：本轮未覆盖")
-    errors = verification_scope_errors(text)
-    assert any(field in error and "必须填写真实" in error for error in errors)
-
-
-def test_verification_scope_rejects_conditional_required_check():
-    text = _verification_scope("integration").replace(
-        "- 集成检查：适用外：无直接受影响链路",
-        "- 集成检查：仅当 CI 触发时运行",
-    )
-    errors = verification_scope_errors(text)
-    assert any("集成检查" in error and "必须填写真实" in error for error in errors)
-
-
-@pytest.mark.parametrize("marker", ["未执行", "跳过", "不执行"])
-def test_verification_scope_rejects_non_run_required_check(marker):
-    text = _verification_scope("project").replace("- 全项目检查：适用外：发布门禁", f"- 全项目检查：{marker}")
-    errors = verification_scope_errors(text)
-    assert any("全项目检查" in error and "必须填写真实" in error for error in errors)
 
 
 # -- F12（AUD-11）历史 5.4 兼容：orchestration_strategy_errors 结论不变 --
@@ -1028,21 +992,16 @@ def test_orchestration_strategy_errors_accepts_historical_forms():
     assert orchestration_strategy_errors("## 5. 技术决策\n- 决策一\n") == []
 
 
-def test_orchestration_strategy_errors_rejects_invalid_and_missing_route():
+def test_orchestration_strategy_errors_rejects_invalid_route_only():
     from spec_package_support import orchestration_strategy_errors
 
     for route_line in ("- route: build（主线程）+ review", "- route: nonsense"):
         content = f"### 5.4 编排策略\n{route_line}\n"
         errors = orchestration_strategy_errors(content)
-        assert errors and "单 token" in errors[0], route_line
-    # 有节但既无 route 也无 opt-out 声明
-    content = "### 5.4 编排策略\n- ownership: 主线程\n"
-    errors = orchestration_strategy_errors(content)
-    assert errors and "route" in errors[0]
-    # 多个 route 字段
-    content = "### 5.4 编排策略\n- route: local\n- route: review\n"
-    errors = orchestration_strategy_errors(content)
-    assert errors and "唯一" in errors[0]
+        assert errors and "route 必须" in errors[0], route_line
+    # 无 route 字段 = 默认 local，不报错
+    assert orchestration_strategy_errors("### 5.4 编排策略\n- ownership: 主线程\n") == []
+    assert orchestration_strategy_errors("### 5.4 编排策略\n- route: local\n- route: review\n") == []
 
 
 # -- falsified-paths section (2.5): keyed, parsed, never gated --

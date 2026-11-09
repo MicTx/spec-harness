@@ -127,26 +127,33 @@ USER_STAGES=(new goal autoplan autorun run check done push update status doctor 
 # CORE_STAGES) install only under `full`; membership may move back based on
 # usage evidence in later rounds.
 CORE_STAGES=(new run check done push doctor)
-# Extension components excluded under INSTALL_PROFILE=core (planning F16
-# sub-step 2, AUD-18): mirrors payload_contract.py CORE_EXCLUDED_DIRS and
-# CORE_EXCLUDED_SCRIPTS. Release trees ship no exporter (SCRIPT_BLACKLIST),
-# so the copy path prunes them here; alignment with the contract is pinned
-# by tests/test_install_profile.py.
-CORE_EXCLUDED_DIRS=(agents server slots)
-# Kept from excluded directories under core (host discovery metadata); mirrors
-# payload_contract.py CORE_KEPT_FILES. Pinned by tests/test_install_profile.py.
+# Core payload lists. These are seeded from payload_contract.py (the single
+# source of truth) at prepare time; the literals here
+# are only the fallback for a tree too old to carry the contract module.
+# Alignment is pinned by tests/test_install_profile.py.
+CORE_EXCLUDED_DIRS=(agents slots)
 CORE_KEPT_FILES=(agents/openai.yaml)
 CORE_EXCLUDED_SCRIPTS=(
-  autorun_spawn.py
-  autoplan_spawn.py
   autoplan_gate.py
-  chain_spawn_support.py
-  chain_recovery.py
-  chain_lifecycle.py
-  chain_session.py
-  reasoning_policy.py
-  sweep_chain_windows.py
+  chain_state.py
 )
+
+# Populate the core payload lists from payload_contract.py in the prepared
+# source. A tree old enough to lack the module keeps the literals above.
+resolve_payload_contract() {
+  local contract="$PREPARED_SOURCE_DIR/scripts/payload_contract.py"
+  [ -n "${PYTHON_BIN:-}" ] && [ -f "$contract" ] || return 0
+  local dirs scripts kept
+  if dirs="$("$PYTHON_BIN" "$contract" excluded-dirs --profile core 2>/dev/null)" && [ -n "$dirs" ]; then
+    read -r -a CORE_EXCLUDED_DIRS <<<"$dirs"
+  fi
+  if scripts="$("$PYTHON_BIN" "$contract" excluded-scripts --profile core 2>/dev/null)" && [ -n "$scripts" ]; then
+    read -r -a CORE_EXCLUDED_SCRIPTS <<<"$scripts"
+  fi
+  if kept="$("$PYTHON_BIN" "$contract" kept-files --profile core 2>/dev/null)" && [ -n "$kept" ]; then
+    read -r -a CORE_KEPT_FILES <<<"$kept"
+  fi
+}
 
 format_stage_aliases() {
   local prefix="$1"
@@ -479,30 +486,12 @@ prepare_source() {
 export_runtime() {
   local source_dir="$1"
   local output_dir="$2"
-  local skip_signing=""
   if [ -n "${PYTHON_BIN:-}" ] && [ -f "$source_dir/scripts/export_skill_package.py" ]; then
-    # 签名只在 release 构建路径强制；源码树不带凭据是常态（.gitignore 忽略
-    # .watermark-*）。凭据全缺时自动跳过签名并打印说明，安装不再是死路。
-    if [ "${SPEC_SKIP_SIGNING:-}" = "1" ]; then
-      skip_signing="--skip-signing"
-    elif signing_credentials_absent "$source_dir"; then
-      skip_signing="--skip-signing"
-      log "no signing credentials found - exporting an unsigned skill package (auto --skip-signing; distribution signing happens at release build)"
-    fi
-    "$PYTHON_BIN" "$source_dir/scripts/export_skill_package.py" --root "$source_dir" --output "$output_dir" --force --profile "$INSTALL_PROFILE" ${skip_signing:+"$skip_signing"} >/dev/null
+    "$PYTHON_BIN" "$source_dir/scripts/export_skill_package.py" --root "$source_dir" --output "$output_dir" --force --profile "$INSTALL_PROFILE" >/dev/null
     return 0
   fi
 
-  # 复制路径即 release 布局：分发包出厂自带发布签名，签名在场直接安装。
-  # 签名载体是 NOTICE（AUD-17：入口 SKILL.md 保持纯文本，不被模型加载）。
-  # 存在性判断不走 grep：签名行超长，行截断会误判为缺失。
-  if ! "$PYTHON_BIN" -c 'import pathlib,sys; sys.exit(0 if "\u2063" in pathlib.Path(sys.argv[1]).read_text(encoding="utf-8") else 1)' "$source_dir/NOTICE"; then
-    if signing_credentials_absent "$source_dir"; then
-      log "no signing credentials found - installing the unsigned source tree as-is (distribution signing happens at release build)"
-    elif [ -z "${SPEC_SIGNING_IDENTITY:-}" ] || [ -z "${SPEC_SIGNING_KEY:-}" ]; then
-      fail "unsigned source tree with incomplete signing credentials: set both SPEC_SIGNING_IDENTITY and SPEC_SIGNING_KEY, or clear both to install unsigned"
-    fi
-  fi
+  # 发行包不含导出器，直接复制其运行时载荷。
   mkdir -p "$output_dir"
   cp -R "$source_dir/." "$output_dir/"
   # Release trees ship no exporter (SCRIPT_BLACKLIST), so core filtering on
@@ -531,14 +520,6 @@ export_runtime() {
       rm -f -- "$output_dir/scripts/$excluded_script"
     done
   fi
-}
-
-# 凭据「全缺」= 身份与密钥两维的环境变量与默认文件四者全部缺席；
-# 部分配置不算全缺：交给响亮失败，绝不静默跳过签名。
-signing_credentials_absent() {
-  local source_dir="$1"
-  [ -z "${SPEC_SIGNING_IDENTITY:-}" ] && [ ! -f "$source_dir/.watermark-identity.json" ] \
-    && [ -z "${SPEC_SIGNING_KEY:-}" ] && [ ! -f "$source_dir/.watermark-key" ]
 }
 
 backup_namespace() {
@@ -675,6 +656,20 @@ EOF_MARKER
   fi
 }
 
+# install-manifest.json is the single record a doctor reads to learn where a
+# host install lives: it never re-derives host directories itself.
+write_install_manifest() {
+  local host="$1"
+  local target_dir="$2"
+  "$PYTHON_BIN" - "$target_dir" "$host" "$INSTALL_PROFILE" "${runtime_version:-unknown}" <<'PY_MANIFEST'
+import json, sys
+from pathlib import Path
+root, host, profile, version = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+manifest = {"host": host, "path": root, "profile": profile, "version": version}
+Path(root, "install-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+PY_MANIFEST
+}
+
 stage_description() {
   case "$1" in
     route) printf '%s\n' "Spec auto-routing" ;;
@@ -775,14 +770,14 @@ EOF_BODY
       cat <<EOF_BODY
 # /$command_name
 
-Run the spec environment doctor: check Python/git foundations, the installed skill package, every host installation, Claude stage command files and legacy layout leftovers, the target project's .spec skeleton, and rendered Git hook drift. With --fix apply the safe repairs (installer-owned paths only, backed up first). Report from the script output; do not restate the check list by hand.
+Run the spec environment doctor for Python, Git, the install manifest, rendered Git hooks, and Stop hook wiring. Report its findings and any migration advisories.
 EOF_BODY
       ;;
     organize)
       cat <<EOF_BODY
 # /$command_name
 
-Run \`scripts/organize_project_structure.py\` for inventory, references, candidates, architecture and optional import contracts. Default is audit-only; --check is also read-only. Only explicit --update-baseline freezes current violations and prunes fixed entries. Report coverage, new and stale entries and incomplete scans. Applying is an explicit opt-in (--apply or a user instruction): create a new package before moves or doc fixes, never append to an unrelated package. never delete; archive confirmed orphans under archive/retired and disposition every member of a confirmed class. Report facts and actual moves.
+Run \`slots/organize/scripts/organize_project_structure.py --root <project>\` for the structure audit. The organize slot is available in the full profile. Use --check for read-only verification or --update-baseline to explicitly update the baseline.
 EOF_BODY
       ;;
     new)
@@ -817,7 +812,7 @@ description: $description
 
 $(command_body "$command_name" "$stage")
 
-First load the installed skill \`$skill_ref\` and follow its shared native session recovery contract in references/handoff.md before stage analysis or execution. Forward user arguments unchanged.
+First load the installed skill \`$skill_ref\` and resume from the package on disk (tasks.md, handoff.md, git log) before stage analysis or execution. Forward user arguments unchanged.
 EOF_COMMAND
   write_file_from_stdin "$target_file.spec-skill-install" <<EOF_MARKER
 installed_by=spec/install.sh
@@ -1028,6 +1023,7 @@ install_claude() {
   local target="$CLAUDE_SKILLS_DIR/$SKILL_NAME"
   log "Installing Claude Code skill to $target"
   copy_runtime "$runtime_dir" "$target"
+  write_install_manifest "claude" "$target"
 
   local stage alias_dir alias_command command_target
   command_target="$CLAUDE_COMMANDS_DIR/$SKILL_NAME.md"
@@ -1117,8 +1113,8 @@ description: "$description"
 argument-hint: "[query]"
 ---
 Use the installed skill \`$SKILL_NAME\` for this request. Follow the stage
-index in the skill's references/commands.md; first follow shared native session
-recovery in references/handoff.md before stage analysis or execution.
+index in the skill's references/commands.md; resume from the package on disk
+before stage analysis or execution.
 Forward user arguments unchanged: \$@
 EOF_TEMPLATE
   else
@@ -1129,8 +1125,7 @@ argument-hint: "[stage arguments]"
 ---
 Use the installed skill \`$SKILL_NAME\` for this request. Follow the /$SKILL_NAME:$stage
 stage contract in the skill's references/stages/ (index: references/commands.md).
-First follow shared native session recovery in references/handoff.md before
-stage analysis or execution.
+Resume from the package on disk before stage analysis or execution.
 Forward user arguments unchanged: \$@
 EOF_TEMPLATE
   fi
@@ -1162,6 +1157,7 @@ install_pi() {
   local stage
   log "Installing Pi skill to $target"
   copy_runtime "$runtime_dir" "$target"
+  write_install_manifest "pi" "$target"
   log "Installing Pi prompt templates to $PI_PROMPTS_DIR (/spec, $(format_stage_aliases '/spec:' ', '))"
   pi_sweep_stale_templates
   pi_write_template "base"
@@ -1177,6 +1173,7 @@ install_skill_only_host() {
   target="$(skill_dir_for "$host")/$SKILL_NAME"
   log "Installing $(host_label_for "$host") skill to $target"
   copy_runtime "$runtime_dir" "$target"
+  write_install_manifest "$host" "$target"
 }
 
 # ZCode users often symlink ~/.zcode/skills/spec to another host's install.
@@ -1211,6 +1208,7 @@ main() {
     fi
   fi
   prepare_source
+  resolve_payload_contract
   INSTALL_TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/spec-skill-install.XXXXXX")"
   runtime_dir="$INSTALL_TEMP_DIR/runtime"
 
@@ -1261,12 +1259,6 @@ main() {
     log "  $PYTHON_BIN $(skill_dir_for "$host")/$SKILL_NAME/scripts/smoke_test_spec_skill.py"
     log "  $(host_label_for "$host"): $(host_trigger_hint "$host"), then use $(format_stage_aliases 'spec:' ' / ')"
   done
-
-  if host_enabled claude; then
-    log ""
-    log "Automatic admission (opt-in, not wired by default): the activation guard files are installed but no Claude settings were changed."
-    log "  Enable once: python3 $CLAUDE_SKILLS_DIR/$SKILL_NAME/scripts/install_activation_hooks.py --mode on   (undo: --mode off; check: spec:doctor)"
-  fi
 
   # AGENTS.md 兼读提示：AGENTS.md 是 Codex/OpenCode/Gemini CLI 等 agent 的
   # 指令入口，与 SKILL.md 同层生效。仅提示，不改安装逻辑。

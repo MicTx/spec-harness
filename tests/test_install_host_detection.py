@@ -59,9 +59,6 @@ def sandbox_env(home: Path, stub_dir: Path | None = None) -> dict[str, str]:
     for var in (
         "INSTALL_HOSTS",
         "SOURCE_DIR",
-        "SPEC_SIGNING_IDENTITY",
-        "SPEC_SIGNING_KEY",
-        "SPEC_SKIP_SIGNING",
         "CLAUDE_SKILLS_DIR",
         "CLAUDE_COMMANDS_DIR",
         "CLAUDE_AGENTS_DIR",
