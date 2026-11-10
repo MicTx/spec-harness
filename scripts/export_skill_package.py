@@ -56,7 +56,7 @@ def parse_args() -> argparse.Namespace:
         "--profile",
         choices=PROFILE_VALUES,
         default="full",
-        help="Compatibility alias; core and full export the identical six-stage kernel payload.",
+        help="Compatibility alias; core and full export the identical three-command kernel payload.",
     )
     return parser.parse_args()
 

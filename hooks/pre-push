@@ -7,7 +7,7 @@ checker="__SPEC_CHECK_ALL_SCRIPT_PLACEHOLDER__"
 #   1. SPEC_CHECK_ALL_SCRIPT environment override — the explicit operator
 #      escape hatch; the path in effect is echoed to stderr so a swap is
 #      never silent.
-#   2. The absolute path rendered by install_git_hooks.py, already held in
+#   2. The absolute path rendered by install_hooks.py, already held in
 #      $checker when the placeholder above was replaced. Repository content
 #      can never replace the gate checker; an unrendered template fails
 #      closed below.
@@ -21,7 +21,7 @@ if [ ! -f "$checker" ]; then
     "error: Spec gate checker not found at: $checker" \
     "  The checker script is expected at the path above." \
     "  Fix:" \
-    "    1. Re-run: python3 scripts/install_git_hooks.py --root \"$repo\"" \
+    "    1. Re-run: python3 scripts/install_hooks.py --root \"$repo\"" \
     "    2. The checker lives in the spec skill package under scripts/" >&2
   exit 1
 fi
@@ -100,16 +100,15 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   [ -n "${local_sha:-}" ] || continue
   [ "$local_sha" = "$zero" ] && continue
   case "$remote_ref" in
-    refs/heads/spec/*)
-      # AUD-07: in-flight handoff. Integration branches carry work in
-      # progress (WIP commits, handoff.md) through the remote; the
-      # irreversible path is the main-branch merge, which keeps the full
-      # gate below.
+  refs/heads/spec/*)
+    branch=${remote_ref#refs/heads/}
+    if "$python" "$checker" --root "$repo" --wip-branch "$branch" >/dev/null; then
       printf '%s\n' \
-        "spec gate: releasing in-flight push of $remote_ref (integration-branch handoff);" \
+        "spec gate: releasing in-flight push of $remote_ref (branch-bound WIP channel);" \
         "the full gate applies when this work merges to the main branch" >&2
       continue
-      ;;
+    fi
+    ;;
   esac
   index=$((index + 1))
   files_path=$tmp_dir/files-$index

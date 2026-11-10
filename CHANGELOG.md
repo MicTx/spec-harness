@@ -4,6 +4,20 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [1.0.0] - 2026-11-10
+
+### Changed
+
+- **BREAKING — 两相 v3 运行时**：用户命令面收缩为 `/spec`、`/spec:push` 和 `/spec:doctor`；规划期先通过确定性 plan lint 和用户分叉，Go 之后按任务 DAG、边界和可重复 verify 执行。
+- **BREAKING — Two-phase v3 runtime**: the user-facing command surface is now `/spec`, `/spec:push`, and `/spec:doctor`; planning first clears deterministic plan lint and user forks, then execution follows the task DAG, boundaries, and repeatable verifies.
+- **自强化证据链**：验证记录绑定树指纹，任务勾选由脚本写入；失败签名驱动三级修复阶梯，lessons 进入下一轮规划，交付由最终树复验与边界审计收口。
+- **Self-reinforcing evidence chain**: verification records bind tree fingerprints, script-owned checks write task state; failure signatures drive a three-step repair ladder, lessons feed future planning, and delivery closes with final-tree re-verification and boundary audit.
+
+### Removed
+
+- **BREAKING — v2 六阶段入口**：删除 `new / run / check / done` 独立命令、旧 v2 模板、阶段页和专用校验脚本；冻结归档与历史记录按原语义保留，不做迁移。
+- **BREAKING — v2 six-stage entry**: standalone `new / run / check / done` commands, legacy templates, stage pages, and dedicated checkers are removed; frozen archives and historical records keep their original semantics without migration.
+
 ## [0.31.0] - 2026-11-10
 
 ### Changed

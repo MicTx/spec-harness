@@ -7,13 +7,14 @@ COPY_DIRS = ("agents", "hooks", "references")
 IGNORE_PATTERNS = ("__pycache__", "*.pyc", ".DS_Store")
 SCRIPT_BLACKLIST = frozenset(
     {
-        "export_skill_package.py",
-        "lint_workflows.py",
-        "export_public_repo.py",
-        "public_secret_scan.py",
         "build_release.py",
+        "export_skill_package.py",
+        "export_public_repo.py",
+        "lint_workflows.py",
         "package_agent_plugin.py",
+        "payload_contract.py",
         "skill_watermark.py",
+        "public_secret_scan.py",
         "path_safety.py",
         "verify_install_parity.py",
     }

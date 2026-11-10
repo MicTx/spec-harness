@@ -224,7 +224,7 @@ def test_marker_upgrade_set_survives_detection(tmp_path):
     )
     assert first.returncode == 0, first.stderr
     assert (custom / "spec" / "SKILL.md").is_file()
-    assert ".claude" not in install_roots(home)
+    assert not (home / ".claude" / "skills" / "spec" / "SKILL.md").exists()
 
     # Upgrade: same routing env, but no explicit INSTALL_HOSTS — the
     # default-root probes miss, and only the ownership marker keeps the
@@ -241,7 +241,7 @@ def test_marker_upgrade_set_survives_detection(tmp_path):
     )
     assert second.returncode == 0, second.stderr
     assert (custom / "spec" / "SKILL.md").is_file(), "marker-owned host must be reinstalled"
-    assert ".claude" not in install_roots(home)
+    assert not (home / ".claude" / "skills" / "spec" / "SKILL.md").exists()
     # Detection reports the marker-rescued host instead of skipping it.
     assert "detected hosts: claude" in second.stdout
 

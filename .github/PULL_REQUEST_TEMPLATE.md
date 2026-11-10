@@ -27,7 +27,7 @@ List changed commands, task-package formats, exported layouts, or migration step
 ## Checklist
 
 - [ ] `python3 -m compileall -q scripts hooks tests` passes
-- [ ] `python3 scripts/smoke_test_spec_skill.py` passes
+- [ ] `python3 scripts/export_skill_package.py --output <temporary-path> --force` passes
 - [ ] `python3 -m pytest -q` passes
 - [ ] `ruff check scripts/ hooks/ tests/` passes
 - [ ] `ruff format --check scripts/ hooks/ tests/` passes

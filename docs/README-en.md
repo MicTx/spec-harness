@@ -11,14 +11,11 @@ Decide what you want to accomplish first, then pick the one document that does i
 ## I want to understand it first
 
 - [Spec Harness introduction](introduction.md) — Chinese only: start from why a long-running task loses control, then see what task packages, verification, and Git closeout each solve.
-- [Long-running task tutorial](tutorial.md) — Chinese only: walk one audit-export goal from installation to archive; the example is a skeleton, business names may be replaced.
 
 ## I want to operate it
 
 - [Git workflow (English)](git-workflow.en.md)
 - [Git 工作流（中文）](git-workflow.md)
-- [Host entry points](../references/commands.md#host-entry-points): the six-stage kernel shared by CLIs, IDE agent extensions, and desktop clients.
-- [Pending questions](../references/templates.md#pending-questions): one closeout markup for open questions and the user-authority requirement.
 - Root [README (English)](../README-en.md): installation, host selection, and runtime export.
 - Root [README（中文）](../README.md)：安装、宿主选择、导出运行时包和回归命令。
 
@@ -33,7 +30,7 @@ Decide what you want to accomplish first, then pick the one document that does i
 ## Entry classes
 
 - **public / user entry**: the root [README (English)](../README-en.md) and [README（中文）](../README.md), this index and the [Chinese index](README.md), and the guides in this directory.
-- **runtime reference**: [`SKILL.md`](../SKILL.md) and [`references/`](../references/00-readme.md) — the runtime contracts for commands, templates, outputs, and archival.
+- **runtime reference**: [`SKILL.md`](../SKILL.md) and the five pages under `references/` — planning, execution, format, philosophy, and Git contracts.
 - **maintainer-only**: [`agent-plugin/README.md`](../agent-plugin/README.md) — packaging-template notes that exist only in the source repository and never ship in the runtime export.
 
-Command, task-package, and gate contracts live in [`references/`](../references/00-readme.md): they answer "what must hold"; the guides in this directory answer "why it is arranged this way and what to do next".
+The two-phase runtime contracts live in [`references/plan.md`](../references/plan.md), [`references/exec.md`](../references/exec.md), [`references/format.md`](../references/format.md), and [`references/git.md`](../references/git.md): they answer "what must hold"; the guides in this directory answer "why it is arranged this way and what to do next".

@@ -9,7 +9,7 @@ Fix the source revision before you edit: use a tag for a stable installation and
     git clone https://github.com/MicTx/spec-harness.git
     cd spec-harness
     git fetch --tags origin
-    git checkout v0.31.0
+    git checkout v1.0.0
 
 Contributors normally clone a fork and keep the official repository as `upstream`:
 
@@ -62,10 +62,9 @@ Include:
 - Compatibility or migration notes.
 - Examples, screenshots, or reproduction steps for documentation and CLI changes.
 
-Run checks that can answer whether the current tree is ready to publish. The full suite below is a publish/main-branch gate, not the default for every task-package `check`/`done`; packages use the `package`, `integration`, or `project` level declared in `spec.md`:
+Run checks that can answer whether the current tree is ready to publish. The full suite below is a publish/main-branch gate; individual packages follow the `package`, `integration`, or `project` level declared by the v3 charter:
 
     python3 -m compileall -q scripts hooks tests
-    python3 scripts/smoke_test_spec_skill.py
     python3 -m pytest -q
     ruff check scripts/ hooks/ tests/
     ruff format --check scripts/ hooks/ tests/

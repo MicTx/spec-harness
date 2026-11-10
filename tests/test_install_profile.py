@@ -1,10 +1,11 @@
-"""Installer and exporter compatibility aliases share one six-stage payload."""
+"""Installer and exporter compatibility aliases share one three-command payload."""
 
 from __future__ import annotations
 
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -14,7 +15,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 INSTALLER = ROOT / "install.sh"
 EXPORTER = ROOT / "scripts" / "export_skill_package.py"
-CORE_STAGES = ("new", "run", "check", "done", "push", "doctor")
+CORE_STAGES = ("push", "doctor")
 RETIRED_STAGES = ("goal", "autoplan", "autorun", "update", "status", "organize")
 RETIRED_SCRIPTS = (
     "autoplan_gate.py",
@@ -104,9 +105,9 @@ def assert_kernel_tree(root: Path) -> None:
         "agents/openai.yaml",
         "hooks/pre-commit",
         "hooks/pre-push",
-        "references/commands.md",
-        "scripts/init_spec_package.py",
-        "scripts/payload_contract.py",
+        "references/exec.md",
+        "scripts/spec.py",
+        "scripts/package.py",
     )
     for relative in required:
         assert (root / relative).is_file(), relative
@@ -114,6 +115,7 @@ def assert_kernel_tree(root: Path) -> None:
         assert not (root / relative).exists(), relative
     for name in RETIRED_SCRIPTS:
         assert not (root / "scripts" / name).exists(), name
+    assert not (root / "scripts" / "payload_contract.py").exists()
     assert sorted(path.name for path in (root / "agents").iterdir()) == ["openai.yaml"]
 
 
@@ -135,6 +137,36 @@ def test_export_rejects_unknown_profile(tmp_path):
     assert result.returncode != 0
     assert "invalid choice" in result.stderr
     assert not output.exists()
+
+
+@requires_bash
+def test_release_payload_install_excludes_maintainer_scripts(tmp_path):
+    home = tmp_path / "home"
+    release = tmp_path / "release"
+    shutil.copytree(
+        ROOT,
+        release,
+        ignore=shutil.ignore_patterns(".git", ".spec", ".maintainer", "tests", "release"),
+    )
+    (release / "VERSION").write_text("1.0.0\n", encoding="utf-8")
+    (release / "BUILD_INFO").write_text("version=1.0.0\n", encoding="utf-8")
+    (release / "scripts" / "export_skill_package.py").unlink()
+    home.mkdir()
+    env = sandbox_env(home, {"INSTALL_HOSTS": "claude"})
+    result = subprocess.run(
+        ["bash", str(release / "install.sh")],
+        cwd=release,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=300,
+    )
+    assert result.returncode == 0, result.stderr
+    skill = home / ".claude" / "skills" / "spec"
+    assert (skill / "VERSION").is_file()
+    assert (skill / "BUILD_INFO").is_file()
+    assert not (skill / "scripts" / "payload_contract.py").exists()
+    assert not (skill / "scripts" / "export_public_repo.py").exists()
 
 
 def test_payload_contract_has_one_copy_dir_source():
@@ -159,14 +191,15 @@ def test_sandbox_profiles_install_identical_kernel(tmp_path, profile):
     result = run_installer(home, {"INSTALL_PROFILE": profile})
     assert result.returncode == 0, result.stderr
     assert f"Install profile: {profile}" in result.stdout
-    assert "six-stage kernel" in result.stdout
+    assert "three-command kernel" in result.stdout
 
     skill = home / ".claude" / "skills" / "spec"
     assert_kernel_tree(skill)
     assert claude_stage_commands(home) == sorted(f"{stage}.md" for stage in CORE_STAGES)
     assert f"profile={profile}" in (skill / ".spec-skill-install").read_text(encoding="utf-8")
     assert not (home / ".claude" / "agents").exists()
-    assert not (home / ".claude" / "settings.json").exists()
+    settings = json.loads((home / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    assert "spec_hook.py" in settings["hooks"]["Stop"][0]["hooks"][0]["command"]
     reference = tmp_path / f"reference-{profile}"
     assert run_export(reference, "--profile", profile).returncode == 0
     assert tree_manifest(skill) == tree_manifest(reference)
@@ -221,21 +254,6 @@ def test_sandbox_upgrade_sweeps_installer_owned_retired_artifacts(tmp_path):
 
 
 @requires_bash
-@pytest.mark.parametrize("profile", ["core", "full"])
-def test_sandbox_stage_commands_continue_recoverable_failures(tmp_path, profile):
-    home = tmp_path / "home"
-    home.mkdir()
-    assert run_installer(home, {"INSTALL_PROFILE": profile}).returncode == 0
-    commands = home / ".claude" / "commands" / "spec"
-    run_body = (commands / "run.md").read_text(encoding="utf-8")
-    check_body = (commands / "check.md").read_text(encoding="utf-8")
-    assert "Recovery" in run_body and "Stop at any failed gate" not in run_body
-    assert "Recovery" in check_body and "human-in-the-loop" not in check_body
-    assert "unresolved blocker" in check_body
-    assert "checklist must be fully checked" not in check_body
-
-
-@requires_bash
 def test_sandbox_doctor_is_kernel_aware(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
@@ -244,11 +262,11 @@ def test_sandbox_doctor_is_kernel_aware(tmp_path):
     doctor = subprocess.run(
         [
             sys.executable,
-            str(skill / "scripts" / "doctor_spec_environment.py"),
+            str(skill / "scripts" / "doctor.py"),
             "--root",
             str(home),
-            "--format",
-            "json",
+            "--host",
+            "claude",
         ],
         capture_output=True,
         text=True,
@@ -257,47 +275,7 @@ def test_sandbox_doctor_is_kernel_aware(tmp_path):
     )
     assert doctor.returncode == 0, f"{doctor.stdout}\n{doctor.stderr}"
     payload = json.loads(doctor.stdout)
-    layout = next(check for check in payload["checks"] if check["id"] == "skill.layout")
-    assert layout["status"] == "ok"
-    assert {check["id"] for check in payload["checks"]} <= {
-        "python.runtime",
-        "git.available",
-        "skill.layout",
-        "project.hooks",
-        "hooks.stop",
-        "advice.checkpoint",
-        "advice.activation",
-    }
-
-
-@requires_bash
-@pytest.mark.parametrize("profile", ["core", "full"])
-def test_smoke_profiles_pass_on_kernel_install(tmp_path, profile):
-    home = tmp_path / "home"
-    home.mkdir()
-    assert run_installer(home, {"INSTALL_PROFILE": profile}).returncode == 0
-    smoke = home / ".claude" / "skills" / "spec" / "scripts" / "smoke_test_spec_skill.py"
-    result = subprocess.run(
-        [sys.executable, str(smoke), "--profile", profile],
-        capture_output=True,
-        text=True,
-        env=sandbox_env(home),
-        timeout=600,
-    )
-    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
-    assert "smoke: OK" in result.stdout
-
-
-def test_smoke_rejects_unknown_profile():
-    smoke = ROOT / "scripts" / "smoke_test_spec_skill.py"
-    result = subprocess.run(
-        [sys.executable, str(smoke), "--profile", "bogus"],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    assert result.returncode != 0
-    assert "invalid choice" in result.stderr
+    assert payload["hosts"] == [{"host": "claude", "wired": True, "config": payload["hosts"][0]["config"]}]
 
 
 @requires_bash
@@ -312,10 +290,10 @@ def test_installer_preserves_user_settings_both_ways(tmp_path):
             if preexisting:
                 settings.parent.mkdir(parents=True)
                 settings.write_text(_json.dumps({"permissions": {"allow": ["Bash(ls)"]}, "sentinel": "keep-me"}))
-                original = settings.read_bytes()
             result = run_installer(home, {"INSTALL_PROFILE": profile, "PYTHONDONTWRITEBYTECODE": "1"})
             assert result.returncode == 0, result.stderr[-300:]
+            current = _json.loads(settings.read_text(encoding="utf-8"))
+            assert "spec_hook.py" in current["hooks"]["Stop"][0]["hooks"][0]["command"]
             if preexisting:
-                assert settings.read_bytes() == original
-            else:
-                assert not settings.exists()
+                assert current["permissions"] == {"allow": ["Bash(ls)"]}
+                assert current["sentinel"] == "keep-me"

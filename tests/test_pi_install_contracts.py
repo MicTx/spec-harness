@@ -6,7 +6,7 @@ templates into <pi-root>/agent/prompts: ``spec.md`` (/spec) and
 Pi 1.2.0; empirics recorded in the 2026-10-14_normalize-public-example-25
 package evidence). This suite pins, under a sandbox HOME:
 
-* one six-stage template set for both profile aliases, parsed from
+* the base, push, and doctor templates for both profile aliases, parsed from
   install.sh's stage lists — never hardcoded, so USER_STAGES changes cannot
   make these assertions lie;
 * the thin-forwarder shape: quoted frontmatter description (unquoted
@@ -145,7 +145,7 @@ def test_core_profile_writes_core_stage_set(tmp_path):
 
     core = parse_stage_list("CORE_STAGES")
     user = parse_stage_list("USER_STAGES")
-    assert core == user == ("new", "run", "check", "done", "push", "doctor")
+    assert core == user == ("push", "doctor")
     assert template_names(home) == expected_names(core)
 
 
@@ -183,7 +183,6 @@ def test_template_shape_is_thin_forwarder(tmp_path):
         assert 'argument-hint: "' in text, name
         # Mechanical argument pass-through and a contract pointer.
         assert "$@" in text, name
-        assert "references/commands.md" in text, name
         assert "Use the installed skill `spec`" in text, name
         # Thin forwarder only: no workflow restatement sneaks into the
         # always-loaded surface (F1 slimming rule).

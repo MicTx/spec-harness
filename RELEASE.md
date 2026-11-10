@@ -10,23 +10,23 @@ Spec Harness releases answer two different needs: a tagged source revision for r
 
 ## Versioning Policy
 
-Spec Harness follows [Semantic Versioning](https://semver.org/) with an explicit 0.x interpretation. The deciding question for a bump is not "did behavior change" but "did a compatibility surface move":
+Spec Harness follows [Semantic Versioning](https://semver.org/). The deciding question for a bump is not "did behavior change" but "did a compatibility surface move":
 
 - **PATCH** — a backwards-compatible bug fix. No new user-facing surface (commands, flags, task-package file layout, export layout, event/audit contract). Correcting wrong behavior counts as a fix, even though behavior changes.
-- **MINOR** — a backwards-compatible addition to the user-facing surface (a new command, flag, or event key — an add-only vocabulary extension stays compatible), and, while the project is 0.x, **breaking** changes to a compatibility surface (an incompatible layout or behavior reversal); breaking entries are marked `BREAKING` in the release notes.
-- **MAJOR** — reserved for after 1.0.0. While 0.x, breaking changes land in a minor.
+- **MINOR** — a backwards-compatible addition to the user-facing surface (a new command, flag, or event key — an add-only vocabulary extension stays compatible).
+- **MAJOR** — an incompatible layout or behavior reversal; breaking entries are marked `BREAKING` in the release notes.
 
 Pacing: a minor is not minted for a single round. User-visible changes accumulate to the next natural release window (the close of a stage that changed user-visible behavior); pure fixes may ship as a patch at any time.
 
 Compatibility window: a format change ships with a one-shot migration script, and the old read path plus the script are removed in the next minor. Archived packages are frozen and never regraded. Compatibility code without a removal version is a defect.
 
-The exit from 0.x to 1.0.0 is deliberate: the skill command surface, the install surface, and the event contract are frozen (no `BREAKING` minor across a sustained window) before 1.0.0 is tagged. Historical tags before this policy was written are evidence, not precedents — they are not rewritten.
+The v3 runtime removes the v2 command surface; archived v2 packages remain frozen and must be handled by the explicitly pinned historical toolkit. Historical releases are evidence, not precedents — they are not rewritten.
 
 ## Install from a Release Archive
 
 Download the archive and checksum file from the release page:
 
-    VERSION=0.31.0
+    VERSION=1.0.0
     curl -LO "https://github.com/MicTx/spec-harness/releases/download/v$VERSION/spec-harness-$VERSION.tar.gz"
     curl -LO "https://github.com/MicTx/spec-harness/releases/download/v$VERSION/SHA256SUMS"
     sha256sum -c SHA256SUMS --ignore-missing
@@ -42,7 +42,7 @@ The archive root contains the local skill installer.
 
     git clone https://github.com/MicTx/spec-harness.git
     cd spec-harness
-    git checkout v0.31.0
+    git checkout v1.0.0
     bash install.sh
 
 A tagged checkout is preferable to an unpinned main checkout when reproducibility matters. Replace the tag with a full commit SHA for an exact source revision.

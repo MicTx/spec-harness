@@ -1,183 +1,49 @@
-# 我们一起完成一个可恢复的长程任务
+# 用两相运行时完成长程任务
 
-这篇 Spec Harness 教程从一个实际问题开始：如果任务要做两天，中间换一次 Agent，经历几轮测试和审查，我们怎样保证它不会越做越偏？
+v3 把长期工作分为两个阶段：规划阶段允许提问、写假设和设计验证；Go 之后进入薄执行阶段，当前会话只消费磁盘上的任务、边界和证据。
 
-我们用“为已有 API 增加审计日志导出”做练习。业务名称可以替换；要练的是同一副骨架：先留下问题，再让代码逐步靠近答案。
+## 为什么不是更长的提示词
 
-> 第一次使用请先完成[从零完成第一个任务：保姆级教程](getting-started.md)。本文偏向原理与整体流程，保姆级教程按操作步骤展开。
+提示词无法可靠保存“已经确认什么、验证过什么、失败到第几次”。v3 把这些事实写入 `.spec/`：
 
-## 先约定终点
+- `spec.md`：目标、范围、Charter、假设、分叉、决策与成功标准。
+- `tasks.md`：依赖图、边界、红绿验证和状态。
+- `runs.jsonl`：真实验证记录。
+- `state.json` / `lessons.md`：恢复、停机和跨包学习状态。
 
-完成后应留下五样东西：
+## 规划轮
 
-- 一份说清目标、事实和边界的 `spec.md`。
-- 一组每一步都有 `boundary` 和 `verify` 的 `tasks.md`。
-- 一份带真实证据、全部勾选的 `spec.md` §6 成功标准。
-- 一套中断后可以继续的磁盘记录。
-- 一个只包含这项工作的 Git 提交。
+按 [`references/plan.md`](../references/plan.md) 依次完成 Recon、Intent、Charter、Simulation 和 Go。规划的目标不是填表，而是消除会阻塞执行的未知：
 
-如果只是改一个拼写，这套流程会显得太重。它适合需要分析、实现、测试或审查的工作。
-
-判断是否需要任务记录，看的是交付形状而不是措辞：几个相互独立、各自要验收的功能，或者几位队友同时实施，就值得先留下范围和验收；单一验收的机械替换、只读调查、一次性实验不需要。文件数多、说明长、房间里有空闲队友，都不单独说明问题。这个判断由 agent 按 `SKILL.md` 的“何时使用”在动手前做出。
-
-## 第一步：让环境站稳
-
-先取得一个可复现版本：
+1. 已确认事实必须带探针或来源。
+2. 边界必须覆盖实际会修改的路径。
+3. 每条验收标准映射到可执行任务。
+4. 不可逆选择必须成为分叉并获得用户授权。
 
 ```bash
-git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
-cd /tmp/spec-harness
-git checkout v0.31.0
-bash install.sh
+python3 scripts/spec.py plan-lint
+python3 scripts/spec.py plan-go
 ```
 
-再回到真正要修改的项目，确认工作树：
+## 执行轮
+
+Go 后的循环只有四步：
+
+1. `next` 选择依赖已满足且未停机的任务。
+2. 只修改该任务 `boundary` 内的文件。
+3. `verify` 执行精确命令并留下证据。
+4. 失败按 [`references/exec.md`](../references/exec.md) 的阶梯推进；同一签名最多三次。
 
 ```bash
-cd /path/to/project
-git status --short
+python3 scripts/spec.py next
+python3 scripts/spec.py verify task-api
+python3 scripts/spec.py check
 ```
 
-没有输出，才说明接下来的 diff 可以归属于这项任务。已有其他改动时，先提交、暂存或另开任务包，不要把两个目标混在一起。
+分叉触发时立即记录 `D`；无法授权的选项放入 `P` 并继续独立任务。只有 `delivered`、`parked-only` 和 `stalled` 是合法 Stop 状态。
 
-支持 Skill 的 CLI 可以直接开始：
+## 交接与收尾
 
-```text
-$spec 为已有 API 增加审计日志导出，包含权限检查、接口测试和恢复说明
-```
+新会话不需要读取旧聊天。它读取活动包、路由卡、最近证据和 lessons，然后继续当前任务。全部任务通过后执行 `done`；完成报告列出证据、用户决策、可回滚动作和剩余阻塞。
 
-Claude Code 使用 `/spec` 从磁盘解析下一步。想先观察任务包文件时，也可以初始化：
-
-```bash
-python3 /tmp/spec-harness/scripts/init_spec_package.py \
-  --root /path/to/project \
-  --slug 2026-10-03_add-audit-export \
-  --title "Audit Log Export"
-```
-
-初始化会检查 Git 状态，并创建独立的 `spec/` 分支。工作树不干净、目标分支已存在或主分支不能安全更新时，它会停下来；这一步保留了后面 diff 的可信度。
-
-## 第二步：先写已知事实
-
-打开任务包里的 `spec.md`，把四类内容分开：
-
-```text
-项目目标：为有权限的用户导出指定时间范围内的审计事件。
-目标用户：需要进行合规审查的项目管理员。
-已确认事实：现有服务已经保存审计事件，但没有导出接口。
-关键假设：导出格式先支持 JSON，不在本轮设计异步下载中心。
-待确认问题：无；权限沿用现有管理员中间件。
-本轮不做：数据库重构、前端页面、后台定时任务。
-```
-
-“本轮不做”不是附注，而是防止任务扩张的护栏。如果某个待确认问题会改变方案，就保留它；一段诚实的未知比建立在猜测上的代码更容易修正。
-
-## 第三步：把结果拆成可证明的任务
-
-不要按目录列任务，先问每一步要留下什么结果：
-
-```markdown
-- [ ] 增加导出服务
-  - boundary: 只修改审计查询、JSON 序列化和服务层测试
-  - verify: 运行导出测试，覆盖空结果、时间范围和无效参数
-- [ ] 接入权限检查
-  - depends-on: 增加导出服务
-  - boundary: 只修改路由、中间件接线和接口测试
-  - verify: 运行接口测试，证明无权限请求被拒绝且管理员请求成功
-- [ ] 写用户说明和回滚说明
-  - depends-on: 接入权限检查
-  - boundary: 只修改公开文档和任务包证据
-  - verify: 运行 Markdown 链接检查，并从 Git 恢复一次
-```
-
-准备勾选时，先运行 `verify`，再改变复选框。`boundary` 说明做到哪里为止，`verify` 说明凭什么说做完；两者缺一不可。
-
-## 第四步：按依赖顺序执行
-
-两个 Agent 同时修改同一个路由，通常会增加合并成本。按 `depends-on` 执行就绪任务；确实需要分工时，每个任务写清目标、范围、排除项、输出和 `verify`。执行者可以不同，流程真源仍是任务包，主会话仍负责阅读结果和运行每条验证。没有独立边界时，串行执行更可靠，不能补写一个不存在的成功结果。
-
-## 第五步：边做边留下交接点
-
-每完成一个任务，检查四件事：
-
-1. 改动有没有越过 `boundary`？
-2. `verify` 里的命令是否真的运行？
-3. 失败是否写回 `tasks.md` / §6？
-4. 下一位接手的人是否知道下一步？
-
-需要暂停时，不要写“基本完成”。保留任务包和工作树，下次先运行：
-
-```bash
-python3 /tmp/spec-harness/scripts/route_spec_package.py \
-  --root /path/to/project \
-  --slug 2026-10-03_add-audit-export
-python3 /tmp/spec-harness/scripts/report_spec_package.py \
-  --root /path/to/project \
-  --slug 2026-10-03_add-audit-export \
-  --view status
-```
-
-状态来自磁盘上的任务、证据和 Git 工作树，所以换一个 Agent 也能继续。
-
-## 第六步：把“完成”交给门禁
-
-任务全部完成后，先跑单包检查，再跑全仓检查：
-
-```bash
-python3 /tmp/spec-harness/scripts/check_spec_package.py \
-  --root /path/to/project \
-  --slug 2026-10-03_add-audit-export
-python3 /tmp/spec-harness/scripts/check_all_spec_packages.py \
-  --root /path/to/project
-```
-
-检查失败时回到对应任务修复，不用更乐观的文字覆盖失败。验收的价值正是让“完成”可以被别人相信。
-
-## 第七步：归档、提交，再发布
-
-先归档并提交：
-
-```bash
-python3 /tmp/spec-harness/scripts/complete_spec_package.py \
-  --root /path/to/project \
-  --slug 2026-10-03_add-audit-export \
-  --archive
-```
-
-归档会生成完成摘要，并把任务包移到 `.spec/specs/archive/`。提交信息应描述用户可见的变化，并带上任务包归属：
-
-```text
-docs(audit): document export verification
-
-Spec: 2026-10-03_add-audit-export
-```
-
-最后才合并和推送：
-
-```bash
-python3 /tmp/spec-harness/scripts/push_spec_package.py \
-  --root /path/to/project \
-  --branch spec/2026-10-03_add-audit-export
-```
-
-`push` 会再次检查工作树、任务包和目标 Git 树。它不是把当前所有改动一起推上去的快捷键；没有归属的改动要先拆开。
-
-## 第八步：下一轮从磁盘开始
-
-第七步收口的是单个任务包。目标大到需要连续开很多包时，不另起一条规划链：归档当前包后，下一轮再从 `$spec` 读取磁盘状态，按同样六个阶段重新写目标、范围、任务和验证。历史规划文档是证据，不是自动执行入口；每次交付仍由当前任务包和真实门禁收口。
-
-## 遇到偏差时回到最早的不确定点
-
-**一开始就进入执行**：`spec.md` 仍有占位或关键待确认问题。回到事实、假设和边界。
-
-**任务完成但 check 不通过**：某项缺少 `boundary`/`verify`，或证据仍是占位文字。修对应任务，再重跑真实验证。
-
-**并行结果无法合并**：item 范围重叠，或输出形状不统一。缩小边界，让每项结果都带文件、结论和验证。
-
-**中断后不知道从哪里继续**：不要重读整段聊天。先跑 `$spec` 的磁盘路由，处理任务包报告的下一项。
-
-## 把骨架带回你的项目
-
-现在选一个真实的长期任务，写下四句话：服务谁？本轮不做什么？哪个结果最先能验证？如果今天暂停，下一位 Agent 从哪份文件继续？
-
-当四个答案都落进任务包，Agent 就不再只是在一次对话里“帮忙写代码”，而是在共同维护一项可以继续、复核和交接的工程工作。
+v3 的强度来自约束：规划可以厚，执行必须薄；声明必须被证据兑现，Git 归属必须由机器收口。

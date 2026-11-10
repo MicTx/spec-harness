@@ -36,17 +36,15 @@ def test_collect_excludes_export():
 
 def test_collect_includes_core_scripts():
     files = _collect_script_files()
-    assert "spec_package_support.py" in files
-    assert "init_spec_package.py" in files
-    assert "route_spec_package.py" in files
-    assert "check_spec_package.py" in files
-    assert "check_all_spec_packages.py" in files
-    assert "report_spec_package.py" in files
-    assert "complete_spec_package.py" in files
-    assert "push_spec_package.py" in files
-    assert "smoke_test_spec_skill.py" in files
-    assert "issue_closure_support.py" in files
-    assert "payload_contract.py" in files
+    assert "package.py" in files
+    assert "plan.py" in files
+    assert "evidence.py" in files
+    assert "route.py" in files
+    assert "gate.py" in files
+    assert "check_all.py" in files
+    assert "done.py" in files
+    assert "push.py" in files
+    assert "spec.py" in files
     # The recruitment machinery must not ship in the exported skill.
     for removed in (
         "supervisor_keepalive_support.py",
@@ -118,20 +116,18 @@ def test_export_end_to_end():
 
         assert (output / "SKILL.md").exists()
         assert (output / "agents" / "openai.yaml").exists()
-        assert (output / "references" / "templates.md").exists()
+        assert (output / "references" / "format.md").exists()
         assert (output / "hooks" / "pre-commit").exists()
         assert (output / "hooks" / "pre-push").exists()
-        assert (output / "scripts" / "spec_package_support.py").exists()
-        assert (output / "scripts" / "issue_closure_support.py").is_file()
-        assert (output / "scripts" / "init_spec_package.py").exists()
+        assert (output / "scripts" / "package.py").exists()
+        assert (output / "scripts" / "charter.py").is_file()
+        assert (output / "scripts" / "spec.py").exists()
         assert not (output / "slots").exists()
         assert not (output / "scripts" / "route_decision.py").exists()
         assert not (output / "scripts" / "chain_state.py").exists()
         assert not (output / "agents" / "orchestrator.md").exists()
         assert not (output / "references" / "orchestration.md").exists()
         assert not (output / "scripts" / "export_skill_package.py").exists()
-        # payload_contract.py ships: install.sh queries it for the profile lists.
-        assert (output / "scripts" / "payload_contract.py").is_file()
         assert not (output / "scripts" / "path_safety.py").exists()
         assert not (output / "scripts" / "skill_watermark.py").exists()
         assert not (output / ".watermark-key").exists()

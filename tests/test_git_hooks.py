@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-CHECKER = ROOT / "scripts" / "check_all_spec_packages.py"
+CHECKER = ROOT / "scripts" / "check_all.py"
 PRE_COMMIT = ROOT / "hooks" / "pre-commit"
 PRE_PUSH = ROOT / "hooks" / "pre-push"
 
@@ -45,70 +45,50 @@ def install_hook(repo: Path, source: Path) -> None:
 def make_incomplete_package(repo: Path) -> None:
     package = repo / ".spec" / "specs" / "2026-07-13_fix-git-hook"
     package.mkdir(parents=True)
-    (package / "spec.md").write_text("# Incomplete\n", encoding="utf-8")
-    (package / "tasks.md").write_text("- [ ] Task\n", encoding="utf-8")
-    (package / "checklist.md").write_text("**验收结果**：待修复\n", encoding="utf-8")
+    branch = git(repo, "branch", "--show-current").stdout.strip()
+    (package / "spec.md").write_text(
+        "# Incomplete\n<!-- spec-format: 3 -->\n"
+        "## Goal\n- goal: incomplete\n- literal ask: incomplete\n- done means: verified\n"
+        "## Charter\n- V1 priority: quality | charter.md\n- V2 scope: strict | charter.md\n"
+        "- V3 verification: package | charter.md\n- V4 finish: commit | charter.md\n"
+        "- V5 dependencies: none-new | charter.md\n- V6 compatibility: keep-public-api | charter.md\n"
+        "- V7 blocked: park-and-continue | charter.md\n## Scope\n- in: fixture\n- out: unrelated\n"
+        "## Assumptions\n## Forks\n## Criteria\n- C1 | Verified | task-fixture\n"
+        f"## Decisions\n## Parked\n## Binding\n- branch: `{branch}`\n",
+        encoding="utf-8",
+    )
+    (package / "tasks.md").write_text(
+        "- [ ] Task\n  - id: task-fixture\n  - boundary: fixture\n  - verify: `true`\n  - expect: green\n",
+        encoding="utf-8",
+    )
 
 
 def make_archived_package(repo: Path, slug: str = "2026-07-13_fix-hook-attribution") -> Path:
     package = repo / ".spec" / "specs" / "archive" / slug
     package.mkdir(parents=True)
     (package / "spec.md").write_text(
-        """# Hook - 项目范围
-## 1. 问题定义
-- **项目目标**：验证 hook
-- **目标用户**：维护者
-- **核心价值**：归属可信
-## 2. 假设与待确认
-### 2.1 已确认事实
-- fixture
-### 2.2 关键假设
-- git available
-### 2.3 待确认问题
-- 无
-## 3. 功能范围
-### 3.3 不在范围内
-- production
-## 4. 最小实现路径
-- archive
-- attribute
-- push
-""",
+        "# Hook\n<!-- spec-format: 3 -->\n## Goal\n- goal: verify hooks\n- literal ask: hook\n- done means: verified\n"
+        "## Charter\n- V1 priority: quality | charter.md\n- V2 scope: strict | charter.md\n"
+        "- V3 verification: package | charter.md\n- V4 finish: commit | charter.md\n"
+        "- V5 dependencies: none-new | charter.md\n- V6 compatibility: keep-public-api | charter.md\n"
+        "- V7 blocked: park-and-continue | charter.md\n## Scope\n- in: fixture\n- out: unrelated\n"
+        "## Assumptions\n## Forks\n## Criteria\n- C1 | Verified | task-fixture\n"
+        "## Decisions\n## Parked\n## Binding\n- branch: `spec/fixture`\n",
         encoding="utf-8",
     )
-    (package / "tasks.md").write_text("- [x] Verify hook\n  - boundary: fixture\n  - verify: push\n", encoding="utf-8")
-    (package / "checklist.md").write_text(
-        "- [x] Verified\n## 验收证据\n- 脚本验证：pytest\n**验收结果**：通过\n",
+    (package / "tasks.md").write_text(
+        "- [x] Verify hook\n  - id: task-fixture\n  - boundary: fixture\n  - verify: `true`\n  - expect: green\n",
         encoding="utf-8",
     )
-    summary = """# Hook - 完成总结
-## 交付结论
-- 完成
-## 假设回顾
-- verified
-## 交付范围
-- delivered
-## 简化决策
-- simple
-## 变更边界
-- fixture
-## 验证证据
-- pytest
-## 门禁证据
-- passed
-## 问题处置
-```json
-{"version":1,"issues":[]}
-```
-"""
-    (package / "completion-summary.md").write_text(summary, encoding="utf-8")
+    (package / "runs.jsonl").write_text('{"task":"task-fixture","exit":0,"cmd":"true"}\n', encoding="utf-8")
+    (package / "completion-summary.md").write_text("# Completion Summary\n- Verified fixture.\n", encoding="utf-8")
     return package
 
 
 def archive_commit_fixture(tmp_path: Path) -> tuple[Path, str]:
     repo = tmp_path / "repo"
     init_repo(repo)
-    git(repo, "checkout", "-b", "spec/2026-07-13_fix-hook-attribution")
+    git(repo, "checkout", "-b", "spec/2026-07-13_fix-git-hook")
     (repo / "README.md").write_text("base\n", encoding="utf-8")
     git(repo, "add", "README.md")
     git(repo, "commit", "-m", "base")
@@ -202,9 +182,9 @@ def test_pre_commit_blocks_git_alias_and_git_dir_redirection(tmp_path):
 
     assert alias.returncode != 0
     assert redirected.returncode != 0
-    assert "check gates not passed" in alias.stdout + alias.stderr
+    assert "result: blocked" in alias.stdout + alias.stderr
     assert "Spec Disk Truth" in redirected.stdout + redirected.stderr
-    assert "<git-index>" in redirected.stdout + redirected.stderr
+    assert "diff" in redirected.stdout + redirected.stderr
     assert git(repo, "rev-parse", "--verify", "HEAD", check=False).returncode != 0
 
 
@@ -222,7 +202,7 @@ def test_pre_commit_checks_git_commit_only_transaction_index(tmp_path):
     result = git(repo, "commit", "--only", "-m", "broken archive", "--", str(tasks), check=False)
 
     assert result.returncode != 0
-    assert "check gates not passed" in result.stdout + result.stderr
+    assert "result: blocked" in result.stdout + result.stderr
     status = git(repo, "status", "--short").stdout
     assert " M .spec/specs/archive/2026-07-13_fix-git-hook/tasks.md" in status
 
@@ -246,7 +226,7 @@ def test_pre_push_blocks_incomplete_active_package(tmp_path):
     result = git(repo, "p", "origin", "HEAD:main", check=False)
 
     assert result.returncode != 0
-    assert "check gates not passed" in result.stdout + result.stderr
+    assert "result: blocked" in result.stdout + result.stderr
     assert git(remote, "show-ref", "--verify", "refs/heads/main", check=False).returncode != 0
 
 
@@ -489,7 +469,7 @@ def test_pre_push_checks_archives_changed_earlier_in_remote_window(tmp_path):
     base = git(repo, "rev-parse", "HEAD").stdout.strip()
     slug = "2026-07-13_fix-earlier-window"
     archive = make_archived_package(repo, slug)
-    (archive / "tasks.md").write_text("- [ ] Not done\n", encoding="utf-8")
+    (archive / "completion-summary.md").unlink()
     git(repo, "add", ".spec")
     git(repo, "commit", "-m", "archive", "-m", f"Spec: {slug}")
     (repo / "later.txt").write_text("later\n", encoding="utf-8")
@@ -500,7 +480,7 @@ def test_pre_push_checks_archives_changed_earlier_in_remote_window(tmp_path):
     result = _run_pre_push_hook(repo, f"refs/heads/main {tip} refs/heads/main {base}\n")
 
     assert result.returncode != 0
-    assert "check gates not passed" in result.stdout + result.stderr
+    assert "result: blocked" in result.stdout + result.stderr
 
 
 def test_pre_push_all_mode_blocks_incomplete_active_package(tmp_path):
@@ -533,7 +513,7 @@ def test_pre_push_all_mode_blocks_incomplete_active_package(tmp_path):
     )
 
     assert result.returncode != 0
-    assert "check gates not passed" in result.stdout + result.stderr
+    assert "result: blocked" in result.stdout + result.stderr
 
 
 def test_pre_push_lite_channel_releases_none_only_push(tmp_path):

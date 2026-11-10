@@ -1,23 +1,16 @@
 # Spec Harness
 
-Task-package workflow for AI coding agents with verifiable scope, evidence, and Git gates.
+Two-phase task packages for AI coding agents: thick planning, silent execution, verifiable delivery.
 
-[![CI](https://img.shields.io/github/actions/workflow/status/MicTx/spec-harness/ci-public.yml)](https://github.com/MicTx/spec-harness/actions/workflows/ci-public.yml) [![Release](https://img.shields.io/github/v/release/MicTx/spec-harness)](https://github.com/MicTx/spec-harness/releases) [![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](LICENSE) [![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
+[![Release](https://img.shields.io/github/v/release/MicTx/spec-harness)](https://github.com/MicTx/spec-harness/releases) [![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](LICENSE) [![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
 
-[🇨🇳 阅读中文版](README.md) · [Documentation index](docs/README-en.md) · [Introduction](docs/introduction.md) · [Tutorial](docs/tutorial.md)
+[中文](README.md) · [Documentation](docs/README-en.md) · [Quick start](#quick-start)
 
-It stores cross-session work as a Development Record under `.spec/specs/YYYY-MM-DD_slug/`: `spec.md` holds scope and success criteria, `tasks.md` holds boundaries and verify commands, and `runs.jsonl` records executions on the final working tree. Resume from files, not from chat recall.
-
-- **Small kernel**: the default LITE template needs only a `boundary` and a `verify` per task.
-- **Checkable results**: verification runs before completion; change code or a verify command and the evidence is refreshed.
-- **Separated closeout**: archiving and local commit belong to `done`; merge, push, and branch deletion need separate authorization.
-- **Small kernel**: every host receives the same six-stage entry points without planning chains, slots, or agent-role extensions.
-
-Contents: [Install](#install) · [Quick Start](#quick-start) · [Runtime Payload](#runtime-payload) · [Verify and Maintain](#verify-and-maintain) · [License](#license)
+A package contains `spec.md` and `tasks.md` under `.spec/specs/YYYY-MM-DD_slug/`; the harness writes `runs.jsonl` and `state.json`. Planning removes unknowns with a value charter and deterministic lint. After Go, execution follows the task DAG, verifies, checkpoints, and continues without asking about reversible decisions.
 
 ## Install
 
-Requires Python 3.9+, Git, Bash, and an agent client with project read/write and command execution tools. Windows uses WSL2; a plain read-only chat cannot run the full flow.
+Requires Python 3.9+, Git, Bash, and a host that can edit files and execute commands.
 
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
@@ -25,45 +18,37 @@ cd /tmp/spec-harness
 bash install.sh
 ```
 
-The installer defaults to `INSTALL_PROFILE=core`; `core` and `full` are compatibility aliases with an identical runtime payload. Without `INSTALL_HOSTS` it auto-detects installed hosts. Given a token, it installs only the selected hosts and skips detection.
+Without `INSTALL_HOSTS`, the installer detects hosts. `core` and `full` are compatibility aliases with identical payloads. Session hooks are merged incrementally, preserving non-Spec entries and backing up files first.
 
-| Host | `INSTALL_HOSTS` | Default skill directory |
-| --- | --- | --- |
-| Claude Code / Desktop | `claude` / `claude-desktop` | `~/.claude/skills` / `~/.claude-desktop/skills` |
-| Codex / Gemini / Grok | `codex` / `gemini` / `grok` | `~/.codex/skills` / `~/.gemini/skills` / `~/.grok/skills` |
-| OpenCode / OpenClaw / Hermes | `opencode` / `openclaw` / `hermes` | `${XDG_CONFIG_HOME:-~/.config}/opencode/skills` / `~/.openclaw/skills` / `~/.hermes/skills` |
-| Pi / ZCode | `pi` / `zcode` | `~/.pi/agent/skills` / `~/.zcode/skills` |
-| DeepSeek Harness / Devin / Cursor | `dsh` / `devin` / `cursor` | `${DSH_HOME:-~/.dsh}/skills` / `~/.config/devin/skills` / `~/.cursor/skills` |
-| Combined / all | `desktop`, `rpi` / `all` | Claude Code + Codex / every directory above |
-
-```bash
-INSTALL_HOSTS=claude bash install.sh
-```
-
-**Explicit stages**: `new`, `run`, `check`, `done`, `push`, `doctor` (6 stage commands).
-
-The installer refuses to overwrite an unmarked same-name skill; use `FORCE=1` only when you mean to replace it. Installer tests are not a per-host live acceptance; dsh remains a developer preview.
+| Host | `INSTALL_HOSTS` |
+| --- | --- |
+| Claude Code / Desktop | `claude` / `claude-desktop` |
+| Codex / Gemini / Grok | `codex` / `gemini` / `grok` |
+| OpenCode / OpenClaw / Hermes | `opencode` / `openclaw` / `hermes` |
+| Pi / ZCode / Devin | `pi` / `zcode` / `devin` |
+| DeepSeek Harness / Cursor | `dsh` / `cursor` |
 
 ## Quick Start
 
-Load the skill in the target project, then state a bounded goal. A Claude Code install works directly:
+Enable the skill in a project and state the goal:
 
 ```text
-/spec:new Fix the export API permission check for admins and regular users
-/spec:run
-/spec:check
-/spec:done
+/spec Fix the export API permission check for admins and regular users
 ```
 
-Codex/ZCode use `$spec`, Pi uses `/spec` and `/spec:<stage>`. Other hosts load the skill and request stages per the [command index](references/commands.md).
+Without an active package this enters planning: confirm outcome and scope, fill the charter, make assumptions and forks machine-checkable, then run `plan-go`. After Go, reversible choices are made and recorded; irreversible work is parked while other tasks continue.
 
-For the first run, follow the [LITE tutorial](docs/tutorial.md): create a package, fill in scope, change code, run `spec_verify.py run --all`, tick boxes, check, and archive. The expected output is a checkable completion record, not a claim of "done". A single small fix, read-only investigation, or one-off experiment does not need a package.
+There are exactly three user commands:
 
-Machine evidence requires a computable Git working-tree fingerprint; non-Git projects can use manual verification but cannot claim the evidence stayed fresh after code changes. `push` runs only after explicit authorization; on failure, trust the actual Git state.
+| Command | Purpose |
+| --- | --- |
+| `/spec <goal>` | Plan, or continue the package bound to this branch |
+| `/spec:push` | Finish Git delivery after explicit authorization |
+| `/spec:doctor` | Check and repair runtime and host hooks |
+
+Codex/ZCode may use `$spec`. Small fixes, read-only investigation, and experiments do not need a package.
 
 ## Runtime Payload
-
-The runtime exporter and installer share one [payload contract](scripts/payload_contract.py). `core` and `full` export byte-identical trees with this top level.
 
 ```text
 spec/
@@ -77,27 +62,17 @@ spec/
 └── scripts/
 ```
 
-`agents/` keeps only `openai.yaml` for host discovery. Export runtime files only:
-
-```bash
-python3 scripts/export_skill_package.py --output /tmp/spec
-```
-
-Drop the exported directory into the host's skill root; the installer additionally generates host stage commands and an install manifest. Release, watermark, and plugin packaging tools never enter the runtime package.
+`references/` contains only planning, execution, format, philosophy, and Git pages. Command-style hosts receive generated config; OpenCode, Pi, OpenClaw, and Hermes use forwarding shims.
 
 ## Verify and Maintain
 
 ```bash
-python3 -m pytest -q tests
+python3 -m pytest -q
 python3 -m ruff check scripts hooks tests
-python3 scripts/smoke_test_spec_skill.py
+python3 scripts/export_skill_package.py --output /tmp/spec
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full verification matrix; [RELEASE.md](RELEASE.md) covers release, upgrade, and rollback, and [Git workflow](docs/git-workflow.en.md) covers closeout. Stable releases and SHA-256 files are on [GitHub Releases](https://github.com/MicTx/spec-harness/releases); the tracked `release/` directory is the canonical payload for the current version.
-
-For old active packages, dry-run `scripts/migrate_packages.py` first, then pass `--apply` explicitly; packages whose checklists cannot be mapped reliably stay untouched and need manual acceptance links. Historical archives are neither migrated nor re-scored.
-
-Spec Harness provides no model or hosted service and makes no product decisions for you. Recoverable records and test evidence do not replace judgment about business correctness.
+Private Gitea is the development source of truth; GitHub receives only an allowlisted public snapshot. Stable releases and SHA-256 files are on [GitHub Releases](https://github.com/MicTx/spec-harness/releases).
 
 ## License
 

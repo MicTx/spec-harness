@@ -48,11 +48,10 @@ Do not commit generated release archives, local credentials, private task record
 Run the checks that match the change. The full suite is:
 
     python3 -m compileall -q scripts hooks tests
-    python3 scripts/smoke_test_spec_skill.py
     python3 -m pytest -q
     ruff check scripts/ hooks/ tests/
     ruff format --check scripts/ hooks/ tests/
-    python3 scripts/check_all_spec_packages.py --root .
+    python3 scripts/check_all.py --root .
     git diff --check
 
 For documentation-only changes, run the Markdown link and structure checks plus the affected tests. If a check cannot run, state the reason in the pull request.

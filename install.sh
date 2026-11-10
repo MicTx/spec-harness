@@ -6,7 +6,7 @@ REPO_URL="${REPO_URL:-}"
 REPO_REF="${REPO_REF:-}"
 INSTALL_HOSTS="${INSTALL_HOSTS:-}"
 # Install profile is a compatibility alias pair. Both values ship the same
-# six-stage kernel payload; validation still rejects unknown values.
+# three-command kernel payload; validation still rejects unknown values.
 INSTALL_PROFILE="${INSTALL_PROFILE:-}"
 # Empty INSTALL_HOSTS means auto-detect (only hosts with a real presence on
 # this machine); an explicit value, including `all`, always bypasses probing.
@@ -116,10 +116,11 @@ resolve_python() {
 }
 
 # User-facing stages for Claude command files. Single source: the stage list
-# documented in SKILL.md and references/commands.md. CORE_STAGES is the same
+# documented in SKILL.md. CORE_STAGES is the same
 # kernel surface under its compatibility alias name.
-USER_STAGES=(new run check done push doctor)
-CORE_STAGES=(new run check done push doctor)
+USER_STAGES=(push doctor)
+CORE_STAGES=(push doctor)
+RETIRED_STAGES=(goal autoplan autorun update status organize assemble combat marshal new run check done)
 
 format_stage_aliases() {
   local prefix="$1"
@@ -218,8 +219,8 @@ default_skill_dir_for() {
 host_trigger_hint() {
   case "$1" in
     codex|zcode|pi) printf '%s\n' 'trigger $spec' ;;
-    devin|cursor) printf '%s\n' 'load /spec, then ask spec:new' ;;
-    dsh) printf '%s\n' 'load the spec skill via the skill tool, then ask spec:new' ;;
+    devin|cursor) printf '%s\n' 'load /spec with the task goal' ;;
+    dsh) printf '%s\n' 'load the spec skill via the skill tool with the task goal' ;;
     *) printf '%s\n' 'trigger the spec skill' ;;
   esac
 }
@@ -445,7 +446,33 @@ export_runtime() {
 
   # Release packages omit the exporter; copy their runtime payload directly.
   mkdir -p "$output_dir"
-  cp -R "$source_dir/." "$output_dir/"
+  "$PYTHON_BIN" - "$source_dir" "$output_dir" <<'PY_RELEASE_PAYLOAD'
+import shutil
+import sys
+from pathlib import Path
+
+source, output = map(Path, sys.argv[1:])
+for name in ("SKILL.md", "install.sh", "pyproject.toml", "LICENSE", "VERSION", "BUILD_INFO"):
+    path = source / name
+    if path.is_file():
+        shutil.copy2(path, output / name)
+for name in ("agents", "hooks", "references", "scripts"):
+    path = source / name
+    if path.is_dir():
+        shutil.copytree(path, output / name, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store"))
+for name in (
+    "build_release.py",
+    "export_skill_package.py",
+    "export_public_repo.py",
+    "lint_workflows.py",
+    "payload_contract.py",
+    "skill_watermark.py",
+    "public_secret_scan.py",
+    "path_safety.py",
+    "verify_install_parity.py",
+):
+    (output / "scripts" / name).unlink(missing_ok=True)
+PY_RELEASE_PAYLOAD
 }
 
 backup_namespace() {
@@ -598,13 +625,8 @@ PY_MANIFEST
 
 stage_description() {
   case "$1" in
-    route) printf '%s\n' "Spec auto-routing" ;;
     base) printf '%s\n' "Spec: resolve the next action" ;;
-    new) printf '%s\n' "Spec: create a task package" ;;
-    run) printf '%s\n' "Spec: execute or resume" ;;
-    check) printf '%s\n' "Spec: collaborative review" ;;
-    done) printf '%s\n' "Spec: archive and record" ;;
-    push) printf '%s\n' "Spec: merge and push" ;;
+    push) printf '%s\n' "Spec: finish delivery and push" ;;
     doctor) printf '%s\n' "Spec: environment self-check and repair" ;;
     *) printf '%s\n' "Spec workflow stage" ;;
   esac
@@ -614,27 +636,6 @@ command_body() {
   local command_name="$1"
   local stage="$2"
   case "$stage" in
-    route)
-      cat <<EOF_BODY
-# /$command_name
-
-Internal route first, then continue with the right spec stage. Do not present route as a user-facing stage unless debugging the workflow.
-EOF_BODY
-      ;;
-    run)
-      cat <<EOF_BODY
-# /$command_name
-
-Execute the active spec to a concrete result in one shot when possible. If prior work was interrupted, recover state from the task package and continue from the next incomplete item. Work ready tasks in dependency order, run each task's verify before checking it off, and keep going until the package converges. Follow Recovery in-session; stop only at authority or an environment blocker you cannot repair.
-EOF_BODY
-      ;;
-    check)
-      cat <<EOF_BODY
-# /$command_name
-
-Run the machine check and review pass: inspect implementation, evidence and gaps, write genuinely new executable defects back into the spec package without duplicating aggregate gate counts, and follow Recovery in-session; ask for authority or report an unresolved blocker. Read the package's declared verification level first: package (default focused checks), integration (focused checks plus directly affected paths), or project (full suite). Do not expand a package/integration review to the whole project without the recorded upgrade trigger. The machine gate is check_spec_package.py: tasks must be complete, success criteria ticked with evidence, every task needs boundary/verify, and task runs evidence must include non-placeholder script/test/build proof plus any enabled consistency or structure gates.
-EOF_BODY
-      ;;
     done)
       cat <<EOF_BODY
 # /$command_name
@@ -646,28 +647,21 @@ EOF_BODY
       cat <<EOF_BODY
 # /$command_name
 
-After spec:done and a committed working branch, run the Git handoff flow: safety precheck, merge the branch into main, push main, and delete the merged local and remote branch.
+User authorization for Git handoff. Follow the installed skill: safety precheck, archive delivery, merge the bound branch into main, push main, and clean the delivered branch when authorized.
 EOF_BODY
       ;;
     doctor)
       cat <<EOF_BODY
 # /$command_name
 
-Run the spec environment doctor for Python, Git, the install manifest, rendered Git hooks, and Stop hook wiring. Report its findings and any migration advisories.
-EOF_BODY
-      ;;
-    new)
-      cat <<EOF_BODY
-# /$command_name
-
-Create a new spec task package with scope, tasks, and acceptance criteria before implementation.
+Run the spec environment doctor for Python, Git, the install manifest, rendered Git hooks, and session hook wiring. Report findings and repair advisories.
 EOF_BODY
       ;;
     *)
       cat <<EOF_BODY
 # /$command_name
 
-Use the installed spec skill for this workflow stage.
+Use the installed spec skill for this workflow request.
 EOF_BODY
       ;;
   esac
@@ -688,7 +682,7 @@ description: $description
 
 $(command_body "$command_name" "$stage")
 
-First load the installed skill \`$skill_ref\` and resume from the package on disk (tasks.md, handoff.md, git log) before stage analysis or execution. Forward user arguments unchanged.
+First load the installed skill \`$skill_ref\`; when an active package is bound, resume from its disk state and \`spec.py next\`. Forward user arguments unchanged.
 EOF_COMMAND
   write_file_from_stdin "$target_file.spec-skill-install" <<EOF_MARKER
 installed_by=spec/install.sh
@@ -714,9 +708,9 @@ description: $description
 
 This is a Claude Code slash-command alias for the installed spec skill.
 
-Use ../spec/SKILL.md as the canonical workflow definition, then follow the /$alias_name section in ../spec/references/commands.md and ../spec/references/output-contracts.md.
+Use ../spec/SKILL.md as the canonical workflow definition and follow ../spec/references/git.md for delivery ownership.
 
-Do not create a separate workflow. Treat this alias as stage '$stage' of the same spec new/run/check/done/push/doctor task-package workflow.
+Do not create a separate workflow. Treat this alias as the user authorization entry for '$stage'.
 EOF_ALIAS
   write_file_from_stdin "$target_dir/.spec-skill-install" <<EOF_MARKER
 installed_by=spec/install.sh
@@ -838,6 +832,7 @@ install_claude() {
   log "Installing Claude Code skill to $target"
   copy_runtime "$runtime_dir" "$target"
   write_install_manifest "claude" "$target"
+  "$PYTHON_BIN" "$runtime_dir/scripts/install_hooks.py" --host claude
 
   local stage alias_dir alias_command command_target
   command_target="$CLAUDE_COMMANDS_DIR/$SKILL_NAME.md"
@@ -919,9 +914,8 @@ pi_write_template() {
 description: "$description"
 argument-hint: "[query]"
 ---
-Use the installed skill \`$SKILL_NAME\` for this request. Follow the stage
-index in the skill's references/commands.md; resume from the package on disk
-before stage analysis or execution.
+Use the installed skill \`$SKILL_NAME\` for this request. Resume an active
+package from its disk state and \`spec.py next\`.
 Forward user arguments unchanged: \$@
 EOF_TEMPLATE
   else
@@ -930,9 +924,8 @@ EOF_TEMPLATE
 description: "$description"
 argument-hint: "[stage arguments]"
 ---
-Use the installed skill \`$SKILL_NAME\` for this request. Follow the /$SKILL_NAME:$stage
-stage contract in the skill's references/stages/ (index: references/commands.md).
-Resume from the package on disk before stage analysis or execution.
+Use the installed skill \`$SKILL_NAME\` and follow the \`$stage\` ownership
+contract in its runtime references. Resume from package disk state.
 Forward user arguments unchanged: \$@
 EOF_TEMPLATE
   fi
@@ -962,6 +955,7 @@ install_pi() {
   log "Installing Pi skill to $target"
   copy_runtime "$runtime_dir" "$target"
   write_install_manifest "pi" "$target"
+  "$PYTHON_BIN" "$runtime_dir/scripts/install_hooks.py" --host pi
   log "Installing Pi prompt templates to $PI_PROMPTS_DIR (/spec, $(format_stage_aliases '/spec:' ', '))"
   pi_sweep_stale_templates
   pi_write_template "base"
@@ -978,6 +972,7 @@ install_skill_only_host() {
   log "Installing $(host_label_for "$host") skill to $target"
   copy_runtime "$runtime_dir" "$target"
   write_install_manifest "$host" "$target"
+  "$PYTHON_BIN" "$runtime_dir/scripts/install_hooks.py" --host "$host"
 }
 
 # ZCode users often symlink ~/.zcode/skills/spec to another host's install.
@@ -1015,7 +1010,7 @@ main() {
   INSTALL_TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/spec-skill-install.XXXXXX")"
   runtime_dir="$INSTALL_TEMP_DIR/runtime"
 
-  log "Install profile: $INSTALL_PROFILE — six-stage kernel ($(printf '%s ' "${USER_STAGES[@]}" | sed 's/ $//'))"
+  log "Install profile: $INSTALL_PROFILE — three-command kernel ($(printf '%s ' "${USER_STAGES[@]}" | sed 's/ $//'))"
 
   export_runtime "$PREPARED_SOURCE_DIR" "$runtime_dir"
   CLAUDE_ALIASES=("${USER_STAGES[@]}")
@@ -1041,17 +1036,17 @@ main() {
   log ""
   log "Installed spec skill. Verify with:"
   if host_enabled claude; then
-    log "  $PYTHON_BIN $CLAUDE_SKILLS_DIR/$SKILL_NAME/scripts/smoke_test_spec_skill.py"
+    log "  $PYTHON_BIN $CLAUDE_SKILLS_DIR/$SKILL_NAME/scripts/spec.py doctor"
     log "  Claude Code commands: /spec, $(format_stage_aliases '/spec:' ', ')"
   fi
   if host_enabled pi; then
-    log "  $PYTHON_BIN $PI_SKILLS_DIR/$SKILL_NAME/scripts/smoke_test_spec_skill.py"
+    log "  $PYTHON_BIN $PI_SKILLS_DIR/$SKILL_NAME/scripts/spec.py doctor"
     log "  Pi commands: /spec, $(format_stage_aliases '/spec:' ', ') — run /reload in Pi to pick up new prompts"
   fi
   for host in "${SKILL_ONLY_HOSTS[@]}"; do
     host_enabled "$host" || continue
-    log "  $PYTHON_BIN $(skill_dir_for "$host")/$SKILL_NAME/scripts/smoke_test_spec_skill.py"
-    log "  $(host_label_for "$host"): $(host_trigger_hint "$host"), then use $(format_stage_aliases 'spec:' ' / ')"
+    log "  $PYTHON_BIN $(skill_dir_for "$host")/$SKILL_NAME/scripts/spec.py doctor"
+    log "  $(host_label_for "$host"): $(host_trigger_hint "$host")"
   done
 
   # AGENTS.md is also read by Codex, OpenCode, Gemini CLI, and other hosts at

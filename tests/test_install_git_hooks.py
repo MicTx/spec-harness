@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-SCRIPT = ROOT / "scripts" / "install_git_hooks.py"
+SCRIPT = ROOT / "scripts" / "install_hooks.py"
 HOOK_SOURCES = {"pre-commit": ROOT / "hooks" / "pre-commit", "pre-push": ROOT / "hooks" / "pre-push"}
 CHECKER_PLACEHOLDER = "__SPEC_CHECK_ALL_SCRIPT_PLACEHOLDER__"
 PYTHON_PLACEHOLDER = "__SPEC_PYTHON_PLACEHOLDER__"
@@ -162,16 +162,12 @@ def test_hook_checker_resolution_order(tmp_path, repo_dirname, hook_name, case_n
 
     hook = repo / ".git" / "hooks" / hook_name
     candidates = {
-        "env": write_stub_checker(tmp_path / "env override" / "check_all_spec_packages.py") if case["env"] else None,
-        "in_project": write_stub_checker(repo / "scripts" / "check_all_spec_packages.py")
-        if case["in_project"]
-        else None,
-        "rendered": write_stub_checker(tmp_path / "skill copy" / "scripts" / "check_all_spec_packages.py")
+        "env": write_stub_checker(tmp_path / "env override" / "check_all.py") if case["env"] else None,
+        "in_project": write_stub_checker(repo / "scripts" / "check_all.py") if case["in_project"] else None,
+        "rendered": write_stub_checker(tmp_path / "skill copy" / "scripts" / "check_all.py")
         if case["rendered"]
         else None,
-        "bootstrap": write_stub_checker(hook.parent.parent / "scripts" / "check_all_spec_packages.py")
-        if case["bootstrap"]
-        else None,
+        "bootstrap": write_stub_checker(hook.parent.parent / "scripts" / "check_all.py") if case["bootstrap"] else None,
     }
     render_hook_template(hook_name, hook, candidates["rendered"])
     expected = candidates[case["expected"]]
@@ -204,8 +200,8 @@ def test_hook_fails_closed_when_no_checker_resolves(tmp_path, hook_name):
     init_repo(repo)
     make_initial_commit(repo)
     hook = repo / ".git" / "hooks" / hook_name
-    write_stub_checker(repo / "scripts" / "check_all_spec_packages.py")
-    write_stub_checker(hook.parent.parent / "scripts" / "check_all_spec_packages.py")
+    write_stub_checker(repo / "scripts" / "check_all.py")
+    write_stub_checker(hook.parent.parent / "scripts" / "check_all.py")
     render_hook_template(hook_name, hook, None)
 
     marker = tmp_path / "marker.log"
@@ -221,7 +217,7 @@ def test_hook_fails_closed_when_env_override_points_nowhere(tmp_path):
     repo = tmp_path / "repo"
     init_repo(repo)
     hook = repo / ".git" / "hooks" / "pre-commit"
-    rendered = write_stub_checker(tmp_path / "skill" / "scripts" / "check_all_spec_packages.py")
+    rendered = write_stub_checker(tmp_path / "skill" / "scripts" / "check_all.py")
     render_hook_template("pre-commit", hook, rendered)
 
     marker = tmp_path / "marker.log"
@@ -245,15 +241,17 @@ def test_installed_hook_uses_rendered_path_without_in_project_copy(tmp_path, rep
     scripts_src.mkdir(parents=True)
     for name in ("pre-commit", "pre-push"):
         (hooks_src / name).write_text(HOOK_SOURCES[name].read_text(encoding="utf-8"), encoding="utf-8")
-    (scripts_src / "install_git_hooks.py").write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
-    rendered_checker = write_stub_checker(scripts_src / "check_all_spec_packages.py")
+    (scripts_src / "install_hooks.py").write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+    adapters = ROOT / "hooks" / "adapters.py"
+    (scripts_src / "adapters.py").write_text(adapters.read_text(encoding="utf-8"), encoding="utf-8")
+    rendered_checker = write_stub_checker(scripts_src / "check_all.py")
 
     repo = tmp_path / repo_dirname
     init_repo(repo)
     make_initial_commit(repo)
 
     result = subprocess.run(
-        [sys.executable, str(scripts_src / "install_git_hooks.py"), "--root", str(repo)],
+        [sys.executable, str(scripts_src / "install_hooks.py"), "--root", str(repo)],
         capture_output=True,
         text=True,
     )
@@ -262,7 +260,7 @@ def test_installed_hook_uses_rendered_path_without_in_project_copy(tmp_path, rep
     hook = repo / ".git" / "hooks" / hook_name
     assert hook.is_file()
     assert CHECKER_PLACEHOLDER not in hook.read_text(encoding="utf-8")
-    assert not (repo / "scripts" / "check_all_spec_packages.py").exists()
+    assert not (repo / "scripts" / "check_all.py").exists()
 
     marker = tmp_path / "marker.log"
     run_result = run_hook(hook, repo, marker, push_input=push_refs_input(repo) if hook_name == "pre-push" else None)
@@ -423,7 +421,7 @@ def test_pre_commit_lint_only_on_spec_branch_wip(tmp_path):
     repo = _setup_repo_on_main(tmp_path)
     subprocess.run(["git", "checkout", "-q", "-b", "spec/wip-probe"], cwd=repo, check=True, capture_output=True)
     hook = repo / ".git" / "hooks" / "pre-commit"
-    rendered = write_args_checker(tmp_path / "skill" / "scripts" / "check_all_spec_packages.py")
+    rendered = write_args_checker(tmp_path / "skill" / "scripts" / "check_all.py")
     render_hook_template("pre-commit", hook, rendered)
     _stage(repo, "wip.txt")
 
@@ -435,7 +433,7 @@ def test_pre_commit_lint_only_on_spec_branch_wip(tmp_path):
     assert "structural lint only" in result.stderr
     invocations = gate_invocations(marker)
     assert len(invocations) == 1
-    assert "--lint-only" in invocations[0]
+    assert "--wip-branch spec/wip-probe" in invocations[0]
     assert "--baseline" not in invocations[0]
     assert "--index" not in invocations[0]
 
@@ -443,7 +441,7 @@ def test_pre_commit_lint_only_on_spec_branch_wip(tmp_path):
 def test_pre_commit_full_gate_on_main_branch(tmp_path):
     repo = _setup_repo_on_main(tmp_path)
     hook = repo / ".git" / "hooks" / "pre-commit"
-    rendered = write_args_checker(tmp_path / "skill" / "scripts" / "check_all_spec_packages.py")
+    rendered = write_args_checker(tmp_path / "skill" / "scripts" / "check_all.py")
     render_hook_template("pre-commit", hook, rendered)
     _stage(repo, "mainline.txt")
 
@@ -463,7 +461,7 @@ def test_pre_commit_full_gate_on_non_spec_branch(tmp_path):
     repo = _setup_repo_on_main(tmp_path)
     subprocess.run(["git", "checkout", "-q", "-b", "feature/other"], cwd=repo, check=True, capture_output=True)
     hook = repo / ".git" / "hooks" / "pre-commit"
-    rendered = write_args_checker(tmp_path / "skill" / "scripts" / "check_all_spec_packages.py")
+    rendered = write_args_checker(tmp_path / "skill" / "scripts" / "check_all.py")
     render_hook_template("pre-commit", hook, rendered)
     _stage(repo, "feature.txt")
 
@@ -479,7 +477,7 @@ def test_pre_commit_archive_paths_keep_full_gate_on_spec_branch(tmp_path):
     repo = _setup_repo_on_main(tmp_path)
     subprocess.run(["git", "checkout", "-q", "-b", "spec/wip-probe"], cwd=repo, check=True, capture_output=True)
     hook = repo / ".git" / "hooks" / "pre-commit"
-    rendered = write_args_checker(tmp_path / "skill" / "scripts" / "check_all_spec_packages.py")
+    rendered = write_args_checker(tmp_path / "skill" / "scripts" / "check_all.py")
     render_hook_template("pre-commit", hook, rendered)
     _stage(repo, ".spec/specs/archive/2026-01-01_probe/spec.md", "# archived\n")
 
@@ -489,19 +487,15 @@ def test_pre_commit_archive_paths_keep_full_gate_on_spec_branch(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert "WIP commit on integration branch" not in result.stderr
     invocations = gate_invocations(marker)
-    assert len(invocations) == 4
-    assert all("--lint-only" in line for line in invocations[:2])
-    assert "--index" not in invocations[0] and "--index" in invocations[1]
-    assert all("--lint-only" not in line for line in invocations[2:])
-    assert all("--baseline" not in line for line in invocations[2:])
-    assert all("--slug 2026-01-01_probe" in line for line in invocations[2:])
-    assert "--index" not in invocations[2] and "--index" in invocations[3]
+    assert len(invocations) == 2
+    assert "--lint-only" in invocations[0]
+    assert "--slug 2026-01-01_probe" in invocations[1]
 
 
 def test_pre_push_releases_spec_branch_handoff(tmp_path):
     repo = _setup_repo_on_main(tmp_path)
     hook = repo / ".git" / "hooks" / "pre-push"
-    rendered = write_args_checker(tmp_path / "skill" / "scripts" / "check_all_spec_packages.py")
+    rendered = write_args_checker(tmp_path / "skill" / "scripts" / "check_all.py")
     render_hook_template("pre-push", hook, rendered)
 
     marker = tmp_path / "marker.log"
@@ -511,13 +505,13 @@ def test_pre_push_releases_spec_branch_handoff(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert "releasing in-flight push" in result.stderr
     assert "refs/heads/spec/wip-exp05" in result.stderr
-    assert gate_invocations(marker) == []
+    assert len(gate_invocations(marker)) == 1
 
 
 def test_pre_push_full_gate_for_main_push(tmp_path):
     repo = _setup_repo_on_main(tmp_path)
     hook = repo / ".git" / "hooks" / "pre-push"
-    rendered = write_args_checker(tmp_path / "skill" / "scripts" / "check_all_spec_packages.py")
+    rendered = write_args_checker(tmp_path / "skill" / "scripts" / "check_all.py")
     render_hook_template("pre-push", hook, rendered)
 
     marker = tmp_path / "marker.log"
@@ -531,7 +525,7 @@ def test_pre_push_full_gate_for_main_push(tmp_path):
 def test_pre_push_full_gate_for_non_spec_branch_push(tmp_path):
     repo = _setup_repo_on_main(tmp_path)
     hook = repo / ".git" / "hooks" / "pre-push"
-    rendered = write_args_checker(tmp_path / "skill" / "scripts" / "check_all_spec_packages.py")
+    rendered = write_args_checker(tmp_path / "skill" / "scripts" / "check_all.py")
     render_hook_template("pre-push", hook, rendered)
 
     marker = tmp_path / "marker.log"
@@ -548,7 +542,7 @@ def test_pre_push_full_gate_for_non_spec_branch_push(tmp_path):
 
 
 def _install_real_hooks(repo: Path) -> None:
-    real_checker = ROOT / "scripts" / "check_all_spec_packages.py"
+    real_checker = ROOT / "scripts" / "check_all.py"
     for name in ("pre-commit", "pre-push"):
         render_hook_template(name, repo / ".git" / "hooks" / name, real_checker)
 
@@ -556,13 +550,42 @@ def _install_real_hooks(repo: Path) -> None:
 def _make_active_package(repo: Path, slug: str) -> None:
     package = repo / ".spec" / "specs" / slug
     package.mkdir(parents=True)
+    branch = subprocess.run(
+        ["git", "branch", "--show-current"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
     (package / "spec.md").write_text(
-        "# WIP 探针包 - 项目范围\n\n## 1. 问题定义\n- **项目目标**：探针\n", encoding="utf-8"
+        f"""# Probe
+<!-- spec-format: 3 -->
+## Goal
+- goal: probe the WIP channel
+- literal ask: probe
+- done means: probe passes
+## Charter
+- V1 priority: quality | charter.md
+- V2 scope: strict | charter.md
+- V3 verification: package | charter.md
+- V4 finish: commit | charter.md
+- V5 dependencies: none-new | charter.md
+- V6 compatibility: keep-public-api | charter.md
+- V7 blocked: park-and-continue | charter.md
+## Scope
+- in: probe
+- out: unrelated
+## Assumptions
+## Forks
+## Criteria
+- C1 | Probe | task-probe
+## Decisions
+## Parked
+## Binding
+- branch: `{branch}`
+""",
+        encoding="utf-8",
     )
     (package / "tasks.md").write_text(
-        "- [ ] 探针任务\n  - boundary: probe\n  - verify: manual: probe\n", encoding="utf-8"
+        "- [ ] Probe\n  - id: task-probe\n  - boundary: probe\n  - verify: `true`\n  - expect: green\n",
+        encoding="utf-8",
     )
-    (package / "checklist.md").write_text("## 验收证据\n- 脚本验证：pending\n", encoding="utf-8")
 
 
 def _git_commit(repo: Path, message: str, *extra: str) -> subprocess.CompletedProcess:
@@ -587,9 +610,8 @@ def _git_commit(repo: Path, message: str, *extra: str) -> subprocess.CompletedPr
 def test_replay_exp05_wip_commit_and_inflight_push(tmp_path):
     repo = _setup_repo_on_main(tmp_path)
     _install_real_hooks(repo)
-    _make_active_package(repo, "2026-10-12_wip-probe")
-
     subprocess.run(["git", "checkout", "-q", "-b", "spec/wip-exp05"], cwd=repo, check=True, capture_output=True)
+    _make_active_package(repo, "2026-10-12_wip-probe")
     _stage(repo, "wip.txt")
     committed = _git_commit(repo, "wip handoff\n\nSpec-WIP: 2026-10-12_wip-probe")
 
@@ -646,7 +668,7 @@ def test_replay_exp05_main_gate_not_weakened(tmp_path):
     blocked_push = subprocess.run(["git", "push", "origin", "main"], cwd=repo, capture_output=True, text=True)
     assert blocked_push.returncode != 0
     combined = blocked_push.stdout + blocked_push.stderr
-    assert "check gates not passed" in combined
+    assert "result: blocked" in combined
 
 
 # --- F9 (AUD-06): footer-attribution interval warnings (observation period) ---
@@ -702,18 +724,21 @@ def _write_valid_archive(repo: Path, slug: str, base: str, head: str) -> None:
     package = repo / ".spec" / "specs" / "archive" / slug
     package.mkdir(parents=True)
     (package / "spec.md").write_text(
-        "# Footer Fixture - 项目范围\n## 1. 问题定义\n- **项目目标**：footer fixture\n- **目标用户**：维护者\n"
-        "- **核心价值**：归属可信\n## 2. 假设与待确认\n### 2.1 已确认事实\n- fixture\n### 2.2 关键假设\n"
-        "- standard git\n### 2.3 待确认问题\n- 无\n## 3. 功能范围\n### 3.3 不在范围内\n- production\n"
-        "## 4. 最小实现路径\n- archive\n- attribute\n- verify\n",
+        "# Fixture\n<!-- spec-format: 3 -->\n## Goal\n- goal: fixture\n- literal ask: fixture\n- done means: verified\n"
+        "## Charter\n- V1 priority: quality | charter.md\n- V2 scope: strict | charter.md\n"
+        "- V3 verification: package | charter.md\n- V4 finish: commit | charter.md\n"
+        "- V5 dependencies: none-new | charter.md\n- V6 compatibility: keep-public-api | charter.md\n"
+        "- V7 blocked: park-and-continue | charter.md\n## Scope\n- in: payload.txt\n- out: unrelated\n"
+        "## Assumptions\n## Forks\n## Criteria\n- C1 | Verified | task-fixture\n"
+        "## Decisions\n## Parked\n## Binding\n- branch: `spec/fixture`\n",
         encoding="utf-8",
     )
     (package / "tasks.md").write_text(
-        "- [x] Footer fixture\n  - boundary: test repository\n  - verify: push gate\n", encoding="utf-8"
+        "- [x] Footer fixture\n  - id: task-fixture\n  - boundary: payload.txt\n"
+        "  - verify: `true`\n  - expect: green\n",
+        encoding="utf-8",
     )
-    (package / "checklist.md").write_text(
-        "- [x] Verified\n## 验收证据\n- 脚本验证：pytest\n**验收结果**：通过\n", encoding="utf-8"
-    )
+    (package / "runs.jsonl").write_text('{"task":"task-fixture","exit":0,"cmd":"true"}\n', encoding="utf-8")
     (package / "completion-summary.md").write_text(
         f"# {slug} - 完成总结\n## 交付结论\n- 完成\n## 假设回顾\n- verified\n## 交付范围\n- delivered\n"
         "## 简化决策\n- simple\n## 变更边界\n- fixture\n## 验证证据\n- pytest\n## 门禁证据\n- passed\n"
@@ -728,7 +753,7 @@ def test_pre_push_passes_footer_window_base_in_footer_channel(tmp_path):
     initial = head_sha(repo)
     _footer_commit(repo, "sneaky.txt", "code-only change", OLD_SLUG := "2026-08-01_legacy-audit-fixture")
     hook = repo / ".git" / "hooks" / "pre-push"
-    rendered = write_footer_args_checker(tmp_path / "skill" / "scripts" / "check_all_spec_packages.py")
+    rendered = write_footer_args_checker(tmp_path / "skill" / "scripts" / "check_all.py")
     render_hook_template("pre-push", hook, rendered)
 
     marker = tmp_path / "marker.log"
@@ -749,7 +774,7 @@ def test_pre_push_touched_channel_omits_footer_window_base(tmp_path):
     _stage(repo, ".spec/specs/2026-08-01_legacy-audit-fixture/spec.md", "# archived\n")
     _git_commit(repo, "archive touch\n\nSpec: 2026-08-01_legacy-audit-fixture")
     hook = repo / ".git" / "hooks" / "pre-push"
-    rendered = write_args_checker(tmp_path / "skill" / "scripts" / "check_all_spec_packages.py")
+    rendered = write_args_checker(tmp_path / "skill" / "scripts" / "check_all.py")
     render_hook_template("pre-push", hook, rendered)
 
     marker = tmp_path / "marker.log"
@@ -772,7 +797,7 @@ def test_pre_push_new_ref_footer_channel_omits_footer_window_base(tmp_path):
     _footer_commit(repo, "followup.txt", "follow-up for old package", "2026-08-01_legacy-audit-fixture")
     subprocess.run(["git", "branch", "-M", "main"], cwd=repo, check=True, capture_output=True)
     hook = repo / ".git" / "hooks" / "pre-push"
-    rendered = write_footer_args_checker(tmp_path / "skill" / "scripts" / "check_all_spec_packages.py")
+    rendered = write_footer_args_checker(tmp_path / "skill" / "scripts" / "check_all.py")
     render_hook_template("pre-push", hook, rendered)
 
     marker = tmp_path / "marker.log"

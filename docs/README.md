@@ -11,14 +11,11 @@
 ## 我想先理解它
 
 - [Spec Harness 介绍](introduction.md)：从一个长程任务为什么会失控开始，理解任务包、验证和 Git 收尾各自解决什么问题。
-- [长程任务教程](tutorial.md)：跟着一个审计日志导出目标，从安装走到归档；示例是骨架，业务名称可以替换。
 
 ## 我想操作它
 
 - [Git 工作流（中文）](git-workflow.md)
 - [Git workflow (English)](git-workflow.en.md)
-- [命令入口](../references/commands.md#host-entry-points)：CLI、IDE agent 插件与桌面端共享的六阶段入口。
-- [待确认问题](../references/templates.md#pending-questions)：开放问题的统一收口标记与用户授权要求。
 - 根目录 [README（中文）](../README.md)：安装、宿主选择与导出运行时包。
 - Root [README (English)](../README-en.md): installation, host selection, runtime export, and regression commands.
 
@@ -33,7 +30,7 @@
 ## 入口归类
 
 - **public / user entry**：根 [README（中文）](../README.md) 与 [README (English)](../README-en.md)、本索引与[英文索引](README-en.md)，以及本目录的引导/教程/Git 工作流。
-- **runtime reference**：[`SKILL.md`](../SKILL.md) 与 [`references/`](../references/00-readme.md)：命令、模板、输出与归档的运行时契约。
+- **runtime reference**：[`SKILL.md`](../SKILL.md) 与 [`references/`](../SKILL.md)：规划、执行、格式、哲学与 Git 运行时契约。
 - **maintainer-only**：[`agent-plugin/README.md`](../agent-plugin/README.md)——源码库独有的插件清单打包模板说明，不进运行时导出树。
 
-命令、任务包文档（`spec.md` + `tasks.md`，验收面规则见 [`references/templates.md`](../references/templates.md)）和机器门禁的精确契约在 [`references/`](../references/00-readme.md)。它们回答“必须满足什么”；本目录的教程回答“为什么这样安排、下一步怎么走”。
+两相运行时契约在 [`references/plan.md`](../references/plan.md)、[`references/exec.md`](../references/exec.md)、[`references/format.md`](../references/format.md) 与 [`references/git.md`](../references/git.md)。它们回答“必须满足什么”；本目录的教程回答“为什么这样安排、下一步怎么走”。

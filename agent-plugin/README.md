@@ -54,10 +54,12 @@ python3 .maintainer/tools/release/package_agent_plugin.py --name spec-harness --
     └── spec/              # Runtime skill payload under the compatibility name (SKILL.md is at the skill root)
         ├── SKILL.md
         ├── install.sh
-        ├── agents/ hooks/ references/ scripts/ ...
+        ├── agents/ references/ scripts/ ...
+        ├── commands/            # Claude Code adds spec/new, spec/go, spec/done
+        └── hooks/hooks.json     # generated only for hook-capable plugin hosts
 ```
 
-The Claude Code format differs only in the manifest location (`.claude-plugin/plugin.json`); its skills payload is identical.
+The Claude Code format adds the manifest at `.claude-plugin/plugin.json` and generates `commands/spec/{new,go,done}.md` plus the Stop hook manifest. Hookless formats omit those host-specific files; the skills payload stays identical.
 
 ## Notes
 

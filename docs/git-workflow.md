@@ -9,7 +9,7 @@
     git clone https://github.com/MicTx/spec-harness.git
     cd spec-harness
     git fetch --tags origin
-    git checkout v0.31.0
+    git checkout v1.0.0
 
 贡献者通常从 fork 克隆，并把官方仓库保留为 `upstream`：
 
@@ -67,7 +67,6 @@ Pull Request 应包含：
 提交前至少运行这些能回答“当前树是否可交付”的命令。下面的完整套件属于发布/主分支门禁，不是每个任务包 `check`/`done` 的默认验证；任务包按 `spec.md` 声明的 `package`、`integration` 或 `project` 范围执行：
 
     python3 -m compileall -q scripts hooks tests
-    python3 scripts/smoke_test_spec_skill.py
     python3 -m pytest -q
     ruff check scripts/ hooks/ tests/
     ruff format --check scripts/ hooks/ tests/

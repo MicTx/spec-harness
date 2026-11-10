@@ -1,0 +1,303 @@
+"""Thick planning: deterministic lint, Go binding and execution amendments."""
+
+from __future__ import annotations
+
+import re
+import subprocess
+import time
+from pathlib import Path
+
+import charter
+import gitx
+from memory import lessons_top
+from package import (
+    append_run,
+    criteria,
+    dependency_errors,
+    now,
+    parse_charter,
+    parse_forks,
+    parse_tasks,
+    path_matches,
+    read_package,
+    scope_patterns,
+    section,
+)
+
+IRREVERSIBLE_GLOBS = (
+    "migrations",
+    ".github/workflows",
+    "pyproject.toml",
+    "package.json",
+    "requirements",
+    "uv.lock",
+    "poetry.lock",
+    "package-lock.json",
+    "secret",
+    ".env",
+    "credential",
+    "release/",
+)
+VALID_ORIGINS = {"planned", "emergent", "support"}
+
+
+def _gap(rule: str, detail: str, ask: str, task: str | None = None) -> dict:
+    return {"rule": rule, **({"task": task} if task else {}), "detail": detail, "ask": ask}
+
+
+def _literal_prefix(pattern: str) -> str:
+    clean = pattern.removeprefix("new:").rstrip("/")
+    positions = [clean.find(char) for char in "*?[" if char in clean]
+    cut = min(positions) if positions else len(clean)
+    return clean[:cut].rstrip("/")
+
+
+def _scope_covers(pattern: str, scopes: list[str]) -> bool:
+    """Best-effort deterministic containment check for glob boundaries."""
+    clean = pattern.removeprefix("new:").rstrip("/")
+    if not any(char in clean for char in "*?["):
+        return any(path_matches(clean, scope) for scope in scopes)
+    prefix = _literal_prefix(clean)
+    for scope in scopes:
+        base = scope.removeprefix("new:").rstrip("/")
+        if base.endswith("/**"):
+            root = base[:-3].rstrip("/")
+            if prefix == root or prefix.startswith(root + "/"):
+                return True
+        elif prefix and (base == prefix or base.startswith(prefix + "/")):
+            return True
+    return False
+
+
+def _verify(root: Path, command: str) -> tuple[int, float, str]:
+    started = time.monotonic()
+    try:
+        completed = subprocess.run(command, shell=True, cwd=root, capture_output=True, timeout=600)
+        return completed.returncode, round(time.monotonic() - started, 3), ""
+    except subprocess.TimeoutExpired:
+        return 124, round(time.monotonic() - started, 3), "verify timed out after 600s"
+
+
+def _charter_gaps(spec: str) -> list[dict]:
+    values = parse_charter(spec)
+    gaps = []
+    for index, allowed in charter.ALLOWED.items():
+        value = values.get(index, "")
+        if not value:
+            gaps.append(_gap("PLAN-004", f"missing charter {index}", "Fill the charter through a planning card."))
+        elif value not in allowed:
+            gaps.append(
+                _gap(
+                    "PLAN-004",
+                    f"unknown charter value {index}={value}",
+                    "Use one of: " + ", ".join(sorted(allowed)),
+                )
+            )
+    priority = values.get("V1", "")
+    if not priority or len([part for part in priority.split(">") if part.strip()]) < 2:
+        gaps.append(_gap("PLAN-004", "V1 priority has no ordering", "Write at least two ordered priorities."))
+    return gaps
+
+
+def lint(root: Path, slug: str, static: bool = False, record: bool = False) -> dict:
+    package, spec, tasks = read_package(root, slug)
+    gaps: list[dict] = []
+    if "spec-format: 3" not in spec:
+        return {
+            "ready": False,
+            "gaps": [
+                _gap(
+                    "PLAN-004",
+                    "package is not spec-format: 3",
+                    "Use the v3 format; migration is not supported.",
+                )
+            ],
+        }
+    gaps.extend(_charter_gaps(spec))
+    scope = scope_patterns(spec)
+    if not scope:
+        gaps.append(_gap("PLAN-003", "Scope.in is empty", "List the paths this package may change."))
+    if not any(line.startswith("goal:") for line in section(spec, "Goal")):
+        gaps.append(_gap("PLAN-004", "Goal.goal is missing", "State the observable outcome."))
+    if not any(line.startswith("done means:") for line in section(spec, "Goal")):
+        gaps.append(_gap("PLAN-004", "Goal.done means is missing", "State how completion is observed."))
+
+    try:
+        records = parse_tasks(tasks)
+    except ValueError as exc:
+        return {"ready": False, "gaps": [_gap("PLAN-004", str(exc), "Give every task one unique stable id.")]}
+    if not records:
+        gaps.append(_gap("PLAN-004", "no tasks", "Write executable task cards."))
+    gaps.extend(_gap("PLAN-005", error, "Close the task dependency graph.") for error in dependency_errors(records))
+    known = {task.id for task in records}
+    criterion_lines = criteria(spec)
+    if not criterion_lines:
+        gaps.append(_gap("PLAN-004", "no Criteria", "Add at least one observable criterion."))
+    criteria_tasks = [task_id for _key, _text, task_id in criterion_lines]
+    for task_id in criteria_tasks:
+        if task_id not in known:
+            gaps.append(_gap("PLAN-004", f"unknown criterion task {task_id}", "Point every criterion at a task."))
+    durations: dict[str, float] = {}
+    for task in records:
+        if task.origin not in VALID_ORIGINS:
+            gaps.append(
+                _gap("PLAN-004", f"invalid origin {task.origin}", "Use planned, emergent, or support.", task.id)
+            )
+        if not task.globs:
+            gaps.append(_gap("PLAN-002", "empty boundary", "List the exact files this task may change.", task.id))
+        for pattern in task.globs:
+            clean = pattern.removeprefix("new:")
+            tracked = gitx.git(root, "ls-files", "--", clean, check=False).stdout.splitlines()
+            matches = [path for path in tracked if path]
+            if not pattern.startswith("new:") and not matches:
+                gaps.append(
+                    _gap(
+                        "PLAN-002",
+                        f"{clean} matches 0 tracked files",
+                        "Point at a real tracked path or prefix new:.",
+                        task.id,
+                    )
+                )
+            if scope and not _scope_covers(pattern, scope):
+                gaps.append(
+                    _gap("PLAN-003", f"{clean} outside Scope.in", "Amend scope or move the task boundary.", task.id)
+                )
+            token = next((item for item in IRREVERSIBLE_GLOBS if item in clean), "")
+            if token:
+                has_fork = any(token in fork["text"] or clean in fork["text"] for fork in parse_forks(spec))
+                if not has_fork:
+                    gaps.append(
+                        _gap(
+                            "PLAN-009",
+                            f"{clean} is an irreversible surface with no matching fork",
+                            "Add an F with the user's pre-authorization.",
+                            task.id,
+                        )
+                    )
+        if task.id not in criteria_tasks and task.origin != "support":
+            gaps.append(
+                _gap(
+                    "PLAN-004",
+                    "task not covered by Criteria",
+                    "Reference the task from a criterion or mark origin: support.",
+                    task.id,
+                )
+            )
+        if not re.search(r"(?m)^\s*-\s*expect:\s*(red|green)\s*$", task.block):
+            gaps.append(
+                _gap("PLAN-001", "missing expect: red|green", "Record whether the baseline should fail.", task.id)
+            )
+        if not task.command:
+            gaps.append(
+                _gap("PLAN-001", "missing executable verify", "Provide one backticked repeatable command.", task.id)
+            )
+        elif not static:
+            code, duration, detail = _verify(root, task.command)
+            durations[task.id] = duration
+            expected = task.expect or "green"
+            if (expected == "red" and code == 0) or (expected == "green" and code != 0):
+                gaps.append(
+                    _gap(
+                        "PLAN-001",
+                        detail or f"expect {expected}, exit {code}",
+                        "Make the verify discriminate the intended change or fix its baseline.",
+                        task.id,
+                    )
+                )
+            if duration > 120:
+                gaps.append(
+                    _gap(
+                        "PLAN-010",
+                        f"verify took {duration}s",
+                        "Use a narrower command for a faster feedback loop.",
+                        task.id,
+                    )
+                )
+            if record:
+                append_run(
+                    package,
+                    {
+                        "kind": "baseline",
+                        "task": task.id,
+                        "cmd": task.command,
+                        "exit": code,
+                        "expect": expected,
+                        "duration": duration,
+                        "ts": now(),
+                    },
+                )
+    for task in records:
+        for other in records:
+            if task.id == other.id:
+                continue
+            for pattern in other.globs:
+                if pattern.startswith("new:") and pattern[4:] in task.command and other.id not in task.depends_on:
+                    gaps.append(
+                        _gap(
+                            "PLAN-005",
+                            f"{task.id} reads {other.id}'s new file before it exists",
+                            "Add depends-on for the producer task.",
+                            task.id,
+                        )
+                    )
+    for line in section(spec, "Assumptions"):
+        if "CONFIRMED" in line and "probe:" not in line:
+            gaps.append(_gap("PLAN-006", line[:100], "Add the read-only probe that confirmed this assumption."))
+        elif "UNVERIFIED" in line and "if false:" not in line:
+            gaps.append(_gap("PLAN-006", line[:100], "Name the fork or task used if this assumption is false."))
+        elif "CONFIRMED" not in line and "UNVERIFIED" not in line:
+            gaps.append(_gap("PLAN-006", line[:100], "Mark the assumption CONFIRMED with a probe or UNVERIFIED."))
+    for marker in ("[fact]", "[decision]", "[reversible]"):
+        if marker in spec or marker in tasks:
+            gaps.append(_gap("PLAN-007", marker, "Resolve the fact now or turn it into a probe task."))
+    for fork in parse_forks(spec):
+        if not fork["pick"] or not fork["by"]:
+            gaps.append(_gap("PLAN-008", fork["id"], "Choose an option and cite its authority."))
+        if "不可逆" in fork["reversal"] or "irreversible" in fork["reversal"].lower():
+            if not fork["by"].startswith("user"):
+                gaps.append(_gap("PLAN-008", fork["id"], "Irreversible choices require user authority."))
+        elif fork["by"] and not re.fullmatch(r"(V[1-7]|F\d+|user .+)", fork["by"]):
+            gaps.append(_gap("PLAN-008", fork["id"], "Cite V<n>, F<n>, or user <reference>."))
+    return {
+        "ready": not any(gap["rule"] != "PLAN-010" for gap in gaps),
+        "gaps": gaps,
+        "durations": durations,
+        "lessons": lessons_top(root, [pattern for task in records for pattern in task.globs]),
+    }
+
+
+def go(root: Path, slug: str) -> dict:
+    package, spec, _tasks = read_package(root, slug)
+    result = lint(root, slug, record=True)
+    if not result["ready"]:
+        return result
+    branch = gitx.branch(root)
+    if not branch:
+        raise ValueError("plan-go requires a named branch")
+    bound = re.search(r"(?m)^- branch:\s*`?([^\s`;]+)`?", spec)
+    if bound:
+        branch = bound.group(1)
+        if gitx.branch(root) != branch:
+            raise ValueError(f"package is bound to {branch}, current branch is {gitx.branch(root)}")
+    elif branch in {"main", "master", "develop"} or branch.startswith("release/"):
+        branch = f"spec/{slug}"
+        gitx.git(root, "checkout", "-b", branch)
+    if not bound:
+        (package / "spec.md").write_text(
+            spec.rstrip() + f"\n\n## Binding\n- branch: `{branch}`\n- frozen: {now()}\n", encoding="utf-8"
+        )
+    charter.merge(root, parse_charter(spec))
+    dirty = gitx.dirty_paths(root, exclude=(".spec/",))
+    append_run(package, {"kind": "baseline", "task": "package", "head": gitx.head(root), "dirty": dirty, "ts": now()})
+    return {"ready": True, "slug": slug, "branch": branch}
+
+
+def amend(root: Path, slug: str, task_text: str) -> dict:
+    package, _spec, tasks = read_package(root, slug)
+    if charter.load(root).get("V2", "strict") == "strict":
+        raise ValueError("charter V2=strict does not allow emergent tasks")
+    addition = task_text.strip()
+    if not re.search(r"(?m)^\s*-\s*origin:", addition):
+        addition += "\n  - origin: emergent"
+    (package / "tasks.md").write_text(tasks.rstrip() + "\n" + addition + "\n", encoding="utf-8")
+    return lint(root, slug)

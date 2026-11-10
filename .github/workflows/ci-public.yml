@@ -35,14 +35,9 @@ jobs:
         run: python3 -m compileall -q scripts hooks tests
       - name: Check installer syntax
         run: bash -n install.sh
-      - name: Run smoke test
-        run: python3 scripts/smoke_test_spec_skill.py
       - name: Run pytest
         run: |
-          # These tests assert against private `.spec/` history, which the
-          # public export excludes by design.
-          python3 -m pytest tests/ \
-            --ignore=tests/test_check_spec_package.py
+          python3 -m pytest tests/
       - name: Ruff check
         run: ruff check scripts/ hooks/ tests/
       - name: Ruff format check
