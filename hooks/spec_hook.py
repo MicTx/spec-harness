@@ -89,6 +89,8 @@ def handle(name: str, event: dict) -> Action:
         return Action()
     brief = route.decide(root, slug)
     if name == "stop":
+        if event.get("continuing"):
+            return Action()
         progress = brief["progress"]
         state = memory.snapshot_read(directory)
         if brief["state"] == "deliver":
@@ -142,8 +144,9 @@ def main(argv: list[str] | None = None) -> int:
 
         event = decode(args.host, payload)
         active = _active(event)
-        if active and memory.seen(package.package_dir(*active), event):
-            return 0
+        if args.event == "stop" and active and not event.get("continuing"):
+            if memory.seen(package.package_dir(*active), event):
+                return 0
         action = handle(args.event, event)
         output = encode(args.host, args.event, action)
         if output:

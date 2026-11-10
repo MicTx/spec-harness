@@ -55,9 +55,22 @@ def run_tasks(root: Path, slug: str, selected: list[str] | None = None, final: b
     results = []
     for task in chosen:
         started = time.monotonic()
-        completed = subprocess.run(task.command, shell=True, cwd=root, capture_output=True, timeout=600)
-        stdout, stderr = subprocess_output(completed)
-        signature = failure_signature(completed.stdout, completed.stderr)
+        timeout = False
+        try:
+            completed = subprocess.run(task.command, shell=True, cwd=root, capture_output=True, timeout=600)
+            exit_code = completed.returncode
+            stdout, stderr = subprocess_output(completed)
+            signature = failure_signature(completed.stdout, completed.stderr)
+        except subprocess.TimeoutExpired as exc:
+            timeout = True
+            exit_code = 124
+            stdout_tail = (exc.stdout or b"")[-4096:]
+            stderr_tail = (exc.stderr or b"")[-4096:]
+            stdout, stderr = subprocess_output(
+                subprocess.CompletedProcess(task.command, exit_code, stdout_tail, stderr_tail)
+            )
+            stderr = f"Spec verify timed out after 600 seconds\n{stderr}"
+            signature = failure_signature(stdout_tail, stderr_tail)
         previous = [
             record for record in runs(package) if record.get("task") == task.id and record.get("kind", "run") == "run"
         ]
@@ -65,7 +78,7 @@ def run_tasks(root: Path, slug: str, selected: list[str] | None = None, final: b
             "kind": "run",
             "task": task.id,
             "cmd": task.command,
-            "exit": completed.returncode,
+            "exit": exit_code,
             "sig": signature,
             "attempt": len(previous) + 1,
             "head": gitx.head(root),
@@ -74,7 +87,7 @@ def run_tasks(root: Path, slug: str, selected: list[str] | None = None, final: b
             "ts": now(),
         }
         directive = ""
-        if completed.returncode == 0:
+        if exit_code == 0:
             had_failure = any(item.get("exit") not in (None, 0) for item in previous)
             tick(root, slug, task.id)
             if not final:
@@ -83,6 +96,8 @@ def run_tasks(root: Path, slug: str, selected: list[str] | None = None, final: b
                 directive = 'Record one reusable lesson with spec.py learn "<when>" "<do>".'
         else:
             directive = ladder_directive(package, task.id, signature)
+            if timeout:
+                directive = f"Verify timed out. {directive}"
             print(f"--- {task.id} stdout ---\n{stdout[-4096:]}\n--- stderr ---\n{stderr[-4096:]}")
         record["tree_fp"] = tree_fingerprint(root)
         append_run(package, record)

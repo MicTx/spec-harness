@@ -18,15 +18,16 @@ def decide(root: Path, slug: str | None = None, *, fingerprint: bool = False) ->
     parked = parse_ledger(spec, "Parked", "P")
     latest = criteria_status(spec, package)
     all_done = bool(records) and all(record.checked for record in records)
+    evidence_failures = last_failures(package)
     unblocked_left = any(not record.checked and not record.blocked for record in records)
     if ready:
         state = "run"
-    elif all_done and all(item[3] for item in latest) and not parked:
+    elif all_done and all(item[3] for item in latest) and not parked and not evidence_failures:
         state = "deliver"
+    elif evidence_failures or any(record.blocked for record in records):
+        state = "stalled"
     elif parked and not unblocked_left:
         state = "parked-only"
-    elif not ready and any(record.blocked for record in records):
-        state = "stalled"
     else:
         state = "plan"
     task = ready[0] if ready else None
@@ -47,7 +48,7 @@ def decide(root: Path, slug: str | None = None, *, fingerprint: bool = False) ->
         "criteria": [
             {"id": key, "text": text, "task": task_id, "passed": passed} for key, text, task_id, passed in latest
         ],
-        "failures": last_failures(package),
+        "failures": evidence_failures,
         "progress": list(progress_tuple(package, gitx.head(root))),
     }
     return result

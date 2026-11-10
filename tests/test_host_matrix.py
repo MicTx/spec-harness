@@ -1,6 +1,7 @@
 import json
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 HOOKS = ROOT / "hooks"
 sys.path.insert(0, str(HOOKS))
 
+import install_hooks  # noqa: E402
 from adapters import HOSTS, capabilities, render_config  # noqa: E402
 from install_hooks import install_session_hooks  # noqa: E402
 
@@ -60,6 +62,29 @@ def test_config_install_is_idempotent_and_preserves_custom_hooks(tmp_path):
     assert first == second
     assert "custom" in before
     assert before == target.read_text(encoding="utf-8")
+
+
+def test_same_second_installs_preserve_distinct_backups(tmp_path, monkeypatch):
+    target = tmp_path / ".claude" / "settings.json"
+    target.parent.mkdir()
+    first_content = json.dumps({"hooks": {"Stop": [{"matcher": "*", "hooks": [{"command": "first"}]}]}})
+    second_content = json.dumps({"hooks": {"Stop": [{"matcher": "*", "hooks": [{"command": "second"}]}]}})
+    target.write_text(first_content, encoding="utf-8")
+    fixed_now = datetime.now(timezone.utc).replace(microsecond=0)
+
+    class FixedDatetime:
+        @staticmethod
+        def now(_timezone):
+            return fixed_now
+
+    monkeypatch.setattr(install_hooks, "datetime", FixedDatetime)
+    install_session_hooks("claude", home=tmp_path)
+    target.write_text(second_content, encoding="utf-8")
+    install_session_hooks("claude", home=tmp_path)
+
+    backups = sorted(target.parent.glob(target.name + ".spec-backup-*"))
+    assert len(backups) == 2
+    assert {backup.read_text(encoding="utf-8") for backup in backups} == {first_content, second_content}
 
 
 def test_shim_install_copies_dispatcher_and_rejects_foreign_file(tmp_path):

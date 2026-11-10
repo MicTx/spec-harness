@@ -1,3 +1,4 @@
+import io
 import json
 import sys
 from pathlib import Path
@@ -7,7 +8,8 @@ from tests.v3_support import SLUG, cli, make_package, repo
 HOOKS = Path(__file__).resolve().parents[1] / "hooks"
 sys.path.insert(0, str(HOOKS))
 
-from spec_hook import Action, handle  # noqa: E402
+import memory  # noqa: E402
+from spec_hook import Action, handle, main  # noqa: E402
 
 
 def event(root: Path, **values):
@@ -75,3 +77,49 @@ def test_end_writes_snapshot(tmp_path):
     handle("end", event(tmp_path))
     state = json.loads((package / "state.json").read_text())
     assert state["task"]["id"] == "task-value"
+
+
+def test_claude_continuing_stop_releases_and_skips_state_machine(tmp_path, monkeypatch, capsys):
+    repo(tmp_path)
+    package = make_package(tmp_path, verify="false")
+    assert cli(tmp_path, "verify", "task-value").returncode == 1
+    capsys.readouterr()
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"cwd": str(tmp_path)})))
+    first = main(["--host", "claude", "stop"])
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"cwd": str(tmp_path), "stop_hook_active": True})))
+    continuing = main(["--host", "claude", "stop"])
+    assert first == 0 and continuing == 0
+    first_output = capsys.readouterr().out
+    assert "task-value" in first_output
+    assert first_output
+    assert not capsys.readouterr().out
+    state = json.loads((package / "state.json").read_text())
+    assert state["stalls"] == 0
+
+
+def test_duplicate_stop_does_not_rewrite_state_and_other_events_are_not_deduped(tmp_path, monkeypatch, capsys):
+    repo(tmp_path)
+    package = make_package(tmp_path, verify="false")
+    assert cli(tmp_path, "verify", "task-value").returncode == 1
+    payload = {"cwd": str(tmp_path), "session_id": "same"}
+    calls = []
+    original_seen = memory.seen
+
+    def seen(package_path, event):
+        calls.append(event)
+        return original_seen(package_path, event)
+
+    monkeypatch.setattr(memory, "seen", seen)
+    capsys.readouterr()
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+    first = main(["--host", "claude", "stop"])
+    state_path = package / "state.json"
+    before = state_path.read_text()
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+    second = main(["--host", "claude", "stop"])
+    assert first == second == 0
+    assert state_path.read_text() == before
+    assert len(calls) == 2
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+    main(["--host", "claude", "end"])
+    assert len(calls) == 2

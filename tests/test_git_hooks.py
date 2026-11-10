@@ -1,6 +1,8 @@
 import os
+import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -9,6 +11,8 @@ ROOT = Path(__file__).resolve().parent.parent
 CHECKER = ROOT / "scripts" / "check_all.py"
 PRE_COMMIT = ROOT / "hooks" / "pre-commit"
 PRE_PUSH = ROOT / "hooks" / "pre-push"
+NETWORK_TIMEOUT = 300
+LOCAL_TIMEOUT = 60
 
 
 def git(root: Path, *args: str, check: bool = True):
@@ -31,6 +35,18 @@ def init_repo(root: Path) -> None:
     git(root.parent, "init", "-q", str(root))
     git(root, "config", "user.email", "test@example.com")
     git(root, "config", "user.name", "Spec Test")
+
+
+def render_pre_push_with_timeout(timeout: str) -> Path:
+    target = Path(tempfile.mkdtemp(prefix="spec-pre-push-timeout-")) / "pre-push"
+    content = PRE_PUSH.read_text(encoding="utf-8")
+    content = content.replace("run_git 300", f"run_git {timeout}")
+    content = content.replace("run_git 60", f"run_git {timeout}")
+    content = content.replace("__SPEC_CHECK_ALL_SCRIPT_PLACEHOLDER__", str(CHECKER.resolve()))
+    content = content.replace("__SPEC_PYTHON_PLACEHOLDER__", sys.executable)
+    target.write_text(content, encoding="utf-8")
+    target.chmod(0o755)
+    return target
 
 
 def install_hook(repo: Path, source: Path) -> None:
@@ -329,6 +345,51 @@ def test_pre_push_fails_closed_when_ref_enumeration_fails(tmp_path):
 
     assert result.returncode != 0
     assert "cannot diff pushed ref" in result.stderr
+
+
+def test_pre_push_git_calls_are_bounded():
+    source = PRE_PUSH.read_text(encoding="utf-8")
+    assert source.count("run_git 300") >= 3
+    assert source.count("run_git 60") >= 7
+    direct_git_calls = [
+        line
+        for line in source.splitlines()
+        if not line.startswith("repo=$(git rev-parse")
+        if re.search(r"(?<![#'\"])git\s+(ls-remote|fetch|log|rev-list|diff|show|merge-base|update-ref|rev-parse)", line)
+    ]
+    assert direct_git_calls == []
+
+
+def test_pre_push_git_timeout_fails_closed(tmp_path):
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    (repo / "README.md").write_text("initial\n", encoding="utf-8")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "initial")
+    git(repo, "branch", "-M", "main")
+    base = git(repo, "rev-parse", "HEAD").stdout.strip()
+    (repo / "payload.txt").write_text("payload\n", encoding="utf-8")
+    git(repo, "add", "payload.txt")
+    git(repo, "commit", "-m", "payload")
+    tip = git(repo, "rev-parse", "HEAD").stdout.strip()
+    hook = render_pre_push_with_timeout("0")
+
+    result = subprocess.run(
+        ["sh", str(hook)],
+        cwd=repo,
+        input=f"refs/heads/main {tip} refs/heads/main {base}\n",
+        capture_output=True,
+        text=True,
+        timeout=5,
+        env={
+            **os.environ,
+            "SPEC_CHECK_ALL_SCRIPT": str(CHECKER),
+            "SPEC_PYTHON": os.environ.get("SPEC_PYTHON", "python3"),
+        },
+    )
+
+    assert result.returncode != 0
+    assert "timed out after" in result.stderr
 
 
 def _run_pre_push_hook(repo: Path, input_text: str, **extra_env):

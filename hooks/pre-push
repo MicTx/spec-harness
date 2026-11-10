@@ -46,11 +46,22 @@ case "$mode" in
   touched|all) ;;
   *) printf '%s\n' "error: SPEC_PUSH_GATE must be touched or all" >&2; exit 1 ;;
 esac
+run_git() {
+  timeout_seconds=$1
+  shift
+  "$python" -c 'import subprocess, sys
+try:
+    raise SystemExit(subprocess.run(["git", *sys.argv[2:]], timeout=float(sys.argv[1])).returncode)
+except subprocess.TimeoutExpired:
+    print("error: git " + " ".join(sys.argv[2:5]) + " timed out after " + sys.argv[1] + " seconds", file=sys.stderr)
+    raise SystemExit(124)' "$timeout_seconds" "$@"
+}
+
 zero=0000000000000000000000000000000000000000
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/spec-pre-push.XXXXXX")
 baseline_ref="refs/spec-gate/legacy-baseline-$$"
 cleanup() {
-  git update-ref -d "$baseline_ref" >/dev/null 2>&1 || true
+  run_git 60 update-ref -d "$baseline_ref" >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
 }
 trap cleanup EXIT HUP INT TERM
@@ -59,19 +70,19 @@ legacy_baseline=$zero
 if [ -n "$remote_name" ]; then
   main_branch=${SPEC_MAIN_BRANCH:-}
   if [ -z "$main_branch" ]; then
-    symref=$(git ls-remote --symref "$remote_name" HEAD) \
+    symref=$(run_git 300 ls-remote --symref "$remote_name" HEAD) \
       || { printf '%s\n' "error: cannot resolve authoritative remote HEAD for $remote_name" >&2; exit 1; }
     main_branch=$(printf '%s\n' "$symref" | sed -n 's#^ref: refs/heads/\([^[:space:]]*\)[[:space:]]*HEAD$#\1#p' | sed -n '1p')
     main_branch=${main_branch:-main}
   fi
-  remote_main=$(git ls-remote --heads "$remote_name" "refs/heads/$main_branch") \
+  remote_main=$(run_git 300 ls-remote --heads "$remote_name" "refs/heads/$main_branch") \
     || { printf '%s\n' "error: cannot resolve authoritative $remote_name/$main_branch" >&2; exit 1; }
   legacy_baseline=$(printf '%s\n' "$remote_main" | sed -n 's/[[:space:]].*$//p' | sed -n '1p')
   legacy_baseline=${legacy_baseline:-$zero}
   if [ "$legacy_baseline" != "$zero" ]; then
-    git fetch --no-tags "$remote_name" "+refs/heads/$main_branch:$baseline_ref" >/dev/null 2>&1 \
+    run_git 300 fetch --no-tags "$remote_name" "+refs/heads/$main_branch:$baseline_ref" >/dev/null 2>&1 \
       || { printf '%s\n' "error: cannot fetch authoritative $remote_name/$main_branch baseline" >&2; exit 1; }
-    fetched_baseline=$(git rev-parse --verify "$baseline_ref^{commit}") \
+    fetched_baseline=$(run_git 60 rev-parse --verify "$baseline_ref^{commit}") \
       || { printf '%s\n' "error: authoritative remote-main baseline object is unavailable" >&2; exit 1; }
     [ "$fetched_baseline" = "$legacy_baseline" ] \
       || { printf '%s\n' "error: authoritative remote-main baseline changed during pre-push" >&2; exit 1; }
@@ -120,14 +131,14 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   : >"$footer_slugs"
 
   if [ "$remote_sha" = "$zero" ]; then
-    git log --name-only --pretty=format: "$local_sha" --not --remotes >"$files_path" \
+    run_git 60 log --name-only --pretty=format: "$local_sha" --not --remotes >"$files_path" \
       || { printf '%s\n' "error: cannot enumerate files for pushed ref $local_ref" >&2; exit 1; }
-    git rev-list --no-merges "$local_sha" --not --remotes >"$commits_path" \
+    run_git 60 rev-list --no-merges "$local_sha" --not --remotes >"$commits_path" \
       || { printf '%s\n' "error: cannot enumerate commits for pushed ref $local_ref" >&2; exit 1; }
   else
-    git diff --name-only "$remote_sha" "$local_sha" >"$files_path" \
+    run_git 60 diff --name-only "$remote_sha" "$local_sha" >"$files_path" \
       || { printf '%s\n' "error: cannot diff pushed ref $local_ref" >&2; exit 1; }
-    git rev-list --no-merges "$remote_sha..$local_sha" >"$commits_path" \
+    run_git 60 rev-list --no-merges "$remote_sha..$local_sha" >"$commits_path" \
       || { printf '%s\n' "error: cannot enumerate commits for pushed ref $local_ref" >&2; exit 1; }
   fi
 
@@ -139,7 +150,8 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   if [ -z "$touched_slugs" ]; then
     while read -r commit; do
       [ -n "$commit" ] || continue
-      message=$(git show -s --format=%B "$commit" 2>/dev/null || true)
+      message=$(run_git 60 show -s --format=%B "$commit" 2>/dev/null) \
+        || { printf '%s\n' "error: cannot read commit message for $commit" >&2; exit 1; }
       slugs=$(printf '%s\n' "$message" | sed -nE 's/^Spec:[[:space:]]*([a-z0-9][a-z0-9_-]*[a-z0-9]|[a-z0-9])[[:space:]]*$/\1/p')
       if printf '%s\n' "$message" | grep -qE '^Spec:[[:space:]]*none[[:space:]]*(\([[:space:]]*\))?[[:space:]]*$'; then
         printf '%s\n' \
@@ -168,7 +180,8 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     # single judge inside check_all can warn (observation period) when a cited
     # archive's recorded commit interval predates this delivery window.
     if [ "$remote_sha" != "$zero" ]; then
-      footer_window_base=$(git merge-base "$remote_sha" "$local_sha" 2>/dev/null || true)
+      footer_window_base=$(run_git 60 merge-base "$remote_sha" "$local_sha" 2>/dev/null) \
+        || { printf '%s\n' "error: cannot derive footer window base for $local_ref" >&2; exit 1; }
     fi
   fi
 

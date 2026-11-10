@@ -29,3 +29,23 @@ def test_unexplained_stop_is_blocked_until_two_failed_attempts(tmp_path):
     assert not release.block
     assert release.context.startswith("stalled:")
     assert (package / "state.json").is_file()
+
+
+def test_latest_failure_blocks_deliver_even_when_tasks_are_checked(tmp_path):
+    repo(tmp_path)
+    package = make_package(tmp_path)
+    assert cli(tmp_path, "verify", "task-value").returncode == 0
+    (package / "runs.jsonl").write_text(
+        (package / "runs.jsonl").read_text().replace('"exit": 0,', '"exit": 1,', 1), encoding="utf-8"
+    )
+    brief = cli(tmp_path, "next")
+    assert brief.returncode == 1
+    assert '"state": "stalled"' in brief.stdout
+    assert "task-value:" in brief.stdout
+    action = handle("stop", {"cwd": str(tmp_path)})
+    assert action.block
+    assert "blocked without new evidence" in action.reason
+    assert cli(tmp_path, "decide", "Publish?", "--park", "--by", "user pending").returncode == 0
+    parked = cli(tmp_path, "next")
+    assert parked.returncode == 1
+    assert '"state": "stalled"' in parked.stdout

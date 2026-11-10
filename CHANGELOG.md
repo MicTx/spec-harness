@@ -4,6 +4,15 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [1.0.1] - 2026-11-11
+
+### Fixed
+
+- **Stop continuation release**: a continuing Stop hook event now returns control to the host once, without entering duplicate detection or the stall state machine, so agent continuation completes normally.
+- **Duplicate stop evidence**: repeated non-continuing Stop events no longer rewrite memory state, preventing duplicate observations from mutating evidence.
+- **Hook backup safety**: installing hooks twice within the same second now creates unique backup names instead of overwriting the first backup.
+- **Bounded pre-push Git calls**: every pre-push Git operation now has a timeout, with network calls bounded to 300 seconds and local calls to 60 seconds; timeouts fail closed.
+
 ## [1.0.0] - 2026-11-10
 
 ### Changed

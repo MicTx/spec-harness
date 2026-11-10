@@ -51,7 +51,9 @@ def progress_tuple(package: Path, head: str) -> tuple[int, int, str]:
 def last_failures(package: Path) -> list[str]:
     latest = latest_runs(package)
     return [
-        f"{task}: {record.get('sig', '')}" for task, record in latest.items() if record.get("exit") not in (None, 0)
+        f"{task}: {record.get('sig') or 'verify failed without a signature'}"
+        for task, record in latest.items()
+        if record.get("exit") not in (None, 0)
     ][-3:]
 
 
@@ -112,6 +114,8 @@ def seen(package: Path, event: dict) -> bool:
     key = json.dumps(event, sort_keys=True, default=str)
     current = time.time()
     duplicate = state.get("seen_key") == key and current - float(state.get("seen_at", 0)) < 2
+    if duplicate:
+        return True
     state.update({"seen_key": key, "seen_at": current})
     path.write_text(json.dumps(state) + "\n", encoding="utf-8")
-    return duplicate
+    return False

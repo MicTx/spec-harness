@@ -85,6 +85,12 @@ def install_session_hooks(host: str, home: Path | None = None) -> Path | None:
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
         backup = target.with_name(target.name + ".spec-backup-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S"))
+        sequence = 1
+        while backup.exists():
+            backup = target.with_name(
+                target.name + ".spec-backup-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + f"-{sequence}"
+            )
+            sequence += 1
         shutil.copy2(target, backup)
         try:
             data = json.loads(target.read_text(encoding="utf-8"))
