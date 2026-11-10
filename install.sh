@@ -5,8 +5,8 @@ set -euo pipefail
 REPO_URL="${REPO_URL:-}"
 REPO_REF="${REPO_REF:-}"
 INSTALL_HOSTS="${INSTALL_HOSTS:-}"
-# Install profile (planning F16, sub-step 1): empty means core (the default),
-# `full` restores the complete component set. Validated in validate_inputs.
+# Install profile is a compatibility alias pair. Both values ship the same
+# six-stage kernel payload; validation still rejects unknown values.
 INSTALL_PROFILE="${INSTALL_PROFILE:-}"
 # Empty INSTALL_HOSTS means auto-detect (only hosts with a real presence on
 # this machine); an explicit value, including `all`, always bypasses probing.
@@ -53,10 +53,7 @@ HERMES_SKILLS_DIR="${HERMES_SKILLS_DIR:-$(default_hermes_home)/skills}"
 
 CLAUDE_ALIASES=()
 STALE_CLAUDE_ALIASES=(route tasks)
-# Retired stages that once shipped as commands/spec/<stage>.md in the current
-# subdirectory layout; the swarm stages went away with the multi-session
-# worker machinery and must be swept on upgrade like any retired artifact.
-STALE_CLAUDE_SUBDIR_STAGES=(assemble combat marshal)
+RETIRED_STAGES=(goal autoplan autorun update status organize assemble combat marshal)
 PREPARED_SOURCE_DIR=""
 INSTALL_TEMP_DIR=""
 SOURCE_CLONE_DIR=""
@@ -119,41 +116,10 @@ resolve_python() {
 }
 
 # User-facing stages for Claude command files. Single source: the stage list
-# documented in SKILL.md and references/commands.md.
-USER_STAGES=(new goal autoplan autorun run check done push update status doctor organize)
-# Core stage surface under INSTALL_PROFILE=core (planning F16): the kernel
-# command files every install ships. The internal route/tasks views ride the
-# scripts tree regardless of profile. Extended stages (USER_STAGES minus
-# CORE_STAGES) install only under `full`; membership may move back based on
-# usage evidence in later rounds.
+# documented in SKILL.md and references/commands.md. CORE_STAGES is the same
+# kernel surface under its compatibility alias name.
+USER_STAGES=(new run check done push doctor)
 CORE_STAGES=(new run check done push doctor)
-# Core payload lists. These are seeded from payload_contract.py (the single
-# source of truth) at prepare time; the literals here
-# are only the fallback for a tree too old to carry the contract module.
-# Alignment is pinned by tests/test_install_profile.py.
-CORE_EXCLUDED_DIRS=(agents slots)
-CORE_KEPT_FILES=(agents/openai.yaml)
-CORE_EXCLUDED_SCRIPTS=(
-  autoplan_gate.py
-  chain_state.py
-)
-
-# Populate the core payload lists from payload_contract.py in the prepared
-# source. A tree old enough to lack the module keeps the literals above.
-resolve_payload_contract() {
-  local contract="$PREPARED_SOURCE_DIR/scripts/payload_contract.py"
-  [ -n "${PYTHON_BIN:-}" ] && [ -f "$contract" ] || return 0
-  local dirs scripts kept
-  if dirs="$("$PYTHON_BIN" "$contract" excluded-dirs --profile core 2>/dev/null)" && [ -n "$dirs" ]; then
-    read -r -a CORE_EXCLUDED_DIRS <<<"$dirs"
-  fi
-  if scripts="$("$PYTHON_BIN" "$contract" excluded-scripts --profile core 2>/dev/null)" && [ -n "$scripts" ]; then
-    read -r -a CORE_EXCLUDED_SCRIPTS <<<"$scripts"
-  fi
-  if kept="$("$PYTHON_BIN" "$contract" kept-files --profile core 2>/dev/null)" && [ -n "$kept" ]; then
-    read -r -a CORE_KEPT_FILES <<<"$kept"
-  fi
-}
 
 format_stage_aliases() {
   local prefix="$1"
@@ -252,8 +218,8 @@ default_skill_dir_for() {
 host_trigger_hint() {
   case "$1" in
     codex|zcode|pi) printf '%s\n' 'trigger $spec' ;;
-    devin|cursor) printf '%s\n' 'load /spec, then ask spec:goal' ;;
-    dsh) printf '%s\n' 'load the spec skill via the skill tool, then ask spec:goal' ;;
+    devin|cursor) printf '%s\n' 'load /spec, then ask spec:new' ;;
+    dsh) printf '%s\n' 'load the spec skill via the skill tool, then ask spec:new' ;;
     *) printf '%s\n' 'trigger the spec skill' ;;
   esac
 }
@@ -385,20 +351,6 @@ validate_hosts() {
   [ "$enabled" = "1" ] || fail "INSTALL_HOSTS must include a supported host: all, claude, claude-desktop, codex, codex-desktop, cursor, cursor-cli, desktop, devin, devin-desktop, gemini, grok, grokbuild, opencode, openclaw, hermes, pi, rpi, zcode, or dsh"
 }
 
-# Extended stages = USER_STAGES minus CORE_STAGES, computed so a future
-# USER_STAGES addition lands in the extended set by default (core stays the
-# stable kernel surface until deliberately widened).
-extended_stage_list() {
-  local stage out=""
-  for stage in "${USER_STAGES[@]}"; do
-    case " ${CORE_STAGES[*]} " in
-      *" $stage "*) ;;
-      *) out="$out $stage" ;;
-    esac
-  done
-  printf '%s' "${out# }"
-}
-
 validate_stage_profiles() {
   local stage
   for stage in "${CORE_STAGES[@]}"; do
@@ -494,32 +446,6 @@ export_runtime() {
   # Release packages omit the exporter; copy their runtime payload directly.
   mkdir -p "$output_dir"
   cp -R "$source_dir/." "$output_dir/"
-  # Release trees ship no exporter (SCRIPT_BLACKLIST), so core filtering on
-  # this path prunes the staged copy — the staging dir is never user-visible,
-  # which keeps the single-exit rule meaningful where an exit exists.
-  if [ "$INSTALL_PROFILE" = "core" ]; then
-    local excluded_dir excluded_script kept_file kept_stash
-    kept_stash="$(mktemp -d "${TMPDIR:-/tmp}/spec-core-keep.XXXXXX")"
-    for kept_file in "${CORE_KEPT_FILES[@]}"; do
-      if [ -f "$output_dir/$kept_file" ]; then
-        mkdir -p "$kept_stash/$(dirname "$kept_file")"
-        cp "$output_dir/$kept_file" "$kept_stash/$kept_file"
-      fi
-    done
-    for excluded_dir in "${CORE_EXCLUDED_DIRS[@]}"; do
-      rm -rf -- "$output_dir/$excluded_dir"
-    done
-    for kept_file in "${CORE_KEPT_FILES[@]}"; do
-      if [ -f "$kept_stash/$kept_file" ]; then
-        mkdir -p "$output_dir/$(dirname "$kept_file")"
-        cp "$kept_stash/$kept_file" "$output_dir/$kept_file"
-      fi
-    done
-    rm -rf -- "$kept_stash"
-    for excluded_script in "${CORE_EXCLUDED_SCRIPTS[@]}"; do
-      rm -f -- "$output_dir/scripts/$excluded_script"
-    done
-  fi
 }
 
 backup_namespace() {
@@ -675,17 +601,11 @@ stage_description() {
     route) printf '%s\n' "Spec auto-routing" ;;
     base) printf '%s\n' "Spec: resolve the next action" ;;
     new) printf '%s\n' "Spec: create a task package" ;;
-    goal) printf '%s\n' "Spec: one-shot goal chain" ;;
-    autoplan) printf '%s\n' "Spec: interactive planning rounds" ;;
-    autorun) printf '%s\n' "Spec: recursive autorun chain" ;;
     run) printf '%s\n' "Spec: execute or resume" ;;
     check) printf '%s\n' "Spec: collaborative review" ;;
     done) printf '%s\n' "Spec: archive and record" ;;
     push) printf '%s\n' "Spec: merge and push" ;;
-    update) printf '%s\n' "Spec: adjust tasks" ;;
-    status) printf '%s\n' "Spec: package overview" ;;
     doctor) printf '%s\n' "Spec: environment self-check and repair" ;;
-    organize) printf '%s\n' "Spec: structure audit and tidy-up" ;;
     *) printf '%s\n' "Spec workflow stage" ;;
   esac
 }
@@ -701,34 +621,11 @@ command_body() {
 Internal route first, then continue with the right spec stage. Do not present route as a user-facing stage unless debugging the workflow.
 EOF_BODY
       ;;
-    goal)
-      cat <<EOF_BODY
-# /$command_name
-
-Run the one-shot goal workflow: plan the task package, execute every task in this session, self-verify each delivery at the package's declared verification level, and archive and commit scoped changes after gates pass. Default: stop at the local commit and print the spec:push command as the next step; run the safe spec:push flow only when the invocation carried --push or the user explicitly asks to push in this session. Recover verify and gate failures in-session via Recovery; stop only at authority, an external blocker, or a failed hook, commit or push preflight.
-EOF_BODY
-      ;;
-    autoplan)
-      cat <<EOF_BODY
-# /$command_name
-
-Run the interactive planning workflow: clarify goal, scope, technology, priorities and risks, then resolve execution from the actual client and surface. Desktop and IDE-plugin sessions use current-session framework/detail/review passes; verified CLI adapters may use the serial fresh-session chain. No in-process subagent delegation transfers chain ownership: native workers are optional bounded helpers, and review without them is explicitly main-session review. Keep pass receipts and recovery state, run the planning gate, report readiness and stop. Never start autorun from autoplan. Read references/stages/autoplan.md before execution.
-EOF_BODY
-      ;;
-    autorun)
-      cat <<EOF_BODY
-# /$command_name
-
-Run the recursive autorun chain using the actual client and surface: desktop and IDE-plugin sessions continue in the current session; verified CLI adapters retain fresh interactive sessions. Finish each package through run/check/done, perform Git publication only when explicitly authorized, then plan the next unchecked feature. Preserve scope, verification and recovery gates; recover in-session and stop only at a permission boundary, an unrepaired external blocker, or a failed hook, commit or push preflight. Safety rails: no round cap unless --max-rounds is set; follow the chain state and package gates. Do not launch another agent just because its CLI is on PATH. Read references/stages/autorun.md before execution.
-EOF_BODY
-      ;;
     run)
       cat <<EOF_BODY
 # /$command_name
 
-Execute the active spec to a concrete result in one shot when possible. If prior work was interrupted, recover state from the task package and continue from the next incomplete item.
-
-The main session is the orchestrator: work ready tasks in dependency order, run each task's verify before checking it off, and keep going until the package converges. Bounded sidecar work follows the orchestration contract in references/orchestration.md after a route_decision.py call; loop-shaped work follows a managed slot protocol. Follow Recovery in-session; stop only at authority or an environment blocker you cannot repair.
+Execute the active spec to a concrete result in one shot when possible. If prior work was interrupted, recover state from the task package and continue from the next incomplete item. Work ready tasks in dependency order, run each task's verify before checking it off, and keep going until the package converges. Follow Recovery in-session; stop only at authority or an environment blocker you cannot repair.
 EOF_BODY
       ;;
     check)
@@ -752,32 +649,11 @@ EOF_BODY
 After spec:done and a committed working branch, run the Git handoff flow: safety precheck, merge the branch into main, push main, and delete the merged local and remote branch.
 EOF_BODY
       ;;
-    update)
-      cat <<EOF_BODY
-# /$command_name
-
-Adjust the current spec during execution: append genuinely new tasks, update scope or acceptance criteria with evidence, and keep the worktree intact; do not commit or stash without a user request.
-EOF_BODY
-      ;;
-    status)
-      cat <<EOF_BODY
-# /$command_name
-
-Show the user a concise overview across active task packages, including each package's phase, progress, blockers, and next action.
-EOF_BODY
-      ;;
     doctor)
       cat <<EOF_BODY
 # /$command_name
 
 Run the spec environment doctor for Python, Git, the install manifest, rendered Git hooks, and Stop hook wiring. Report its findings and any migration advisories.
-EOF_BODY
-      ;;
-    organize)
-      cat <<EOF_BODY
-# /$command_name
-
-Run \`slots/organize/scripts/organize_project_structure.py --root <project>\` for the structure audit. The organize slot is available in the full profile. Use --check for read-only verification or --update-baseline to explicitly update the baseline.
 EOF_BODY
       ;;
     new)
@@ -840,7 +716,7 @@ This is a Claude Code slash-command alias for the installed spec skill.
 
 Use ../spec/SKILL.md as the canonical workflow definition, then follow the /$alias_name section in ../spec/references/commands.md and ../spec/references/output-contracts.md.
 
-Do not create a separate workflow. Treat this alias as stage '$stage' of the same spec new/goal/run/check/done/push/update/status task-package workflow.
+Do not create a separate workflow. Treat this alias as stage '$stage' of the same spec new/run/check/done/push/doctor task-package workflow.
 EOF_ALIAS
   write_file_from_stdin "$target_dir/.spec-skill-install" <<EOF_MARKER
 installed_by=spec/install.sh
@@ -867,46 +743,16 @@ preflight_claude_targets() {
   done
 }
 
-# F16 core profile: a previous full install leaves extended-stage command
-# files and native agents outside the skill tree, where copy_runtime's
-# whole-tree replace cannot reach them. A core upgrade sweeps them the same
-# way retired stages are swept — backed up, never deleted outright.
-sweep_core_excluded_claude_artifacts() {
+# Legacy upgrades can leave retired stage commands and native agent contracts
+# outside the skill tree; sweep installer-owned files without touching user files.
+sweep_retired_claude_artifacts() {
   local stage name
-  for stage in $(extended_stage_list); do
+  for stage in "${RETIRED_STAGES[@]}"; do
     remove_installer_owned "$CLAUDE_COMMANDS_DIR/$SKILL_NAME/$stage.md"
     remove_installer_owned "$CLAUDE_COMMANDS_DIR/$SKILL_NAME:$stage.md"
   done
   for name in orchestrator planner reviewer confirmer; do
     remove_installer_owned "$CLAUDE_AGENTS_DIR/$name.md"
-  done
-}
-
-preflight_claude_agent_targets() {
-  local name target
-  for name in orchestrator planner reviewer confirmer; do
-    target="$CLAUDE_AGENTS_DIR/$name.md"
-    preflight_native_target "$target"
-  done
-}
-
-install_claude_agents() {
-  local runtime_dir="$1"
-  local name source target
-  ensure_private_dir "$CLAUDE_AGENTS_DIR"
-  for name in orchestrator planner reviewer confirmer; do
-    source="$runtime_dir/agents/$name.md"
-    target="$CLAUDE_AGENTS_DIR/$name.md"
-    [ -f "$source" ] || fail "sidecar agent contract missing from runtime package: $source"
-    backup_orphan_native_marker "$target"
-    backup_existing "$target"
-    cp "$source" "$target"
-    chmod 600 "$target"
-    write_file_from_stdin "$target.spec-skill-install" <<EOF_MARKER
-installed_by=spec/install.sh
-source=$source
-EOF_MARKER
-    log "Installing Claude Code native agent $name to $target"
   done
 }
 
@@ -953,34 +799,6 @@ check_name_collisions() {
   fail "Refusing to overwrite a different '$SKILL_NAME' skill. Re-run with FORCE=1 to back it up and replace it, or remove/rename the existing skill first."
 }
 
-preflight_native_target() {
-  local target="$1"
-  local marker="$1.spec-skill-install"
-  local parent
-  parent="$(dirname "$target")"
-  # Match the directory checks performed by publication before writing any
-  # launcher/skill/extension, not only when this particular file is reached.
-  reject_symlink "$parent"
-  if target_exists "$parent"; then
-    [ -d "$parent" ] || fail "native install parent is not a directory: $parent"
-  fi
-  ensure_replaceable "$target"
-  reject_symlink "$marker"
-  if target_exists "$marker"; then
-    [ -f "$marker" ] || fail "native install marker is not a regular file: $marker"
-    if ! target_exists "$target"; then
-      ensure_replaceable "$marker"
-    fi
-  fi
-}
-
-backup_orphan_native_marker() {
-  local target="$1"
-  if ! target_exists "$target" && target_exists "$target.spec-skill-install"; then
-    backup_existing "$target.spec-skill-install"
-  fi
-}
-
 preflight_pi_targets() {
   local target="$PI_SKILLS_DIR/$SKILL_NAME"
   local stage
@@ -996,11 +814,7 @@ preflight_targets() {
   if host_enabled claude; then
     require_allowed_root "Claude Code" "$CLAUDE_SKILLS_DIR" "$HOME/.claude/skills"
     require_allowed_root "Claude Code commands" "$CLAUDE_COMMANDS_DIR" "$HOME/.claude/commands"
-    require_allowed_root "Claude Code agents" "$CLAUDE_AGENTS_DIR" "$HOME/.claude/agents"
     preflight_claude_targets
-    if [ "$INSTALL_PROFILE" = "full" ]; then
-      preflight_claude_agent_targets
-    fi
   fi
   if host_enabled pi; then
     require_allowed_root "Pi" "$PI_SKILLS_DIR" "$HOME/.pi/agent/skills"
@@ -1039,7 +853,7 @@ install_claude() {
   backup_existing "$command_target"
 
   # Sweep the previous per-stage alias skill dirs (a very old layout).
-  for stage in "${CLAUDE_ALIASES[@]}" "${STALE_CLAUDE_ALIASES[@]}"; do
+  for stage in "${CLAUDE_ALIASES[@]}" "${STALE_CLAUDE_ALIASES[@]}" "${RETIRED_STAGES[@]}"; do
     alias_dir="$CLAUDE_SKILLS_DIR/$SKILL_NAME:$stage"
     remove_installer_owned "$alias_dir"
   done
@@ -1050,16 +864,13 @@ install_claude() {
   # Claude Code uses read spec:check.md as speccheck.md, so /spec:check was
   # never registered and surfaced as "Did you mean speccheck?". The colon name
   # is still reachable from this bash installer, so removal works here.
-  for stage in "${CLAUDE_ALIASES[@]}" "${STALE_CLAUDE_ALIASES[@]}"; do
+  for stage in "${CLAUDE_ALIASES[@]}" "${STALE_CLAUDE_ALIASES[@]}" "${RETIRED_STAGES[@]}"; do
     alias_command="$CLAUDE_COMMANDS_DIR/$SKILL_NAME:$stage.md"
     remove_installer_owned "$alias_command"
   done
 
-  # Sweep retired stages that shipped in the current subdirectory layout
-  # (commands/spec/<stage>.md). The swarm stages are gone from USER_STAGES,
-  # but nothing removed their files on upgrade — leaving them in place would
-  # keep dead /spec:<stage> commands registered next to the live stages.
-  for stage in "${STALE_CLAUDE_SUBDIR_STAGES[@]}"; do
+  # Sweep retired stages that shipped in the current subdirectory layout.
+  for stage in "${RETIRED_STAGES[@]}"; do
     subdir_command="$CLAUDE_COMMANDS_DIR/$SKILL_NAME/$stage.md"
     remove_installer_owned "$subdir_command"
   done
@@ -1072,11 +883,7 @@ install_claude() {
     write_claude_command "$SKILL_NAME:$stage" "$alias_command" "$stage"
   done
 
-  if [ "$INSTALL_PROFILE" = "full" ]; then
-    install_claude_agents "$runtime_dir"
-  else
-    sweep_core_excluded_claude_artifacts
-  fi
+  sweep_retired_claude_artifacts
 }
 
 # --- Pi native command surface (F4) -----------------------------------------
@@ -1137,13 +944,10 @@ EOF_MARKER
 }
 
 pi_sweep_stale_templates() {
-  # Downgrade (full->core) and stage retirement both leave installer-owned
-  # templates behind. The candidate list reuses the truth-source stage
-  # lists (USER_STAGES + the retired Claude stage lists) instead of a
-  # private copy; user-owned files never carry our marker and are left
-  # untouched.
+  # Stage retirement leaves installer-owned templates behind; user-owned
+  # files never carry our marker and are left untouched.
   local stage active=" base ${CLAUDE_ALIASES[*]} "
-  for stage in "${USER_STAGES[@]}" "${STALE_CLAUDE_ALIASES[@]}" "${STALE_CLAUDE_SUBDIR_STAGES[@]}"; do
+  for stage in "${USER_STAGES[@]}" "${STALE_CLAUDE_ALIASES[@]}" "${RETIRED_STAGES[@]}"; do
     case "$active" in
       *" $stage "*) ;;
       *) remove_installer_owned "$(pi_template_file "$stage")" ;;
@@ -1208,23 +1012,13 @@ main() {
     fi
   fi
   prepare_source
-  resolve_payload_contract
   INSTALL_TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/spec-skill-install.XXXXXX")"
   runtime_dir="$INSTALL_TEMP_DIR/runtime"
 
-  if [ "$INSTALL_PROFILE" = "core" ]; then
-    log "Install profile: core (default) — kernel stage commands ($(printf '%s ' "${CORE_STAGES[@]}" | sed 's/ $//')), hooks, and scripts only"
-    log "Not installed under core: extension components (slots/, agents/) and extended stage commands ($(extended_stage_list)) — set INSTALL_PROFILE=full to install everything"
-  else
-    log "Install profile: full — installing the complete component set"
-  fi
+  log "Install profile: $INSTALL_PROFILE — six-stage kernel ($(printf '%s ' "${USER_STAGES[@]}" | sed 's/ $//'))"
 
   export_runtime "$PREPARED_SOURCE_DIR" "$runtime_dir"
-  if [ "$INSTALL_PROFILE" = "core" ]; then
-    CLAUDE_ALIASES=("${CORE_STAGES[@]}")
-  else
-    CLAUDE_ALIASES=("${USER_STAGES[@]}")
-  fi
+  CLAUDE_ALIASES=("${USER_STAGES[@]}")
   check_name_collisions
   preflight_targets
 

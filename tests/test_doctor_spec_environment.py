@@ -151,11 +151,12 @@ def test_layout_probe_does_not_write_bytecode(tmp_path):
     assert not any(skill.rglob("__pycache__"))
 
 
-def test_manifest_selects_the_core_runtime_face(tmp_path):
+def test_manifest_profile_does_not_change_the_kernel_runtime_face(tmp_path):
     core = make_skill(tmp_path / "core", profile="core")
     core_doctor = Doctor(skill_root=core, project_root=tmp_path)
     assert core_doctor.install_profile() == "core"
     face = core_doctor.required_runtime_files()
+    assert face == REQUIRED_RUNTIME_FILES
     assert "agents/openai.yaml" in face
     assert not any(name.startswith(("agents/orchestrator", "slots/")) for name in face)
     core_doctor.check_skill_layout()

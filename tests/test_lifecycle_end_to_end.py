@@ -201,8 +201,8 @@ def test_corrected_completed_verify_can_recover_with_retained_history(tmp_path, 
     result = json.loads(attempt(tmp_path, *check).stdout)
     assert result["overall"] is True
     assert history in tasks_path.read_text(encoding="utf-8")
-    update_doc = (SCRIPTS.parent / "references/stages/update.md").read_text(encoding="utf-8")
-    assert "invalid" in update_doc and "evidence" in update_doc and "verify" in update_doc
+    check_doc = (SCRIPTS.parent / "references/stages/check.md").read_text(encoding="utf-8")
+    assert "verify" in check_doc and "evidence" in check_doc
 
 
 def test_open_decision_keeps_the_authority_boundary(tmp_path):

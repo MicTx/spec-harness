@@ -27,7 +27,7 @@
 ```bash
 git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
 cd /tmp/spec-harness
-git checkout v0.30.0
+git checkout v0.31.0
 bash install.sh
 ```
 
@@ -43,11 +43,10 @@ git status --short
 支持 Skill 的 CLI 可以直接开始：
 
 ```text
-$spec
-spec:goal 为已有 API 增加审计日志导出，包含权限检查、接口测试和恢复说明
+$spec 为已有 API 增加审计日志导出，包含权限检查、接口测试和恢复说明
 ```
 
-Claude Code 使用对应的 `/spec:goal` 入口。想先观察三份文件时，也可以初始化任务包：
+Claude Code 使用 `/spec` 从磁盘解析下一步。想先观察任务包文件时，也可以初始化：
 
 ```bash
 python3 /tmp/spec-harness/scripts/init_spec_package.py \
@@ -93,28 +92,9 @@ python3 /tmp/spec-harness/scripts/init_spec_package.py \
 
 准备勾选时，先运行 `verify`，再改变复选框。`boundary` 说明做到哪里为止，`verify` 说明凭什么说做完；两者缺一不可。
 
-## 第四步：只在边界清楚时并行
+## 第四步：按依赖顺序执行
 
-两个 Agent 同时修改同一个路由，通常会增加合并成本。先让仓库判断任务形状：
-
-```bash
-python3 /tmp/spec-harness/slots/workflow-runner/scripts/workflow_route.py \
-  --text "并行审查导出接口的安全、测试和文档" \
-  --json
-```
-
-适合并行时，仓库自有 driver 执行 fan-out：
-
-```bash
-python3 /tmp/spec-harness/slots/workflow-runner/scripts/workflow_fanout.py \
-  --backend codex \
-  --plan plan.json \
-  --out results.jsonl \
-  --concurrency 2 \
-  --timeout 300
-```
-
-一个 item 要写清目标、范围、排除项、输出和验证。Pi 或 Codex 只是可替换的 worker CLI；流程真源仍是任务包，主会话仍负责阅读结果和运行 verify。没有合适后端时，串行执行更可靠，不能补写一个不存在的成功结果。
+两个 Agent 同时修改同一个路由，通常会增加合并成本。按 `depends-on` 执行就绪任务；确实需要分工时，每个任务写清目标、范围、排除项、输出和 `verify`。执行者可以不同，流程真源仍是任务包，主会话仍负责阅读结果和运行每条验证。没有独立边界时，串行执行更可靠，不能补写一个不存在的成功结果。
 
 ## 第五步：边做边留下交接点
 
@@ -182,15 +162,9 @@ python3 /tmp/spec-harness/scripts/push_spec_package.py \
 
 `push` 会再次检查工作树、任务包和目标 Git 树。它不是把当前所有改动一起推上去的快捷键；没有归属的改动要先拆开。
 
-## 第八步：项目级的长路——先规划，再接力
+## 第八步：下一轮从磁盘开始
 
-第七步收口的是单个任务包。如果目标大到要连续开很多包，路径变成两层：
-
-1. **先把项目规划写成带功能 checkbox 的文档**。放在项目根的 `.spec/plans/` 目录（索引 `.spec/plans/README.md`，单轮计划 `<日期>_<动词>-<对象>.md`，多轮集群 `<slug>/master.md` + 阶段细节）或用 `--plan` 显式指定；每个功能小到一个任务包能装下。
-2. **`autoplan` 规划**：几轮征询把目标问清，再在当前会话按框架、逐阶段细节和一致性复核逐轮推进，过结构门禁与独立复核后停在就绪报告——它不启动执行。
-3. **`autorun` 接力**：当前包走完门禁推送后，从规划文档里计划下一轮并在同一会话继续，直到功能 checkbox 全部勾完。每一轮都是完整的 run/check/归档流程；没有合格规划文档时拒绝起链，轮次上限让递归有边界，不会自己发明范围。
-
-单包流程里的三张纸、门禁和交接机制在链上逐轮复用；中断后从磁盘状态恢复，不需要重读聊天记录。参数与护栏细节见 [`references/commands.md`](../references/commands.md)。
+第七步收口的是单个任务包。目标大到需要连续开很多包时，不另起一条规划链：归档当前包后，下一轮再从 `$spec` 读取磁盘状态，按同样六个阶段重新写目标、范围、任务和验证。历史规划文档是证据，不是自动执行入口；每次交付仍由当前任务包和真实门禁收口。
 
 ## 遇到偏差时回到最早的不确定点
 
@@ -200,7 +174,7 @@ python3 /tmp/spec-harness/scripts/push_spec_package.py \
 
 **并行结果无法合并**：item 范围重叠，或输出形状不统一。缩小边界，让每项结果都带文件、结论和验证。
 
-**中断后不知道从哪里继续**：不要重读整段聊天。先跑 route 和 status，处理任务包报告的下一项。
+**中断后不知道从哪里继续**：不要重读整段聊天。先跑 `$spec` 的磁盘路由，处理任务包报告的下一项。
 
 ## 把骨架带回你的项目
 

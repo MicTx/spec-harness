@@ -1,23 +1,10 @@
-"""INSTALL_PROFILE=core|full — planning F16 sub-step 1 (AUD-18).
-
-The default install collapses to the kernel surface: core stage command
-files plus the runtime tree minus extension components (``slots/``,
-``agents/``). ``INSTALL_PROFILE=full`` must restore the pre-change install
-byte-for-byte, and an unknown value fails loudly. Three evidence layers:
-
-* exporter-level: the profile flag filters the payload tree, full stays
-  byte-identical to the flagless default (release pipelines unchanged);
-* sandbox (``-k sandbox``): real ``bash install.sh`` runs under a temp
-  HOME — default core layout, full parity, loud rejection, downgrade sweep,
-  and the no-exporter copy path;
-* smoke (``-k smoke``): the shipped smoke's core subset passes on a core
-  install, and its default profile is still the full sequence.
-"""
+"""Installer and exporter compatibility aliases share one six-stage payload."""
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -27,26 +14,25 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 INSTALLER = ROOT / "install.sh"
 EXPORTER = ROOT / "scripts" / "export_skill_package.py"
-
 CORE_STAGES = ("new", "run", "check", "done", "push", "doctor")
-EXTENDED_STAGES = ("goal", "autoplan", "autorun", "update", "status", "organize")
-CORE_EXCLUDED_DIRS = ("agents", "slots")
-KEPT_COMPONENT_DIRS = ("hooks", "references")
-# Chain scripts are full-profile only; payload_contract.py, install.sh and the
-# smoke layout must agree on this list.
-CORE_EXCLUDED_SCRIPTS = ("autoplan_gate.py", "chain_state.py")
-
-CORE_KEPT_AGENT_FILES = ("openai.yaml",)
-
-
-def assert_excluded_dir_absent(base: Path, name: str) -> None:
-    """A core-excluded component is absent; agents/ may keep only its discovery metadata."""
-    target = base / name
-    if name == "agents" and target.exists():
-        assert sorted(entry.name for entry in target.iterdir()) == list(CORE_KEPT_AGENT_FILES), name
-        return
-    assert not target.exists(), name
-
+RETIRED_STAGES = ("goal", "autoplan", "autorun", "update", "status", "organize")
+RETIRED_SCRIPTS = (
+    "autoplan_gate.py",
+    "chain_state.py",
+    "route_decision.py",
+    "slot_registry.py",
+    "install_slot_hooks.py",
+)
+RETIRED_TREES = (
+    "slots",
+    "references/orchestration.md",
+    "references/slots.md",
+    "agents/orchestrator.md",
+    "agents/planner.md",
+    "agents/reviewer.md",
+    "agents/confirmer.md",
+    "hooks/claude_activation_guard.py",
+)
 
 requires_bash = pytest.mark.skipif(
     subprocess.run(["bash", "--version"], capture_output=True).returncode != 0 or not Path("/bin/bash").exists(),
@@ -64,40 +50,29 @@ def run_export(output: Path, *extra: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def tree_manifest(
-    root: Path,
-    skip_names: frozenset[str] = frozenset({".spec-skill-install", "install-manifest.json"}),
-) -> dict[str, bytes]:
+def tree_manifest(root: Path) -> dict[str, bytes]:
     manifest: dict[str, bytes] = {}
     for path in sorted(root.rglob("*")):
-        if path.is_file() and not any(part in ("__pycache__",) for part in path.parts):
-            relative = path.relative_to(root).as_posix()
-            if relative in skip_names or any(part in skip_names for part in path.parts):
-                continue
-            manifest[relative] = path.read_bytes()
+        if not path.is_file() or "__pycache__" in path.parts:
+            continue
+        relative = path.relative_to(root).as_posix()
+        if relative in (".spec-skill-install", "install-manifest.json") or any(
+            part in (".spec-skill-install", "install-manifest.json") for part in path.parts
+        ):
+            continue
+        manifest[relative] = path.read_bytes()
     return manifest
 
 
 def sandbox_env(home: Path, extra_env: dict[str, str] | None = None) -> dict[str, str]:
-    """Hermetic installer environment: sandbox HOME, controlled PATH.
-
-    Real host CLIs and host-relevant env (including any inherited
-    INSTALL_PROFILE) can never leak into the assertions.
-    """
     env = {
         "HOME": str(home),
         "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
         "BACKUP_ROOT": str(home / ".spec-skill-backups"),
     }
-    for var in (
-        "INSTALL_HOSTS",
-        "INSTALL_PROFILE",
-        "SOURCE_DIR",
-        "FORCE",
-        "INSTALL_DIR",
-    ):
+    for var in ("INSTALL_HOSTS", "INSTALL_PROFILE", "SOURCE_DIR", "FORCE", "INSTALL_DIR"):
         env.pop(var, None)
-    env.update({k: v for k, v in os.environ.items() if k in ("TMPDIR",)})
+    env.update({key: value for key, value in os.environ.items() if key in ("TMPDIR",)})
     if extra_env:
         env.update(extra_env)
     return env
@@ -118,80 +93,40 @@ def run_installer(home: Path, extra_env: dict[str, str] | None = None) -> subpro
 
 
 def claude_stage_commands(home: Path) -> list[str]:
-    commands_dir = home / ".claude" / "commands" / "spec"
-    return sorted(path.name for path in commands_dir.glob("*.md")) if commands_dir.is_dir() else []
+    directory = home / ".claude" / "commands" / "spec"
+    return sorted(path.name for path in directory.glob("*.md")) if directory.is_dir() else []
 
 
-# ---------------------------------------------------------------------------
-# Exporter-level profile behavior
-# ---------------------------------------------------------------------------
-
-
-def test_export_core_excludes_extension_components(tmp_path):
-    output = tmp_path / "core-export"
-    result = run_export(output, "--profile", "core")
-    assert result.returncode == 0, result.stderr
-    for name in ("SKILL.md", "pyproject.toml", "LICENSE"):
-        assert (output / name).is_file(), name
-    for name in KEPT_COMPONENT_DIRS:
-        assert (output / name).is_dir(), name
-    assert (output / "scripts" / "init_spec_package.py").is_file()
-    assert (output / "hooks" / "pre-commit").is_file()
-    for excluded in CORE_EXCLUDED_DIRS:
-        assert_excluded_dir_absent(output, excluded)
-    for excluded in CORE_EXCLUDED_SCRIPTS:
-        assert not (output / "scripts" / excluded).exists(), excluded
-    assert "profile: core" in result.stdout
-
-
-@pytest.mark.parametrize("profile", ["core", "full"])
-def test_exported_instructions_admit_missing_optional_capabilities(tmp_path, profile):
-    output = tmp_path / profile
-    result = run_export(output, "--profile", profile)
-    assert result.returncode == 0, result.stderr
-    assert (output / "slots/team-loop/README.md").exists() is (profile == "full")
-
-
-def test_export_full_profile_is_byte_identical_to_default(tmp_path):
-    """full must equal the flagless default — release pipelines unchanged."""
-    default_output = tmp_path / "default-export"
-    full_output = tmp_path / "full-export"
-    assert run_export(default_output).returncode == 0
-    assert run_export(full_output, "--profile", "full").returncode == 0
-    assert tree_manifest(default_output) == tree_manifest(full_output)
-
-
-def test_extension_classification_stays_pinned_across_carriers():
-    """payload_contract, install.sh copy path, and the smoke layout assertion
-    all carry the core-exclusion lists; they must never drift apart."""
-    import re
-
-    sys.path.insert(0, str(ROOT / "scripts"))
-    import payload_contract  # noqa: E402
-
-    assert payload_contract.CORE_EXCLUDED_DIRS == CORE_EXCLUDED_DIRS
-    assert sorted(payload_contract.CORE_EXCLUDED_SCRIPTS) == sorted(CORE_EXCLUDED_SCRIPTS)
-
-    installer_text = (ROOT / "install.sh").read_text(encoding="utf-8")
-    assert tuple(f"agents/{name}" for name in CORE_KEPT_AGENT_FILES) == payload_contract.CORE_KEPT_FILES
-    kept_block = re.search(r"CORE_KEPT_FILES=\(([^)]*)\)", installer_text)
-    assert kept_block, "install.sh CORE_KEPT_FILES array not found"
-    assert tuple(kept_block.group(1).split()) == payload_contract.CORE_KEPT_FILES
-    installer_block = re.search(
-        r"CORE_EXCLUDED_DIRS=\(([^)]*)\)\n(?:#[^\n]*\n)*(?:CORE_KEPT_FILES=\([^)]*\)\n)?"
-        r"CORE_EXCLUDED_SCRIPTS=\(([^)]*)\)",
-        installer_text,
-        re.DOTALL,
+def assert_kernel_tree(root: Path) -> None:
+    required = (
+        "SKILL.md",
+        "install.sh",
+        "agents/openai.yaml",
+        "hooks/pre-commit",
+        "hooks/pre-push",
+        "references/commands.md",
+        "scripts/init_spec_package.py",
+        "scripts/payload_contract.py",
     )
-    assert installer_block, "install.sh core-exclusion arrays not found"
-    installer_dirs = installer_block.group(1).split()
-    installer_scripts = installer_block.group(2).split()
-    assert tuple(installer_dirs) == CORE_EXCLUDED_DIRS
-    assert tuple(installer_scripts) == CORE_EXCLUDED_SCRIPTS
+    for relative in required:
+        assert (root / relative).is_file(), relative
+    for relative in RETIRED_TREES:
+        assert not (root / relative).exists(), relative
+    for name in RETIRED_SCRIPTS:
+        assert not (root / "scripts" / name).exists(), name
+    assert sorted(path.name for path in (root / "agents").iterdir()) == ["openai.yaml"]
 
-    smoke_text = (ROOT / "scripts" / "smoke_test_spec_skill.py").read_text(encoding="utf-8")
-    for name in CORE_EXCLUDED_SCRIPTS:
-        assert f'"{name}"' in smoke_text, f"smoke layout must pin scripts/{name}"
+
+def test_profile_flags_are_compatibility_aliases(tmp_path):
+    outputs = {}
+    for profile, args in (("default", ()), ("core", ("--profile", "core")), ("full", ("--profile", "full"))):
+        output = tmp_path / profile
+        result = run_export(output, *args)
+        assert result.returncode == 0, result.stderr
+        assert_kernel_tree(output)
+        outputs[profile] = tree_manifest(output)
+    assert outputs["default"] == outputs["core"] == outputs["full"]
+    assert "profile:" not in run_export(tmp_path / "stdout").stdout
 
 
 def test_export_rejects_unknown_profile(tmp_path):
@@ -202,79 +137,39 @@ def test_export_rejects_unknown_profile(tmp_path):
     assert not output.exists()
 
 
-# ---------------------------------------------------------------------------
-# Sandbox installs (-k sandbox)
-# ---------------------------------------------------------------------------
+def test_payload_contract_has_one_copy_dir_source():
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import payload_contract  # noqa: E402
 
-
-@requires_bash
-def test_sandbox_default_profile_installs_core(tmp_path):
-    home = tmp_path / "home"
-    home.mkdir()
-    result = run_installer(home)
-    assert result.returncode == 0, result.stderr
-    assert "Install profile: core (default)" in result.stdout
-    assert "INSTALL_PROFILE=full" in result.stdout
-
-    skill = home / ".claude" / "skills" / "spec"
-    for name in ("SKILL.md", "pyproject.toml") + KEPT_COMPONENT_DIRS:
-        assert (skill / name).exists(), name
-    for excluded in CORE_EXCLUDED_DIRS:
-        assert_excluded_dir_absent(skill, excluded)
-    for excluded in CORE_EXCLUDED_SCRIPTS:
-        assert not (skill / "scripts" / excluded).exists(), excluded
-
-    assert claude_stage_commands(home) == sorted(f"{stage}.md" for stage in CORE_STAGES)
-    assert not (home / ".claude" / "agents").exists()
-
-
-@requires_bash
-def test_sandbox_full_profile_restores_complete_tree(tmp_path):
-    home = tmp_path / "home"
-    home.mkdir()
-    result = run_installer(home, {"INSTALL_PROFILE": "full"})
-    assert result.returncode == 0, result.stderr
-    assert "Install profile: full" in result.stdout
-
-    skill = home / ".claude" / "skills" / "spec"
-    for excluded in CORE_EXCLUDED_DIRS:
-        assert (skill / excluded).is_dir(), excluded
-    for excluded in CORE_EXCLUDED_SCRIPTS:
-        assert (skill / "scripts" / excluded).is_file(), excluded
-    assert claude_stage_commands(home) == sorted(f"{stage}.md" for stage in CORE_STAGES + EXTENDED_STAGES)
-    for name in ("orchestrator", "planner", "reviewer", "confirmer"):
-        assert (home / ".claude" / "agents" / f"{name}.md").is_file(), name
-
-    # full == current export behavior, byte-for-byte (upgrade-safety lock).
-    reference = tmp_path / "reference-export"
-    assert run_export(reference).returncode == 0
-    assert tree_manifest(skill) == tree_manifest(reference)
+    assert payload_contract.COPY_DIRS == ("agents", "hooks", "references")
+    assert payload_contract.PROFILE_VALUES == ("core", "full")
+    assert not hasattr(payload_contract, "CORE_EXCLUDED_DIRS")
+    installer = (ROOT / "install.sh").read_text(encoding="utf-8")
+    assert "CORE_EXCLUDED_DIRS" not in installer
+    assert "CORE_EXCLUDED_SCRIPTS" not in installer
+    core = re.search(r"^CORE_STAGES=\(([^)]*)\)", installer, re.M).group(1).split()
+    assert tuple(core) == CORE_STAGES
 
 
 @requires_bash
 @pytest.mark.parametrize("profile", ["core", "full"])
-def test_sandbox_stage_commands_continue_recoverable_failures(tmp_path, profile):
-    """Installed commands must not contradict the Recovery loop or ask for commits."""
-    home = tmp_path / "home"
+def test_sandbox_profiles_install_identical_kernel(tmp_path, profile):
+    home = tmp_path / f"home-{profile}"
     home.mkdir()
     result = run_installer(home, {"INSTALL_PROFILE": profile})
     assert result.returncode == 0, result.stderr
-    commands = home / ".claude" / "commands" / "spec"
-    run_body = (commands / "run.md").read_text(encoding="utf-8")
-    check_body = (commands / "check.md").read_text(encoding="utf-8")
-    assert "Recovery" in run_body and "Stop at any failed gate" not in run_body
-    assert "Recovery" in check_body and "human-in-the-loop" not in check_body
-    assert "unresolved blocker" in check_body
-    assert "checklist must be fully checked" not in check_body
-    if profile == "full":
-        skill = home / ".claude" / "skills" / "spec"
-        goal_body = (commands / "goal.md").read_text(encoding="utf-8")
-        autorun_body = (commands / "autorun.md").read_text(encoding="utf-8")
-        update_page = (skill / "references" / "stages" / "update.md").read_text(encoding="utf-8")
-        assert "Recovery" in goal_body and "Stop at any failed gate" not in goal_body
-        assert "first failure" not in autorun_body and "5 rounds" not in autorun_body
-        assert "transaction lock" not in autorun_body and "owner/revision" not in autorun_body
-        assert "Commit or stash" not in update_page and "authority" in update_page
+    assert f"Install profile: {profile}" in result.stdout
+    assert "six-stage kernel" in result.stdout
+
+    skill = home / ".claude" / "skills" / "spec"
+    assert_kernel_tree(skill)
+    assert claude_stage_commands(home) == sorted(f"{stage}.md" for stage in CORE_STAGES)
+    assert f"profile={profile}" in (skill / ".spec-skill-install").read_text(encoding="utf-8")
+    assert not (home / ".claude" / "agents").exists()
+    assert not (home / ".claude" / "settings.json").exists()
+    reference = tmp_path / f"reference-{profile}"
+    assert run_export(reference, "--profile", profile).returncode == 0
+    assert tree_manifest(skill) == tree_manifest(reference)
 
 
 @requires_bash
@@ -289,66 +184,67 @@ def test_sandbox_invalid_profile_fails_loudly(tmp_path):
 
 
 @requires_bash
-def test_sandbox_core_upgrade_sweeps_full_artifacts(tmp_path):
+def test_sandbox_upgrade_sweeps_installer_owned_retired_artifacts(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
-    first = run_installer(home, {"INSTALL_PROFILE": "full"})
-    assert first.returncode == 0, first.stderr
-
-    downgrade = run_installer(home)
-    assert downgrade.returncode == 0, downgrade.stderr
-
     skill = home / ".claude" / "skills" / "spec"
-    for excluded in CORE_EXCLUDED_DIRS:
-        assert_excluded_dir_absent(skill, excluded)
-    for excluded in CORE_EXCLUDED_SCRIPTS:
-        assert not (skill / "scripts" / excluded).exists(), excluded
-    assert claude_stage_commands(home) == sorted(f"{stage}.md" for stage in CORE_STAGES)
-    # Swept artifacts are backed up, not deleted outright.
-    backups = home / ".spec-skill-backups"
-    swept = {path.name for path in backups.rglob("goal.md*")}
-    assert swept, "extended stage commands must land in backups on downgrade"
-    for name in ("orchestrator", "planner"):
-        assert list(backups.rglob(f"{name}.md*")), f"agent {name} must land in backups on downgrade"
-    # The former full tree (chain scripts) lands in the whole-tree backup, not in the live skill.
-    assert list(backups.rglob("chain_state.py")), "chain scripts must land in backups on downgrade"
+    commands = home / ".claude" / "commands" / "spec"
+    agents = home / ".claude" / "agents"
+    for stage in RETIRED_STAGES:
+        for directory in (commands, agents):
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / f"{stage}.md"
+            path.write_text("# retired\n", encoding="utf-8")
+            (directory / f"{stage}.md.spec-skill-install").write_text(
+                "installed_by=spec/install.sh\n", encoding="utf-8"
+            )
+    (agents / "orchestrator.md").write_text("# retired\n", encoding="utf-8")
+    (agents / "orchestrator.md.spec-skill-install").write_text("installed_by=spec/install.sh\n", encoding="utf-8")
+    skill.mkdir(parents=True)
+    for name in RETIRED_SCRIPTS:
+        (skill / "scripts").mkdir(exist_ok=True)
+        (skill / "scripts" / name).write_text("# retired\n", encoding="utf-8")
+    (skill / "slots").mkdir()
+    (skill / "references" / "orchestration.md").parent.mkdir(parents=True, exist_ok=True)
+    (skill / "references" / "orchestration.md").write_text("# retired\n", encoding="utf-8")
+    (skill / ".spec-skill-install").write_text("installed_by=spec/install.sh\n", encoding="utf-8")
 
-
-@requires_bash
-def test_sandbox_copy_path_prunes_core_components(tmp_path):
-    """Release trees ship no exporter; core filtering prunes the staged copy."""
-    release_tree = tmp_path / "release-tree"
-    assert run_export(release_tree).returncode == 0
-    home = tmp_path / "home"
-    home.mkdir()
-    result = run_installer(home, {"SOURCE_DIR": str(release_tree)})
+    result = run_installer(home)
     assert result.returncode == 0, result.stderr
-
-    skill = home / ".claude" / "skills" / "spec"
-    for excluded in CORE_EXCLUDED_DIRS:
-        assert_excluded_dir_absent(skill, excluded)
-    for excluded in CORE_EXCLUDED_SCRIPTS:
-        assert not (skill / "scripts" / excluded).exists(), excluded
-    assert (skill / "hooks" / "pre-commit").is_file()
-    assert claude_stage_commands(home) == sorted(f"{stage}.md" for stage in CORE_STAGES)
+    assert_kernel_tree(skill)
+    for stage in RETIRED_STAGES:
+        assert not (commands / f"{stage}.md").exists(), stage
+    backups = home / ".spec-skill-backups"
+    assert list(backups.rglob("chain_state.py")), "old skill tree must be backed up"
+    assert list(backups.rglob("goal.md*")), "retired command must be backed up"
+    assert list(backups.rglob("orchestrator.md*")), "retired agent must be backed up"
 
 
 @requires_bash
-def test_sandbox_doctor_is_profile_aware(tmp_path):
-    """F16 sub-step 2 followup: core installs audit clean against the core
-    face (no extension-absence false positives); full installs keep the full
-    audit and carry their profile stamp."""
+@pytest.mark.parametrize("profile", ["core", "full"])
+def test_sandbox_stage_commands_continue_recoverable_failures(tmp_path, profile):
     home = tmp_path / "home"
     home.mkdir()
-    core = run_installer(home)
-    assert core.returncode == 0, core.stderr
-    core_skill = home / ".claude" / "skills" / "spec"
-    assert "profile=core" in (core_skill / ".spec-skill-install").read_text(encoding="utf-8")
+    assert run_installer(home, {"INSTALL_PROFILE": profile}).returncode == 0
+    commands = home / ".claude" / "commands" / "spec"
+    run_body = (commands / "run.md").read_text(encoding="utf-8")
+    check_body = (commands / "check.md").read_text(encoding="utf-8")
+    assert "Recovery" in run_body and "Stop at any failed gate" not in run_body
+    assert "Recovery" in check_body and "human-in-the-loop" not in check_body
+    assert "unresolved blocker" in check_body
+    assert "checklist must be fully checked" not in check_body
 
-    core_doctor = subprocess.run(
+
+@requires_bash
+def test_sandbox_doctor_is_kernel_aware(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    assert run_installer(home).returncode == 0
+    skill = home / ".claude" / "skills" / "spec"
+    doctor = subprocess.run(
         [
             sys.executable,
-            str(core_skill / "scripts" / "doctor_spec_environment.py"),
+            str(skill / "scripts" / "doctor_spec_environment.py"),
             "--root",
             str(home),
             "--format",
@@ -359,13 +255,10 @@ def test_sandbox_doctor_is_profile_aware(tmp_path):
         env=sandbox_env(home),
         timeout=120,
     )
-    assert core_doctor.returncode == 0, f"{core_doctor.stdout}\n{core_doctor.stderr}"
-    payload = json.loads(core_doctor.stdout)
+    assert doctor.returncode == 0, f"{doctor.stdout}\n{doctor.stderr}"
+    payload = json.loads(doctor.stdout)
     layout = next(check for check in payload["checks"] if check["id"] == "skill.layout")
     assert layout["status"] == "ok"
-    assert "profile=core" in layout["detail"]
-    # The reduced doctor reports the five probes only; the stage command files
-    # remain an installer surface, asserted directly instead.
     assert {check["id"] for check in payload["checks"]} <= {
         "python.runtime",
         "git.available",
@@ -375,206 +268,36 @@ def test_sandbox_doctor_is_profile_aware(tmp_path):
         "advice.checkpoint",
         "advice.activation",
     }
-    assert claude_stage_commands(home) == sorted(f"{stage}.md" for stage in CORE_STAGES)
-
-    full_home = tmp_path / "home-full"
-    full_home.mkdir()
-    full = run_installer(full_home, {"INSTALL_PROFILE": "full"})
-    assert full.returncode == 0, full.stderr
-    full_skill = full_home / ".claude" / "skills" / "spec"
-    assert "profile=full" in (full_skill / ".spec-skill-install").read_text(encoding="utf-8")
-
-    full_doctor = subprocess.run(
-        [
-            sys.executable,
-            str(full_skill / "scripts" / "doctor_spec_environment.py"),
-            "--root",
-            str(full_home),
-            "--format",
-            "json",
-        ],
-        capture_output=True,
-        text=True,
-        env=sandbox_env(full_home),
-        timeout=120,
-    )
-    assert full_doctor.returncode == 0, f"{full_doctor.stdout}\n{full_doctor.stderr}"
-    full_payload = json.loads(full_doctor.stdout)
-    full_layout = next(check for check in full_payload["checks"] if check["id"] == "skill.layout")
-    assert full_layout["status"] == "ok"
-    assert "profile=full" in full_layout["detail"]
-    assert claude_stage_commands(full_home) == sorted(f"{stage}.md" for stage in CORE_STAGES + EXTENDED_STAGES)
-
-
-# ---------------------------------------------------------------------------
-# Smoke profile (-k smoke)
-# ---------------------------------------------------------------------------
 
 
 @requires_bash
-def test_smoke_core_subset_passes_on_core_install(tmp_path):
+@pytest.mark.parametrize("profile", ["core", "full"])
+def test_smoke_profiles_pass_on_kernel_install(tmp_path, profile):
     home = tmp_path / "home"
     home.mkdir()
-    install = run_installer(home)
-    assert install.returncode == 0, install.stderr
-
+    assert run_installer(home, {"INSTALL_PROFILE": profile}).returncode == 0
     smoke = home / ".claude" / "skills" / "spec" / "scripts" / "smoke_test_spec_skill.py"
     result = subprocess.run(
-        [sys.executable, str(smoke), "--profile", "core"],
+        [sys.executable, str(smoke), "--profile", profile],
         capture_output=True,
         text=True,
         env=sandbox_env(home),
         timeout=600,
     )
     assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
-    assert "core gate chain ok" in result.stdout
+    assert "smoke: OK" in result.stdout
 
 
-def test_smoke_default_profile_is_full_and_rejects_unknown():
+def test_smoke_rejects_unknown_profile():
     smoke = ROOT / "scripts" / "smoke_test_spec_skill.py"
-    bogus = subprocess.run(
+    result = subprocess.run(
         [sys.executable, str(smoke), "--profile", "bogus"],
         capture_output=True,
         text=True,
         timeout=60,
     )
-    assert bogus.returncode != 0
-    assert "invalid choice" in bogus.stderr
-
-    source = smoke.read_text(encoding="utf-8")
-    assert 'default="full"' in source
-
-
-# ---------------------------------------------------------------------------
-# Discovery metadata survives core (proactive admission)
-# ---------------------------------------------------------------------------
-
-#: Retired guard kept as a no-op stub until 0.28 so old settings entries never block.
-ACTIVATION_RUNTIME_FILES = ("hooks/claude_activation_guard.py",)
-
-
-def test_export_core_keeps_discovery_metadata_but_no_agent_contracts(tmp_path):
-    output = tmp_path / "core-export"
-    assert run_export(output, "--profile", "core").returncode == 0
-    assert (output / "agents" / "openai.yaml").is_file()
-    shipped = sorted(p.name for p in (output / "agents").iterdir())
-    assert shipped == list(CORE_KEPT_AGENT_FILES), shipped
-    for contract in ("orchestrator.md", "planner.md", "reviewer.md", "confirmer.md"):
-        assert not (output / "agents" / contract).exists(), contract
-
-
-def test_export_core_ships_the_retired_activation_stub_without_slots(tmp_path):
-    output = tmp_path / "core-export"
-    assert run_export(output, "--profile", "core").returncode == 0
-    for rel in ACTIVATION_RUNTIME_FILES:
-        assert (output / rel).is_file(), rel
-    assert not (output / "slots").exists()
-    assert not (output / "server").exists()
-
-
-def test_full_export_is_unchanged_by_the_core_metadata_rule(tmp_path):
-    default_output = tmp_path / "default-export"
-    full_output = tmp_path / "full-export"
-    assert run_export(default_output).returncode == 0
-    assert run_export(full_output, "--profile", "full").returncode == 0
-    assert tree_manifest(default_output) == tree_manifest(full_output)
-    assert (full_output / "agents" / "orchestrator.md").is_file()
-
-
-@requires_bash
-def test_sandbox_core_install_keeps_metadata_and_does_not_wire_settings(tmp_path):
-    home = tmp_path / "home"
-    home.mkdir()
-    result = run_installer(home)
-    assert result.returncode == 0, result.stderr
-    skill = home / ".claude" / "skills" / "spec"
-    assert (skill / "agents" / "openai.yaml").is_file()
-    assert not (skill / "agents" / "orchestrator.md").exists()
-    assert not (home / ".claude" / "agents").exists()
-    assert not (home / ".claude" / "settings.json").exists()
-    for rel in ACTIVATION_RUNTIME_FILES:
-        assert (skill / rel).is_file(), rel
-
-
-@requires_bash
-def test_sandbox_core_copy_path_prunes_agents_but_keeps_metadata(tmp_path):
-    release_tree = tmp_path / "release-tree"
-    assert run_export(release_tree).returncode == 0
-    home = tmp_path / "home"
-    home.mkdir()
-    result = run_installer(home, {"SOURCE_DIR": str(release_tree)})
-    assert result.returncode == 0, result.stderr
-    skill = home / ".claude" / "skills" / "spec"
-    assert (skill / "agents" / "openai.yaml").is_file()
-    assert not (skill / "agents" / "orchestrator.md").exists()
-
-
-@requires_bash
-def test_sandbox_full_to_core_downgrade_keeps_metadata(tmp_path):
-    home = tmp_path / "home"
-    home.mkdir()
-    assert run_installer(home, {"INSTALL_PROFILE": "full"}).returncode == 0
-    assert run_installer(home).returncode == 0
-    skill = home / ".claude" / "skills" / "spec"
-    assert (skill / "agents" / "openai.yaml").is_file()
-    assert not (skill / "agents" / "planner.md").exists()
-
-
-def _fingerprint_dir(root: Path) -> dict:
-    out = {}
-    for path in sorted(root.rglob("*")):
-        rel = str(path.relative_to(root))
-        if path.is_file():
-            out[rel] = path.read_bytes()
-        else:
-            out[rel + "/"] = b""
-    return out
-
-
-def _source_runtime_fingerprint() -> dict:
-    root = ROOT / ".spec"
-    out = {}
-    for path in sorted(root.rglob("*")):
-        relative = path.relative_to(root)
-        if relative.parts[0] == "artifacts" or any(part in ("__pycache__", ".pytest_cache") for part in relative.parts):
-            continue
-        if path.is_symlink():
-            out[str(relative)] = ("symlink", os.readlink(path))
-        elif path.is_file():
-            out[str(relative)] = ("file", path.read_bytes())
-        else:
-            out[str(relative)] = ("directory", b"")
-    return out
-
-
-def _seed_claude_home(home: Path, cwd: Path):
-    import json as _json
-
-    enc = "".join(c if c.isalnum() or c in "_-" else "-" for c in str(cwd))
-    bucket = home / ".claude" / "projects" / enc
-    bucket.mkdir(parents=True)
-    records = [
-        {
-            "type": "user",
-            "cwd": str(cwd),
-            "sessionId": "sid-1",
-            "uuid": "u1",
-            "timestamp": "2026-11-02T10:00:00Z",
-            "message": {"role": "user", "content": [{"type": "text", "text": "export alpha"}]},
-        },
-        {
-            "type": "assistant",
-            "cwd": str(cwd),
-            "sessionId": "sid-1",
-            "uuid": "u2",
-            "parentUuid": "u1",
-            "timestamp": "2026-11-02T10:01:00Z",
-            "message": {"role": "assistant", "content": [{"type": "text", "text": "alpha next step"}]},
-        },
-    ]
-    with open(bucket / "sid-1.jsonl", "w", encoding="utf-8") as handle:
-        for record in records:
-            handle.write(_json.dumps(record) + "\n")
+    assert result.returncode != 0
+    assert "invalid choice" in result.stderr
 
 
 @requires_bash

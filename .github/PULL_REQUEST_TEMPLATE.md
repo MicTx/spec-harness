@@ -26,13 +26,11 @@ List changed commands, task-package formats, exported layouts, or migration step
 
 ## Checklist
 
-- [ ] `python3 -m compileall -q scripts hooks slots tests` passes
-- [ ] `python3 scripts/slot_registry.py validate` passes
+- [ ] `python3 -m compileall -q scripts hooks tests` passes
 - [ ] `python3 scripts/smoke_test_spec_skill.py` passes
 - [ ] `python3 -m pytest -q` passes
-- [ ] `ruff check scripts/ hooks/ slots/ tests/` passes
-- [ ] `ruff format --check scripts/ hooks/ slots/ tests/` passes
-- [ ] `python3 slots/organize/scripts/organize_project_structure.py --root . --check` passes for documentation or layout changes
+- [ ] `ruff check scripts/ hooks/ tests/` passes
+- [ ] `ruff format --check scripts/ hooks/ tests/` passes
 - [ ] User-facing behavior changes are reflected in `CHANGELOG.md`
 - [ ] Runtime layout or installer changes were verified against an exported package
 - [ ] README, `SKILL.md`, `references/*`, metadata, installer text, and templates stay aligned where applicable

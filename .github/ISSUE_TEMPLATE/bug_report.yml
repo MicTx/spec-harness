@@ -85,7 +85,7 @@ body:
     attributes:
       label: Invocation used
       description: "The /spec:* command, $spec trigger, or direct script call."
-      placeholder: "spec:goal ... / $spec / python3 scripts/..."
+      placeholder: "$spec ... / /spec:run / python3 scripts/..."
     validations:
       required: true
   - type: dropdown

@@ -7,7 +7,6 @@ Behavior-level smoke test for the spec skill scripts.
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import shutil
 import subprocess
@@ -209,15 +208,12 @@ def assert_runtime_layout(root: Path) -> None:
         "SKILL.md",
         "install.sh",
         "agents/openai.yaml",
-        "agents/orchestrator.md",
-        "agents/planner.md",
         "hooks/pre-commit",
         "hooks/pre-push",
         "scripts/issue_closure_support.py",
         "scripts/init_spec_package.py",
         "scripts/read_version.py",
         "scripts/route_spec_package.py",
-        "scripts/route_decision.py",
         "scripts/report_spec_package.py",
         "scripts/check_spec_package.py",
         "scripts/check_all_spec_packages.py",
@@ -226,39 +222,41 @@ def assert_runtime_layout(root: Path) -> None:
         "scripts/push_spec_package.py",
         "scripts/smoke_test_spec_skill.py",
         "scripts/spec_package_support.py",
-        "scripts/slot_registry.py",
         "references/commands.md",
         "references/output-contracts.md",
-        "references/orchestration.md",
     )
     for relative in required_paths:
         path = root / relative
         if not path.exists():
             raise AssertionError(f"missing runtime file: {path}")
-    registry_path = root / "scripts" / "slot_registry.py"
-    registry_spec = importlib.util.spec_from_file_location("runtime_slot_registry", registry_path)
-    if registry_spec is None or registry_spec.loader is None:
-        raise AssertionError(f"cannot load slot registry: {registry_path}")
-    registry = importlib.util.module_from_spec(registry_spec)
-    registry_spec.loader.exec_module(registry)
-    slots = registry.discover_slots(root)
-    expected_slots = {"team-loop", "workflow-runner"}
-    actual_slots = {slot.name for slot in slots}
-    if not expected_slots <= actual_slots:
-        raise AssertionError(f"missing runtime slots: {sorted(expected_slots - actual_slots)}")
-    slot_problems = {}
-    for slot in slots:
-        problems = registry.validate_slot(slot)
-        if problems:
-            slot_problems[slot.name] = problems
-    if slot_problems:
-        raise AssertionError(f"invalid runtime slots: {slot_problems}")
+    retired_paths = (
+        "slots",
+        "agents/orchestrator.md",
+        "agents/planner.md",
+        "agents/reviewer.md",
+        "agents/confirmer.md",
+        "references/orchestration.md",
+        "references/slots.md",
+        "scripts/route_decision.py",
+        "scripts/chain_state.py",
+        "scripts/autoplan_gate.py",
+        "scripts/slot_registry.py",
+        "scripts/install_slot_hooks.py",
+        "hooks/claude_activation_guard.py",
+    )
+    for relative in retired_paths:
+        if (root / relative).exists():
+            raise AssertionError(f"retired runtime file must not exist: {root / relative}")
     legacy_install = root / "scripts" / "install.sh"
     if legacy_install.exists():
         raise AssertionError(f"legacy runtime file must not exist: {legacy_install}")
     doc = (root / "SKILL.md").read_text(encoding="utf-8")
-    if "assemble" in doc or "combat" in doc or "marshal" in doc or "terminal Worker" in doc:
-        raise AssertionError("runtime SKILL.md still advertises retired swarm/worker machinery")
+    for retired in ("/spec:goal", "autoplan", "autorun", "organize", "orchestration", "slots/", "terminal Worker"):
+        if retired in doc:
+            raise AssertionError(f"runtime SKILL.md still advertises retired governance: {retired}")
+    commands = (root / "references" / "commands.md").read_text(encoding="utf-8")
+    for stage in ("new", "run", "check", "done", "push", "doctor"):
+        assert_contains(commands, f"`/spec:{stage}`")
     doctor_script = str(root / "scripts" / "doctor_spec_environment.py")
     completed = run_result(doctor_script, "--root", str(REPO_ROOT), "--format", "json")
     if completed.returncode not in (0, 1):
@@ -369,169 +367,31 @@ def assert_gate_counterexamples() -> None:
     log("question contract probes ok (checkbox + answer)")
 
 
-def assert_orchestration_runtime() -> None:
-    """The orchestration assets must actually run, not just exist on disk."""
-    route_script = str(SCRIPTS_DIR / "route_decision.py")
-    with tempfile.TemporaryDirectory() as tmp:
-        missing = run_result(route_script, "--root", tmp, "--slug", "2026-01-01_fix-missing")
-        if missing.returncode != 1:
-            raise AssertionError(f"a missing package must fail closed, got {missing.returncode}: {missing.stderr}")
-        rejected = run_result(route_script, "--root", tmp, "--slug", "x", "--route", "build + review")
-    if rejected.returncode != 2:
-        raise AssertionError(f"multi-token --route must exit 2, got {rejected.returncode}: {rejected.stderr}")
-    log("orchestration runtime ok")
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Behavior-level smoke test for the spec skill scripts.")
     parser.add_argument(
         "--profile",
         choices=("core", "full"),
         default="full",
-        help=(
-            "core: kernel subset for INSTALL_PROFILE=core installs — core layout plus the "
-            "init->check->done gate chain; full (default): the complete sequence"
-        ),
+        help="Compatibility alias; core and full run the identical six-stage kernel smoke suite.",
     )
     return parser.parse_args()
 
 
-def assert_core_layout(root: Path) -> None:
-    """F16 core profile: the kernel runtime tree without extension components.
-
-    The core profile is meaningful on an installed tree; the authoring
-    checkout always carries slots/ and agents/ and fails this check by
-    design.
-    """
-    required_paths = (
-        "SKILL.md",
-        "install.sh",
-        "hooks/pre-commit",
-        "hooks/pre-push",
-        "scripts/init_spec_package.py",
-        "scripts/route_spec_package.py",
-        "scripts/check_spec_package.py",
-        "scripts/check_all_spec_packages.py",
-        "scripts/complete_spec_package.py",
-        "scripts/push_spec_package.py",
-        "scripts/spec_verify.py",
-        "scripts/spec_package_support.py",
-        "references/commands.md",
-        "references/output-contracts.md",
-    )
-    for relative in required_paths:
-        if not (root / relative).exists():
-            raise AssertionError(f"missing core runtime file: {root / relative}")
-    for excluded in ("slots", "server"):
-        if (root / excluded).exists():
-            raise AssertionError(f"core profile must not ship {excluded}/: {root / excluded}")
-    # agents/ keeps only host discovery metadata (payload_contract CORE_KEPT_FILES,
-    # pinned inline like the chain scripts below); agent contracts stay extension.
-    agents_dir = root / "agents"
-    if agents_dir.exists():
-        extra = sorted(p.name for p in agents_dir.iterdir() if p.name != "openai.yaml")
-        if extra:
-            raise AssertionError(f"core profile must not ship agents/ contracts: {extra}")
-    # Chain-family scripts are extension surface (F16 sub-step 2): the
-    # kernel gates never import them. payload_contract is maintainer-side
-    # (never shipped), so the smoke pins the same list inline.
-    for excluded in ("autoplan_gate.py", "chain_state.py"):
-        if (root / "scripts" / excluded).exists():
-            raise AssertionError(f"core profile must not ship scripts/{excluded}")
-
-
-def run_core_gate_chain() -> None:
-    """Core subset: init -> populate -> check gate passes -> done stage.
-
-    Mirrors the full smoke's package lifecycle trimmed to the kernel chain
-    the core profile promises, skipping the orchestration, slot-registry,
-    and export blocks owned by the full tree.
-    """
-    temp_root = Path(tempfile.mkdtemp(prefix="spec-smoke-core-"))
-    remote_root = None
-    try:
-        run(
-            str(SCRIPTS_DIR / "init_spec_package.py"),
-            "--root",
-            str(temp_root),
-            "--slug",
-            "2026-06-12_smoke-test",
-            "--title",
-            "Smoke Test",
-        )
-        package_dir = temp_root / ".spec" / "specs" / "2026-06-12_smoke-test"
-        # The worktree fingerprint behind runs.jsonl needs a Git workspace;
-        # same promotion the full sequence does before its recordings.
-        remote_root = setup_git_repo(temp_root)
-        populate_spec(package_dir / "spec.md")
-        populate_tasks(package_dir / "tasks.md", "2026-06-12_smoke-test")
-        active_route_state = run(
-            str(SCRIPTS_DIR / "route_spec_package.py"),
-            "--root",
-            str(temp_root),
-            "--slug",
-            "2026-06-12_smoke-test",
-            "--format",
-            "json",
-        )
-        assert_contains(active_route_state, '"stage": "run"')
-        mark_all_tasks_done(package_dir / "tasks.md")
-        mark_success_criteria_passed(package_dir / "spec.md")
-        record_runs("2026-06-12_smoke-test", temp_root)
-        passed_check_result = run_result(
-            str(SCRIPTS_DIR / "check_spec_package.py"),
-            "--root",
-            str(temp_root),
-            "--slug",
-            "2026-06-12_smoke-test",
-        )
-        if passed_check_result.returncode != 0:
-            raise AssertionError(
-                f"core check gate must pass:\n{passed_check_result.stdout}\n{passed_check_result.stderr}"
-            )
-        assert_contains(passed_check_result.stdout, "- Convergence: converged")
-        done_route_state = run(
-            str(SCRIPTS_DIR / "route_spec_package.py"),
-            "--root",
-            str(temp_root),
-            "--slug",
-            "2026-06-12_smoke-test",
-            "--format",
-            "json",
-        )
-        assert_contains(done_route_state, '"stage": "done"')
-        log("core gate chain ok (init -> run -> check -> done)")
-    finally:
-        shutil.rmtree(temp_root, ignore_errors=True)
-        if remote_root:
-            shutil.rmtree(remote_root, ignore_errors=True)
-
-
 def main() -> int:
-    args = parse_args()
-    if args.profile == "core":
-        assert_core_layout(REPO_ROOT)
-        log("core layout ok")
-        assert_doctor_self_check(REPO_ROOT)
-        assert_gate_counterexamples()
-        run_core_gate_chain()
-        log("OK")
-        return 0
-
+    parse_args()
     temp_root = Path(tempfile.mkdtemp(prefix="spec-smoke-"))
     remote_root = None
     try:
         assert_runtime_layout(REPO_ROOT)
         commands_text = (REPO_ROOT / "references" / "commands.md").read_text(encoding="utf-8")
         contracts_text = (REPO_ROOT / "references" / "output-contracts.md").read_text(encoding="utf-8")
-        assert_contains(commands_text, "`/spec:goal`")
-        assert_contains(contracts_text, "`/spec:goal`")
-        assert_contains(commands_text, "`/spec:autoplan`")
-        assert_contains(contracts_text, "`/spec:autoplan`")
+        for stage in ("new", "run", "check", "done", "push", "doctor"):
+            assert_contains(commands_text, f"`/spec:{stage}`")
+            assert_contains(contracts_text, f"`/spec:{stage}`")
         log("runtime layout ok")
         assert_doctor_self_check(REPO_ROOT)
         assert_gate_counterexamples()
-        assert_orchestration_runtime()
         run(
             str(SCRIPTS_DIR / "init_spec_package.py"),
             "--root",

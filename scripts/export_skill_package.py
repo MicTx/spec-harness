@@ -13,15 +13,11 @@ from pathlib import Path
 
 from path_safety import UnsafePathError, ensure_output_outside_root, validate_source_tree
 from payload_contract import (
-    CORE_EXCLUDED_DIRS,
-    CORE_EXCLUDED_SCRIPTS,
-    CORE_KEPT_FILES,
+    COPY_DIRS,
     IGNORE_PATTERNS,
     PROFILE_VALUES,
     ROOT_FILES,
     SCRIPT_BLACKLIST,
-    copy_dirs_for_profile,
-    excluded_scripts_for_profile,
 )
 
 
@@ -60,14 +56,7 @@ def parse_args() -> argparse.Namespace:
         "--profile",
         choices=PROFILE_VALUES,
         default="full",
-        help=(
-            "Component profile of the exported tree (default: full, byte-equivalent to the "
-            "release payload). core excludes the extension components: "
-            + ", ".join(CORE_EXCLUDED_DIRS)
-            + " plus the chain-family scripts ("
-            + ", ".join(sorted(CORE_EXCLUDED_SCRIPTS))
-            + "). install.sh passes its resolved INSTALL_PROFILE here."
-        ),
+        help="Compatibility alias; core and full export the identical six-stage kernel payload.",
     )
     return parser.parse_args()
 
@@ -93,14 +82,11 @@ def copy_tree(src: Path, dest: Path) -> None:
 def main() -> int:
     args = parse_args()
     root = Path(args.root).resolve()
-    copy_dirs = copy_dirs_for_profile(args.profile)
-    excluded_scripts = excluded_scripts_for_profile(args.profile)
-    script_files = tuple(name for name in SCRIPT_FILES if name not in excluded_scripts)
     try:
         output = ensure_output_outside_root(root, Path(args.output), label="export output")
         for name in ROOT_FILES:
             validate_source_tree(root / name)
-        for name in copy_dirs:
+        for name in COPY_DIRS:
             validate_source_tree(root / name)
         validate_source_tree(root / "scripts")
     except UnsafePathError as exc:
@@ -118,26 +104,15 @@ def main() -> int:
     for name in ROOT_FILES:
         copy_file(root / name, output / name)
 
-    for name in copy_dirs:
+    for name in COPY_DIRS:
         copy_tree(root / name, output / name)
-    if args.profile == "core":
-        for rel in CORE_KEPT_FILES:
-            copy_file(root / rel, output / rel)
 
     scripts_output = output / "scripts"
     scripts_output.mkdir(parents=True, exist_ok=True)
-    for name in script_files:
+    for name in SCRIPT_FILES:
         copy_file(root / "scripts" / name, scripts_output / name)
 
     print(f"exported: {output}")
-    if args.profile == "core":
-        print(
-            "profile: core (extension components excluded: "
-            + ", ".join(CORE_EXCLUDED_DIRS)
-            + "; chain-family scripts excluded: "
-            + ", ".join(sorted(CORE_EXCLUDED_SCRIPTS))
-            + ")"
-        )
     return 0
 
 

@@ -65,8 +65,7 @@ def _readme_stages(relative: str) -> list[str]:
 
 def test_install_stage_inventory_is_the_single_source():
     stages = _install_stages()
-    assert len(stages) == len(set(stages)) >= 12
-    assert {"goal", "autoplan", "autorun", "organize"} <= set(stages)
+    assert stages == ["new", "run", "check", "done", "push", "doctor"]
     assert _doctor_stages() == stages, "doctor's consulted stage list must mirror install.sh"
 
 

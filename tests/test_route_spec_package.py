@@ -721,7 +721,7 @@ def test_route_invalid_54_is_advisory(tmp_path):
     )
     state = _route_state(tmp_path, slug)
     assert state["stage"] == "run"
-    assert state["orchestrationErrors"] == []
+    assert "orchestrationErrors" not in state
     assert "Orchestration requirements not met" not in route_for_package(tmp_path, slug)
 
 
@@ -739,12 +739,12 @@ def test_route_and_report_agree_on_invalid_54_with_completed_tasks(tmp_path):
     )
     state = _route_state(tmp_path, slug)
     assert state["stage"] == "done"
-    assert state["orchestrationErrors"] == []
+    assert "orchestrationErrors" not in state
 
     sections, tasks = parse_tasks(tasks_text)
     summary = package_status_summary(slug, tasks_text, ORCHESTRATION_BLOCK_SPEC, COMPLETE_CHECKLIST, sections, tasks)
     assert summary["state"] == "正常", "summary health must agree with route health"
-    assert summary["orchestration"] == ""
+    assert "orchestration" not in summary
     assert summary["gate_failed"] == "no"
 
     report = render_status(

@@ -235,7 +235,6 @@ def route_for_package(
             "total": r.total_tasks,
             "currentTask": v["current_task"],
             "dependencyErrors": r.task_contract_errors,
-            "orchestrationErrors": r.orchestration_errors,
             "verificationScope": r.verification_scope,
             "humanQuestions": r.human_questions,
             "autonomousQuestions": r.autonomous_questions,

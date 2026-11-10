@@ -75,7 +75,7 @@ The snapshot anchors `head` (git HEAD) and `progress` (task counts). `show` comp
 | Stage | Behavior |
 | --- | --- |
 | `/spec` route | Adds a handoff detail line with the latest timestamp, freshness, and collaboration mode, and a JSON `handoff` field when the file exists |
-| `/spec:status` | Appends `handoff <collab>/<freshness>` to the package row |
+| `/spec` route | Adds a handoff detail line with the latest timestamp, freshness, and collaboration mode, and a JSON `handoff` field when the file exists |
 | `/spec:run` | On pause/interrupt/session end, the session runs `update --event pause` (or `takeover` / `escalation` / `lane-end` as appropriate) |
 | `/spec:check` | Reads the snapshot for context when present; it does not re-validate the document |
 | `/spec:done --archive` | Appends the terminal `close` entry (`status: done`) before archiving; the frozen log moves with the package |
@@ -93,4 +93,4 @@ When the scope grows after teammates already started, `scripts/init_spec_package
 
 It refuses a protected or detached branch, a branch already bound to another package, any other active package, an existing slug, a non-Git directory, and a concurrent adopter; one succeeds, the rest write nothing. Teammates are named, never recreated. `--writers-paused` is an operator attestation recorded as such; without it the output says running writers were not confirmed paused, because a member list never proves writes have stopped.
 
-On a branch outside `spec/`, the installed pre-commit hook runs the full gate, so the unfinished package blocks every commit there, teammates' included, and `spec:push` refuses the branch. Rename it before committing (`git branch -m <branch> spec/<name>`), then update the package's `Git integration branch` line to the new name. Updates follow [`stages/update.md`](stages/update.md), which commits and restores only the package directory of an adopted package.
+On a branch outside `spec/`, the installed pre-commit hook runs the full gate, so the unfinished package blocks every commit there, teammates' included, and `spec:push` refuses the branch. Rename it before committing (`git branch -m <branch> spec/<name>`), then update the package's `Git integration branch` line to the new name.

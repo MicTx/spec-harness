@@ -60,13 +60,8 @@ Only the title always appears; omit empty sections. Order is fixed as above; mul
 | Command | Output source |
 | --- | --- |
 | `/spec` | `route_spec_package.py --root <project>`; with no package, ask for the goal |
-| `/spec:new` · `/spec:run` · `/spec:update` | The schema above, filled from `tasks.md` |
+| `/spec:new` · `/spec:run` | The schema above, filled from `tasks.md` |
 | `/spec:check` | `check_spec_package.py --root <project> --slug <slug>`; failures become project facts and new tasks |
 | `/spec:done` | `complete_spec_package.py --root <project> --slug <slug> --archive`; report delivery and the summary path |
 | `/spec:push` | `push_spec_package.py --root <repo>`; report merge target, remote state and branch cleanup after they happen |
-| `/spec:status` | `report_spec_package.py --root <project> --view status`; one line per project when several exist |
-| `/spec:goal` | The schema; it stops at the local commit unless push was explicitly authorized |
 | `/spec:doctor` | `doctor_spec_environment.py --root <project> [--fix]`; an environment report grouped by needs repair / attention / fixed / passed |
-| `/spec:organize` | `slots/organize/scripts/organize_project_structure.py --root <project>`; a read-only structure report unless `--apply` |
-| `/spec:autoplan` | `autoplan_gate.py discover|gate`; a planning report that ends with readiness and stops |
-| `/spec:autorun` | `chain_state.py plan|status`; the schema plus one chain line: checked/total features, round, cap, stop reason |

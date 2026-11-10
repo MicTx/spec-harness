@@ -217,7 +217,6 @@ def status_next_step(
     *,
     standalone_blocked: str | None = None,
     dependency_errors_list: list[str] | None = None,
-    orchestration_errors_list: list[str] | None = None,
     question_errors_list: list[str] | None = None,
     inquiry_next_step: str | None = None,
     branch_error: str = "",
@@ -238,8 +237,6 @@ def status_next_step(
         if dependency_errors_list and first_gap in dependency_errors_list:
             return f"Fix task dependencies: {first_gap}"
         return f"Complete the project definition: {project_gap_message(first_gap)}"
-    if orchestration_errors_list:
-        return f"Fix the orchestration strategy: {orchestration_errors_list[0]}"
     if standalone_blocked:
         return f"Resolve blocked package: {standalone_blocked}"
     if verify_errors and not inquiry_next_step:
@@ -323,7 +320,6 @@ def render_status(
         inquiry_next_step = f"Investigate independently: {r.autonomous_unbound_questions[0]}"
     checkpoint_pending = checkpoint_pending or bool(checkpoint_status and checkpoint_status.interrupted)
 
-    orchestration_errors = list(r.orchestration_errors)
     dependency_errors_list = list(r.task_contract_errors)
     # Same order as route_spec_package: definition gaps first, dependency
     # errors second; both outrank acceptance/execution steps.
@@ -336,13 +332,7 @@ def render_status(
     if checkpoint_pending:
         # Advisory-level attention mirroring route; gates still refuse.
         health = worst_health(health, HEALTH_RISK)
-    if (
-        r.branch_error
-        or r.invalid_verify
-        or orchestration_errors
-        or r.question_errors
-        or (r.all_tasks_done and not r.overall_ok)
-    ):
+    if r.branch_error or r.invalid_verify or r.question_errors or (r.all_tasks_done and not r.overall_ok):
         health = worst_health(health, HEALTH_RISK)
 
     strip, strip_labels = task_strip_from_records(records if records else tasks)
@@ -363,7 +353,6 @@ def render_status(
             alerts.append(f"Fix task dependencies: {gap}")
         else:
             alerts.append(f"Project definition incomplete: {project_gap_message(gap)}")
-    alerts.extend(f"Orchestration requirements not met: {error}" for error in orchestration_errors)
     alerts.extend(f"Verification scope requirements not met: {error}" for error in r.verification_scope_errors)
     if r.branch_error:
         alerts.append(f"Branch binding: {r.branch_error}")
@@ -389,7 +378,6 @@ def render_status(
         ordered_gate_gaps,
         standalone_blocked=standalone_blocked_text,
         dependency_errors_list=dependency_errors_list,
-        orchestration_errors_list=orchestration_errors,
         question_errors_list=r.question_errors,
         inquiry_next_step=inquiry_next_step if not r.package_blocked else None,
         branch_error=r.branch_error,
@@ -501,10 +489,9 @@ def package_status_summary(
     if checkpoint_pending:
         # Advisory-level attention mirroring route; gates still refuse.
         state = worst_health(state, HEALTH_RISK)
-    if r.orchestration_errors or r.question_errors or (r.all_tasks_done and not r.overall_ok):
+    if r.question_errors or (r.all_tasks_done and not r.overall_ok):
         state = worst_health(state, HEALTH_RISK)
 
-    first_error = r.orchestration_errors[0] if r.orchestration_errors else ""
     if blocked_tasks:
         blocked_label = blocked_tasks[0].text
     elif standalone_blocked:
@@ -523,7 +510,7 @@ def package_status_summary(
             or pending_questions
             or ordered_gate_gaps
             or dependency_errors_list
-            or r.orchestration_errors
+            or r.question_errors
         )
     )
     return {
@@ -539,7 +526,6 @@ def package_status_summary(
         "dependency": dependency_label,
         "needs_work": "yes" if (definition_gaps or acceptance_failed) else "no",
         "gate_failed": "yes" if not r.overall_ok else "no",
-        "orchestration": first_error,
         "verification_scope": r.verification_scope or "not declared in legacy package",
         "checkpoint": checkpoint_label,
         "acceptance": "acceptance failed" if acceptance_failed else "",
@@ -575,7 +561,6 @@ def render_multi_status(
     question_error_packages = 0
     gate_packages = 0
     failed_gate_packages = 0
-    orchestration_packages = 0
     dependency_packages = 0
     checkpoint_packages = 0
     read_failure_packages = 0
@@ -676,9 +661,6 @@ def render_multi_status(
         if summary["dependency"]:
             row += f"; task dependency error: {summary['dependency']}"
             dependency_packages += 1
-        if summary["orchestration"]:
-            row += f"; orchestration requirements not met: {summary['orchestration']}"
-            orchestration_packages += 1
         if summary["acceptance"]:
             row += "; acceptance failed"
         scope = summary["verification_scope"]
@@ -706,8 +688,6 @@ def render_multi_status(
         alerts.append(f"{question_error_packages} projects do not meet the inquiry contract")
     if gate_packages:
         alerts.append(f"{gate_packages} projects have definition or acceptance gaps")
-    if orchestration_packages:
-        alerts.append(f"{orchestration_packages} projects do not meet orchestration requirements")
     if dependency_packages:
         alerts.append(f"{dependency_packages} projects have task dependency errors")
 
@@ -725,8 +705,6 @@ def render_multi_status(
         next_step = "Fix project task dependencies"
     elif gate_packages:
         next_step = "Fix project definition or acceptance gaps"
-    elif orchestration_packages:
-        next_step = "Fix the project orchestration strategy"
     else:
         next_step = "Continue current project tasks"
 

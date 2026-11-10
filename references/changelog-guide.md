@@ -19,6 +19,5 @@ Example excerpt:
 
 ```markdown
 **Added**
-- **Parallel delegation**: Batch work is split among subagents, each with a goal, scope, exclusions, and acceptance criteria; the main session retains acceptance authority.
 - **Evidence freshness**: Acceptance evidence can be anchored to a code version and time; code changes invalidate old evidence and require verification again.
 ```

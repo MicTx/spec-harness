@@ -12,8 +12,7 @@ This page explains where a fact belongs after a task starts. The active package 
 │   │   ├── tasks.md
 │   │   ├── checklist.md          # optional: legacy v1 packages only
 │   │   ├── handoff.md            # optional session-boundary handoff log
-│   │   ├── update-checkpoint.json # optional: historical artifact of the retired checkpoint mechanism; new updates never produce one
-│   │   └── orchestration/        # optional orchestration assets: script + run ledger
+│   │   └── update-checkpoint.json # optional: historical artifact of the retired checkpoint mechanism
 │   └── archive/
 │       └── YYYY-MM-DD_slug/      # archived record (+ completion-summary.md)
 │           ├── spec.md
@@ -22,14 +21,6 @@ This page explains where a fact belongs after a task starts. The active package 
 │           └── completion-summary.md
 ├── docs/
 │   └── YYYY-MM-DD_slug_topic.md
-├── plans/                        # optional project planning documents
-│   └── archive/                  # completed or retired planning units
-├── archive/
-│   └── retired/                  # structure-audit retirement, dated + manifest
-├── autoplan/
-│   └── chain.json               # tracked pass-chain summary (pass, kind, target doc; volatile-free)
-├── autorun/
-│   └── chain.json               # tracked chain summary (round, host, plan docs; volatile-free)
 ├── artifacts/
 └── architecture/
     ├── module-index.md
@@ -37,15 +28,10 @@ This page explains where a fact belongs after a task starts. The active package 
     └── module-dag.mmd
 ```
 
-Chain state is one tracked JSON file per chain, `.spec/<chain>/chain.json` for `autorun` and `autoplan`, written by `scripts/chain_state.py`; it never archives with a package.
-
 - Active packages live only at the `.spec/specs/` root; completed packages move wholesale into `archive/`.
 - A new task package has `spec.md` and `tasks.md`; an archive additionally has `completion-summary.md`. A legacy v1 package also keeps its `checklist.md`.
 - The optional `handoff.md` member is the session-boundary handoff document (`references/handoff.md`): generated snapshot head plus append-only entry log, validated by the check gate when present, closed with a terminal entry at `done`, archived wholesale with the package.
-- An active package may additionally carry `orchestration/` (workflow script + run ledger, written by the main session); it archives wholesale with the package.
 - A leftover `update-checkpoint.json` comes from the retired update mechanism; it is advisory (route, status and doctor surface it), never a gate.
-- `.spec/autoplan/` and `.spec/autorun/` hold `chain.json` (written by `scripts/chain_state.py`) and a `history/` of closed chains; they never archive with a package.
-- The planning-document tree (`.spec/plans/` root: index `README.md`, single-round `<YYYY-MM-DD>_<verb>-<object>.md` plans, multi-round `<slug>/` clusters holding `master.md` plus `NN-<slug>.md` phase details; delivered or retired units move to `.spec/plans/archive/` under the same name) is project content produced or reconciled by `/spec:autoplan` (`scripts/autoplan_gate.py`, chain state via `scripts/chain_state.py`): it feeds the autorun chain's feature checkboxes and detail designs, is committed like normal project files, and is never task-package state — `autoplan` writes no `.spec/specs/` package and no `.spec/autorun/` chain state.
 - `.spec/architecture/` is the current module graph and belongs to no single package.
 - `--specs-dir` must be a trusted relative directory under root — never empty, absolute, or containing `..`.
 
@@ -60,7 +46,7 @@ One development loop, directory named `YYYY-MM-DD_slug`. The date lives in the s
 
 - Knowledge documents: `.spec/docs/YYYY-MM-DD_slug_topic.md`, always inside the executing project's own `.spec/` tree — never a global carrier (`~/.claude/CLAUDE.md`, user-level `AGENTS.md`, or user-level memory). No executable tasks stored there; only project-specific engineering facts qualify, and spec process mechanics are never distilled.
 - Module DAG: nodes are modules, not tasks; the graph must be acyclic; task packages reference it.
-- Structure governance is a rare task: prove the structure unreasonable first, then write the target tree, migration table, and reference map; never reshuffle for tidiness. Historical Development Records, knowledge, architecture, archives, and maintainer notes stay by default. A deprecation verdict needs an evidence chain (retired mechanism, zero live references, superseded by a successor asset) recorded in a conclusive knowledge document; cleanup/merge dispositions go through the task-package gates, never around them.
+- Historical Development Records, knowledge, architecture, archives, and maintainer notes stay by default; cleanup/merge dispositions go through the task-package gates, never around them.
 
 ## Archiving
 

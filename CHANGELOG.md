@@ -4,6 +4,18 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [0.31.0] - 2026-11-10
+
+### Changed
+
+- **BREAKING — 六阶段内核**：用户命令面收缩为 `new / run / check / done / push / doctor`；`INSTALL_PROFILE=core|full` 仅作兼容别名，两者安装和导出完全相同的六阶段负载。
+- **BREAKING — Six-stage kernel**: the user-facing command surface is now `new / run / check / done / push / doctor`; `INSTALL_PROFILE=core|full` remain compatibility aliases that install and export the identical six-stage payload.
+
+### Removed
+
+- **BREAKING — 旧编排治理**：移除规划链、编排路由、slot 扩展、代理角色契约、退役阶段页及其安装入口；冻结归档的任务包、规划文档、ADR 与历史 CHANGELOG 记录保持原样，仍可解析。
+- **BREAKING — Legacy governance**: planning chains, orchestration routing, slot extensions, agent-role contracts, retired stage pages, and their installer entry points are removed; frozen task-package archives, planning documents, ADRs and historical CHANGELOG entries remain unchanged and parseable.
+
 ## [0.30.0] - 2026-11-09
 
 ### Changed

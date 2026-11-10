@@ -1,13 +1,11 @@
-"""F4 install/export acceptance matrix — sandbox four paths + export-tree capabilities.
+"""Install/export acceptance matrix — sandbox paths + export-tree capabilities.
 
 Four representative sandbox paths (main evidence layer, doc 04 §2.2):
 
-* fresh core (default profile, 5-stage command surface);
-* fresh full (12-stage command surface);
-* full -> full upgrade with injected stale files (reinstall restores the
-  installer-owned surface; zero net change vs a clean full install);
-* full -> core downgrade sweep (extension surface cleaned, core capabilities
-  still callable).
+* fresh core (default profile, six-stage command surface);
+* fresh full alias (identical six-stage payload);
+* full -> full upgrade with injected stale files (reinstall restores the installer-owned surface);
+* full -> core alias switch (same kernel payload; capabilities still callable).
 
 Each path asserts install parity for its profile and that the internal read
 capabilities (``route_spec_package.py --format json --brief`` and
@@ -34,8 +32,7 @@ INSTALLER = ROOT / "install.sh"
 EXPORTER = ROOT / "scripts" / "export_skill_package.py"
 
 CORE_STAGES = ("new", "run", "check", "done", "push", "doctor")
-EXTENDED_STAGES = ("goal", "autoplan", "autorun", "update", "status", "organize")
-CORE_EXCLUDED_SCRIPTS = ("autoplan_gate.py", "chain_state.py")
+RETIRED_SCRIPTS = ("autoplan_gate.py", "chain_state.py", "route_decision.py", "slot_registry.py")
 
 requires_bash = pytest.mark.skipif(
     subprocess.run(["bash", "--version"], capture_output=True).returncode != 0 or not Path("/bin/bash").exists(),
@@ -233,11 +230,11 @@ def test_matrix_fresh_core_install(tmp_path):
     home.mkdir()
     result = run_installer(home)
     assert result.returncode == 0, result.stderr
-    assert "Install profile: core (default)" in result.stdout
+    assert "Install profile: core" in result.stdout
 
     assert claude_stage_commands(home) == sorted(f"{stage}.md" for stage in CORE_STAGES)
     skill = skill_dir(home)
-    for name in CORE_EXCLUDED_SCRIPTS:
+    for name in RETIRED_SCRIPTS:
         assert not (skill / "scripts" / name).exists(), name
 
     assert_export_parity(skill, "core", tmp_path / "core-reference")
@@ -249,7 +246,7 @@ def test_matrix_fresh_core_install(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Path 2: fresh full
+# Path 2: fresh full alias
 # ---------------------------------------------------------------------------
 
 
@@ -260,9 +257,12 @@ def test_matrix_fresh_full_install(tmp_path):
     result = run_installer(home, {"INSTALL_PROFILE": "full"})
     assert result.returncode == 0, result.stderr
 
-    assert claude_stage_commands(home) == sorted(f"{stage}.md" for stage in CORE_STAGES + EXTENDED_STAGES)
+    assert claude_stage_commands(home) == sorted(f"{stage}.md" for stage in CORE_STAGES)
     skill = skill_dir(home)
     assert_export_parity(skill, "full", tmp_path / "full-reference")
+    core_reference = tmp_path / "core-reference"
+    assert run_export(core_reference, "--profile", "core").returncode == 0
+    assert tree_manifest(tmp_path / "full-reference") == tree_manifest(core_reference)
 
     install_fixture_package(skill)
     assert route_brief(skill)["slug"] == FIXTURE_SLUG
@@ -317,22 +317,22 @@ def test_matrix_full_upgrade_restores_installer_owned_surface(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Path 4: full -> core downgrade sweep
+# Path 4: full -> core alias switch
 # ---------------------------------------------------------------------------
 
 
 @requires_bash
-def test_matrix_core_downgrade_sweeps_and_keeps_capabilities(tmp_path):
+def test_matrix_core_alias_switch_keeps_capabilities(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     assert run_installer(home, {"INSTALL_PROFILE": "full"}).returncode == 0
     result = run_installer(home)
     assert result.returncode == 0, result.stderr
-    assert "Install profile: core (default)" in result.stdout
+    assert "Install profile: core" in result.stdout
 
     assert claude_stage_commands(home) == sorted(f"{stage}.md" for stage in CORE_STAGES)
     skill = skill_dir(home)
-    for name in CORE_EXCLUDED_SCRIPTS:
+    for name in RETIRED_SCRIPTS:
         assert not (skill / "scripts" / name).exists(), name
     for excluded in ("slots",):
         assert not (skill / excluded).exists(), excluded

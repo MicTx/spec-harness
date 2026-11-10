@@ -11,7 +11,7 @@
 - **小内核**：默认 LITE 模板，每个任务只需明确 `boundary` 与 `verify`。
 - **结果可核对**：完成前统一执行验证；改了代码或验证命令，就重新取证。
 - **收尾分离**：归档与本地提交属于 `done`；合并、推送和删分支必须单独授权。
-- **按需扩展**：full 安装提供规划链和 slots；主会话始终负责集成与验收。
+- **小内核**：所有宿主获得同一六阶段入口，不附带规划链、slots 或代理角色扩展。
 
 目录：[安装](#安装) · [快速开始](#快速开始) · [运行时载荷](#运行时载荷) · [验证与维护](#验证与维护) · [许可协议](#许可协议)
 
@@ -25,7 +25,7 @@ cd /tmp/spec-harness
 bash install.sh
 ```
 
-安装器缺省 `INSTALL_PROFILE=core`；未指定 `INSTALL_HOSTS` 时自动探测已安装宿主。指定 token 则只安装所选宿主，不做探测。
+安装器缺省 `INSTALL_PROFILE=core`；`core` 与 `full` 仅是兼容别名，两者的运行时载荷完全相同。未指定 `INSTALL_HOSTS` 时自动探测已安装宿主，指定 token 则只安装所选宿主。
 
 | 宿主 | `INSTALL_HOSTS` | 默认 Skill 目录 |
 | --- | --- | --- |
@@ -37,16 +37,16 @@ bash install.sh
 | 组合 / 全部 | `desktop`、`rpi` / `all` | Claude Code + Codex / 全部目录 |
 
 ```bash
-INSTALL_HOSTS=claude INSTALL_PROFILE=full bash install.sh
+INSTALL_HOSTS=claude bash install.sh
 ```
 
-**明确的入口**：`new`、`goal`、`autoplan`、`autorun`、`run`、`check`、`done`、`push`、`update`、`status`、`doctor`、`organize`，full 共 12 个阶段命令；core 保留 `new/run/check/done/push/doctor` 六个。
+**明确的入口**：`new`、`run`、`check`、`done`、`push`、`doctor`，共 6 个阶段命令。
 
-安装器拒绝覆盖无所有权标记的同名 Skill；只有确认替换时才用 `FORCE=1`。已安装 full 后重跑默认安装会降回 core，移除扩展前会备份。安装测试不等于每个宿主已实机验收，dsh 仍为 developer preview。
+安装器拒绝覆盖无所有权标记的同名 Skill；只有确认替换时才用 `FORCE=1`。安装测试不等于每个宿主已实机验收，dsh 仍为 developer preview。
 
 ## 快速开始
 
-在目标项目中加载 Skill，再给出有边界的目标。Claude Code core 安装可直接使用：
+在目标项目中加载 Skill，再给出有边界的目标。Claude Code 安装可直接使用：
 
 ```text
 /spec:new 修复导出 API 的权限校验，覆盖管理员与普通用户
@@ -55,7 +55,7 @@ INSTALL_HOSTS=claude INSTALL_PROFILE=full bash install.sh
 /spec:done
 ```
 
-full 安装可用 `/spec:goal <目标>` 完成同一条单包流程；Codex/ZCode 使用 `$spec`，Pi 使用 `/spec` 与 `/spec:<stage>`。其他宿主加载 Skill 后按[命令索引](references/commands.md)请求阶段。
+Codex/ZCode 使用 `$spec`，Pi 使用 `/spec` 与 `/spec:<stage>`。其他宿主加载 Skill 后按[命令索引](references/commands.md)请求阶段。
 
 第一次操作跟随 [LITE 实操教程](docs/getting-started.md)：创建包、填范围、改代码、`spec_verify.py run --all`、勾选、检查并归档。预期产物是可核对的完成记录，而不是一句“已完成”。单一小修、只读调查和一次性实验不必建包。
 
@@ -63,7 +63,7 @@ full 安装可用 `/spec:goal <目标>` 完成同一条单包流程；Codex/ZCod
 
 ## 运行时载荷
 
-运行时导出器与安装器使用同一[载荷契约](scripts/payload_contract.py)。下图为 full 的顶层结构，core 不含 slots 和代理角色文档，仅保留宿主发现用的 `agents/openai.yaml`。
+运行时导出器与安装器使用同一[载荷契约](scripts/payload_contract.py)。`core` 与 `full` 的导出结果逐字节一致，顶层结构如下。
 
 ```text
 spec/
@@ -74,28 +74,26 @@ spec/
 ├── agents/
 ├── hooks/
 ├── references/
-├── scripts/
-└── slots/
+└── scripts/
 ```
 
-从源码只导出运行时文件：
+`agents/` 只保留宿主发现用的 `openai.yaml`。从源码只导出运行时文件：
 
 ```bash
-python3 scripts/export_skill_package.py --profile core --output /tmp/spec
+python3 scripts/export_skill_package.py --output /tmp/spec
 ```
 
-导出目录放入宿主的 Skill 根目录；安装器还会生成宿主阶段命令与安装清单。发布、水印、插件打包等维护工具不进入运行包。full 的扩展协议见 [slots](references/slots.md)，规划链只在当前会话推进，中断后显式恢复。
+导出目录放入宿主的 Skill 根目录；安装器还会生成宿主阶段命令与安装清单。发布、水印、插件打包等维护工具不进入运行包。
 
 ## 验证与维护
 
 ```bash
-python3 -m pytest -q tests slots
-python3 -m ruff check scripts hooks slots tests
+python3 -m pytest -q tests
+python3 -m ruff check scripts hooks tests
 python3 scripts/smoke_test_spec_skill.py
-python3 scripts/slot_registry.py validate
 ```
 
-完整验证矩阵见 [CONTRIBUTING.md](CONTRIBUTING.md)；发布、升级和回滚见 [RELEASE.md](RELEASE.md)，Git 收尾见 [Git 工作流](docs/git-workflow.md)。稳定发布与 SHA-256 文件见 [GitHub Releases](https://github.com/MicTx/spec-harness/releases)。当前源码的精简流程不代表已有发布压缩包已重建。
+完整验证矩阵见 [CONTRIBUTING.md](CONTRIBUTING.md)；发布、升级和回滚见 [RELEASE.md](RELEASE.md)，Git 收尾见 [Git 工作流](docs/git-workflow.md)。稳定发布与 SHA-256 文件见 [GitHub Releases](https://github.com/MicTx/spec-harness/releases)；仓库内 `release/` 是当前版本的 canonical 载荷。
 
 旧活动包可用 `scripts/migrate_packages.py` 先 dry-run，再显式 `--apply`；无法可靠映射 checklist 的包保持原样，需手工补齐验收关系。历史归档不迁移也不重新评分。
 

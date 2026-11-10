@@ -2,18 +2,15 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """Environment self-check for the spec skill.
 
-Five probes, each owned by exactly one check:
+Checks the six-stage kernel install:
 
   python.runtime  Python >= 3.9 on PATH
   git.available   git on PATH
-  skill.layout    installed package carries the runtime files its profile needs
+  skill.layout    installed package carries the kernel runtime files
   project.hooks   the rendered Git gate hooks point at this skill's checker
   hooks.stop      the host's Stop hook is wired (Claude settings reference)
 
-Plus two advisories that never fail the run:
-  a leftover ``update-checkpoint.json`` from the retired update mechanism
-  (safe to delete), and a retired ``claude_activation_guard`` hook entry still
-  referenced by a Claude settings file (safe to remove).
+Retired-update and activation-guard leftovers remain advisory only.
 
 Host install directories are read from each install's own
 ``install-manifest.json`` (written by install.sh), not re-derived here.
@@ -40,8 +37,8 @@ CHECKER_NAME = "check_all_spec_packages.py"
 HOOK_CHECKER_RE = re.compile(r'^checker="([^"]+)"', re.MULTILINE)
 ACTIVATION_HOOK = "hooks/claude_activation_guard.py"
 
-# Runtime files every healthy install must carry. The profile stamped into the
-# manifest selects the face: core drops the extension components.
+# Runtime files every healthy install must carry. Both profile aliases are the
+# same payload, so the manifest never changes this list.
 REQUIRED_RUNTIME_FILES: tuple[str, ...] = (
     "SKILL.md",
     "install.sh",
@@ -50,7 +47,6 @@ REQUIRED_RUNTIME_FILES: tuple[str, ...] = (
     "hooks/pre-push",
     "references/commands.md",
     "references/output-contracts.md",
-    "references/orchestration.md",
     "references/templates.md",
     "scripts/check_all_spec_packages.py",
     "scripts/check_spec_package.py",
@@ -62,12 +58,9 @@ REQUIRED_RUNTIME_FILES: tuple[str, ...] = (
     "scripts/push_spec_package.py",
     "scripts/read_version.py",
     "scripts/route_spec_package.py",
-    "scripts/route_decision.py",
-    "scripts/slot_registry.py",
     "scripts/spec_package_support.py",
     "scripts/spec_verify.py",
 )
-CORE_DROP_PREFIXES = ("agents/orchestrator", "agents/planner", "agents/reviewer", "agents/confirmer", "slots/")
 
 PROBE_IDS: tuple[str, ...] = (
     "python.runtime",
@@ -101,17 +94,11 @@ class Doctor:
     # fails when either list drifts.
     USER_STAGES: ClassVar[tuple[str, ...]] = (
         "new",
-        "goal",
-        "autoplan",
-        "autorun",
         "run",
         "check",
         "done",
         "push",
-        "update",
-        "status",
         "doctor",
-        "organize",
     )
 
     skill_root: Path
@@ -190,8 +177,6 @@ class Doctor:
         return {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
 
     def required_runtime_files(self) -> tuple[str, ...]:
-        if self.install_profile() == "core":
-            return tuple(name for name in REQUIRED_RUNTIME_FILES if not name.startswith(CORE_DROP_PREFIXES))
         return REQUIRED_RUNTIME_FILES
 
     def check_skill_layout(self) -> None:

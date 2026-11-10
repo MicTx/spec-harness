@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
 from pathlib import Path
@@ -78,11 +77,23 @@ def test_smoke_git_setup_binds_packages_without_duplicate_branches(tmp_path):
     assert status.stdout == ""
 
 
-ORCHESTRATION_RUNTIME_FILES = (
-    "scripts/route_decision.py",
+KERNEL_RUNTIME_FILES = (
+    "SKILL.md",
+    "agents/openai.yaml",
+    "references/commands.md",
+    "scripts/doctor_spec_environment.py",
+)
+RETIRED_RUNTIME_FILES = (
+    "slots",
     "references/orchestration.md",
+    "references/slots.md",
     "agents/orchestrator.md",
-    "agents/planner.md",
+    "scripts/route_decision.py",
+    "scripts/chain_state.py",
+    "scripts/autoplan_gate.py",
+    "scripts/slot_registry.py",
+    "scripts/install_slot_hooks.py",
+    "hooks/claude_activation_guard.py",
 )
 
 
@@ -91,8 +102,6 @@ def _minimal_runtime_tree(root: Path) -> None:
         "SKILL.md",
         "install.sh",
         "agents/openai.yaml",
-        "agents/orchestrator.md",
-        "agents/planner.md",
         "hooks/pre-commit",
         "hooks/pre-push",
         "scripts/gitx.py",
@@ -100,53 +109,42 @@ def _minimal_runtime_tree(root: Path) -> None:
         "scripts/init_spec_package.py",
         "scripts/read_version.py",
         "scripts/route_spec_package.py",
-        "scripts/route_decision.py",
         "scripts/report_spec_package.py",
         "scripts/check_spec_package.py",
         "scripts/check_all_spec_packages.py",
         "scripts/complete_spec_package.py",
         "scripts/doctor_spec_environment.py",
+        "scripts/payload_contract.py",
         "scripts/push_spec_package.py",
         "scripts/smoke_test_spec_skill.py",
         "scripts/spec_package_support.py",
-        "scripts/slot_registry.py",
         "references/commands.md",
         "references/output-contracts.md",
-        "references/orchestration.md",
     )
     for relative in required:
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
-        if relative == "SKILL.md":
+        if relative == "references/commands.md":
+            path.write_text(
+                "\n".join(f"`/spec:{stage}`" for stage in ("new", "run", "check", "done", "push", "doctor")),
+                encoding="utf-8",
+            )
+        elif relative == "SKILL.md":
             path.write_text("# spec\n", encoding="utf-8")
-        elif relative == "scripts/slot_registry.py":
-            path.write_text((ROOT / relative).read_text(encoding="utf-8"), encoding="utf-8")
+        elif relative == "scripts/doctor_spec_environment.py":
+            path.write_text(
+                "import json, sys\n"
+                "print(json.dumps({'checks': [{'id': name} for name in "
+                "('python.runtime', 'skill.layout', 'project.hooks')]}))\n"
+                "sys.exit(0)\n",
+                encoding="utf-8",
+            )
         else:
             path.write_text("fixture\n", encoding="utf-8")
-    for slot_name in ("team-loop", "workflow-runner"):
-        slot = root / "slots" / slot_name
-        for relative in ("scripts/runner.py", "hooks/guard.py", "README.md", "tests/test_runner.py"):
-            path = slot / relative
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("# fixture\n", encoding="utf-8")
-        (slot / "manifest.json").write_text(
-            json.dumps(
-                {
-                    "name": slot_name,
-                    "version": "1.0.0",
-                    "summary": "fixture",
-                    "scripts": ["scripts/runner.py"],
-                    "hooks": {"Stop": ["hooks/guard.py"]},
-                    "docs": ["README.md"],
-                    "tests": "tests",
-                }
-            ),
-            encoding="utf-8",
-        )
 
 
-@pytest.mark.parametrize("missing", ORCHESTRATION_RUNTIME_FILES)
-def test_smoke_runtime_layout_requires_orchestration_assets(tmp_path, missing, monkeypatch):
+@pytest.mark.parametrize("missing", KERNEL_RUNTIME_FILES)
+def test_smoke_runtime_layout_requires_kernel_assets(tmp_path, missing, monkeypatch):
     _minimal_runtime_tree(tmp_path)
     (tmp_path / missing).unlink()
     # Keep doctor from running against this fixture: layout must fail first.
@@ -155,9 +153,15 @@ def test_smoke_runtime_layout_requires_orchestration_assets(tmp_path, missing, m
         assert_runtime_layout(tmp_path)
 
 
-def test_smoke_runtime_layout_requires_builtin_slots(tmp_path, monkeypatch):
+@pytest.mark.parametrize("retired", RETIRED_RUNTIME_FILES)
+def test_smoke_runtime_layout_rejects_retired_assets(tmp_path, retired, monkeypatch):
     _minimal_runtime_tree(tmp_path)
-    (tmp_path / "slots" / "workflow-runner" / "manifest.json").unlink()
+    target = tmp_path / retired
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if retired.endswith("/") or "." not in Path(retired).name:
+        target.mkdir(exist_ok=True)
+    else:
+        target.write_text("retired\n", encoding="utf-8")
     monkeypatch.setattr("smoke_test_spec_skill.REPO_ROOT", tmp_path)
-    with pytest.raises(AssertionError, match="missing runtime slots"):
+    with pytest.raises(AssertionError, match="retired runtime file must not exist"):
         assert_runtime_layout(tmp_path)

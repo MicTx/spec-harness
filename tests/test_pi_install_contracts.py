@@ -6,9 +6,9 @@ templates into <pi-root>/agent/prompts: ``spec.md`` (/spec) and
 Pi 1.2.0; empirics recorded in the 2026-10-14_normalize-public-example-25
 package evidence). This suite pins, under a sandbox HOME:
 
-* template sets per profile (full/core), counts parsed from install.sh's
-  stage lists — never hardcoded, so USER_STAGES changes cannot make these
-  assertions lie;
+* one six-stage template set for both profile aliases, parsed from
+  install.sh's stage lists — never hardcoded, so USER_STAGES changes cannot
+  make these assertions lie;
 * the thin-forwarder shape: quoted frontmatter description (unquoted
   ``Spec: ...`` scalars break Pi's YAML frontmatter parser and silently
   drop the template), argument-hint, literal ``$@``, contract-index
@@ -17,8 +17,7 @@ package evidence). This suite pins, under a sandbox HOME:
   ``stage_description`` case parsed out of install.sh;
 * sidecar markers on every template (stage stamps included);
 * idempotent reinstall (zero net change);
-* downgrade sweep of installer-owned extended templates, user-authored
-  files spared;
+* retired-template sweep of installer-owned files, user-authored files spared;
 * FORCE protection for user-owned same-name templates;
 * relocation via PI_DIR (both skills and prompts follow);
 * no fake ``spec-<stage>`` alias skills under the Pi skills dir — the exact
@@ -146,7 +145,7 @@ def test_core_profile_writes_core_stage_set(tmp_path):
 
     core = parse_stage_list("CORE_STAGES")
     user = parse_stage_list("USER_STAGES")
-    assert core != user  # guard the guard: the lists must differ for this to mean anything
+    assert core == user == ("new", "run", "check", "done", "push", "doctor")
     assert template_names(home) == expected_names(core)
 
 
@@ -227,27 +226,25 @@ def test_reinstall_is_zero_net_change(tmp_path):
 
 
 @requires_bash
-def test_core_downgrade_sweeps_installer_owned_extended_templates(tmp_path):
+def test_retired_template_sweep_spares_user_owned_templates(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     assert run_installer(home, {"INSTALL_PROFILE": "full"}).returncode == 0
 
-    # A user-authored extended-stage template (no marker) must survive.
+    # A user-authored retired-stage template (no marker) must survive.
     user_file = prompts_dir(home) / "spec:organize.md"
-    marker = prompts_dir(home) / "spec:organize.md.spec-skill-install"
-    marker.unlink()
     user_file.write_text('---\ndescription: "mine"\n---\nmy own command\n', encoding="utf-8")
+    retired = prompts_dir(home) / "spec:status.md"
+    retired.write_text('---\ndescription: "retired"\n---\nold\n', encoding="utf-8")
+    (retired.parent / "spec:status.md.spec-skill-install").write_text(
+        "installed_by=spec/install.sh\n", encoding="utf-8"
+    )
 
     result = run_installer(home, {"INSTALL_PROFILE": "core"})
     assert result.returncode == 0, result.stderr
 
     core = parse_stage_list("CORE_STAGES")
-    extended = [stage for stage in parse_stage_list("USER_STAGES") if stage not in core]
-    for stage in extended:
-        if stage == "organize":
-            continue
-        assert not (prompts_dir(home) / f"spec:{stage}.md").exists(), stage
-        assert not (prompts_dir(home) / f"spec:{stage}.md.spec-skill-install").exists(), stage
+    assert not (prompts_dir(home) / "spec:status.md").exists()
     assert template_names(home) == sorted(expected_names(core) + ["spec:organize.md"])
     assert user_file.read_text(encoding="utf-8").startswith('---\ndescription: "mine"')
 

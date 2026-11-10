@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-LINT_TARGETS = ("scripts", "hooks", "slots", "tests")
+LINT_TARGETS = ("scripts", "hooks", "tests")
 
 
 def _ruff(*args: str) -> subprocess.CompletedProcess:

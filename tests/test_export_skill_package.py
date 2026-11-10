@@ -1,4 +1,3 @@
-import json
 import re
 import subprocess
 import sys
@@ -37,8 +36,6 @@ def test_collect_excludes_export():
 
 def test_collect_includes_core_scripts():
     files = _collect_script_files()
-    assert "chain_state.py" in files
-    assert "autoplan_gate.py" in files
     assert "spec_package_support.py" in files
     assert "init_spec_package.py" in files
     assert "route_spec_package.py" in files
@@ -49,7 +46,7 @@ def test_collect_includes_core_scripts():
     assert "push_spec_package.py" in files
     assert "smoke_test_spec_skill.py" in files
     assert "issue_closure_support.py" in files
-    assert "route_decision.py" in files
+    assert "payload_contract.py" in files
     # The recruitment machinery must not ship in the exported skill.
     for removed in (
         "supervisor_keepalive_support.py",
@@ -60,10 +57,12 @@ def test_collect_includes_core_scripts():
         "pi_intercom_live_smoke_test.py",
     ):
         assert removed not in files, removed
+    for retired in ("chain_state.py", "autoplan_gate.py", "route_decision.py", "slot_registry.py"):
+        assert retired not in files, retired
 
 
 @pytest.mark.parametrize("profile", ["core", "full"])
-def test_exported_contract_auditor_detects_real_violation(tmp_path, profile):
+def test_export_has_no_retired_governance_surface(tmp_path, profile):
     skill_root = Path(__file__).resolve().parent.parent
     output = tmp_path / "exported"
     result = subprocess.run(
@@ -81,46 +80,20 @@ def test_exported_contract_auditor_detects_real_violation(tmp_path, profile):
         text=True,
     )
     assert result.returncode == 0, result.stderr
-    organize = output / "slots" / "organize" / "scripts" / "organize_project_structure.py"
-    if profile == "core":
-        # The organize slot is extension surface: it ships only under full.
-        assert not organize.exists()
-        return
-    assert organize.is_file()
-    project = tmp_path / "project"
-    arch = project / ".spec" / "architecture"
-    arch.mkdir(parents=True)
-    (project / "upper.py").write_text("VALUE = 1\n", encoding="utf-8")
-    (project / "lower.py").write_text("import upper\n", encoding="utf-8")
-    (arch / "contracts.json").write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "layers": ["high", "low"],
-                "modules": [
-                    {"name": "high", "layer": "high", "paths": ["upper.py"]},
-                    {"name": "low", "layer": "low", "paths": ["lower.py"]},
-                ],
-                "forbid": [{"from": "low", "to": "high", "reason": "forbidden reverse dependency"}],
-            }
-        ),
-        encoding="utf-8",
-    )
-    audit = subprocess.run(
-        [
-            sys.executable,
-            str(organize),
-            "--root",
-            str(project),
-            "--check",
-            "--format",
-            "json",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    assert audit.returncode == 2, audit.stderr
-    assert json.loads(audit.stdout)["contracts"]["new_violations"][0]["rule"] == "forbidden-import"
+    for relative in (
+        "slots",
+        "references/orchestration.md",
+        "references/slots.md",
+        "agents/orchestrator.md",
+        "agents/planner.md",
+        "hooks/claude_activation_guard.py",
+        "scripts/route_decision.py",
+        "scripts/chain_state.py",
+        "scripts/autoplan_gate.py",
+        "scripts/slot_registry.py",
+    ):
+        assert not (output / relative).exists(), relative
+    assert sorted(path.name for path in (output / "agents").iterdir()) == ["openai.yaml"]
 
 
 def test_export_end_to_end():
@@ -151,17 +124,11 @@ def test_export_end_to_end():
         assert (output / "scripts" / "spec_package_support.py").exists()
         assert (output / "scripts" / "issue_closure_support.py").is_file()
         assert (output / "scripts" / "init_spec_package.py").exists()
-        # full keeps the chain-family scripts (extension surface under core
-        # only — planning F16 sub-step 2).
-        assert (output / "scripts" / "chain_state.py").is_file()
-        assert (output / "scripts" / "autoplan_gate.py").is_file()
-        assert (output / "scripts" / "route_decision.py").is_file()
-        assert (output / "agents" / "orchestrator.md").is_file()
-        assert (output / "agents" / "planner.md").is_file()
-        assert (output / "references" / "orchestration.md").is_file()
-        assert (output / "slots" / "team-loop" / "manifest.json").is_file()
-        assert (output / "slots" / "workflow-runner" / "manifest.json").is_file()
-        assert (output / "slots" / "workflow-runner" / "scripts" / "workflow_fanout.py").is_file()
+        assert not (output / "slots").exists()
+        assert not (output / "scripts" / "route_decision.py").exists()
+        assert not (output / "scripts" / "chain_state.py").exists()
+        assert not (output / "agents" / "orchestrator.md").exists()
+        assert not (output / "references" / "orchestration.md").exists()
         assert not (output / "scripts" / "export_skill_package.py").exists()
         # payload_contract.py ships: install.sh queries it for the profile lists.
         assert (output / "scripts" / "payload_contract.py").is_file()

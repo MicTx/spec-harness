@@ -16,20 +16,7 @@ KB = 1024
 SKILL_MAX = 6 * KB
 REFERENCES_TOTAL_MAX = 64 * KB
 STAGE_MAX = 2 * KB
-STAGES = (
-    "new",
-    "run",
-    "check",
-    "done",
-    "push",
-    "status",
-    "goal",
-    "doctor",
-    "organize",
-    "update",
-    "autoplan",
-    "autorun",
-)
+STAGES = ("new", "run", "check", "done", "push", "doctor")
 SCRIPTS_LINES_MAX = 20_000
 MODULE_LINE_BUDGETS = {
     "spec_package_support.py": 1200,
@@ -37,7 +24,6 @@ MODULE_LINE_BUDGETS = {
     "check_spec_package.py": 450,
     "init_spec_package.py": 400,
     "route_spec_package.py": 350,
-    "route_decision.py": 200,
     "complete_spec_package.py": 450,
     "push_spec_package.py": 600,
     "check_all_spec_packages.py": 400,

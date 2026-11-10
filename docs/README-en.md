@@ -17,7 +17,7 @@ Decide what you want to accomplish first, then pick the one document that does i
 
 - [Git workflow (English)](git-workflow.en.md)
 - [Git 工作流（中文）](git-workflow.md)
-- [Session backends](../references/commands.md#session-backends): execution boundaries for CLIs, IDE agent extensions, and desktop clients.
+- [Host entry points](../references/commands.md#host-entry-points): the six-stage kernel shared by CLIs, IDE agent extensions, and desktop clients.
 - [Pending questions](../references/templates.md#pending-questions): one closeout markup for open questions and the user-authority requirement.
 - Root [README (English)](../README-en.md): installation, host selection, and runtime export.
 - Root [README（中文）](../README.md)：安装、宿主选择、导出运行时包和回归命令。
@@ -33,7 +33,7 @@ Decide what you want to accomplish first, then pick the one document that does i
 ## Entry classes
 
 - **public / user entry**: the root [README (English)](../README-en.md) and [README（中文）](../README.md), this index and the [Chinese index](README.md), and the guides in this directory.
-- **runtime reference**: [`SKILL.md`](../SKILL.md) and [`references/`](../references/00-readme.md) — the runtime contracts for commands, templates, orchestration, slots, and archival.
+- **runtime reference**: [`SKILL.md`](../SKILL.md) and [`references/`](../references/00-readme.md) — the runtime contracts for commands, templates, outputs, and archival.
 - **maintainer-only**: [`agent-plugin/README.md`](../agent-plugin/README.md) — packaging-template notes that exist only in the source repository and never ship in the runtime export.
 
 Command, task-package, and gate contracts live in [`references/`](../references/00-readme.md): they answer "what must hold"; the guides in this directory answer "why it is arranged this way and what to do next".

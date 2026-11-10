@@ -14,7 +14,7 @@ A task package lives in `.spec/specs/YYYY-MM-DD_slug/`: `spec.md` holds scope, `
 
 Decide from the work's shape before the first substantive edit. Create a package when the work has independent acceptance surfaces, several implementers, or must survive a session boundary; resume the active package bound to the current branch. A one-line fix with its test, a typo, read-only investigation or an experiment stays direct: fix + test, and commit with `Spec: none (<reason>)` where the repository allows it. The user can always ask for a package anyway.
 
-Package tiers (`init_spec_package.py --workflow`): `lite` (default) records goal, assumptions, scope, minimal path and verification; `full` adds intent and option ledgers — use it when the user asks or when `route_decision.py` reports risks (auth, billing, secrets, data migration, destructive operations).
+Package tiers (`init_spec_package.py --workflow`): `lite` (default) records goal, assumptions, scope, minimal path and verification; `full` adds intent and option ledgers — use it when the user asks or the work involves risks such as auth, billing, secrets, data migration or destructive operations.
 
 ## Core loop
 
@@ -31,12 +31,11 @@ Package tiers (`init_spec_package.py --workflow`): `lite` (default) records goal
 3. Never write to protected branches (`main`, `master`, `develop`, `release/*`, …; list in `scripts/spec_package_support.py`). One package binds one `spec/` branch.
 4. Never use `--no-verify`; never change files and commit in the same shell call; never stash, reset or overwrite user changes to make a gate pass.
 5. Classify every question: `[fact]` inspects code/data or a read-only command; `[reversible]` picks the in-scope option by reversal cost and regret and records the choice; `[decision]` covers permission, irreversibility, preference or external dependency and closes only with `authority: user:<reference>`. Investigate the rest with read-only research or an installed skill. External queries disclose their contents: do not send project data, credentials or private paths without authorization. No label grants permission: host and user authorization still govern Git writes, credentials, global configuration, publication and destructive actions.
-6. Delegation is optional: give the helper a goal, scope, excluded areas and a `verify`; the main session merges and accepts. See [`references/orchestration.md`](references/orchestration.md).
-7. Report to the user in project terms — goal, progress, problems, results — not stage names or gate counts ([`references/output-contracts.md`](references/output-contracts.md)).
+6. Report to the user in project terms — goal, progress, problems, results — not stage names or gate counts ([`references/output-contracts.md`](references/output-contracts.md)).
 
 ## Commands
 
-Read only the current stage's page under `references/stages/`; [`references/commands.md`](references/commands.md) is the index. Stages marked full need `INSTALL_PROFILE=full`.
+Read only the current stage's page under `references/stages/`; [`references/commands.md`](references/commands.md) is the index.
 
 | Command | Purpose |
 | --- | --- |
@@ -47,13 +46,5 @@ Read only the current stage's page under `references/stages/`; [`references/comm
 | `/spec:done` | Archive and commit |
 | `/spec:push` | Merge, push, delete the merged branch (authorized only) |
 | `/spec:doctor` | Environment self-check |
-| `/spec:update` | Change scope or tasks mid-flight (full) |
-| `/spec:status` | Overview of packages and blockers (full) |
-| `/spec:goal` | One-shot new → run → check → done (full) |
-| `/spec:autoplan` | Plan a feature list to readiness (full) |
-| `/spec:autorun` | Work through the plan one package per round (full) |
-| `/spec:organize` | Structure audit, read-only by default (full) |
-
-Extension slots (`slots/<name>/`, full install only) follow their own README; validate with `python3 scripts/slot_registry.py validate`. When a slot is missing, report it and continue on the ordinary path.
 
 Principles and the defense admission test: [`references/engineering-philosophy.md`](references/engineering-philosophy.md). Reading index: [`references/00-readme.md`](references/00-readme.md).
