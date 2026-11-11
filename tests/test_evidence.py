@@ -13,6 +13,66 @@ if str(SCRIPTS) not in sys.path:
 import evidence  # noqa: E402
 
 
+def test_tree_fingerprint_tracks_product_content_not_commit_identity(tmp_path):
+    from package import tree_fingerprint
+
+    repo(tmp_path)
+    make_package(tmp_path)
+    before = tree_fingerprint(tmp_path)
+    subprocess.run(["git", "add", ".spec"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "package metadata"], cwd=tmp_path, check=True, capture_output=True)
+
+    assert tree_fingerprint(tmp_path) == before
+    (tmp_path / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    changed = tree_fingerprint(tmp_path)
+    assert changed != before
+    subprocess.run(["git", "add", "app.py"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "product change"], cwd=tmp_path, check=True, capture_output=True)
+    assert tree_fingerprint(tmp_path) == changed
+    (tmp_path / "app.py").unlink()
+    assert tree_fingerprint(tmp_path) != changed
+
+
+def test_package_only_checkpoint_preserves_other_task_evidence_freshness(tmp_path):
+    repo(tmp_path)
+    package = make_package(tmp_path)
+    (package / "tasks.md").write_text(
+        "- [ ] First\n"
+        "  - id: task-one\n"
+        "  - boundary: .spec/specs\n"
+        "  - verify: `true`\n"
+        "  - expect: green\n"
+        "- [ ] Second\n"
+        "  - id: task-two\n"
+        "  - boundary: .spec/specs\n"
+        "  - verify: `true`\n"
+        "  - expect: green\n",
+        encoding="utf-8",
+    )
+    spec_path = package / "spec.md"
+    spec_path.write_text(
+        spec_path.read_text(encoding="utf-8").replace(
+            "- C1 | Fixture works | task-value", "- C1 | Both tasks pass | task-two"
+        ),
+        encoding="utf-8",
+    )
+
+    assert cli(tmp_path, "verify", "--all").returncode == 0
+    check = cli(tmp_path, "check")
+    assert check.returncode == 0, check.stderr
+    assert json.loads(check.stdout)["passed"] is True
+
+    done = cli(tmp_path, "done")
+    assert done.returncode == 0, done.stderr
+    runs = [
+        json.loads(line)
+        for line in (tmp_path / ".spec/specs/archive" / SLUG / "runs.jsonl").read_text().splitlines()
+        if line
+    ]
+    final = [record for record in runs if record.get("final") is True]
+    assert {record["task"] for record in final} == {"task-one", "task-two"}
+
+
 def test_verify_ticks_and_creates_checkpoint(tmp_path):
     repo(tmp_path)
     make_package(tmp_path)

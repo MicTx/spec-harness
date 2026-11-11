@@ -327,26 +327,28 @@ def append_run(package: Path, record: dict) -> None:
 def tree_fingerprint(root: Path) -> str:
     if gitx.toplevel(root) is None:
         raise ValueError("v3 evidence requires a Git worktree")
-    head = gitx.head(root)
-    digest = hashlib.sha256(head.encode() + b"\0")
-    diff = gitx.git(
-        root, "diff", "--binary", *(["HEAD"] if head else []), "--", ".", ":(exclude,literal).spec", text=False
-    ).stdout
-    digest.update(diff)
-    files = gitx.git(root, "ls-files", "--others", "--exclude-standard", "-z", text=False).stdout
+    digest = hashlib.sha256()
+    files = gitx.git(root, "ls-files", "--cached", "--others", "--exclude-standard", "-z", text=False).stdout
     for raw in sorted(item for item in files.split(b"\0") if item):
         name = os.fsdecode(raw)
         if name == ".spec" or name.startswith(".spec/"):
             continue
         path = root / name
         digest.update(raw + b"\0")
+        if not path.exists() and not path.is_symlink():
+            digest.update(b"deleted\0")
+            continue
         mode = path.lstat().st_mode
         if stat.S_ISLNK(mode):
+            digest.update(b"link\0")
             digest.update(os.fsencode(os.readlink(path)))
         elif stat.S_ISREG(mode):
+            digest.update(b"executable\0" if mode & stat.S_IXUSR else b"file\0")
             with path.open("rb") as stream:
                 while chunk := stream.read(CHUNK):
                     digest.update(chunk)
+        else:
+            raise ValueError(f"unsupported file type in evidence fingerprint: {name}")
         digest.update(b"\0")
     return digest.hexdigest()
 
