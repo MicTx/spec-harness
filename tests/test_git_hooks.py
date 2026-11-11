@@ -467,10 +467,10 @@ def test_done_preflight_fails_before_archive_without_remote(tmp_path):
 
 
 def test_done_delivers_baseline_dirt_inside_boundary(tmp_path):
-    from tests.v3_support import SLUG, cli, make_package, repo
+    from tests.v3_support import cli, make_package, repo
 
     repo(tmp_path)
-    package = make_package(tmp_path)
+    make_package(tmp_path)
     # Pre-Go dirt inside the task boundary simulates implementation that
     # started before plan-go recorded the baseline.
     (tmp_path / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
@@ -484,7 +484,9 @@ def test_done_delivers_baseline_dirt_inside_boundary(tmp_path):
     delivered = git(tmp_path, "rev-list", f"{base}..HEAD", "--", "app.py").stdout.split()
     assert delivered, "baseline change inside the boundary was not delivered"
     residual = [
-        line for line in git(tmp_path, "status", "--porcelain").stdout.splitlines() if not line.endswith(".spec/charter.md")
+        line
+        for line in git(tmp_path, "status", "--porcelain").stdout.splitlines()
+        if not line.endswith(".spec/charter.md")
     ]
     assert residual == []
 
@@ -518,7 +520,7 @@ def test_done_preflight_rejects_baseline_dirt_outside_boundary(tmp_path):
 
 
 def test_done_delivers_new_boundary_file(tmp_path):
-    from tests.v3_support import SLUG, cli, make_package, repo
+    from tests.v3_support import cli, make_package, repo
 
     repo(tmp_path)
     package = make_package(tmp_path)
@@ -546,10 +548,10 @@ def test_done_delivers_new_boundary_file(tmp_path):
 
 
 def test_done_skips_untracked_ignored_memory_files(tmp_path):
-    from tests.v3_support import SLUG, cli, make_package, repo
+    from tests.v3_support import cli, make_package, repo
 
     repo(tmp_path)
-    package = make_package(tmp_path)
+    make_package(tmp_path)
     assert cli(tmp_path, "plan-go").returncode == 0
     assert cli(tmp_path, "verify", "task-value").returncode == 0
 

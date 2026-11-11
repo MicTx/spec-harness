@@ -124,7 +124,17 @@ def main(argv: list[str] | None = None) -> int:
             if result["finish"] in {"merge", "push"}:
                 import push
 
-                result["push"] = push.deliver(root, slug, push_enabled=result["finish"] == "push")
+                try:
+                    result["push"] = push.deliver(root, slug, push_enabled=result["finish"] == "push")
+                except (OSError, ValueError, KeyError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+                    result["push"] = {"error": str(exc)}
+                    print(json.dumps(result, ensure_ascii=False, indent=2))
+                    print(
+                        f"delivery incomplete: the package is archived at {result['archive']}; "
+                        "inspect the delivery branch, then rerun `spec.py push` from its spec branch.",
+                        file=sys.stderr,
+                    )
+                    return 1
         elif args.command == "push":
             import push
 
