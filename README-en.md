@@ -43,7 +43,7 @@ There are exactly three user commands:
 | Command | Purpose |
 | --- | --- |
 | `/spec <goal>` | Plan, or continue the package bound to this branch |
-| `/spec:push` | Finish Git delivery after explicit authorization |
+| `/spec:push` | Finish Git delivery after explicit authorization (resolves the archived package bound to the current branch) |
 | `/spec:doctor` | Check and repair runtime and host hooks |
 
 Codex/ZCode may use `$spec`. Small fixes, read-only investigation, and experiments do not need a package.

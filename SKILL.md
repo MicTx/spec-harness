@@ -25,7 +25,7 @@ After Go, do not ask about reversible in-scope decisions. Apply the charter prio
 1. Every machine task has `id`, path-glob `boundary`, backticked `verify`, and `expect`; tick only after the current-tree verify passes.
 2. Before `plan-go`, planning may create or update only package files under `.spec/`; it must not change product code.
 3. Git commits, archive, merge, and push are harness-script actions; never run Git with `--no-verify`.
-4. One package binds one non-protected branch. Never overwrite or stash user changes to make a gate pass.
+4. One package binds one non-protected branch. Never overwrite or stash user changes to make a gate pass. For V4 `merge`/`push`, `done` preflights delivery before archiving and fails fast on residual dirt instead of stranding the package.
 5. Boundary edits require a matching task or a planned amendment. Bash-created changes are audited from the final diff.
 6. Irreversible forks require `by: user <reference>`. New dependencies and compatibility breaks require charter authority.
 
@@ -34,7 +34,7 @@ After Go, do not ask about reversible in-scope decisions. Apply the charter prio
 | User command | Purpose |
 | --- | --- |
 | `/spec <goal>` | Plan when no active package is bound; otherwise continue execution |
-| `/spec:push` | User-authorized finish after a package has been delivered |
+| `/spec:push` | User-authorized finish; resolves the archived package bound to the current branch, then merges and pushes |
 | `/spec:doctor` | Check or repair installed runtime and session hooks |
 
 Planning contract: [`references/plan.md`](references/plan.md). Execution contract: [`references/exec.md`](references/exec.md). Format: [`references/format.md`](references/format.md). Philosophy: [`references/philosophy.md`](references/philosophy.md). Git ownership: [`references/git.md`](references/git.md).

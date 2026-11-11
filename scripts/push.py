@@ -5,7 +5,52 @@ from __future__ import annotations
 from pathlib import Path
 
 import gitx
-from package import extract_branch, specs_root
+from package import extract_branch, path_matches, specs_root
+
+
+def _worktrees(root: Path) -> list[dict]:
+    result = gitx.git(root, "worktree", "list", "--porcelain", check=False)
+    if result.returncode != 0:
+        return []
+    entries = []
+    current: dict | None = None
+    for line in result.stdout.splitlines() + [""]:
+        if line.startswith("worktree "):
+            current = {"path": Path(line.removeprefix("worktree ")), "branch": ""}
+        elif line.startswith("branch "):
+            if current is not None:
+                current["branch"] = line.removeprefix("branch ")
+        elif not line:
+            if current is not None:
+                entries.append(current)
+            current = None
+    return entries
+
+
+def _branch_worktrees(root: Path, branch: str) -> list[Path]:
+    wanted = f"refs/heads/{branch}"
+    return [entry["path"] for entry in _worktrees(root) if entry["branch"] == wanted]
+
+
+def _remove_linked_worktrees(root: Path, branch: str) -> list[dict]:
+    current = gitx.toplevel(root)
+    removed = []
+    for path in _branch_worktrees(root, branch):
+        resolved = path.resolve()
+        if current is not None and resolved == current:
+            continue
+        if gitx.dirty_paths(path, exclude=()):
+            removed.append({"path": str(path), "removed": False, "warning": "worktree has uncommitted changes"})
+            continue
+        result = gitx.git(root, "worktree", "remove", str(path), check=False)
+        removed.append(
+            {
+                "path": str(path),
+                "removed": result.returncode == 0,
+                **({"warning": result.stderr.strip() or "worktree remove failed"} if result.returncode != 0 else {}),
+            }
+        )
+    return removed
 
 
 def main_branch(root: Path, remote: str) -> str:
@@ -21,43 +66,133 @@ def main_branch(root: Path, remote: str) -> str:
     raise ValueError("cannot resolve the delivery main branch")
 
 
-def deliver(root: Path, slug: str, push_enabled: bool) -> dict:
-    archive = specs_root(root) / "archive" / slug
-    if not archive.is_dir():
-        raise ValueError("push requires an archived package bound to this branch")
-    branch = gitx.branch(root)
+def _delivery_preconditions(root: Path, slug: str, branch: str, bound: str) -> tuple[str, str, list[dict]]:
+    """Shared deterministic delivery checks used by ``preflight`` and ``deliver``.
+
+    Returns ``(remote, target, worktrees)`` so callers do not re-resolve them.
+    """
     if branch in {"main", "master", "develop"}:
-        raise ValueError("push starts on the archived package branch")
-    if gitx.dirty_paths(root, exclude=()):
-        raise ValueError("working tree is not clean")
-    spec = (archive / "spec.md").read_text(encoding="utf-8")
-    if extract_branch(spec) != branch:
-        raise ValueError("archived package is not bound to the current branch")
+        raise ValueError(f"delivery for {slug} requires the package branch, current branch is {branch}")
+    if bound != branch:
+        raise ValueError(f"package is bound to {bound}, current branch is {branch}")
     remotes = gitx.git(root, "remote").stdout.splitlines()
     if not remotes:
         raise ValueError("no Git remote is configured")
     remote = "origin" if "origin" in remotes else remotes[0]
     target = main_branch(root, remote)
-    gitx.git(root, "checkout", target)
-    gitx.git(root, "merge", "--no-ff", "-m", f"Merge Spec delivery {slug}", branch)
-    if not push_enabled:
-        return {
+    worktrees = _worktrees(root)
+    if not worktrees:
+        raise ValueError("cannot enumerate Git worktrees")
+    return remote, target, worktrees
+
+
+def preflight(root: Path, slug: str, spec_text: str, globs: list[str]) -> None:
+    """Fail fast on deterministic delivery blockers before the package is archived.
+
+    Mirrors the checks ``deliver`` runs after archive, plus a residual-dirty
+    prediction so ``done`` never strands an archived package mid-delivery.
+    Every dirty path inside a task boundary — including pre-Go baseline dirt —
+    is committed by delivery, so only outside-boundary residue can block.
+    """
+    branch = gitx.branch(root)
+    bound = extract_branch(spec_text)
+    _delivery_preconditions(root, slug, branch, bound)
+    dirty = gitx.dirty_paths(root, exclude=())
+    residual = []
+    for path in dirty:
+        if path.startswith(".spec/"):
+            continue
+        if any(path_matches(path, pattern) for pattern in globs):
+            continue
+        residual.append(path)
+    if not residual:
+        return
+    outside = residual
+    lines = [f"delivery for {slug} would leave uncommitted changes that block merge/push:"]
+    if outside:
+        lines.append("outside task boundary (commit or stash before done):")
+        lines.extend(f"  - {p}" for p in outside)
+    raise ValueError("\n".join(lines))
+
+
+def deliver(root: Path, slug: str, push_enabled: bool) -> dict:
+    archive = specs_root(root) / "archive" / slug
+    if not archive.is_dir():
+        raise ValueError("push requires an archived package bound to this branch")
+    branch = gitx.branch(root)
+    if gitx.dirty_paths(root, exclude=()):
+        raise ValueError("working tree is not clean")
+    spec = (archive / "spec.md").read_text(encoding="utf-8")
+    bound = extract_branch(spec)
+    remote, target, worktrees = _delivery_preconditions(root, slug, branch, bound)
+    anchor = worktrees[0]["path"]
+    target_ref = f"refs/heads/{target}"
+    target_wt = next((entry["path"] for entry in worktrees if entry["branch"] == target_ref), None)
+    if target_wt is None:
+        merge_wt = root
+    else:
+        merge_wt = target_wt
+        if merge_wt.resolve() != root.resolve() and gitx.dirty_paths(merge_wt, exclude=()):
+            raise ValueError(f"target worktree is not clean: {merge_wt}")
+    checked_out_target = False
+    try:
+        if target_wt is None:
+            gitx.git(merge_wt, "checkout", target)
+            checked_out_target = True
+        gitx.git(merge_wt, "merge", "--no-ff", "-m", f"Merge Spec delivery {slug}", branch)
+        if not push_enabled:
+            return {
+                "branch": branch,
+                "target": target,
+                "merged": True,
+                "pushed": False,
+                "head": gitx.head(merge_wt),
+            }
+        gitx.git(anchor, "push", remote, target)
+        remote_head = gitx.git(anchor, "ls-remote", remote, f"refs/heads/{target}").stdout.split()[0]
+        if remote_head != gitx.head(merge_wt):
+            raise ValueError(f"remote {target} does not contain the delivered head")
+    except Exception:
+        # Leave the caller rerunnable: drop any in-progress merge, and if this
+        # call checked out the delivery target on the root worktree, return it
+        # to the spec branch. A completed merge stays on the target branch so a
+        # retry merges "Already up to date" and continues at the failed step.
+        gitx.git(merge_wt, "merge", "--abort", check=False)
+        if checked_out_target:
+            gitx.git(root, "checkout", branch, check=False)
+        raise
+    removed = _remove_linked_worktrees(anchor, branch)
+    gitx.git(anchor, "push", remote, "--delete", branch, check=False)
+    if any(item["removed"] is False for item in removed):
+        result = {
             "branch": branch,
             "target": target,
             "merged": True,
-            "pushed": False,
-            "head": gitx.head(root),
+            "pushed": True,
+            "head": gitx.head(merge_wt),
+            "worktrees": removed,
+            "warnings": [
+                f"cleanup: {item['path']}: {item.get('warning', 'worktree remove failed')}"
+                for item in removed
+                if not item["removed"]
+            ],
         }
-    gitx.git(root, "push", remote, target)
-    remote_head = gitx.git(root, "ls-remote", remote, f"refs/heads/{target}").stdout.split()[0]
-    if remote_head != gitx.head(root):
-        raise ValueError(f"remote {target} does not contain the delivered head")
-    gitx.git(root, "push", remote, "--delete", branch, check=False)
-    gitx.git(root, "branch", "-d", branch)
-    return {
+        return result
+    gitx.git(anchor, "branch", "-d", branch)
+    result = {
         "branch": branch,
         "target": target,
         "merged": True,
         "pushed": True,
-        "head": gitx.head(root),
+        "head": gitx.head(merge_wt),
     }
+    if removed:
+        result["worktrees"] = removed
+    warnings = [
+        f"cleanup: {item['path']}: {item.get('warning', 'worktree remove failed')}"
+        for item in removed
+        if not item["removed"]
+    ]
+    if warnings:
+        result["warnings"] = warnings
+    return result

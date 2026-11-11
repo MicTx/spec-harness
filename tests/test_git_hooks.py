@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import subprocess
@@ -99,6 +100,467 @@ def make_archived_package(repo: Path, slug: str = "2026-07-13_fix-hook-attributi
     (package / "runs.jsonl").write_text('{"task":"task-fixture","exit":0,"cmd":"true"}\n', encoding="utf-8")
     (package / "completion-summary.md").write_text("# Completion Summary\n- Verified fixture.\n", encoding="utf-8")
     return package
+
+
+def test_push_removes_linked_worktree_for_delivery_branch(tmp_path):
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import push
+
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+    subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], cwd=remote, check=True)
+
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    git(repo, "checkout", "-b", "main")
+    (repo / "README.md").write_text("main\n", encoding="utf-8")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "main")
+
+    slug = "2026-01-01_cleanup-worktree"
+    git(repo, "checkout", "-b", f"spec/{slug}")
+    package = repo / ".spec" / "specs" / "archive" / slug
+    package.mkdir(parents=True)
+    (package / "spec.md").write_text(
+        "# Worktree cleanup\n<!-- spec-format: 3 -->\n"
+        "## Goal\n- goal: cleanup\n- literal ask: cleanup\n- done means: pushed\n"
+        "## Charter\n- V1 priority: quality | charter.md\n- V2 scope: strict | charter.md\n"
+        "- V3 verification: package | charter.md\n- V4 finish: push | charter.md\n"
+        "- V5 dependencies: none-new | charter.md\n- V6 compatibility: keep-public-api | charter.md\n"
+        "- V7 blocked: park-and-continue | charter.md\n## Scope\n- in: fixture\n- out: unrelated\n"
+        "## Assumptions\n## Forks\n## Criteria\n- C1 | Delivered | task-fixture\n"
+        "## Decisions\n## Parked\n## Binding\n- branch: `spec/2026-01-01_cleanup-worktree`\n",
+        encoding="utf-8",
+    )
+    (package / "tasks.md").write_text(
+        "- [x] Cleanup worktree\n  - id: task-fixture\n  - boundary: fixture\n  - verify: `true`\n  - expect: green\n",
+        encoding="utf-8",
+    )
+    git(repo, "add", ".spec")
+    git(repo, "commit", "-m", "archive", "-m", f"Spec: {slug}")
+
+    git(repo, "remote", "add", "origin", str(remote))
+    git(repo, "push", "origin", "main", f"spec/{slug}")
+    linked = tmp_path / "linked"
+    git(repo, "checkout", "main")
+    git(repo, "worktree", "add", str(linked), f"spec/{slug}")
+
+    result = push.deliver(linked, slug, True)
+
+    assert result["pushed"] is True
+    assert result["worktrees"] == [{"path": str(linked), "removed": True}]
+    assert not linked.exists()
+    assert "warnings" not in result
+    assert git(repo, "branch", "--list", f"spec/{slug}").stdout.strip() == ""
+    listed = git(repo, "ls-remote", "--heads", "origin").stdout
+    assert f"refs/heads/spec/{slug}" not in listed
+
+
+def test_push_keeps_dirty_linked_worktree_and_reports_cleanup_warning(tmp_path):
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import push
+
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+    subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], cwd=remote, check=True)
+
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    git(repo, "checkout", "-b", "main")
+    (repo / "README.md").write_text("main\n", encoding="utf-8")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "main")
+
+    slug = "2026-01-01_cleanup-worktree"
+    git(repo, "checkout", "-b", f"spec/{slug}")
+    package = repo / ".spec" / "specs" / "archive" / slug
+    package.mkdir(parents=True)
+    (package / "spec.md").write_text(
+        "# Worktree cleanup\n<!-- spec-format: 3 -->\n"
+        "## Goal\n- goal: cleanup\n- literal ask: cleanup\n- done means: pushed\n"
+        "## Charter\n- V1 priority: quality | charter.md\n- V2 scope: strict | charter.md\n"
+        "- V3 verification: package | charter.md\n- V4 finish: push | charter.md\n"
+        "- V5 dependencies: none-new | charter.md\n- V6 compatibility: keep-public-api | charter.md\n"
+        "- V7 blocked: park-and-continue | charter.md\n## Scope\n- in: fixture\n- out: unrelated\n"
+        "## Assumptions\n## Forks\n## Criteria\n- C1 | Delivered | task-fixture\n"
+        "## Decisions\n## Parked\n## Binding\n- branch: `spec/2026-01-01_cleanup-worktree`\n",
+        encoding="utf-8",
+    )
+    (package / "tasks.md").write_text(
+        "- [x] Cleanup worktree\n  - id: task-fixture\n  - boundary: fixture\n  - verify: `true`\n  - expect: green\n",
+        encoding="utf-8",
+    )
+    git(repo, "add", ".spec")
+    git(repo, "commit", "-m", "archive", "-m", f"Spec: {slug}")
+
+    git(repo, "remote", "add", "origin", str(remote))
+    git(repo, "push", "origin", "main", f"spec/{slug}")
+    linked = tmp_path / "linked"
+    git(repo, "checkout", "main")
+    git(repo, "worktree", "add", str(linked), f"spec/{slug}")
+    (linked / "dirty.txt").write_text("keep me\n", encoding="utf-8")
+
+    result = push._remove_linked_worktrees(repo, f"spec/{slug}")
+
+    assert result == [{"path": str(linked), "removed": False, "warning": "worktree has uncommitted changes"}]
+    assert linked.exists()
+    assert git(repo, "branch", "--list", f"spec/{slug}").stdout.strip().lstrip("+ ") == f"spec/{slug}"
+    listed = git(repo, "ls-remote", "--heads", "origin").stdout
+    assert f"refs/heads/spec/{slug}" in listed
+
+
+def _spec_push_repo(tmp_path: Path, slug: str = "2026-01-01_push-archive-resolution") -> Path:
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+    subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], cwd=remote, check=True)
+
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    git(repo, "checkout", "-b", "main")
+    (repo / "README.md").write_text("main\n", encoding="utf-8")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "main")
+
+    git(repo, "checkout", "-b", f"spec/{slug}")
+    package = repo / ".spec" / "specs" / "archive" / slug
+    package.mkdir(parents=True)
+    (package / "spec.md").write_text(
+        "# Push archive resolution\n<!-- spec-format: 3 -->\n"
+        "## Goal\n- goal: push\n- literal ask: push\n- done means: pushed\n"
+        "## Charter\n- V1 priority: quality | charter.md\n- V2 scope: strict | charter.md\n"
+        "- V3 verification: package | charter.md\n- V4 finish: push | charter.md\n"
+        "- V5 dependencies: none-new | charter.md\n- V6 compatibility: keep-public-api | charter.md\n"
+        "- V7 blocked: park-and-continue | charter.md\n## Scope\n- in: fixture\n- out: unrelated\n"
+        "## Assumptions\n## Forks\n## Criteria\n- C1 | Delivered | task-fixture\n"
+        f"## Decisions\n## Parked\n## Binding\n- branch: `spec/{slug}`\n",
+        encoding="utf-8",
+    )
+    (package / "tasks.md").write_text(
+        "- [x] Push\n  - id: task-fixture\n  - boundary: fixture\n  - verify: `true`\n  - expect: green\n",
+        encoding="utf-8",
+    )
+    git(repo, "add", ".spec")
+    git(repo, "commit", "-m", "archive", "-m", f"Spec: {slug}")
+
+    git(repo, "remote", "add", "origin", str(remote))
+    git(repo, "push", "origin", "main", f"spec/{slug}")
+    return repo
+
+
+def test_spec_push_resolves_archived_package_by_branch(tmp_path):
+    slug = "2026-01-01_push-archive-resolution"
+    repo = _spec_push_repo(tmp_path, slug)
+
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "spec.py"), "--root", str(repo), "push"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["pushed"] is True
+    assert git(repo, "branch", "--show-current").stdout.strip() == "main"
+    assert git(repo, "branch", "--list", f"spec/{slug}").stdout.strip() == ""
+    listed = git(repo, "ls-remote", "--heads", "origin").stdout
+    assert f"refs/heads/spec/{slug}" not in listed
+
+
+def test_spec_push_reports_no_archived_package_on_main(tmp_path):
+    slug = "2026-01-01_push-archive-resolution"
+    repo = _spec_push_repo(tmp_path, slug)
+    git(repo, "checkout", "-b", "spec/unbound")
+
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "spec.py"), "--root", str(repo), "push"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "no archived package binds the current branch" in result.stderr
+
+
+def test_spec_push_reports_multiple_archived_packages(tmp_path):
+    slug = "2026-01-01_push-archive-resolution"
+    repo = _spec_push_repo(tmp_path, slug)
+    other = "2026-01-01_push-archive-resolution-2"
+    package = repo / ".spec" / "specs" / "archive" / other
+    package.mkdir(parents=True)
+    (package / "spec.md").write_text(
+        (repo / ".spec" / "specs" / "archive" / slug / "spec.md").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (package / "tasks.md").write_text(
+        "- [x] Push\n  - id: task-fixture\n  - boundary: fixture\n  - verify: `true`\n  - expect: green\n",
+        encoding="utf-8",
+    )
+    git(repo, "add", ".spec")
+    git(repo, "commit", "-m", "archive second", "-m", f"Spec: {other}")
+
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "spec.py"), "--root", str(repo), "push"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "multiple archived packages bind the current branch" in result.stderr
+
+
+def test_deliver_merge_conflict_restores_spec_branch(tmp_path):
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import push
+
+    slug = "2026-01-01_push-archive-resolution"
+    repo = _spec_push_repo(tmp_path, slug)
+    # Diverge main so `merge --no-ff` conflicts on README.md.
+    (repo / "README.md").write_text("spec branch\n", encoding="utf-8")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "spec readme")
+    git(repo, "checkout", "main")
+    (repo / "README.md").write_text("main changed\n", encoding="utf-8")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "main readme")
+    git(repo, "push", "origin", "main")
+    git(repo, "checkout", f"spec/{slug}")
+
+    with pytest.raises(subprocess.CalledProcessError):
+        push.deliver(repo, slug, True)
+
+    # Recoverable state: back on the spec branch, no merge in progress.
+    assert git(repo, "branch", "--show-current").stdout.strip() == f"spec/{slug}"
+    assert not (repo / ".git" / "MERGE_HEAD").exists()
+
+    # Resolving on the spec branch (merge main into spec, resolve, commit)
+    # makes the retry succeed: main now merges cleanly.
+    git(repo, "merge", "main", check=False)
+    (repo / "README.md").write_text("merged\n", encoding="utf-8")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "--no-edit")
+    result = push.deliver(repo, slug, True)
+    assert result["pushed"] is True
+
+
+def test_deliver_push_failure_is_rerunnable(tmp_path):
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import push
+
+    slug = "2026-01-01_push-archive-resolution"
+    repo = _spec_push_repo(tmp_path, slug)
+    git(repo, "remote", "set-url", "origin", str(tmp_path / "missing.git"))
+
+    with pytest.raises(subprocess.CalledProcessError):
+        push.deliver(repo, slug, True)
+
+    # The merge commit landed on main but the push failed; the root worktree is
+    # back on the spec branch so the call can be retried.
+    assert git(repo, "branch", "--show-current").stdout.strip() == f"spec/{slug}"
+    assert not (repo / ".git" / "MERGE_HEAD").exists()
+    merged = git(repo, "branch", "--contains", f"spec/{slug}", "--format=%(refname:short)").stdout.split()
+    assert "main" in merged
+
+    # A retry finds main already merged, pushes, and cleans up.
+    git(repo, "remote", "set-url", "origin", str(tmp_path / "remote.git"))
+    result = push.deliver(repo, slug, True)
+    assert result["pushed"] is True
+    assert git(repo, "branch", "--list", f"spec/{slug}").stdout.strip() == ""
+
+
+def _preflight_repo(tmp_path: Path, slug: str = "2026-01-01_spec-push-preflight") -> Path:
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+    subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], cwd=remote, check=True)
+
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    git(repo, "checkout", "-b", "main")
+    (repo / "README.md").write_text("main\n", encoding="utf-8")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "main")
+    git(repo, "checkout", "-b", f"spec/{slug}")
+    git(repo, "remote", "add", "origin", str(remote))
+    git(repo, "push", "origin", "main")
+    return repo
+
+
+def _preflight_spec(slug: str) -> str:
+    return f"# Push preflight\n<!-- spec-format: 3 -->\n## Binding\n- branch: `spec/{slug}`\n"
+
+
+def test_push_preflight_passes_on_clean_tree(tmp_path):
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import push
+
+    slug = "2026-01-01_spec-push-preflight"
+    repo = _preflight_repo(tmp_path, slug)
+    push.preflight(repo, slug, _preflight_spec(slug), ["app.py"])
+
+
+def test_push_preflight_allows_boundary_dirt_inside_scope(tmp_path):
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import push
+
+    slug = "2026-01-01_spec-push-preflight"
+    repo = _preflight_repo(tmp_path, slug)
+    (repo / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    push.preflight(repo, slug, _preflight_spec(slug), ["app.py"])
+
+
+def test_push_preflight_rejects_outside_residual_dirt(tmp_path):
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import push
+
+    slug = "2026-01-01_spec-push-preflight"
+    repo = _preflight_repo(tmp_path, slug)
+    (repo / "unrelated.txt").write_text("wip\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="outside task boundary"):
+        push.preflight(repo, slug, _preflight_spec(slug), ["app.py"])
+
+
+def test_push_preflight_allows_baseline_dirt_inside_boundary(tmp_path):
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import push
+
+    slug = "2026-01-01_spec-push-preflight"
+    repo = _preflight_repo(tmp_path, slug)
+    (repo / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    push.preflight(repo, slug, _preflight_spec(slug), ["app.py"])
+
+
+def test_push_preflight_rejects_protected_branch(tmp_path):
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import push
+
+    slug = "2026-01-01_spec-push-preflight"
+    repo = _preflight_repo(tmp_path, slug)
+    git(repo, "checkout", "main")
+
+    with pytest.raises(ValueError, match="requires the package branch"):
+        push.preflight(repo, slug, _preflight_spec(slug), ["app.py"])
+
+
+def test_done_preflight_fails_before_archive_without_remote(tmp_path):
+    from tests.v3_support import SLUG, cli, make_package, repo
+
+    repo(tmp_path)
+    package = make_package(tmp_path)
+    spec_path = package / "spec.md"
+    spec_path.write_text(
+        spec_path.read_text(encoding="utf-8").replace("V4 finish: commit", "V4 finish: push"),
+        encoding="utf-8",
+    )
+    assert cli(tmp_path, "plan-go").returncode == 0
+    assert cli(tmp_path, "verify", "task-value").returncode == 0
+
+    result = cli(tmp_path, "done")
+
+    assert result.returncode != 0
+    assert "no Git remote" in result.stderr
+    assert (tmp_path / ".spec/specs" / SLUG / "spec.md").is_file()
+    assert not (tmp_path / ".spec/specs/archive" / SLUG).exists()
+
+
+def test_done_delivers_baseline_dirt_inside_boundary(tmp_path):
+    from tests.v3_support import SLUG, cli, make_package, repo
+
+    repo(tmp_path)
+    package = make_package(tmp_path)
+    # Pre-Go dirt inside the task boundary simulates implementation that
+    # started before plan-go recorded the baseline.
+    (tmp_path / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    base = git(tmp_path, "rev-parse", "HEAD").stdout.strip()
+    assert cli(tmp_path, "plan-go").returncode == 0
+    assert cli(tmp_path, "verify", "task-value").returncode == 0
+
+    result = cli(tmp_path, "done")
+
+    assert result.returncode == 0, result.stderr
+    delivered = git(tmp_path, "rev-list", f"{base}..HEAD", "--", "app.py").stdout.split()
+    assert delivered, "baseline change inside the boundary was not delivered"
+    residual = [
+        line for line in git(tmp_path, "status", "--porcelain").stdout.splitlines() if not line.endswith(".spec/charter.md")
+    ]
+    assert residual == []
+
+
+def test_done_preflight_rejects_baseline_dirt_outside_boundary(tmp_path):
+    from tests.v3_support import SLUG, cli, make_package, repo
+
+    repo(tmp_path)
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+    subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], cwd=remote, check=True)
+    package = make_package(tmp_path)
+    spec_path = package / "spec.md"
+    spec_path.write_text(
+        spec_path.read_text(encoding="utf-8").replace("V4 finish: commit", "V4 finish: push"),
+        encoding="utf-8",
+    )
+    git(tmp_path, "remote", "add", "origin", str(remote))
+    git(tmp_path, "push", "-q", "origin", "HEAD:main")
+    (tmp_path / "other.py").write_text("OTHER = 1\n", encoding="utf-8")
+    assert cli(tmp_path, "plan-go").returncode == 0
+    assert cli(tmp_path, "verify", "task-value").returncode == 0
+
+    result = cli(tmp_path, "done")
+
+    assert result.returncode != 0
+    assert "outside task boundary" in result.stderr
+    assert "other.py" in result.stderr
+    assert (tmp_path / ".spec/specs" / SLUG / "spec.md").is_file()
+    assert not (tmp_path / ".spec/specs/archive" / SLUG).exists()
+
+
+def test_done_delivers_new_boundary_file(tmp_path):
+    from tests.v3_support import SLUG, cli, make_package, repo
+
+    repo(tmp_path)
+    package = make_package(tmp_path)
+    spec_path = package / "spec.md"
+    spec_path.write_text(
+        spec_path.read_text(encoding="utf-8").replace("- in: tests/**", "- in: tests/**\n- in: created.py"),
+        encoding="utf-8",
+    )
+    (package / "tasks.md").write_text(
+        "- [ ] Create value file\n  - id: task-value\n  - boundary: new:created.py\n"
+        "  - verify: `test -f created.py`\n  - expect: red\n",
+        encoding="utf-8",
+    )
+    base = git(tmp_path, "rev-parse", "HEAD").stdout.strip()
+    assert cli(tmp_path, "plan-go").returncode == 0
+    # Implementation creates the declared new file inside the boundary.
+    (tmp_path / "created.py").write_text("CREATED = True\n", encoding="utf-8")
+    assert cli(tmp_path, "verify", "task-value").returncode == 0
+
+    result = cli(tmp_path, "done")
+
+    assert result.returncode == 0, result.stderr
+    delivered = git(tmp_path, "rev-list", f"{base}..HEAD", "--", "created.py").stdout.split()
+    assert delivered, "created boundary file was not delivered"
+
+
+def test_done_skips_untracked_ignored_memory_files(tmp_path):
+    from tests.v3_support import SLUG, cli, make_package, repo
+
+    repo(tmp_path)
+    package = make_package(tmp_path)
+    assert cli(tmp_path, "plan-go").returncode == 0
+    assert cli(tmp_path, "verify", "task-value").returncode == 0
+
+    result = cli(tmp_path, "done")
+
+    assert result.returncode == 0, result.stderr
+    # charter.md/lessons.md are ignored in the fixture like in the real repo:
+    # they must not be staged or committed even though they are listed for add.
+    committed = git(tmp_path, "show", "--name-only", "--format=", "HEAD").stdout
+    assert ".spec/charter.md" not in committed
+    assert ".spec/lessons.md" not in committed
 
 
 def archive_commit_fixture(tmp_path: Path) -> tuple[Path, str]:

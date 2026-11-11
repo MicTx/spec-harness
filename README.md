@@ -43,7 +43,7 @@ bash install.sh
 | 命令 | 用途 |
 | --- | --- |
 | `/spec <目标>` | 规划新包，或续跑当前分支绑定的包 |
-| `/spec:push` | 用户明确授权后完成 Git 交付 |
+| `/spec:push` | 用户明确授权后完成 Git 交付（按当前分支解析已归档包） |
 | `/spec:doctor` | 检查并修复运行时与宿主 hook |
 
 Codex/ZCode 可写 `$spec`。小修、只读调查和一次性实验不必建包。

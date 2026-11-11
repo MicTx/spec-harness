@@ -4,6 +4,16 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [1.0.3] - 2026-11-11
+
+### Fixed
+
+- **Archived-package push resolution**: `/spec:push` now resolves the archived package bound to the current branch instead of requiring an active package, so delivery can be finished after `done` archives the package.
+- **Delivery preflight before archive**: for V4 `merge`/`push`, `done` now repeats push's deterministic checks and predicts residual uncommitted changes before archiving, failing fast with an outside-boundary report so a blocked delivery stays retryable.
+- **Baseline dirt inside task boundary is delivered**: pre-Go working-tree changes that match a task boundary are now committed by task checkpoints and the final delivery commit instead of being silently excluded; only baseline changes outside every boundary remain uncommitted, and `push.preflight` no longer reports boundary-inside baseline dirt as a blocker.
+- **Recoverable delivery failures**: a failed merge inside `push.deliver` now aborts the merge and returns the root worktree to the spec branch, and a failed push keeps the merge on the target branch — `deliver` can simply be retried instead of requiring manual recovery. `preflight` and `deliver` now share one precondition implementation.
+- **New boundary files are delivered**: files created under a `new:` declared or other untracked single-file boundary are now staged by checkpoints and the delivery commit; only untracked paths matched by `.gitignore` (the optional `.spec/charter.md` / `.spec/lessons.md` memory files) are still skipped.
+
 ## [1.0.2] - 2026-11-11
 
 ### Added

@@ -85,6 +85,30 @@ def resolve_slug(root: Path, explicit: str | None = None) -> str:
     raise ValueError("multiple active packages bind the current branch: " + ", ".join(matches))
 
 
+def resolve_archived_slug(root: Path, explicit: str | None = None) -> str:
+    archive = specs_root(root) / "archive"
+    packages = sorted(path.name for path in archive.iterdir() if path.is_dir()) if archive.is_dir() else []
+    if explicit:
+        if not SLUG_RE.fullmatch(explicit):
+            raise ValueError("invalid Development Record slug")
+        if explicit not in packages:
+            raise ValueError(f"archived package not found: {explicit}")
+        return explicit
+    branch = gitx.branch(root)
+    matches = []
+    for slug in packages:
+        try:
+            if extract_branch((archive / slug / "spec.md").read_text(encoding="utf-8")) == branch:
+                matches.append(slug)
+        except (OSError, ValueError):
+            continue
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise ValueError("no archived package binds the current branch")
+    raise ValueError("multiple archived packages bind the current branch: " + ", ".join(matches))
+
+
 def section(spec: str, name: str) -> list[str]:
     lines = spec.splitlines()
     try:
@@ -363,8 +387,17 @@ def _baseline_dirty(root: Path, package: Path) -> set[str]:
     return set()
 
 
-def _unstage_baseline_dirty(root: Path, baseline: set[str]) -> None:
+def _unstage_baseline_dirty(root: Path, baseline: set[str], patterns: tuple[str, ...] = ()) -> None:
+    """Drop pre-Go dirt from the index unless it sits inside a task boundary.
+
+    Baseline changes matching a task boundary belong to the delivery: they are
+    staged by ``git_add_paths`` and must stay so the wip and delivery commits
+    carry them. Only baseline paths outside every boundary are unstaged back to
+    the worktree.
+    """
     for path in sorted(baseline):
+        if any(path_matches(path, pattern) for pattern in patterns):
+            continue
         if (root / path).exists():
             gitx.git(root, "restore", "--staged", "--", path, check=False)
         else:
@@ -372,7 +405,13 @@ def _unstage_baseline_dirty(root: Path, baseline: set[str]) -> None:
 
 
 def git_add_paths(root: Path, paths: list[str]) -> None:
-    """Stage paths that exist now; skip optional package files that do not."""
+    """Stage paths that exist now; skip missing files and untracked ignored ones.
+
+    ``git add`` fails on untracked paths matched by ``.gitignore`` (the repo's
+    `.spec/charter.md` / `.spec/lessons.md` memory files), so those are the only
+    plain files skipped here — a created ``new:`` boundary file is untracked
+    but not ignored and must be staged.
+    """
     existing = [
         path
         for path in paths
@@ -381,6 +420,7 @@ def git_add_paths(root: Path, paths: list[str]) -> None:
             not (root / path.removeprefix("new:")).is_file()
             or gitx.git(root, "ls-files", "--error-unmatch", "--", path.removeprefix("new:"), check=False).returncode
             == 0
+            or gitx.git(root, "check-ignore", "-q", "--", path.removeprefix("new:"), check=False).returncode != 0
         )
     ]
     if existing:
@@ -400,7 +440,7 @@ def checkpoint_commit(root: Path, slug: str, title: str, patterns: tuple[str, ..
     paths = [pattern.removeprefix("new:") for pattern in patterns if pattern]
     paths.extend([f".spec/specs/{slug}", ".spec/charter.md", ".spec/lessons.md"])
     git_add_paths(root, paths)
-    _unstage_baseline_dirty(root, _baseline_dirty(root, package))
+    _unstage_baseline_dirty(root, _baseline_dirty(root, package), patterns)
     status = gitx.git(root, "diff", "--cached", "--quiet", check=False)
     if status.returncode == 0:
         return ""

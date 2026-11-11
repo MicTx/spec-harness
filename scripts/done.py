@@ -8,6 +8,7 @@ from pathlib import Path
 import evidence
 import gate
 import gitx
+import push
 from memory import lesson_proposals, lessons_adjust
 from package import (
     _baseline_dirty,
@@ -72,6 +73,9 @@ def finish(root: Path, slug: str, lesson_used: list[str] | None = None, lesson_w
     records = parse_tasks(_tasks)
     patterns = [pattern for record in records for pattern in record.globs]
     baseline = _baseline_dirty(root, package)
+    values = parse_charter(spec)
+    if values.get("V4", "commit") in {"merge", "push"}:
+        push.preflight(root, slug, spec, patterns)
     (package / "completion-summary.md").write_text(build_summary(root, slug), encoding="utf-8")
     destination = package.parent / "archive" / slug
     if destination.exists():
@@ -91,9 +95,8 @@ def finish(root: Path, slug: str, lesson_used: list[str] | None = None, lesson_w
         ]
     )
     git_add_paths(root, paths)
-    _unstage_baseline_dirty(root, baseline)
+    _unstage_baseline_dirty(root, baseline, tuple(patterns))
     if gitx.git(root, "diff", "--cached", "--quiet", check=False).returncode == 0:
         raise ValueError("nothing to deliver after final verification")
     gitx.git(root, "commit", "-m", f"feat(spec): deliver {slug}\n\nSpec: {slug}")
-    values = parse_charter(spec)
     return {"slug": slug, "archive": str(destination), "head": gitx.head(root), "finish": values.get("V4", "commit")}

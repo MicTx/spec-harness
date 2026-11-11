@@ -93,7 +93,10 @@ def main(argv: list[str] | None = None) -> int:
                 ]
             )
         root = package.resolve_root(args.root)
-        slug = package.resolve_slug(root, args.slug)
+        if args.command == "push":
+            slug = package.resolve_archived_slug(root, args.slug)
+        else:
+            slug = package.resolve_slug(root, args.slug)
         if args.command == "next":
             result = route.next_card(root, slug)
         elif args.command == "plan-lint":
