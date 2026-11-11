@@ -11,6 +11,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 import evidence  # noqa: E402
+from runtime_budget import project_verify_timeout  # noqa: E402
 
 
 def test_tree_fingerprint_tracks_product_content_not_commit_identity(tmp_path):
@@ -134,3 +135,22 @@ def test_timeout_is_recorded_as_failure_evidence(tmp_path, monkeypatch):
     assert record["sig"]
     assert record["directive"].startswith("Verify timed out.")
     assert (package / "runs.jsonl").is_file()
+
+
+def test_project_verify_budget_matches_release_builder(tmp_path, monkeypatch):
+    repo(tmp_path)
+    make_package(tmp_path)
+    captured = {}
+
+    class StubSubprocess:
+        TimeoutExpired = subprocess.TimeoutExpired
+        CompletedProcess = subprocess.CompletedProcess
+
+        @staticmethod
+        def run(*_args, **kwargs):
+            captured["timeout"] = kwargs["timeout"]
+            return subprocess.CompletedProcess("true", 0, b"", b"")
+
+    monkeypatch.setattr(evidence, "subprocess", StubSubprocess)
+    assert evidence.run_tasks(tmp_path, SLUG, ["task-value"])["ready"] is True
+    assert captured["timeout"] == project_verify_timeout() == 1800

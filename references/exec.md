@@ -1,6 +1,6 @@
 # Execution Phase
 
-After `plan-go`, execution has no planning conversation. Take the first ready task from the dependency DAG, change only its boundary, run its exact verify, and let the harness tick and checkpoint it. Use `plan-amend` only when the charter allows adjacent work and the new task passes the same lint.
+After `plan-go`, execution has no planning conversation. Take the first ready task from the dependency DAG, change only its boundary, run its exact verify, and let the harness tick and checkpoint it. Use `plan-amend` only when the charter allows adjacent work and the new task passes the same lint. The shared project-level verify budget is 1800 seconds; set `SPEC_PROJECT_VERIFY_TIMEOUT` for a slower CI host.
 
 ## Decisions
 

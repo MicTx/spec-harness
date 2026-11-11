@@ -23,6 +23,7 @@ from package import (
     scope_patterns,
     section,
 )
+from runtime_budget import project_verify_timeout
 
 IRREVERSIBLE_GLOBS = (
     "migrations",
@@ -71,11 +72,12 @@ def _scope_covers(pattern: str, scopes: list[str]) -> bool:
 
 def _verify(root: Path, command: str) -> tuple[int, float, str]:
     started = time.monotonic()
+    timeout = project_verify_timeout()
     try:
-        completed = subprocess.run(command, shell=True, cwd=root, capture_output=True, timeout=600)
+        completed = subprocess.run(command, shell=True, cwd=root, capture_output=True, timeout=timeout)
         return completed.returncode, round(time.monotonic() - started, 3), ""
     except subprocess.TimeoutExpired:
-        return 124, round(time.monotonic() - started, 3), "verify timed out after 600s"
+        return 124, round(time.monotonic() - started, 3), f"verify timed out after {timeout}s"
 
 
 def _charter_gaps(spec: str) -> list[dict]:

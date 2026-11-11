@@ -4,6 +4,15 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [1.0.4] - 2026-11-11
+
+### Fixed
+
+- **Content-based evidence fingerprints**: task evidence now tracks the product tree instead of Git commit identity, so a later checkpoint that only commits package state does not invalidate earlier passing evidence; product-file edits, deletions, links, and permissions still invalidate stale evidence.
+- **Delivery failure diagnostics**: when `done` archives a package but its subsequent push fails, the CLI now reports the archived result, the push error, and the `spec.py push` recovery path instead of losing the completed delivery state.
+- **Repository lint gates**: the affected Git-hook and CLI tests pass `ruff check` and `ruff format --check`, restoring the public source CI gate.
+- **Project-level verify budgets**: the execution phase, planning lint, and release pre-build check now share one 1800-second budget, so a legitimate full project suite is no longer truncated by the old 600-second verify ceiling; `SPEC_PROJECT_VERIFY_TIMEOUT` overrides it for slower hosts.
+
 ## [1.0.3] - 2026-11-11
 
 ### Fixed

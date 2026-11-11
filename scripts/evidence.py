@@ -21,6 +21,7 @@ from package import (
     tick,
     tree_fingerprint,
 )
+from runtime_budget import project_verify_timeout
 
 
 def ladder_directive(package: Path, task_id: str, signature: str) -> str:
@@ -56,8 +57,9 @@ def run_tasks(root: Path, slug: str, selected: list[str] | None = None, final: b
     for task in chosen:
         started = time.monotonic()
         timeout = False
+        verify_timeout = project_verify_timeout()
         try:
-            completed = subprocess.run(task.command, shell=True, cwd=root, capture_output=True, timeout=600)
+            completed = subprocess.run(task.command, shell=True, cwd=root, capture_output=True, timeout=verify_timeout)
             exit_code = completed.returncode
             stdout, stderr = subprocess_output(completed)
             signature = failure_signature(completed.stdout, completed.stderr)
@@ -69,7 +71,7 @@ def run_tasks(root: Path, slug: str, selected: list[str] | None = None, final: b
             stdout, stderr = subprocess_output(
                 subprocess.CompletedProcess(task.command, exit_code, stdout_tail, stderr_tail)
             )
-            stderr = f"Spec verify timed out after 600 seconds\n{stderr}"
+            stderr = f"Spec verify timed out after {verify_timeout} seconds\n{stderr}"
             signature = failure_signature(stdout_tail, stderr_tail)
         previous = [
             record for record in runs(package) if record.get("task") == task.id and record.get("kind", "run") == "run"
