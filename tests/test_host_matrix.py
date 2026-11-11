@@ -64,6 +64,49 @@ def test_config_install_is_idempotent_and_preserves_custom_hooks(tmp_path):
     assert before == target.read_text(encoding="utf-8")
 
 
+def test_fresh_config_install_records_ownership_and_stays_idempotent(tmp_path):
+    target = install_session_hooks("claude", home=tmp_path)
+    first = target.read_text(encoding="utf-8")
+    first_settings = json.loads(first)
+    assert first_settings["x-spec-owned"]["commands"] == [
+        f"python3 {ROOT / 'hooks' / 'spec_hook.py'} --host claude {event}" for event in capabilities("claude")
+    ]
+    assert all(len(entries) == 1 for entries in first_settings["hooks"].values())
+
+    install_session_hooks("claude", home=tmp_path)
+    second_settings = json.loads(target.read_text(encoding="utf-8"))
+    assert second_settings == first_settings
+    assert target.read_text(encoding="utf-8") == first
+
+
+def test_config_install_migrates_legacy_ownership_without_external_hook_event_keys(tmp_path, monkeypatch):
+    target = tmp_path / ".claude" / "settings.json"
+    target.parent.mkdir()
+    legacy = "python3 /tmp/spec_hook.py --host claude stop"
+    target.write_text(
+        json.dumps(
+            {
+                "hooks": {"Stop": [{"matcher": "*", "hooks": [{"type": "command", "command": legacy}]}]},
+                "x-spec-owned": {"PreToolUse": "old", "Stop": legacy},
+            }
+        ),
+        encoding="utf-8",
+    )
+    installed_root = tmp_path / "installed" / "spec"
+    monkeypatch.setattr(install_hooks, "HOOKS", installed_root / "hooks")
+
+    install_session_hooks("claude", home=tmp_path, installed_root=installed_root)
+    settings = json.loads(target.read_text(encoding="utf-8"))
+    assert legacy not in target.read_text(encoding="utf-8")
+    assert "PreToolUse" not in settings["x-spec-owned"]
+    assert all("PreToolUse" not in key for key in settings if key != "hooks")
+    hook_path = installed_root / "hooks" / "spec_hook.py"
+    assert settings["x-spec-owned"] == {
+        "commands": [f"python3 {hook_path} --host claude {event}" for event in capabilities("claude")]
+    }
+    assert all(str(installed_root) in command for command in settings["x-spec-owned"]["commands"])
+
+
 def test_same_second_installs_preserve_distinct_backups(tmp_path, monkeypatch):
     target = tmp_path / ".claude" / "settings.json"
     target.parent.mkdir()

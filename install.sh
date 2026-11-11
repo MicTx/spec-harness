@@ -832,7 +832,7 @@ install_claude() {
   log "Installing Claude Code skill to $target"
   copy_runtime "$runtime_dir" "$target"
   write_install_manifest "claude" "$target"
-  "$PYTHON_BIN" "$runtime_dir/scripts/install_hooks.py" --host claude
+  "$PYTHON_BIN" "$runtime_dir/scripts/install_hooks.py" --host claude --installed-root "$target"
 
   local stage alias_dir alias_command command_target
   command_target="$CLAUDE_COMMANDS_DIR/$SKILL_NAME.md"
@@ -955,7 +955,7 @@ install_pi() {
   log "Installing Pi skill to $target"
   copy_runtime "$runtime_dir" "$target"
   write_install_manifest "pi" "$target"
-  "$PYTHON_BIN" "$runtime_dir/scripts/install_hooks.py" --host pi
+  "$PYTHON_BIN" "$runtime_dir/scripts/install_hooks.py" --host pi --installed-root "$target"
   log "Installing Pi prompt templates to $PI_PROMPTS_DIR (/spec, $(format_stage_aliases '/spec:' ', '))"
   pi_sweep_stale_templates
   pi_write_template "base"
@@ -972,7 +972,7 @@ install_skill_only_host() {
   log "Installing $(host_label_for "$host") skill to $target"
   copy_runtime "$runtime_dir" "$target"
   write_install_manifest "$host" "$target"
-  "$PYTHON_BIN" "$runtime_dir/scripts/install_hooks.py" --host "$host"
+  "$PYTHON_BIN" "$runtime_dir/scripts/install_hooks.py" --host "$host" --installed-root "$target"
 }
 
 # ZCode users often symlink ~/.zcode/skills/spec to another host's install.

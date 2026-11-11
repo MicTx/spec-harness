@@ -4,6 +4,14 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [1.0.5] - 2026-11-12
+
+### Fixed
+
+- **Claude settings compatibility**: Spec-owned hook commands are recorded under a neutral `x-spec-owned.commands` list, so Claude Code no longer treats event names outside `hooks` as invalid settings. Existing event-key ownership records are migrated on upgrade.
+- **Persistent session hook paths**: installer-rendered hooks now point at the installed skill root instead of a temporary staging directory, so hooks keep working after installation cleanup.
+- **Idempotent fresh installs**: a first installation now records hook ownership, and repeated installs replace rather than append Spec hooks, preventing duplicate hook entries on every upgrade.
+
 ## [1.0.4] - 2026-11-11
 
 ### Fixed

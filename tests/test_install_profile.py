@@ -297,3 +297,20 @@ def test_installer_preserves_user_settings_both_ways(tmp_path):
             if preexisting:
                 assert current["permissions"] == {"allow": ["Bash(ls)"]}
                 assert current["sentinel"] == "keep-me"
+
+
+@requires_bash
+def test_repeated_installer_run_keeps_one_owned_hook_per_event(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    first = run_installer(home, {"PYTHONDONTWRITEBYTECODE": "1"})
+    assert first.returncode == 0, first.stderr[-300:]
+    settings = home / ".claude" / "settings.json"
+    installed = json.loads(settings.read_text(encoding="utf-8"))
+    assert all(len(entries) == 1 for entries in installed["hooks"].values())
+    installed_hook = home / ".claude" / "skills" / "spec" / "hooks" / "spec_hook.py"
+    assert str(installed_hook) in installed["hooks"]["Stop"][0]["hooks"][0]["command"]
+
+    second = run_installer(home, {"PYTHONDONTWRITEBYTECODE": "1"})
+    assert second.returncode == 0, second.stderr[-300:]
+    assert json.loads(settings.read_text(encoding="utf-8")) == installed

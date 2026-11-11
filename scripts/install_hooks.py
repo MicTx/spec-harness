@@ -47,8 +47,25 @@ def _uses_nested_hooks(entries: list) -> bool:
     return bool(entries) and isinstance(entries[0].get("hooks"), list)
 
 
+def _owned_commands(owned: object) -> set[str]:
+    if isinstance(owned, list):
+        return {command for command in owned if isinstance(command, str)}
+    if isinstance(owned, dict) and "commands" in owned:
+        return _owned_commands(owned["commands"])
+    if not isinstance(owned, dict):
+        return set()
+    return {command for command in owned.values() if isinstance(command, str)}
+
+
+def _rendered_commands(rendered: dict) -> dict[str, str]:
+    return {
+        event: entries[0]["hooks"][0]["command"] if _uses_nested_hooks(entries) else entries[0]["command"]
+        for event, entries in rendered["hooks"].items()
+    }
+
+
 def _merge_hook_config(existing: dict, rendered: dict) -> dict:
-    owned = set(existing.get("x-spec-owned", {}).values())
+    owned = _owned_commands(existing.get("x-spec-owned", {}))
     data = _remove_commands(existing, owned)
     hooks = data.get("hooks", {})
     if not isinstance(hooks, dict):
@@ -56,11 +73,15 @@ def _merge_hook_config(existing: dict, rendered: dict) -> dict:
     for event, entries in rendered["hooks"].items():
         hooks.setdefault(event, []).extend(entries)
     data["hooks"] = hooks
-    data["x-spec-owned"] = {
-        event: entries[0]["hooks"][0]["command"] if _uses_nested_hooks(entries) else entries[0]["command"]
-        for event, entries in rendered["hooks"].items()
-    }
+    data["x-spec-owned"] = {"commands": list(_rendered_commands(rendered).values())}
     return data
+
+
+def _owned_hook_config(rendered: dict) -> dict:
+    return {
+        **rendered,
+        "x-spec-owned": {"commands": list(_rendered_commands(rendered).values())},
+    }
 
 
 def _install_shim(host: str, target: Path) -> None:
@@ -72,7 +93,7 @@ def _install_shim(host: str, target: Path) -> None:
     shutil.copy2(HOOKS / "spec_hook.py", target.parent / "spec_hook.py")
 
 
-def install_session_hooks(host: str, home: Path | None = None) -> Path | None:
+def install_session_hooks(host: str, home: Path | None = None, installed_root: Path | None = None) -> Path | None:
     if host not in HOSTS or not capabilities(host):
         return None
     target = config_path(host)
@@ -81,7 +102,8 @@ def install_session_hooks(host: str, home: Path | None = None) -> Path | None:
     if host in SHIM_SOURCES:
         _install_shim(host, target)
         return target
-    rendered = render_config(host, HOOKS / "spec_hook.py")
+    hook_root = installed_root if installed_root is not None else Path(__file__).resolve().parent.parent
+    rendered = render_config(host, hook_root / "hooks" / "spec_hook.py")
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
         backup = target.with_name(target.name + ".spec-backup-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S"))
@@ -100,7 +122,7 @@ def install_session_hooks(host: str, home: Path | None = None) -> Path | None:
             raise ValueError(f"host config must be a JSON object: {target}")
         data = _merge_hook_config(data, rendered)
     else:
-        data = rendered
+        data = _owned_hook_config(rendered)
     temporary = target.with_name(target.name + ".spec-tmp")
     temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     temporary.replace(target)
@@ -150,6 +172,7 @@ def install_git_hooks(root: Path, source_dir: Path) -> list[Path]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", action="append")
+    parser.add_argument("--installed-root", type=Path)
     parser.add_argument("--root", help="install Git hooks into this repository instead")
     args = parser.parse_args(argv)
     try:
@@ -160,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
             if not args.host:
                 parser.error("--host is required without --root")
             for host in args.host:
-                target = install_session_hooks(host)
+                target = install_session_hooks(host, installed_root=args.installed_root)
                 if target:
                     print(f"installed: {target}")
     except (OSError, ValueError) as exc:
