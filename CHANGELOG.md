@@ -4,6 +4,17 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [1.0.2] - 2026-11-11
+
+### Added
+
+- **Planning contract**: `/spec` now routes an unbound goal to `new` and a bound package to `update`; planning requires read-only recon, intent clarification, and task-level failure reasoning before Go. No new user commands.
+
+### Fixed
+
+- **Delivery commit index gap**: archiving a package now removes its active spec paths from the Git index, so pre-commit `--index` checks on a checkout-index tree no longer see the moved package as still active.
+- **Fingerprint check on git-less trees**: `evaluate_runs` degrades the tree-fingerprint dimension when the gate evaluates a checkout-index tree without `.git`, while keeping cmd/exit/final evidence checks.
+
 ## [1.0.1] - 2026-11-11
 
 ### Fixed

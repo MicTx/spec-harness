@@ -25,7 +25,7 @@ SPEC="$HOME/.claude/skills/spec/scripts/spec.py"
 $spec 修复 add 函数，保持行为由现有测试定义
 ```
 
-规划阶段会生成 `.spec/specs/<slug>/spec.md` 与 `tasks.md`，内容必须符合 [`references/format.md`](../references/format.md)。核心是：
+规划阶段先做只读侦察、确认意图并逆推任务失败点，然后生成 `.spec/specs/<slug>/spec.md` 与 `tasks.md`，内容必须符合 [`references/format.md`](../references/format.md)。核心是：
 
 ```markdown
 ## Goal

@@ -13,7 +13,7 @@ v3 把长期工作分为两个阶段：规划阶段允许提问、写假设和�
 
 ## 规划轮
 
-按 [`references/plan.md`](../references/plan.md) 依次完成 Recon、Intent、Charter、Simulation 和 Go。规划的目标不是填表，而是消除会阻塞执行的未知：
+按 [`references/plan.md`](../references/plan.md) 依次完成 Recon、Intent、Charter、Plan、Forks 和 Go。规划的目标不是填表，而是消除会阻塞执行的未知：
 
 1. 已确认事实必须带探针或来源。
 2. 边界必须覆盖实际会修改的路径。

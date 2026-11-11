@@ -36,7 +36,7 @@ Enable the skill in a project and state the goal:
 /spec Fix the export API permission check for admins and regular users
 ```
 
-Without an active package this enters planning: confirm outcome and scope, fill the charter, make assumptions and forks machine-checkable, then run `plan-go`. After Go, reversible choices are made and recorded; irreversible work is parked while other tasks continue.
+Without a bound package `/spec` enters the `new` planning flow, and a bound package before Go enters `update`: read-only recon, intent clarification, then machine-checkable assumptions, forks, and task-level failure probes before `plan-go`. After Go, reversible choices are made and recorded; irreversible work is parked while other tasks continue.
 
 There are exactly three user commands:
 

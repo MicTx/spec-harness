@@ -77,6 +77,10 @@ def finish(root: Path, slug: str, lesson_used: list[str] | None = None, lesson_w
     if destination.exists():
         raise ValueError(f"archive exists: {destination}")
     shutil.move(str(package), str(destination))
+    # The package may already be tracked by a wip checkpoint commit; a plain
+    # `git add` never records its deletion, leaving the active spec visible to
+    # --index hook checks on a git-less checkout-index tree.
+    gitx.git(root, "rm", "-r", "--cached", "--quiet", "--ignore-unmatch", "--", f".spec/specs/{slug}", check=False)
     lessons_adjust(root, lesson_used or [], lesson_wrong or [])
     paths = [pattern.removeprefix("new:") for pattern in patterns]
     paths.extend(

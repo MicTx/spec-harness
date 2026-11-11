@@ -112,7 +112,10 @@ def run_tasks(root: Path, slug: str, selected: list[str] | None = None, final: b
 def evaluate_runs(root: Path, slug: str, final: bool = False) -> list[str]:
     package, _spec, tasks = read_package(root, slug)
     latest = latest_runs(package)
-    fingerprint = tree_fingerprint(root)
+    # Hook --index checks may still evaluate an active package on a
+    # checkout-index tree that has no .git; the fingerprint dimension is
+    # unverifiable there and must degrade instead of failing.
+    fingerprint = tree_fingerprint(root) if gitx.toplevel(root) is not None else None
     errors = []
     for task in parse_tasks(tasks):
         if not task.command:
@@ -120,7 +123,7 @@ def evaluate_runs(root: Path, slug: str, final: bool = False) -> list[str]:
         record = latest.get(task.id, {})
         if record.get("exit") != 0:
             errors.append(f"{task.id}: latest verify did not pass")
-        elif record.get("cmd") != task.command or record.get("tree_fp") != fingerprint:
+        elif record.get("cmd") != task.command or (fingerprint is not None and record.get("tree_fp") != fingerprint):
             errors.append(f"{task.id}: evidence is stale for the current command or tree")
         elif final and not record.get("final"):
             errors.append(f"{task.id}: final-tree verify has not run")
