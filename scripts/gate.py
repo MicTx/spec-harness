@@ -11,6 +11,7 @@ from package import (
     criteria_status,
     dependency_errors,
     extract_branch,
+    package_baseline,
     parse_ledger,
     parse_tasks,
     path_matches,
@@ -47,6 +48,8 @@ def compute(root: Path, slug: str, final: bool = False) -> dict:
     errors = []
     if "spec-format: 3" not in spec:
         errors.append("only v3 packages are supported")
+    if not package_baseline(package):
+        errors.append("package has not passed plan-go")
     try:
         records = parse_tasks(tasks)
         errors.extend(dependency_errors(records))

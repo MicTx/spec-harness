@@ -58,3 +58,32 @@ def test_done_reports_archived_result_and_recovery_when_push_fails(tmp_path):
     retry = cli(tmp_path, "push")
     assert retry.returncode == 0, retry.stderr
     assert json.loads(retry.stdout)["pushed"] is True
+
+
+def test_done_preflight_rejects_dirty_target_worktree_worktree_topology(tmp_path):
+    from tests.v3_support import SLUG, cli, make_package, repo
+
+    repo(tmp_path)
+    package = make_package(tmp_path)
+    spec_path = package / "spec.md"
+    spec_path.write_text(
+        spec_path.read_text(encoding="utf-8").replace("V4 finish: commit", "V4 finish: push"),
+        encoding="utf-8",
+    )
+    remote = tmp_path.parent / f"{tmp_path.name}-remote.git"
+    subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+    subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], cwd=remote, check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=tmp_path, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=tmp_path, check=True)
+    assert cli(tmp_path, "plan-go").returncode == 0
+    assert cli(tmp_path, "verify", "task-value").returncode == 0
+    main_worktree = tmp_path.parent / f"{tmp_path.name}-main-worktree"
+    subprocess.run(["git", "worktree", "add", str(main_worktree), "main"], cwd=tmp_path, check=True)
+    (main_worktree / "dirty.txt").write_text("keep me\n", encoding="utf-8")
+
+    result = cli(tmp_path, "done")
+
+    assert result.returncode != 0
+    assert "target worktree is not clean" in result.stderr
+    assert (tmp_path / ".spec/specs" / SLUG / "spec.md").is_file()
+    assert not (tmp_path / ".spec/specs/archive" / SLUG).exists()

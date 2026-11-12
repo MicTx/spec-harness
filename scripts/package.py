@@ -284,6 +284,31 @@ def ready_tasks(records: list[Task]) -> list[Task]:
     ]
 
 
+def topological_tasks(records: list[Task]) -> list[Task]:
+    """Return a stable dependency order for a valid task graph."""
+    errors = dependency_errors(records)
+    if errors:
+        raise ValueError("; ".join(errors))
+    pending = {record.id: record for record in records}
+    completed: set[str] = set()
+    ordered: list[Task] = []
+    while pending:
+        ready = next(
+            (
+                record
+                for record in records
+                if record.id in pending and all(dep in completed for dep in record.depends_on)
+            ),
+            None,
+        )
+        if ready is None:
+            raise ValueError("dependency cycle")
+        ordered.append(ready)
+        completed.add(ready.id)
+        del pending[ready.id]
+    return ordered
+
+
 def tick(root: Path, slug: str, task_id: str, blocked: bool = False) -> None:
     directory, _spec, tasks = read_package(root, slug)
     lines = tasks.splitlines()
@@ -302,6 +327,25 @@ def tick(root: Path, slug: str, task_id: str, blocked: bool = False) -> None:
     if not found:
         raise ValueError(f"task not found: {task_id}")
     (directory / "tasks.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def unblock(root: Path, slug: str, task_id: str) -> None:
+    directory, _spec, tasks = read_package(root, slug)
+    lines = tasks.splitlines()
+    task_indexes = [index for index, line in enumerate(lines) if TASK_RE.match(line)]
+    for position, index in enumerate(task_indexes):
+        match = TASK_RE.match(lines[index])
+        if not match:
+            continue
+        end = task_indexes[position + 1] if position + 1 < len(task_indexes) else len(lines)
+        block = "\n".join(lines[index:end])
+        if re.search(rf"(?m)^\s*- id:\s*{re.escape(task_id)}\s*$", block):
+            if match.group(1) != "!":
+                raise ValueError(f"task is not blocked: {task_id}")
+            lines[index] = re.sub(r"^-\s*\[!\]", "- [ ]", lines[index])
+            (directory / "tasks.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+            return
+    raise ValueError(f"task not found: {task_id}")
 
 
 def runs(package: Path) -> list[dict]:
@@ -359,14 +403,45 @@ def criteria_status(spec: str, package: Path) -> list[tuple[str, str, str, bool]
 
 
 def path_matches(path: str, pattern: str) -> bool:
-    clean = pattern.removeprefix("new:")
-    clean = clean.rstrip("/")
-    return (
-        fnmatch.fnmatch(path, clean)
-        or fnmatch.fnmatch(path, clean + "/**")
-        or path.startswith(clean + "/")
-        or (clean.endswith("/**") and path.startswith(clean[:-2]))
-    )
+    """Match a repository path using component-aware POSIX glob semantics.
+
+    A single ``*`` never crosses ``/``; only ``**`` spans directories. A
+    wildcard-free pattern names a file or a directory subtree.
+    """
+    path_parts = [part for part in _portable_path(path).split("/") if part]
+    pattern_clean = _portable_path(pattern.removeprefix("new:")).rstrip("/")
+    pattern_parts = [part for part in pattern_clean.split("/") if part]
+    if not pattern_parts:
+        return False
+    if not any(char in pattern_clean for char in "*?["):
+        return path_parts[: len(pattern_parts)] == pattern_parts
+
+    memo: dict[tuple[int, int], bool] = {}
+
+    def match(path_index: int, pattern_index: int) -> bool:
+        key = (path_index, pattern_index)
+        if key in memo:
+            return memo[key]
+        if pattern_index == len(pattern_parts):
+            result = path_index == len(path_parts)
+        elif pattern_parts[pattern_index] == "**":
+            result = match(path_index, pattern_index + 1) or (
+                path_index < len(path_parts) and match(path_index + 1, pattern_index)
+            )
+        else:
+            result = (
+                path_index < len(path_parts)
+                and fnmatch.fnmatchcase(path_parts[path_index], pattern_parts[pattern_index])
+                and match(path_index + 1, pattern_index + 1)
+            )
+        memo[key] = result
+        return result
+
+    return match(0, 0)
+
+
+def _portable_path(value: str) -> str:
+    return value.replace(os.sep, "/") if os.sep != "/" else value
 
 
 def changed_paths(root: Path, base: str | None = None) -> list[str]:
@@ -382,11 +457,28 @@ def changed_paths(root: Path, base: str | None = None) -> list[str]:
     return sorted(set(tracked + untracked))
 
 
-def _baseline_dirty(root: Path, package: Path) -> set[str]:
+def package_baseline(package: Path) -> dict:
     for record in reversed(runs(package)):
         if record.get("kind") == "baseline" and record.get("task") == "package":
-            return set(record.get("dirty", []))
-    return set()
+            return record
+    return {}
+
+
+def require_execution_started(root: Path, slug: str) -> tuple[Path, str, str]:
+    """Require a frozen package on its bound branch before execution."""
+    package, spec, tasks = read_package(root, slug)
+    if not package_baseline(package):
+        raise ValueError("package has not passed plan-go")
+    bound = extract_branch(spec)
+    current = gitx.branch(root)
+    if current != bound:
+        raise ValueError(f"package is bound to {bound}, current branch is {current}")
+    return package, spec, tasks
+
+
+def _baseline_dirty(root: Path, package: Path) -> set[str]:
+    del root
+    return set(package_baseline(package).get("dirty", []))
 
 
 def _unstage_baseline_dirty(root: Path, baseline: set[str], patterns: tuple[str, ...] = ()) -> None:
@@ -407,26 +499,19 @@ def _unstage_baseline_dirty(root: Path, baseline: set[str], patterns: tuple[str,
 
 
 def git_add_paths(root: Path, paths: list[str]) -> None:
-    """Stage paths that exist now; skip missing files and untracked ignored ones.
-
-    ``git add`` fails on untracked paths matched by ``.gitignore`` (the repo's
-    `.spec/charter.md` / `.spec/lessons.md` memory files), so those are the only
-    plain files skipped here — a created ``new:`` boundary file is untracked
-    but not ignored and must be staged.
-    """
-    existing = [
+    """Stage only concrete changed paths admitted by the requested patterns."""
+    changed = gitx.dirty_paths(root, exclude=())
+    selected = {
         path
-        for path in paths
-        if (any(char in path for char in "*?[") or (root / path.removeprefix("new:")).exists())
+        for path in changed
+        if any(path_matches(path, pattern) for pattern in paths if pattern)
         and (
-            not (root / path.removeprefix("new:")).is_file()
-            or gitx.git(root, "ls-files", "--error-unmatch", "--", path.removeprefix("new:"), check=False).returncode
-            == 0
-            or gitx.git(root, "check-ignore", "-q", "--", path.removeprefix("new:"), check=False).returncode != 0
+            gitx.git(root, "ls-files", "--error-unmatch", "--", path, check=False).returncode == 0
+            or gitx.git(root, "check-ignore", "-q", "--", path, check=False).returncode != 0
         )
-    ]
-    if existing:
-        gitx.git(root, "add", "-A", "--", *existing)
+    }
+    if selected:
+        gitx.git(root, "add", "-A", "--", *sorted(selected))
 
 
 def checkpoint_commit(root: Path, slug: str, title: str, patterns: tuple[str, ...] = ()) -> str:

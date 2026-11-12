@@ -3,7 +3,7 @@ import json
 import sys
 from pathlib import Path
 
-from tests.v3_support import SLUG, cli, make_package, repo
+from tests.v3_support import SLUG, cli, make_package, repo, started_package
 
 HOOKS = Path(__file__).resolve().parents[1] / "hooks"
 sys.path.insert(0, str(HOOKS))
@@ -38,6 +38,7 @@ def test_parked_only_is_a_release_state(tmp_path):
     package = make_package(tmp_path)
     tasks = package / "tasks.md"
     tasks.write_text(tasks.read_text().replace("- [ ]", "- [x]"), encoding="utf-8")
+    assert cli(tmp_path, "plan-go").returncode == 0
     assert cli(tmp_path, "decide", "Publish?", "--park", "--by", "user pending").returncode == 0
     action = handle("stop", event(tmp_path))
     assert not action.block
@@ -46,7 +47,7 @@ def test_parked_only_is_a_release_state(tmp_path):
 
 def test_delivered_archive_releases_and_deliver_state_asks_for_done(tmp_path):
     repo(tmp_path)
-    make_package(tmp_path)
+    started_package(tmp_path)
     assert cli(tmp_path, "verify", "task-value").returncode == 0
     assert handle("stop", event(tmp_path)).block
     assert cli(tmp_path, "done").returncode == 0
@@ -58,13 +59,47 @@ def test_pre_tool_hard_gates(tmp_path):
     make_package(tmp_path)
     denied = handle("pre_tool", event(tmp_path, command="git commit --no-verify"))
     push = handle("pre_tool", event(tmp_path, command="git push origin main"))
+    commit = handle("pre_tool", event(tmp_path, command="git commit -m work"))
+    separated = handle("pre_tool", event(tmp_path, command="git commit --no-verify; echo done"))
+    short = handle("pre_tool", event(tmp_path, command="git commit -n"))
+    shell = handle("pre_tool", event(tmp_path, command="sh -c 'git commit --no-verify'"))
+    hooks_override = handle(
+        "pre_tool",
+        event(tmp_path, command="git -c core.hooksPath=/dev/null commit -m work"),
+    )
     assert denied.deny and "never permits" in denied.reason
-    assert push.deny and "not pre-authorized" in push.reason
+    assert push.deny and commit.deny and "Spec owns Git" in push.reason
+    assert separated.deny and short.deny and shell.deny
+    assert hooks_override.deny and "overriding Git hooks" in hooks_override.reason
+
+
+def test_pre_tool_allows_direct_git_without_active_package(tmp_path):
+    assert not handle("pre_tool", event(tmp_path, command="git commit -m work")).deny
+
+
+def test_pre_tool_allows_read_only_git_while_a_package_is_active(tmp_path):
+    repo(tmp_path)
+    make_package(tmp_path)
+    assert not handle("pre_tool", event(tmp_path, command="git log --grep commit")).deny
+
+
+def test_pre_tool_still_blocks_git_after_the_package_is_archived(tmp_path):
+    repo(tmp_path)
+    started_package(tmp_path)
+    assert cli(tmp_path, "verify", "task-value").returncode == 0
+    assert cli(tmp_path, "done").returncode == 0
+
+    result = handle("pre_tool", event(tmp_path, command="git push origin delivery"))
+
+    assert result.deny and "Spec owns Git" in result.reason
 
 
 def test_post_edit_and_start_injections(tmp_path):
     repo(tmp_path)
     make_package(tmp_path)
+    planning = handle("start", event(tmp_path))
+    assert planning.context.startswith(f"Spec {SLUG}: plan")
+    assert cli(tmp_path, "plan-go").returncode == 0
     warning = handle("post_edit", event(tmp_path, file_path=str(tmp_path / "other.py")))
     context = handle("start", event(tmp_path))
     assert "Boundary warning" in warning.context
@@ -73,7 +108,7 @@ def test_post_edit_and_start_injections(tmp_path):
 
 def test_end_writes_snapshot(tmp_path):
     repo(tmp_path)
-    package = make_package(tmp_path)
+    package = started_package(tmp_path)
     handle("end", event(tmp_path))
     state = json.loads((package / "state.json").read_text())
     assert state["task"]["id"] == "task-value"
@@ -81,7 +116,8 @@ def test_end_writes_snapshot(tmp_path):
 
 def test_claude_continuing_stop_releases_and_skips_state_machine(tmp_path, monkeypatch, capsys):
     repo(tmp_path)
-    package = make_package(tmp_path, verify="false")
+    package = started_package(tmp_path, verify="test ! -e fail-marker")
+    (tmp_path / "fail-marker").write_text("fail\n", encoding="utf-8")
     assert cli(tmp_path, "verify", "task-value").returncode == 1
     capsys.readouterr()
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"cwd": str(tmp_path)})))

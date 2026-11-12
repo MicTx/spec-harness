@@ -6,7 +6,15 @@ from pathlib import Path
 
 import gitx
 from memory import last_failures, progress_tuple
-from package import criteria_status, parse_ledger, parse_tasks, read_package, ready_tasks, resolve_slug
+from package import (
+    criteria_status,
+    package_baseline,
+    parse_ledger,
+    parse_tasks,
+    read_package,
+    ready_tasks,
+    resolve_slug,
+)
 
 
 def decide(root: Path, slug: str | None = None, *, fingerprint: bool = False) -> dict:
@@ -14,13 +22,16 @@ def decide(root: Path, slug: str | None = None, *, fingerprint: bool = False) ->
     selected = slug or resolve_slug(root)
     package, spec, tasks = read_package(root, selected)
     records = parse_tasks(tasks)
-    ready = ready_tasks(records)
+    frozen = bool(package_baseline(package))
+    ready = ready_tasks(records) if frozen else []
     parked = parse_ledger(spec, "Parked", "P")
     latest = criteria_status(spec, package)
     all_done = bool(records) and all(record.checked for record in records)
     evidence_failures = last_failures(package)
     unblocked_left = any(not record.checked and not record.blocked for record in records)
-    if ready:
+    if not frozen:
+        state = "plan"
+    elif ready:
         state = "run"
     elif all_done and all(item[3] for item in latest) and not parked and not evidence_failures:
         state = "deliver"
@@ -65,8 +76,10 @@ def next_card(root: Path, slug: str | None = None) -> dict:
         brief["next"] = "Present all parked decisions in one batch."
     elif brief["state"] == "stalled":
         brief["next"] = "Report the failure signature and change strategy; the task is blocked without new evidence."
-    else:
+    elif brief["state"] == "plan":
         brief["next"] = "Finish planning: run plan-lint, resolve gaps, then plan-go."
+    else:
+        brief["next"] = "Inspect the package state and continue."
     return brief
 
 

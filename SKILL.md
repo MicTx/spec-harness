@@ -22,12 +22,13 @@ After Go, do not ask about reversible in-scope decisions. Apply the charter prio
 
 ## Hard Rules
 
-1. Every machine task has `id`, path-glob `boundary`, backticked `verify`, and `expect`; tick only after the current-tree verify passes.
-2. Before `plan-go`, planning may create or update only package files under `.spec/`; it must not change product code.
-3. Git commits, archive, merge, and push are harness-script actions; never run Git with `--no-verify`.
-4. One package binds one non-protected branch. Never overwrite or stash user changes to make a gate pass. For V4 `merge`/`push`, `done` preflights delivery before archiving and fails fast on residual dirt instead of stranding the package.
+1. Every machine task has `id`, path-glob `boundary`, backticked `verify`, and `expect`; only the harness ticks a ready task after its current-tree verify passes.
+2. Before `plan-go`, the planning agent may create or update only package files under `.spec/`; it must not change product code. Pre-existing working-tree dirt is not an agent edit: `plan-go` records it, changes inside task boundaries are delivered, and changes outside every boundary block delivery.
+3. Git commits, archive, merge, and push are harness-script actions; while a package is active or archived on the current branch, direct `git commit`/`git push` commands are rejected, and Git hooks may never be bypassed with `--no-verify`, `-n`, or a hooks-path override.
+4. A package is frozen by exactly one `plan-go` and binds one non-protected branch. Never overwrite or stash user changes to make a gate pass. For V4 `merge`/`push`, `done` preflights the bound worktree, target worktree, remote, and residual dirt before archiving; a dirty target worktree or ambiguous binding fails fast.
 5. Boundary edits require a matching task or a planned amendment. Bash-created changes are audited from the final diff.
 6. Irreversible forks require `by: user <reference>`. New dependencies and compatibility breaks require charter authority.
+7. `verify` runs only ready tasks. `done` requires every task checked and unblocked, then re-verifies the complete DAG on the final tree before archiving.
 
 ## Commands
 

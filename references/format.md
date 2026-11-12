@@ -20,6 +20,9 @@
 - C1 | observable result | task-id
 ## Binding
 - branch: `<non-protected-branch>`
+- frozen: `<UTC timestamp>`
 ```
 
-`tasks.md` contains task cards. `boundary` is a comma-separated path-glob list; `new:` marks a file that may be created. `verify` is one repeatable backticked shell command. `expect` records the planning baseline (`red` or `green`). Optional fields are `depends-on`, `origin: planned|emergent`, and `pick`.
+`tasks.md` contains task cards. `boundary` is a comma-separated POSIX path-glob list: `*`, `?`, and `[]` match within one path component, `**` spans directories, and a wildcard-free path names a file or directory subtree. `new:` marks a file that may be created. `verify` is one repeatable backticked shell command. `expect` records the planning baseline (`red` or `green`). Optional fields are `depends-on`, `origin: planned|emergent`, and `pick`.
+
+`plan-go` records the `frozen` timestamp and a package baseline exactly once. A decision created from a fork uses the next `D<n>`/`P<n>` id and cites `F<n>` in its `by:` field. A blocked task keeps `[!]` until `spec.py unblock` records an explicit reason.

@@ -4,6 +4,25 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [1.0.7] - 2026-11-12
+
+### Fixed
+
+- **Worktree-aware delivery**: `done` and `push` now resolve unique delivery and target worktrees by branch, reject dirty target worktrees before archive, and reject ambiguous duplicate worktree bindings while preserving linked-worktree cleanup and retry behavior.
+- **Task DAG enforcement**: `verify` now accepts only ready tasks, `verify --all` follows dependency order, and `done` requires every task checked and unblocked before final-tree re-verification.
+- **Blocked-task integrity**: a fourth repeated failure signature marks the task `[!]` instead of routing back to it indefinitely; `spec.py unblock <task> --reason <text>` records the explicit recovery.
+- **Freeze integrity**: `plan-go` now runs exactly once, validates the bound branch, and execution commands require the recorded package baseline.
+- **Boundary matching**: path globs no longer let `*` cross directories, and checkpoints stage only concrete changed paths admitted by a task boundary.
+- **Decision ledger**: `decide --fork F<n>` emits the next `D<n>`/`P<n>` row and cites the fork instead of failing argument parsing or writing an unparseable id.
+- **Git policy gate**: active or archived-on-branch packages reject direct Git commit/push tool calls, plus `--no-verify`, `-n`, shell-wrapper, and hooks-path bypass variants.
+
+## [1.0.6] - 2026-11-12
+
+### Fixed
+
+- **Magpie-backed Claude upgrades**: the installer now follows a Claude skill symlink only when it points to a Spec-owned installation directory, upgrades that real directory, and leaves the host symlink in place. Dangling, chained, and foreign links are rejected without modifying Claude settings.
+- **Relative Claude skill links**: relative symlink targets are resolved against the link location, matching the symlink semantics used by host skill directories.
+
 ## [1.0.5] - 2026-11-12
 
 ### Fixed

@@ -102,7 +102,7 @@ def make_archived_package(repo: Path, slug: str = "2026-07-13_fix-hook-attributi
     return package
 
 
-def test_push_removes_linked_worktree_for_delivery_branch(tmp_path):
+def test_push_removes_linked_worktree_for_delivery_branch_worktree_topology(tmp_path):
     sys.path.insert(0, str(ROOT / "scripts"))
     import push
 
@@ -154,6 +154,67 @@ def test_push_removes_linked_worktree_for_delivery_branch(tmp_path):
     assert git(repo, "branch", "--list", f"spec/{slug}").stdout.strip() == ""
     listed = git(repo, "ls-remote", "--heads", "origin").stdout
     assert f"refs/heads/spec/{slug}" not in listed
+
+
+def test_push_preflight_rejects_dirty_target_worktree_worktree_topology(tmp_path):
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import push
+
+    slug = "2026-01-01_push-archive-resolution"
+    repo = _spec_push_repo(tmp_path, slug)
+    main_worktree = tmp_path / "main-worktree"
+    git(repo, "worktree", "add", str(main_worktree), "main")
+    (main_worktree / "dirty.txt").write_text("keep me\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"(?s)target worktree is not clean:.*dirty\.txt"):
+        push.preflight(repo, slug, _preflight_spec(slug), ["app.py"])
+
+
+def test_push_preflight_rejects_duplicate_delivery_worktrees_worktree_topology(tmp_path, monkeypatch):
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import push
+
+    slug = "2026-01-01_push-archive-resolution"
+    repo = _spec_push_repo(tmp_path, slug)
+    branch_ref = f"refs/heads/spec/{slug}"
+    monkeypatch.setattr(
+        push,
+        "_worktrees",
+        lambda _root: [
+            {"path": repo, "branch": branch_ref},
+            {"path": tmp_path / "duplicate", "branch": branch_ref},
+            {"path": tmp_path / "main-worktree", "branch": "refs/heads/main"},
+        ],
+    )
+
+    with pytest.raises(ValueError, match="multiple worktrees are bound to delivery branch"):
+        push.preflight(repo, slug, _preflight_spec(slug), ["app.py"])
+
+
+def test_deliver_merge_conflict_is_recoverable_in_linked_target_worktree_topology(tmp_path):
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import push
+
+    slug = "2026-01-01_push-archive-resolution"
+    repo = _spec_push_repo(tmp_path, slug)
+    (repo / "README.md").write_text("spec branch\n", encoding="utf-8")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "spec readme")
+    git(repo, "checkout", "main")
+    (repo / "README.md").write_text("main changed\n", encoding="utf-8")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "main readme")
+    git(repo, "push", "origin", "main")
+    git(repo, "checkout", f"spec/{slug}")
+    main_worktree = tmp_path / "main-worktree"
+    git(repo, "worktree", "add", str(main_worktree), "main")
+
+    with pytest.raises(subprocess.CalledProcessError):
+        push.deliver(repo, slug, True)
+
+    assert git(repo, "branch", "--show-current").stdout.strip() == f"spec/{slug}"
+    assert git(main_worktree, "branch", "--show-current").stdout.strip() == "main"
+    assert "UU" not in git(main_worktree, "status", "--porcelain").stdout
 
 
 def test_push_keeps_dirty_linked_worktree_and_reports_cleanup_warning(tmp_path):

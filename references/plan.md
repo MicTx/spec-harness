@@ -14,7 +14,7 @@ Ask at most four cards per batch; each option states its consequence. The first 
 
 - `new`: no bound package exists. Complete Recon, Intent, Charter, and Plan, then create the v3 package.
 - `update`: a package exists for the current planning branch but has no `plan-go` baseline. Keep the same disk truth, revisit Intent and Plan against existing evidence, and amend `spec.md`/`tasks.md` before lint.
-- Before Go, only `.spec/` package files may change; product files stay untouched until a task boundary authorizes them.
+- Before Go, the planning agent may edit only `.spec/` package files; product files stay untouched by agent edits. Pre-existing product dirt is preserved and recorded by `plan-go`: paths inside a task boundary may be delivered, while paths outside every boundary block delivery.
 - After `plan-go`, never reopen planning; use `plan-amend` for in-charter additions and `Parked` for irreversible choices.
 
 ## Charter
@@ -33,4 +33,4 @@ Ask at most four cards per batch; each option states its consequence. The first 
 
 `PLAN-001` verifies discriminate their declared red/green state; `002` boundaries resolve or use `new:`; `003` boundaries stay in `Scope.in`; `004` criteria and tasks cover each other; `005` dependencies close; `006` assumptions carry probes or fallbacks; `007` factual gaps become probes or tasks; `008` forks are chosen and irreversible choices cite user authority; `009` irreversible surfaces have a fork; `010` warns when one verify exceeds 120 seconds.
 
-Only `PLAN-010` is advisory. `plan-go` requires every other gap to be zero and records command baselines.
+Only `PLAN-010` is advisory. `plan-go` requires every other gap to be zero, records command baselines, writes the `Binding.frozen` timestamp, and cannot run again for the package.

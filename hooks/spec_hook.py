@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,8 +23,9 @@ import memory  # noqa: E402
 import package  # noqa: E402
 import route  # noqa: E402
 
-GIT_GROUP = re.compile(r"\bgit\b.*\b(commit|push)\b")
-NO_VERIFY = re.compile(r"(?:^|\s)--no-verify(?:\s|$)")
+SHELLS = {"sh", "bash", "zsh", "dash"}
+WRAPPERS = {"command", "exec", "nohup", "sudo"}
+GIT_DENY = "Spec owns Git actions while a package is active; use spec.py verify/done or /spec:push."
 
 
 @dataclass
@@ -42,29 +44,128 @@ def _active(event: dict) -> tuple[Path, str] | None:
         return None
 
 
+def _delivery_binding(event: dict) -> bool:
+    if _active(event):
+        return True
+    try:
+        root = package.resolve_root(event.get("cwd") or Path.cwd())
+        package.resolve_archived_slug(root)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 def _write_state(package: Path, values: dict) -> None:
     state = memory.snapshot_read(package)
     state.update(values)
     (package / "state.json").write_text(json.dumps(state, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def _git_command(command: str) -> str:
-    match = GIT_GROUP.search(command)
-    return match.group(1) if match else ""
+def _shell_segments(command: str) -> list[list[str]]:
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
+    lexer.whitespace_split = True
+    tokens = list(lexer)
+    segments: list[list[str]] = [[]]
+    for token in tokens:
+        if token and all(char in ";&|()" for char in token):
+            if segments[-1]:
+                segments.append([])
+            continue
+        segments[-1].append(token)
+    return [segment for segment in segments if segment]
+
+
+def _strip_wrappers(tokens: list[str]) -> list[str]:
+    index = 0
+    while index < len(tokens):
+        token = os.path.basename(tokens[index])
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", token):
+            index += 1
+            continue
+        if token == "env":
+            index += 1
+            while index < len(tokens):
+                if tokens[index].startswith("-") or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", tokens[index]):
+                    index += 1
+                else:
+                    break
+            continue
+        if token in WRAPPERS:
+            index += 1
+            while index < len(tokens) and tokens[index].startswith("-"):
+                index += 1
+            continue
+        break
+    return tokens[index:]
+
+
+def _shell_payload(tokens: list[str]) -> str:
+    for index, token in enumerate(tokens[1:], 1):
+        if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
+            return tokens[index + 1] if index + 1 < len(tokens) else ""
+    return ""
+
+
+def _git_action(args: list[str]) -> str:
+    value_options = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token in value_options:
+            index += 2
+        elif token.startswith("-"):
+            index += 1
+        else:
+            return token
+    return ""
+
+
+def _git_invocations(command: str, depth: int = 0) -> list[tuple[str, list[str]]]:
+    if depth > 3:
+        return []
+    result: list[tuple[str, list[str]]] = []
+    for segment in _shell_segments(command):
+        tokens = _strip_wrappers(segment)
+        if not tokens:
+            continue
+        if os.path.basename(tokens[0]) in SHELLS:
+            payload = _shell_payload(tokens)
+            if payload:
+                result.extend(_git_invocations(payload, depth + 1))
+            continue
+        if os.path.basename(tokens[0]) not in {"git", "git.exe"}:
+            continue
+        args = tokens[1:]
+        result.append((_git_action(args), args))
+    return result
+
+
+def _git_bypass_reason(invocations: list[tuple[str, list[str]]]) -> str:
+    for action, args in invocations:
+        if any(token == "--no-verify" or token.startswith("--no-verify=") for token in args):
+            return "Spec never permits Git --no-verify."
+        if action == "commit" and any(
+            token.startswith("-") and not token.startswith("--") and "n" in token[1:] for token in args
+        ):
+            return "Spec never permits Git commit -n/--no-verify."
+        if any(token.startswith("core.hooksPath=") for token in args) and "-c" in args:
+            return "Spec never permits overriding Git hooks."
+    return ""
 
 
 def handle(name: str, event: dict) -> Action:
     if name == "pre_tool":
         command = str(event.get("command", ""))
-        git_action = _git_command(command)
-        if git_action and NO_VERIFY.search(command):
-            return Action(deny=True, reason="Spec never permits Git --no-verify.")
-        active = _active(event)
-        if active and git_action == "push":
-            root, slug = active
-            _directory, spec, _tasks = package.read_package(root, slug)
-            if package.parse_charter(spec).get("V4") != "push":
-                return Action(deny=True, reason="Git push is not pre-authorized by charter V4.")
+        invocations = _git_invocations(command)
+        bypass = _git_bypass_reason(invocations)
+        if bypass:
+            return Action(deny=True, reason=bypass)
+        owns_git = any(action in {"commit", "push"} for action, _args in invocations)
+        if owns_git and _delivery_binding(event):
+            return Action(
+                deny=True,
+                reason=GIT_DENY,
+            )
         return Action()
     active = _active(event)
     if not active:

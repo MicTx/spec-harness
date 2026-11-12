@@ -32,7 +32,7 @@ Go 后的循环只有四步：
 1. `next` 选择依赖已满足且未停机的任务。
 2. 只修改该任务 `boundary` 内的文件。
 3. `verify` 执行精确命令并留下证据。
-4. 失败按 [`references/exec.md`](../references/exec.md) 的阶梯推进；同一签名最多三次。
+4. 失败按 [`references/exec.md`](../references/exec.md) 的阶梯推进；第四个同签名失败会自动标为 `[!]`，有新的根因证据后先 `unblock`。
 
 ```bash
 python3 scripts/spec.py next
@@ -44,6 +44,6 @@ python3 scripts/spec.py check
 
 ## 交接与收尾
 
-新会话不需要读取旧聊天。它读取活动包、路由卡、最近证据和 lessons，然后继续当前任务。全部任务通过后执行 `done`；完成报告列出证据、用户决策、可回滚动作和剩余阻塞。
+新会话不需要读取旧聊天。它读取活动包、路由卡、最近证据和 lessons，然后继续当前任务。全部任务勾选且无阻塞后执行 `done`；`done` 会按 DAG 复验最终树，并按绑定 worktree 与目标 worktree 收口，完成报告列出证据、用户决策、可回滚动作和剩余阻塞。
 
 v3 的强度来自约束：规划可以厚，执行必须薄；声明必须被证据兑现，Git 归属必须由机器收口。

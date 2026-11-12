@@ -56,7 +56,7 @@ python3 "$SPEC" plan-lint --static
 python3 "$SPEC" plan-go
 ```
 
-`plan-go` 会记录基线和 Git 绑定。此后不要重开规划对话，只按磁盘任务推进。
+`plan-go` 会一次性记录基线、冻结时间和 Git 绑定。此后不要重开规划对话，也不能再次 Go，只按磁盘任务推进。
 
 ## 2. 执行与验证
 
@@ -67,7 +67,11 @@ python3 "$SPEC" next
 python3 "$SPEC" verify task-add
 ```
 
-`runs.jsonl` 记录命令、退出码、输出摘要和树指纹。验证后修改代码必须重跑对应任务；手工勾选不能替代证据。
+`runs.jsonl` 记录命令、退出码、输出摘要和树指纹。`verify` 只接受依赖已完成的 ready 任务；验证后修改代码必须重跑对应任务，手工勾选不能替代证据。同一失败签名连续出现四次时，任务会自动进入 `[!]`，修复根因后用 `unblock` 显式恢复：
+
+```bash
+python3 "$SPEC" unblock task-add --reason "已定位并修复根因"
+```
 
 ## 3. 收尾
 
@@ -76,10 +80,10 @@ python3 "$SPEC" check
 python3 "$SPEC" done
 ```
 
-`done` 会生成完成报告，按用户在 Charter `V4` 中的预授权决定提交、合并或推送。只有授权为 `push` 时才会执行推送。遇到阻塞时使用：
+`done` 要求所有任务已勾选且没有 `[!]`，随后按依赖顺序复验最终树。它会生成完成报告，按用户在 Charter `V4` 中的预授权决定提交、合并或推送；合并/推送前会解析绑定 worktree 与目标 worktree，脏目标或重复绑定会先失败。只有授权为 `push` 时才会执行推送。遇到阻塞时使用：
 
 ```bash
-python3 "$SPEC" decide "需要用户确认的外部选择" --fork F1 --reversal "不可逆"
+python3 "$SPEC" decide --fork F1
 python3 "$SPEC" learn "当 add 输出为 5" "不要重新实现运算符；优先检查测试输入"
 ```
 

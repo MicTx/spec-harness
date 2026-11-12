@@ -8,6 +8,7 @@ An explicit value — including ``all`` — must bypass detection entirely.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -264,6 +265,81 @@ def test_explicit_single_host_bypasses_detection(tmp_path):
     result = run_installer(home, extra_env={"INSTALL_HOSTS": "codex"})
     assert result.returncode == 0, result.stderr
     assert install_roots(home) == [".codex"], install_roots(home)
+
+
+@requires_bash
+def test_default_claude_magpie_symlink_upgrades_real_install(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    stubs = tmp_path / "stubs"
+    cli_stub(stubs, "claude")
+    library = home / ".config" / "magpie" / "library" / "skills"
+    library.mkdir(parents=True)
+    first = run_installer(
+        home,
+        stubs,
+        extra_env={
+            "INSTALL_HOSTS": "claude",
+            "CLAUDE_SKILLS_DIR": str(library),
+            "CLAUDE_COMMANDS_DIR": str(home / ".claude" / "commands"),
+            "CLAUDE_AGENTS_DIR": str(home / ".claude" / "agents"),
+            "FORCE": "1",
+        },
+    )
+    assert first.returncode == 0, first.stderr
+    installed = library / "spec"
+    (installed / "marker-original").write_text("old\n", encoding="utf-8")
+    (home / ".claude" / "skills").mkdir(parents=True)
+    (home / ".claude" / "skills" / "spec").symlink_to(
+        Path("../../.config/magpie/library/skills/spec"), target_is_directory=True
+    )
+
+    second = run_installer(
+        home,
+        stubs,
+        extra_env={
+            "INSTALL_HOSTS": "claude",
+            "CLAUDE_COMMANDS_DIR": str(home / ".claude" / "commands"),
+            "CLAUDE_AGENTS_DIR": str(home / ".claude" / "agents"),
+        },
+    )
+    assert second.returncode == 0, second.stderr
+    assert (home / ".claude" / "skills" / "spec").is_symlink()
+    assert (installed / "SKILL.md").is_file()
+    assert not (installed / "marker-original").exists()
+    assert (installed / "install-manifest.json").is_file()
+    settings = json.loads((home / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    commands = settings["x-spec-owned"]["commands"]
+    assert commands and all(str(installed) in command for command in commands)
+
+
+@pytest.mark.parametrize("kind", ["foreign", "dangling", "chained"])
+@requires_bash
+def test_default_claude_symlink_rejects_untrusted_targets(tmp_path, kind):
+    home = tmp_path / "home"
+    home.mkdir()
+    stubs = tmp_path / "stubs"
+    cli_stub(stubs, "claude")
+    library = home / ".config" / "magpie" / "library" / "skills"
+    library.mkdir(parents=True)
+    target = library / "foreign"
+    if kind == "foreign":
+        target.mkdir()
+        (target / "SKILL.md").write_text("# custom\n", encoding="utf-8")
+    elif kind == "chained":
+        foreign = library / "foreign"
+        foreign.mkdir()
+        (foreign / "SKILL.md").write_text("# custom\n", encoding="utf-8")
+        (library / "spec").symlink_to(foreign, target_is_directory=True)
+        target = library / "spec"
+    (home / ".claude" / "skills").mkdir(parents=True)
+    (home / ".claude" / "skills" / "spec").symlink_to(target, target_is_directory=True)
+
+    result = run_installer(home, stubs, extra_env={"INSTALL_HOSTS": "claude"})
+    assert result.returncode != 0
+    assert "refusing" in result.stderr
+    assert (home / ".claude" / "skills" / "spec").is_symlink()
+    assert not (home / ".claude" / "settings.json").exists()
 
 
 @requires_bash

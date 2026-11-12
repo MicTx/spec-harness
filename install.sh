@@ -76,6 +76,29 @@ reject_symlink() {
   [ ! -L "$1" ] || fail "refusing to use symlink path: $1"
 }
 
+resolve_claude_skill_link() {
+  local link="$1" target resolved
+  [ -L "$link" ] || return 1
+  target="$(readlink "$link")"
+  case "$target" in
+    /*) resolved="$target" ;;
+    *) resolved="$(cd "$(dirname "$link")" && cd "$(dirname "$target")" 2>/dev/null && printf '%s/%s\n' "$(pwd)" "$(basename "$target")")" ;;
+  esac
+  [ -e "$resolved" ] || fail "refusing dangling Claude skill symlink: $link -> $target"
+  [ ! -L "$resolved" ] || fail "refusing chained Claude skill symlink: $link -> $target"
+  [ -d "$resolved" ] || fail "Claude skill symlink must point to a directory: $link -> $target"
+  is_installer_owned "$resolved" || fail "refusing to follow non-installer-owned Claude skill symlink: $link -> $target"
+  CLAUDE_SKILLS_DIR="$(dirname "$resolved")"
+}
+
+validate_claude_skills_root() {
+  local requested_root="$1"
+  if [ "$CLAUDE_SKILLS_DIR" = "$requested_root" ] &&
+    [ "$requested_root" != "$HOME/.claude/skills" ]; then
+    require_allowed_root "Claude Code" "$CLAUDE_SKILLS_DIR" "$HOME/.claude/skills"
+  fi
+}
+
 ensure_private_dir() {
   local dir="$1"
   reject_symlink "$dir"
@@ -755,9 +778,12 @@ sweep_retired_claude_artifacts() {
 # before replacing it. This keeps a foreign "spec" skill (for example a router
 # variant) from being silently overwritten.
 check_name_collisions() {
-  local host target
+  local requested_claude_skills_dir host target
   local collisions=()
   if host_enabled claude; then
+    requested_claude_skills_dir="$CLAUDE_SKILLS_DIR"
+    resolve_claude_skill_link "$CLAUDE_SKILLS_DIR/$SKILL_NAME" || true
+    validate_claude_skills_root "$requested_claude_skills_dir"
     target="$CLAUDE_SKILLS_DIR/$SKILL_NAME"
     if is_foreign_skill "$target"; then
       collisions+=("$target")
@@ -806,8 +832,7 @@ preflight_pi_targets() {
 preflight_targets() {
   local host dir name
   if host_enabled claude; then
-    require_allowed_root "Claude Code" "$CLAUDE_SKILLS_DIR" "$HOME/.claude/skills"
-    require_allowed_root "Claude Code commands" "$CLAUDE_COMMANDS_DIR" "$HOME/.claude/commands"
+    require_allowed_root "Claude Code" "$CLAUDE_COMMANDS_DIR" "$HOME/.claude/commands"
     preflight_claude_targets
   fi
   if host_enabled pi; then

@@ -8,6 +8,11 @@ import gitx
 from package import extract_branch, path_matches, specs_root
 
 
+def _branch_entries(worktrees: list[dict], branch: str) -> list[dict]:
+    wanted = f"refs/heads/{branch}"
+    return [entry for entry in worktrees if entry["branch"] == wanted]
+
+
 def _worktrees(root: Path) -> list[dict]:
     result = gitx.git(root, "worktree", "list", "--porcelain", check=False)
     if result.returncode != 0:
@@ -28,8 +33,39 @@ def _worktrees(root: Path) -> list[dict]:
 
 
 def _branch_worktrees(root: Path, branch: str) -> list[Path]:
-    wanted = f"refs/heads/{branch}"
-    return [entry["path"] for entry in _worktrees(root) if entry["branch"] == wanted]
+    return [entry["path"] for entry in _branch_entries(_worktrees(root), branch)]
+
+
+def _delivery_topology(
+    root: Path,
+    worktrees: list[dict],
+    branch: str,
+    target: str,
+) -> tuple[Path, Path | None, Path]:
+    delivery_entries = _branch_entries(worktrees, branch)
+    if not delivery_entries:
+        raise ValueError(f"no worktree is bound to delivery branch {branch}")
+    if len(delivery_entries) > 1:
+        paths = ", ".join(str(entry["path"]) for entry in delivery_entries)
+        raise ValueError(f"multiple worktrees are bound to delivery branch {branch}: {paths}")
+
+    delivery = delivery_entries[0]["path"]
+    current = gitx.toplevel(root)
+    if current is None or current != delivery.resolve():
+        raise ValueError(f"delivery must run from the bound worktree {delivery}; current worktree is {current}")
+
+    target_entries = _branch_entries(worktrees, target)
+    if len(target_entries) > 1:
+        paths = ", ".join(str(entry["path"]) for entry in target_entries)
+        raise ValueError(f"multiple worktrees are bound to target branch {target}: {paths}")
+    target_worktree = target_entries[0]["path"] if target_entries else None
+    if target_worktree is not None:
+        dirty = gitx.dirty_paths(target_worktree, exclude=())
+        if dirty:
+            lines = "\n".join(f"  - {path}" for path in dirty)
+            raise ValueError(f"target worktree is not clean: {target_worktree}\n{lines}")
+    anchor = target_worktree or delivery
+    return delivery, target_worktree, anchor
 
 
 def _remove_linked_worktrees(root: Path, branch: str) -> list[dict]:
@@ -66,10 +102,15 @@ def main_branch(root: Path, remote: str) -> str:
     raise ValueError("cannot resolve the delivery main branch")
 
 
-def _delivery_preconditions(root: Path, slug: str, branch: str, bound: str) -> tuple[str, str, list[dict]]:
+def _delivery_preconditions(
+    root: Path,
+    slug: str,
+    branch: str,
+    bound: str,
+) -> tuple[str, str, list[dict], tuple[Path, Path | None, Path]]:
     """Shared deterministic delivery checks used by ``preflight`` and ``deliver``.
 
-    Returns ``(remote, target, worktrees)`` so callers do not re-resolve them.
+    Returns ``(remote, target, worktrees, topology)`` so callers do not re-resolve them.
     """
     if branch in {"main", "master", "develop"}:
         raise ValueError(f"delivery for {slug} requires the package branch, current branch is {branch}")
@@ -83,7 +124,8 @@ def _delivery_preconditions(root: Path, slug: str, branch: str, bound: str) -> t
     worktrees = _worktrees(root)
     if not worktrees:
         raise ValueError("cannot enumerate Git worktrees")
-    return remote, target, worktrees
+    topology = _delivery_topology(root, worktrees, branch, target)
+    return remote, target, worktrees, topology
 
 
 def preflight(root: Path, slug: str, spec_text: str, globs: list[str]) -> None:
@@ -124,16 +166,8 @@ def deliver(root: Path, slug: str, push_enabled: bool) -> dict:
         raise ValueError("working tree is not clean")
     spec = (archive / "spec.md").read_text(encoding="utf-8")
     bound = extract_branch(spec)
-    remote, target, worktrees = _delivery_preconditions(root, slug, branch, bound)
-    anchor = worktrees[0]["path"]
-    target_ref = f"refs/heads/{target}"
-    target_wt = next((entry["path"] for entry in worktrees if entry["branch"] == target_ref), None)
-    if target_wt is None:
-        merge_wt = root
-    else:
-        merge_wt = target_wt
-        if merge_wt.resolve() != root.resolve() and gitx.dirty_paths(merge_wt, exclude=()):
-            raise ValueError(f"target worktree is not clean: {merge_wt}")
+    remote, target, _worktrees, (_delivery_wt, target_wt, anchor) = _delivery_preconditions(root, slug, branch, bound)
+    merge_wt = target_wt or _delivery_wt
     checked_out_target = False
     try:
         if target_wt is None:

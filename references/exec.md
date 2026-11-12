@@ -1,6 +1,8 @@
 # Execution Phase
 
-After `plan-go`, execution has no planning conversation. Take the first ready task from the dependency DAG, change only its boundary, run its exact verify, and let the harness tick and checkpoint it. Use `plan-amend` only when the charter allows adjacent work and the new task passes the same lint. The shared project-level verify budget is 1800 seconds; set `SPEC_PROJECT_VERIFY_TIMEOUT` for a slower CI host.
+After `plan-go`, execution has no planning conversation. Take the first ready task from the dependency DAG, change only its boundary, run its exact verify, and let the harness tick and checkpoint it. `verify <id>` rejects blocked, checked, or dependency-blocked tasks; `verify --all` runs the unfinished unblocked DAG in stable topological order and stops at the first failure. Use `plan-amend` only when the charter allows adjacent work and the new task passes the same lint. The shared project-level verify budget is 1800 seconds; set `SPEC_PROJECT_VERIFY_TIMEOUT` for a slower CI host.
+
+`done` requires every task checked and no `[!]` task. It then re-runs all machine verifies in dependency order on the final tree without changing task markers. A package that has not passed `plan-go`, or whose current branch differs from `Binding`, cannot execute tasks.
 
 ## Decisions
 
@@ -17,7 +19,9 @@ After `plan-go`, execution has no planning conversation. Take the first ready ta
 1. First failure: read the output and make the smallest fix.
 2. Same signature again: build a minimal reproduction or add diagnostics.
 3. Same signature a third time: compare the last green checkpoint and change implementation path.
-4. Still no new evidence: park the task with its signature and continue elsewhere.
+4. Still no new evidence: the harness marks the task `[!]`, records the blocking evidence, and continues any independent ready work.
+
+After new root-cause evidence exists, run `spec.py unblock <task-id> --reason "<evidence>"` before retrying. The audit record is stored in `runs.jsonl`; `done` remains blocked until that task verifies and is checked.
 
 ## Final Report
 

@@ -37,11 +37,14 @@ def parser() -> argparse.ArgumentParser:
     verify.add_argument("tasks", nargs="*")
     verify.add_argument("--all", action="store_true")
     decide = commands.add_parser("decide")
-    decide.add_argument("text")
+    decide.add_argument("text", nargs="?")
     decide.add_argument("--fork")
     decide.add_argument("--by", default="V1")
     decide.add_argument("--park", action="store_true")
-    decide.add_argument("--reversal", default="checkpoint revert")
+    decide.add_argument("--reversal")
+    unblock = commands.add_parser("unblock")
+    unblock.add_argument("task_id")
+    unblock.add_argument("--reason", required=True)
     learn = commands.add_parser("learn")
     learn.add_argument("when")
     learn.add_argument("do")
@@ -61,13 +64,18 @@ def append_decision(root: Path, slug: str, args: argparse.Namespace) -> dict:
     section_name = "Parked" if args.park else "Decisions"
     prefix = "P" if args.park else "D"
     existing = package.parse_ledger(spec, section_name, prefix)
-    identifier = args.fork or f"{prefix}{len(existing) + 1}"
+    identifier = f"{prefix}{len(existing) + 1}"
     if args.fork:
         fork = next((item for item in package.parse_forks(spec) if item["id"] == args.fork), None)
         if not fork:
             raise ValueError("unknown fork")
         args.by = fork["id"]
         args.text = f"{fork['text'].split('|', 1)[0].strip()} -> {fork['pick']}"
+        args.reversal = args.reversal or fork["reversal"] or "checkpoint revert"
+    else:
+        args.reversal = args.reversal or "checkpoint revert"
+    if not args.text or not args.text.strip():
+        raise ValueError("decision text is required unless --fork supplies it")
     if not args.by.startswith(("V", "F", "user ")):
         raise ValueError("decision by must cite V<n>, F<n> or user <reference>")
     line = f"- {identifier} | {args.text} | by: {args.by} | reversal: {args.reversal}"
@@ -113,6 +121,8 @@ def main(argv: list[str] | None = None) -> int:
             if selected is None and not args.all:
                 raise ValueError("choose task ids or --all")
             result = evidence.run_tasks(root, slug, selected)
+        elif args.command == "unblock":
+            result = evidence.unblock_task(root, slug, args.task_id, args.reason)
         elif args.command == "decide":
             result = append_decision(root, slug, args)
         elif args.command == "learn":
@@ -142,6 +152,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             raise ValueError("unknown command")
         print(json.dumps(result, ensure_ascii=False, indent=2))
+        if args.command == "next":
+            return 0
         return 0 if result.get("ready", result.get("passed", True)) else 1
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         print(f"error: {exc}", file=sys.stderr)

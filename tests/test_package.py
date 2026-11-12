@@ -21,6 +21,14 @@ def test_boundaries_match_files_and_directories():
     assert not path_matches("other.py", "app.py")
 
 
+def test_single_star_does_not_cross_directories():
+    assert path_matches("src/a.py", "src/*.py")
+    assert not path_matches("src/deep/a.py", "src/*.py")
+    assert not path_matches("src/deep/a.py", "src/*")
+    assert path_matches("src/deep/a.py", "src/**")
+    assert path_matches("src/a.py", "src/**/*.py")
+
+
 def test_v2_is_not_an_implicit_v3_package(tmp_path):
     repo(tmp_path)
     package = make_package(tmp_path)

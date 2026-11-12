@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import fnmatch
+import os
 import re
 import subprocess
 import time
@@ -14,7 +16,9 @@ from package import (
     append_run,
     criteria,
     dependency_errors,
+    extract_branch,
     now,
+    package_baseline,
     parse_charter,
     parse_forks,
     parse_tasks,
@@ -59,15 +63,32 @@ def _scope_covers(pattern: str, scopes: list[str]) -> bool:
     if not any(char in clean for char in "*?["):
         return any(path_matches(clean, scope) for scope in scopes)
     prefix = _literal_prefix(clean)
+    boundary_parts = clean.split("/")
     for scope in scopes:
         base = scope.removeprefix("new:").rstrip("/")
-        if base.endswith("/**"):
+        if base == clean:
+            return True
+        if not any(char in base for char in "*?["):
+            if prefix == base or prefix.startswith(base + "/"):
+                return True
+        elif base.endswith("/**"):
             root = base[:-3].rstrip("/")
             if prefix == root or prefix.startswith(root + "/"):
                 return True
-        elif prefix and (base == prefix or base.startswith(prefix + "/")):
-            return True
+        elif "**" not in clean and "**" not in base:
+            scope_parts = base.split("/")
+            if len(scope_parts) == len(boundary_parts) and all(
+                _component_covers(scope_part, boundary_part)
+                for scope_part, boundary_part in zip(scope_parts, boundary_parts)
+            ):
+                return True
     return False
+
+
+def _component_covers(scope: str, boundary: str) -> bool:
+    if scope == boundary or scope == "*":
+        return True
+    return not any(char in boundary for char in "*?[") and bool(fnmatch.fnmatchcase(boundary, scope))
 
 
 def _verify(root: Path, command: str) -> tuple[int, float, str]:
@@ -140,6 +161,8 @@ def lint(root: Path, slug: str, static: bool = False, record: bool = False) -> d
         if task_id not in known:
             gaps.append(_gap("PLAN-004", f"unknown criterion task {task_id}", "Point every criterion at a task."))
     durations: dict[str, float] = {}
+    tracked_files = gitx.git(root, "ls-files", "-z", text=False).stdout.split(b"\0")
+    tracked_paths = [os.fsdecode(path) for path in tracked_files if path]
     for task in records:
         if task.origin not in VALID_ORIGINS:
             gaps.append(
@@ -149,8 +172,7 @@ def lint(root: Path, slug: str, static: bool = False, record: bool = False) -> d
             gaps.append(_gap("PLAN-002", "empty boundary", "List the exact files this task may change.", task.id))
         for pattern in task.globs:
             clean = pattern.removeprefix("new:")
-            tracked = gitx.git(root, "ls-files", "--", clean, check=False).stdout.splitlines()
-            matches = [path for path in tracked if path]
+            matches = [path for path in tracked_paths if path_matches(path, clean)]
             if not pattern.startswith("new:") and not matches:
                 gaps.append(
                     _gap(
@@ -270,24 +292,37 @@ def lint(root: Path, slug: str, static: bool = False, record: bool = False) -> d
 
 def go(root: Path, slug: str) -> dict:
     package, spec, _tasks = read_package(root, slug)
+    if package_baseline(package):
+        raise ValueError("package is already frozen by plan-go")
+    if re.search(r"(?m)^- frozen:", spec):
+        raise ValueError("package already carries a frozen marker")
+    current = gitx.branch(root)
+    if not current:
+        raise ValueError("plan-go requires a named branch")
+    bound_match = re.search(r"(?m)^- branch:", spec)
+    bound = extract_branch(spec) if bound_match else ""
+    if bound and current != bound:
+        raise ValueError(f"package is bound to {bound}, current branch is {current}")
+    branch = bound or current
+    if not bound and (current in {"main", "master", "develop"} or current.startswith("release/")):
+        branch = f"spec/{slug}"
     result = lint(root, slug, record=True)
     if not result["ready"]:
         return result
-    branch = gitx.branch(root)
-    if not branch:
-        raise ValueError("plan-go requires a named branch")
-    bound = re.search(r"(?m)^- branch:\s*`?([^\s`;]+)`?", spec)
-    if bound:
-        branch = bound.group(1)
-        if gitx.branch(root) != branch:
-            raise ValueError(f"package is bound to {branch}, current branch is {gitx.branch(root)}")
-    elif branch in {"main", "master", "develop"} or branch.startswith("release/"):
-        branch = f"spec/{slug}"
+    if not bound and branch != current:
         gitx.git(root, "checkout", "-b", branch)
     if not bound:
         (package / "spec.md").write_text(
             spec.rstrip() + f"\n\n## Binding\n- branch: `{branch}`\n- frozen: {now()}\n", encoding="utf-8"
         )
+    else:
+        frozen = re.sub(
+            r"(?m)^(- branch:.*)$",
+            rf"\1\n- frozen: {now()}",
+            spec,
+            count=1,
+        )
+        (package / "spec.md").write_text(frozen, encoding="utf-8")
     charter.merge(root, parse_charter(spec))
     dirty = gitx.dirty_paths(root, exclude=(".spec/",))
     append_run(package, {"kind": "baseline", "task": "package", "head": gitx.head(root), "dirty": dirty, "ts": now()})

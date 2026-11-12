@@ -1,6 +1,6 @@
 import json
 
-from tests.v3_support import SLUG, cli, make_package, repo
+from tests.v3_support import SLUG, cli, make_package, repo, started_package
 
 
 def test_reversible_decision_is_logged_without_user_question(tmp_path):
@@ -14,7 +14,7 @@ def test_reversible_decision_is_logged_without_user_question(tmp_path):
 
 def test_parked_item_does_not_preempt_ready_task(tmp_path):
     repo(tmp_path)
-    make_package(tmp_path)
+    started_package(tmp_path)
     assert cli(tmp_path, "decide", "Publish?", "--park", "--by", "user pending").returncode == 0
     result = json.loads(cli(tmp_path, "next").stdout)
     assert result["state"] == "run"
@@ -26,3 +26,27 @@ def test_irreversible_decision_requires_user_authority(tmp_path):
     make_package(tmp_path)
     result = cli(tmp_path, "decide", "Delete remote data", "--by", "agent")
     assert result.returncode == 1
+
+
+def test_fork_decision_uses_a_ledger_id_and_cites_the_fork(tmp_path):
+    repo(tmp_path)
+    package = make_package(tmp_path)
+
+    result = cli(tmp_path, "decide", "--fork", "F1")
+
+    assert result.returncode == 0, result.stderr
+    spec = (package / "spec.md").read_text()
+    assert "- D1 |" in spec
+    assert "by: F1" in spec
+    assert "reversal: irreversible" in spec
+    assert "- F1 |" in spec
+
+
+def test_decision_requires_text_without_a_fork(tmp_path):
+    repo(tmp_path)
+    make_package(tmp_path)
+
+    result = cli(tmp_path, "decide", "--by", "V1")
+
+    assert result.returncode == 1
+    assert "decision text is required" in result.stderr

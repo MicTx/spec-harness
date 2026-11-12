@@ -81,3 +81,10 @@ def cli(root: Path, *args: str) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
     )
+
+
+def started_package(root: Path, verify: str = "true", expect: str = "green") -> Path:
+    package = make_package(root, verify=verify, expect=expect)
+    result = cli(root, "plan-go")
+    assert result.returncode == 0, result.stderr
+    return package
