@@ -4,6 +4,12 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [Unreleased]
+
+### Added
+
+- **Worktree-bound concurrent execution**: `plan-go` on a protected branch now creates `spec/<slug>` in a linked worktree at `.spec/worktrees/<slug>` (excluded from dirty checks via `info/exclude`), moves the package there, and baselines inside it, so several specs execute concurrently while the main worktree keeps its branch and uncommitted changes. Shared `.spec/charter.md` and `.spec/lessons.md` resolve at the primary worktree, and `next` reports packages bound in other worktrees with their paths.
+
 ## [1.0.7] - 2026-11-12
 
 ### Fixed

@@ -36,13 +36,14 @@ Enable the skill in a project and state the goal:
 /spec Fix the export API permission check for admins and regular users
 ```
 
-Without a bound package `/spec` enters the `new` planning flow, and a bound package before Go enters `update`: read-only recon, intent clarification, then machine-checkable assumptions, forks, and task-level failure probes before `plan-go`. After Go, reversible choices are made and recorded; irreversible work is parked while other tasks continue.
-
-There are exactly three user commands:
+Without a bound package `/spec` enters the `plan` planning flow, and a bound package before Go enters `update`: read-only recon, intent clarification, then machine-checkable assumptions, forks, and task-level failure probes before `plan-go`. After Go, reversible choices are made and recorded; irreversible work is parked while other tasks continue.
 
 | Command | Purpose |
 | --- | --- |
 | `/spec <goal>` | Plan, or continue the package bound to this branch |
+| `/spec:plan <goal>` | Explicit planning entry: create or refine the package, lint, resolve forks, `plan-go` |
+| `/spec:run [goal]` | Execute the bound package to a terminal state; with a goal and no bound package, the built-in one-shot plans, executes, and delivers in one chain |
+| `/spec:check` | Run the delivery gate (structure audit included); a pass archives, commits, and delivers per V4 automatically |
 | `/spec:push` | Finish Git delivery after explicit authorization (resolves the archived package bound to the current branch) |
 | `/spec:doctor` | Check and repair runtime and host hooks |
 

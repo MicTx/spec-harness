@@ -25,7 +25,7 @@ import route  # noqa: E402
 
 SHELLS = {"sh", "bash", "zsh", "dash"}
 WRAPPERS = {"command", "exec", "nohup", "sudo"}
-GIT_DENY = "Spec owns Git actions while a package is active; use spec.py verify/done or /spec:push."
+GIT_DENY = "Spec owns Git actions while a package is active; use spec.py verify/check or /spec:push."
 
 
 @dataclass
@@ -195,7 +195,7 @@ def handle(name: str, event: dict) -> Action:
         progress = brief["progress"]
         state = memory.snapshot_read(directory)
         if brief["state"] == "deliver":
-            message = "All work is verified; run spec.py done to deliver."
+            message = "All work is verified; run spec.py check to deliver."
             return Action(block=True, reason=message)
         if brief["state"] == "parked-only":
             return Action(context="parked-only: present every parked item in one batch.")

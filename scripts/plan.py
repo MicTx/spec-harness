@@ -5,6 +5,7 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -290,6 +291,51 @@ def lint(root: Path, slug: str, static: bool = False, record: bool = False) -> d
     }
 
 
+def _exclude_worktrees(root: Path) -> None:
+    """Hide `.spec/worktrees/` from dirty checks in every worktree.
+
+    `info/exclude` lives in the common Git dir, so one entry covers the main
+    worktree and all linked worktrees without touching the repo's `.gitignore`.
+    """
+    common = gitx.git(root, "rev-parse", "--git-common-dir", check=False).stdout.strip()
+    if not common:
+        return
+    common_path = Path(common)
+    if not common_path.is_absolute():
+        base = gitx.toplevel(root) or root
+        common_path = base / common_path
+    exclude = common_path / "info" / "exclude"
+    line = ".spec/worktrees/"
+    try:
+        existing = exclude.read_text(encoding="utf-8").splitlines() if exclude.exists() else []
+        if line in existing:
+            return
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        with exclude.open("a", encoding="utf-8") as stream:
+            stream.write(line + "\n")
+    except OSError:
+        return
+
+
+def _spec_worktree(root: Path, slug: str, branch: str) -> Path:
+    """Create (or reuse) the linked worktree that executes the package."""
+    target = root / ".spec" / "worktrees" / slug
+    _exclude_worktrees(root)
+    registered = {entry["path"].resolve(): entry["branch"] for entry in gitx.worktrees(root)}
+    existing = registered.get(target.resolve())
+    if target.exists() or existing:
+        if existing != f"refs/heads/{branch}":
+            raise ValueError(f"worktree path is not bound to {branch}: {target}")
+        return target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    result = gitx.git(root, "worktree", "add", str(target), "-b", branch, check=False)
+    if result.returncode != 0 and "already exists" in result.stderr:
+        result = gitx.git(root, "worktree", "add", str(target), branch, check=False)
+    if result.returncode != 0:
+        raise ValueError(result.stderr.strip() or "git worktree add failed")
+    return target
+
+
 def go(root: Path, slug: str) -> dict:
     package, spec, _tasks = read_package(root, slug)
     if package_baseline(package):
@@ -304,11 +350,23 @@ def go(root: Path, slug: str) -> dict:
     if bound and current != bound:
         raise ValueError(f"package is bound to {bound}, current branch is {current}")
     branch = bound or current
+    worktree: Path | None = None
     if not bound and (current in {"main", "master", "develop"} or current.startswith("release/")):
         branch = f"spec/{slug}"
+        gate = lint(root, slug, static=True)
+        if not gate["ready"]:
+            return gate
+        worktree = _spec_worktree(root, slug, branch)
+        destination = worktree / ".spec" / "specs" / slug
+        if destination.exists():
+            raise ValueError(f"worktree package already exists: {destination}")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(package), str(destination))
+        root, package = worktree, destination
+        current = branch
     result = lint(root, slug, record=True)
     if not result["ready"]:
-        return result
+        return {**result, **({"worktree": str(worktree)} if worktree else {})}
     if not bound and branch != current:
         gitx.git(root, "checkout", "-b", branch)
     if not bound:
@@ -326,7 +384,10 @@ def go(root: Path, slug: str) -> dict:
     charter.merge(root, parse_charter(spec))
     dirty = gitx.dirty_paths(root, exclude=(".spec/",))
     append_run(package, {"kind": "baseline", "task": "package", "head": gitx.head(root), "dirty": dirty, "ts": now()})
-    return {"ready": True, "slug": slug, "branch": branch}
+    result = {"ready": True, "slug": slug, "branch": branch}
+    if worktree is not None:
+        result["worktree"] = str(worktree)
+    return result
 
 
 def amend(root: Path, slug: str, task_text: str) -> dict:

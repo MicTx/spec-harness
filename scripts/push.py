@@ -14,22 +14,7 @@ def _branch_entries(worktrees: list[dict], branch: str) -> list[dict]:
 
 
 def _worktrees(root: Path) -> list[dict]:
-    result = gitx.git(root, "worktree", "list", "--porcelain", check=False)
-    if result.returncode != 0:
-        return []
-    entries = []
-    current: dict | None = None
-    for line in result.stdout.splitlines() + [""]:
-        if line.startswith("worktree "):
-            current = {"path": Path(line.removeprefix("worktree ")), "branch": ""}
-        elif line.startswith("branch "):
-            if current is not None:
-                current["branch"] = line.removeprefix("branch ")
-        elif not line:
-            if current is not None:
-                entries.append(current)
-            current = None
-    return entries
+    return gitx.worktrees(root)
 
 
 def _branch_worktrees(root: Path, branch: str) -> list[Path]:

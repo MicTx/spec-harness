@@ -33,6 +33,23 @@ def resolve_root(start: str | Path = ".") -> Path:
     raise ValueError("no .spec/specs tree found from the current directory")
 
 
+def primary_root(root: Path) -> Path:
+    """Return the primary worktree root for shared `.spec` state.
+
+    Linked spec worktrees own their package trees, but repo-level memory
+    (`.spec/charter.md`, `.spec/lessons.md`) belongs to the primary checkout,
+    which `git worktree list` always reports first.
+    """
+    result = gitx.git(root, "worktree", "list", "--porcelain", check=False)
+    if result.returncode != 0:
+        return root
+    first = next(
+        (line.removeprefix("worktree ") for line in result.stdout.splitlines() if line.startswith("worktree ")),
+        "",
+    )
+    return Path(first).resolve() if first else root
+
+
 def specs_root(root: Path) -> Path:
     return root / ".spec" / "specs"
 
@@ -62,6 +79,28 @@ def extract_branch(spec: str) -> str:
     return branch
 
 
+def worktree_packages(root: Path) -> list[dict]:
+    """Active packages bound inside other worktrees of the same repository."""
+    found = []
+    current = gitx.toplevel(root)
+    for entry in gitx.worktrees(root):
+        path = entry["path"]
+        if current is not None and path.resolve() == current:
+            continue
+        specs = path / ".spec" / "specs"
+        if not specs.is_dir():
+            continue
+        for child in sorted(specs.iterdir()):
+            if not child.is_dir() or child.name == "archive":
+                continue
+            try:
+                branch = extract_branch((child / "spec.md").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            found.append({"slug": child.name, "branch": branch, "worktree": str(path)})
+    return found
+
+
 def resolve_slug(root: Path, explicit: str | None = None) -> str:
     packages = sorted(path.name for path in specs_root(root).iterdir() if path.is_dir() and path.name != "archive")
     if explicit:
@@ -81,7 +120,13 @@ def resolve_slug(root: Path, explicit: str | None = None) -> str:
     if not branch and len(packages) == 1 and gitx.toplevel(root) is None:
         return packages[0]
     if not matches:
-        raise ValueError("current branch does not bind one active v3 package")
+        elsewhere = worktree_packages(root)
+        hint = ""
+        if packages:
+            hint += "; local packages: " + ", ".join(packages)
+        if elsewhere:
+            hint += "; active in worktrees: " + ", ".join(f"{item['slug']} @ {item['worktree']}" for item in elsewhere)
+        raise ValueError(f"current branch does not bind one active v3 package{hint}")
     raise ValueError("multiple active packages bind the current branch: " + ", ".join(matches))
 
 

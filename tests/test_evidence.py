@@ -61,7 +61,7 @@ def test_package_only_checkpoint_preserves_other_task_evidence_freshness(tmp_pat
 
     assert cli(tmp_path, "plan-go").returncode == 0
     assert cli(tmp_path, "verify", "--all").returncode == 0
-    check = cli(tmp_path, "check")
+    check = cli(tmp_path, "check", "--check-only")
     assert check.returncode == 0, check.stderr
     assert json.loads(check.stdout)["passed"] is True
 

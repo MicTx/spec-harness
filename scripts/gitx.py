@@ -50,6 +50,26 @@ def head(root: Path) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
+def worktrees(root: Path) -> list[dict]:
+    """Enumerate `git worktree list` entries as ``{path, branch}`` dicts."""
+    result = git(root, "worktree", "list", "--porcelain", check=False)
+    if result.returncode != 0:
+        return []
+    entries = []
+    current: dict | None = None
+    for line in result.stdout.splitlines() + [""]:
+        if line.startswith("worktree "):
+            current = {"path": Path(line.removeprefix("worktree ")), "branch": ""}
+        elif line.startswith("branch "):
+            if current is not None:
+                current["branch"] = line.removeprefix("branch ")
+        elif not line:
+            if current is not None:
+                entries.append(current)
+            current = None
+    return entries
+
+
 def dirty_paths(root: Path, exclude: tuple[str, ...] = (".spec/",)) -> list[str]:
     fields = git(root, "status", "--porcelain=v1", "--untracked-files=all", "-z").stdout.split("\0")
     paths: set[str] = set()

@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from package import primary_root
+
 DEFAULTS = {
     "V1": "quality > maintainability > speed > cost",
     "V2": "adjacent-fixes",
@@ -27,7 +29,7 @@ ALLOWED = {
 
 def load(root: Path) -> dict[str, str]:
     result = dict(DEFAULTS)
-    path = root / ".spec" / "charter.md"
+    path = primary_root(root) / ".spec" / "charter.md"
     if path.exists():
         for line in path.read_text(encoding="utf-8").splitlines():
             match = re.match(r"- (V\d+)\s+[^:]+:\s*([^|]+)", line)
@@ -37,11 +39,14 @@ def load(root: Path) -> dict[str, str]:
 
 
 def merge(root: Path, values: dict[str, str]) -> None:
+    root = primary_root(root)
     merged = {**load(root), **values}
     lines = ["# Spec Value Charter", ""]
     labels = ["priority", "scope", "verification", "finish", "dependencies", "compatibility", "blocked"]
     lines.extend(f"- V{index} {label}: {merged[f'V{index}']} | charter.md" for index, label in enumerate(labels, 1))
-    (root / ".spec" / "charter.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    path = root / ".spec" / "charter.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def summary_line(root: Path) -> str:

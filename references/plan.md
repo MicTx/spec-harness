@@ -10,9 +10,9 @@
 
 Ask at most four cards per batch; each option states its consequence. The first package may need several batches; after the charter is persisted, later packages normally need only Intent, Forks, and Go.
 
-## New vs Update
+## Plan vs Update
 
-- `new`: no bound package exists. Complete Recon, Intent, Charter, and Plan, then create the v3 package.
+- `plan`: no bound package exists. Complete Recon, Intent, Charter, and Plan, then create the v3 package.
 - `update`: a package exists for the current planning branch but has no `plan-go` baseline. Keep the same disk truth, revisit Intent and Plan against existing evidence, and amend `spec.md`/`tasks.md` before lint.
 - Before Go, the planning agent may edit only `.spec/` package files; product files stay untouched by agent edits. Pre-existing product dirt is preserved and recorded by `plan-go`: paths inside a task boundary may be delivered, while paths outside every boundary block delivery.
 - After `plan-go`, never reopen planning; use `plan-amend` for in-charter additions and `Parked` for irreversible choices.

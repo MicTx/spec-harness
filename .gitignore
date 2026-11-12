@@ -28,5 +28,6 @@ tmp/
 .spec/specs/*/work/
 .spec/specs/*/work-*/
 .spec/specs/*/state.json
+.spec/worktrees/
 .spec/charter.md
 .spec/lessons.md

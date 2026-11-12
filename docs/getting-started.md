@@ -56,7 +56,7 @@ python3 "$SPEC" plan-lint --static
 python3 "$SPEC" plan-go
 ```
 
-`plan-go` 会一次性记录基线、冻结时间和 Git 绑定。此后不要重开规划对话，也不能再次 Go，只按磁盘任务推进。
+`plan-go` 会一次性记录基线、冻结时间和 Git 绑定。此后不要重开规划对话，也不能再次 Go，只按磁盘任务推进。在 `main`/`master`/`develop`/`release/*` 等受保护分支上 Go 时，harness 不会原地切换分支，而是在 `.spec/worktrees/<slug>` 建出 `spec/<slug>` 的 linked worktree、把包移进去并在那棵干净树里记基线——当前工作区及其未提交改动保持原样，不夹带进 spec；多个包因此可以各自在自己的 worktree 里并发执行。规划 lint 若在迁移后仍未过，进入该 worktree 里重跑 `plan-go` 即可就地冻结。
 
 ## 2. 执行与验证
 

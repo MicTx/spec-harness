@@ -6,7 +6,7 @@ REPO_URL="${REPO_URL:-}"
 REPO_REF="${REPO_REF:-}"
 INSTALL_HOSTS="${INSTALL_HOSTS:-}"
 # Install profile is a compatibility alias pair. Both values ship the same
-# three-command kernel payload; validation still rejects unknown values.
+# five-stage command payload; validation still rejects unknown values.
 INSTALL_PROFILE="${INSTALL_PROFILE:-}"
 # Empty INSTALL_HOSTS means auto-detect (only hosts with a real presence on
 # this machine); an explicit value, including `all`, always bypasses probing.
@@ -53,7 +53,6 @@ HERMES_SKILLS_DIR="${HERMES_SKILLS_DIR:-$(default_hermes_home)/skills}"
 
 CLAUDE_ALIASES=()
 STALE_CLAUDE_ALIASES=(route tasks)
-RETIRED_STAGES=(goal autoplan autorun update status organize assemble combat marshal)
 PREPARED_SOURCE_DIR=""
 INSTALL_TEMP_DIR=""
 SOURCE_CLONE_DIR=""
@@ -141,9 +140,9 @@ resolve_python() {
 # User-facing stages for Claude command files. Single source: the stage list
 # documented in SKILL.md. CORE_STAGES is the same
 # kernel surface under its compatibility alias name.
-USER_STAGES=(push doctor)
-CORE_STAGES=(push doctor)
-RETIRED_STAGES=(goal autoplan autorun update status organize assemble combat marshal new run check done)
+USER_STAGES=(plan run check push doctor)
+CORE_STAGES=(plan run check push doctor)
+RETIRED_STAGES=(goal autoplan autorun update status organize assemble combat marshal new done)
 
 format_stage_aliases() {
   local prefix="$1"
@@ -649,6 +648,9 @@ PY_MANIFEST
 stage_description() {
   case "$1" in
     base) printf '%s\n' "Spec: resolve the next action" ;;
+    plan) printf '%s\n' "Spec: plan and freeze a task package" ;;
+    run) printf '%s\n' "Spec: execute the package to a terminal state" ;;
+    check) printf '%s\n' "Spec: audit and deliver on gate pass" ;;
     push) printf '%s\n' "Spec: finish delivery and push" ;;
     doctor) printf '%s\n' "Spec: environment self-check and repair" ;;
     *) printf '%s\n' "Spec workflow stage" ;;
@@ -659,11 +661,25 @@ command_body() {
   local command_name="$1"
   local stage="$2"
   case "$stage" in
-    done)
+    plan)
       cat <<EOF_BODY
 # /$command_name
 
-Close the task: re-verify the declared package/integration/project scope, extract reusable knowledge, archive the task package, and create the local Git commit. Do not widen a focused scope to a whole-project suite implicitly. Do not merge, push, or delete branches in this stage; use spec:push for the post-commit Git handoff.
+Plan the task package: read-only recon, intent clarification, charter values, then write .spec package files, run spec.py plan-lint to zero, resolve forks, and freeze with spec.py plan-go. A bound package that is not yet frozen follows the same update flow.
+EOF_BODY
+      ;;
+    run)
+      cat <<EOF_BODY
+# /$command_name
+
+Execute the bound package: follow spec.py next, work each ready task inside its boundary, run its declared verify, and continue to a terminal state. With a goal argument and no bound package this is the built-in one-shot: plan, go, execute, check, and deliver in one chain; with a bound package the goal is ignored.
+EOF_BODY
+      ;;
+    check)
+      cat <<EOF_BODY
+# /$command_name
+
+Audit and close: run the delivery gate (task state, evidence, criteria, and the structure audit over changed paths) and write failures back. When the gate passes, spec.py check runs done automatically — final-tree re-verify, archive, commit, and the V4 delivery. Use spec.py check --check-only for a gate-only probe; do not merge or push outside the declared V4 finish.
 EOF_BODY
       ;;
     push)
@@ -1035,7 +1051,7 @@ main() {
   INSTALL_TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/spec-skill-install.XXXXXX")"
   runtime_dir="$INSTALL_TEMP_DIR/runtime"
 
-  log "Install profile: $INSTALL_PROFILE — three-command kernel ($(printf '%s ' "${USER_STAGES[@]}" | sed 's/ $//'))"
+  log "Install profile: $INSTALL_PROFILE — five-stage command kernel ($(printf '%s ' "${USER_STAGES[@]}" | sed 's/ $//'))"
 
   export_runtime "$PREPARED_SOURCE_DIR" "$runtime_dir"
   CLAUDE_ALIASES=("${USER_STAGES[@]}")

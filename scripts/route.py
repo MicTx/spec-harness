@@ -71,7 +71,7 @@ def next_card(root: Path, slug: str | None = None) -> dict:
         task = brief["task"]
         brief["next"] = f"{task['id']}: {task['title']}; verify: {task['verify']}"
     elif brief["state"] == "deliver":
-        brief["next"] = "Run spec.py done for final-tree verification and archive."
+        brief["next"] = "Run spec.py check for the delivery gate; a pass verifies the final tree and archives."
     elif brief["state"] == "parked-only":
         brief["next"] = "Present all parked decisions in one batch."
     elif brief["state"] == "stalled":

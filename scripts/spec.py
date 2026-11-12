@@ -21,6 +21,8 @@ import package  # noqa: E402
 import plan  # noqa: E402
 import route  # noqa: E402
 
+STALE_EVIDENCE_SUFFIX = "evidence is stale for the current command or tree"
+
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
@@ -51,7 +53,10 @@ def parser() -> argparse.ArgumentParser:
     finish = commands.add_parser("done")
     finish.add_argument("--lesson-used", action="append", default=[])
     finish.add_argument("--lesson-wrong", action="append", default=[])
-    commands.add_parser("check")
+    check = commands.add_parser("check")
+    check.add_argument("--check-only", action="store_true")
+    check.add_argument("--lesson-used", action="append", default=[])
+    check.add_argument("--lesson-wrong", action="append", default=[])
     commands.add_parser("push")
     doctor = commands.add_parser("doctor")
     doctor.add_argument("--fix", action="store_true")
@@ -86,6 +91,25 @@ def append_decision(root: Path, slug: str, args: argparse.Namespace) -> dict:
     return {"id": identifier, "section": section_name, "by": args.by}
 
 
+def finish_delivery(root: Path, slug: str, lesson_used: list[str], lesson_wrong: list[str]) -> tuple[dict, int]:
+    result = done.finish(root, slug, lesson_used, lesson_wrong)
+    if result["finish"] in {"merge", "push"}:
+        import push
+
+        try:
+            result["push"] = push.deliver(root, slug, push_enabled=result["finish"] == "push")
+        except (OSError, ValueError, KeyError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            result["push"] = {"error": str(exc)}
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            print(
+                f"delivery incomplete: the package is archived at {result['archive']}; "
+                "inspect the delivery branch, then rerun `spec.py push` from its spec branch.",
+                file=sys.stderr,
+            )
+            return result, 1
+    return result, 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
@@ -110,7 +134,9 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "plan-lint":
             result = plan.lint(root, slug, static=args.static)
         elif args.command == "plan-go":
-            result = {**plan.go(root, slug), "next": route.next_card(root, slug)}
+            result = plan.go(root, slug)
+            next_root = Path(result["worktree"]) if result.get("worktree") else root
+            result["next"] = route.next_card(next_root, slug)
         elif args.command == "plan-amend":
             amendment = Path(args.file)
             if not amendment.is_absolute():
@@ -129,22 +155,20 @@ def main(argv: list[str] | None = None) -> int:
             result = {"lesson": memory.lessons_add(root, args.when, args.do)}
         elif args.command == "check":
             result = gate.compute(root, slug)
+            # Stale-evidence errors are curable: done's final re-verify refreshes
+            # them. Any other probe error, parked work, or --check-only returns
+            # the gate result without attempting delivery.
+            curable_only = all(e.endswith(STALE_EVIDENCE_SUFFIX) for e in result["errors"])
+            if not args.check_only and curable_only and not result["parked"]:
+                delivered, code = finish_delivery(root, slug, args.lesson_used, args.lesson_wrong)
+                result.update(delivered)
+                result.update({"passed": code == 0, "errors": [], "parked": []})
+                if code:
+                    return code
         elif args.command == "done":
-            result = done.finish(root, slug, args.lesson_used, args.lesson_wrong)
-            if result["finish"] in {"merge", "push"}:
-                import push
-
-                try:
-                    result["push"] = push.deliver(root, slug, push_enabled=result["finish"] == "push")
-                except (OSError, ValueError, KeyError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-                    result["push"] = {"error": str(exc)}
-                    print(json.dumps(result, ensure_ascii=False, indent=2))
-                    print(
-                        f"delivery incomplete: the package is archived at {result['archive']}; "
-                        "inspect the delivery branch, then rerun `spec.py push` from its spec branch.",
-                        file=sys.stderr,
-                    )
-                    return 1
+            result, code = finish_delivery(root, slug, args.lesson_used, args.lesson_wrong)
+            if code:
+                return code
         elif args.command == "push":
             import push
 

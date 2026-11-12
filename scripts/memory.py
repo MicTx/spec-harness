@@ -7,7 +7,7 @@ import re
 import time
 from pathlib import Path
 
-from package import latest_runs, now, runs
+from package import latest_runs, now, primary_root, runs
 
 
 def snapshot_write(package: Path, event: dict, brief: dict) -> None:
@@ -57,19 +57,24 @@ def last_failures(package: Path) -> list[str]:
     ][-3:]
 
 
+def _lessons_path(root: Path) -> Path:
+    return primary_root(root) / ".spec" / "lessons.md"
+
+
 def lessons_add(root: Path, when: str, do: str) -> str:
-    path = root / ".spec" / "lessons.md"
+    path = _lessons_path(root)
     lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else ["# Spec Lessons"]
     used = [int(match.group(1)) for line in lines if (match := re.match(r"- L(\d+)", line))]
     lesson_id = f"L{max(used, default=0) + 1}"
     lines.append(f"- {lesson_id} | when: {when.strip()} | do: {do.strip()} | hits: 0")
     entries = lines[:1] + lines[1:][-49:]
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(entries) + "\n", encoding="utf-8")
     return lesson_id
 
 
 def lessons_top(root: Path, paths: list[str] | None = None) -> list[str]:
-    path = root / ".spec" / "lessons.md"
+    path = _lessons_path(root)
     if not path.exists():
         return []
     lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.startswith("- L")]
@@ -80,7 +85,7 @@ def lessons_top(root: Path, paths: list[str] | None = None) -> list[str]:
 
 
 def lessons_adjust(root: Path, used: list[str], wrong: list[str]) -> None:
-    path = root / ".spec" / "lessons.md"
+    path = _lessons_path(root)
     if not path.exists():
         return
     output = []
@@ -97,7 +102,7 @@ def lessons_adjust(root: Path, used: list[str], wrong: list[str]) -> None:
 
 
 def lesson_proposals(root: Path) -> list[str]:
-    path = root / ".spec" / "lessons.md"
+    path = _lessons_path(root)
     if not path.exists():
         return []
     result = []

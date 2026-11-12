@@ -9,11 +9,10 @@ import evidence
 import gate
 import gitx
 import push
-from memory import lesson_proposals, lessons_adjust
+from memory import lesson_proposals, lessons_adjust, lessons_top
 from package import (
     _baseline_dirty,
     _unstage_baseline_dirty,
-    git_add_paths,
     now,
     parse_charter,
     parse_ledger,
@@ -51,7 +50,7 @@ def build_summary(root: Path, slug: str) -> str:
             *(f"- {item}" for item in emergent),
             "",
             "## Lessons",
-            "- See .spec/lessons.md for retained project lessons.",
+            "- See .spec/lessons.md for retained project lessons." if lessons_top(root) else "- No retained lessons.",
             *(f"- Promote: {line}" for line in proposals),
             f"- Archived: {now()}",
             "",
@@ -94,7 +93,19 @@ def finish(root: Path, slug: str, lesson_used: list[str] | None = None, lesson_w
             ".spec/lessons.md",
         ]
     )
-    git_add_paths(root, paths)
+    # The package move deletes the active directory from both the worktree and
+    # the index. Stage the spec tree as a unit so Git records the deletions and
+    # archive additions together. Preflight already rejected unrelated dirt.
+    gitx.git(root, "add", "-A", "--", ".spec/specs")
+    remaining = sorted(
+        {
+            path.removeprefix("new:")
+            for path in paths
+            if not path.removeprefix("new:").startswith(".spec/specs/") and (root / path.removeprefix("new:")).exists()
+        }
+    )
+    if remaining:
+        gitx.git(root, "add", "-A", "--", *remaining, check=False)
     _unstage_baseline_dirty(root, baseline, tuple(patterns))
     if gitx.git(root, "diff", "--cached", "--quiet", check=False).returncode == 0:
         raise ValueError("nothing to deliver after final verification")

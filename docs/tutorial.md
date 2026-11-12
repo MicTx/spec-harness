@@ -44,6 +44,6 @@ python3 scripts/spec.py check
 
 ## 交接与收尾
 
-新会话不需要读取旧聊天。它读取活动包、路由卡、最近证据和 lessons，然后继续当前任务。全部任务勾选且无阻塞后执行 `done`；`done` 会按 DAG 复验最终树，并按绑定 worktree 与目标 worktree 收口，完成报告列出证据、用户决策、可回滚动作和剩余阻塞。
+新会话不需要读取旧聊天。它读取活动包、路由卡、最近证据和 lessons，然后继续当前任务。全部任务勾选且无阻塞后执行 `check`；门禁通过时 `check` 自动执行 `done`——按 DAG 复验最终树、归档提交，并按绑定 worktree 与目标 worktree 收口，完成报告列出证据、用户决策、可回滚动作和剩余阻塞。受保护分支上 Go 的包在 `.spec/worktrees/<slug>` 的 linked worktree 里执行；会话应切到该目录运行 `verify`/`check`，main 工作区保持原分支与未提交改动，可同时承载多个并发 spec。
 
 v3 的强度来自约束：规划可以厚，执行必须薄；声明必须被证据兑现，Git 归属必须由机器收口。
