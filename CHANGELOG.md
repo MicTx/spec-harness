@@ -6,6 +6,10 @@ All notable user-facing changes to Spec Harness are recorded here. Internal deve
 
 ## [Unreleased]
 
+### Added
+
+- **Encouraging lifecycle prompts**: every next-action card, session brief, and archived or completion card now ends with a state-keyed `Spark:` line that invites divergent thinking — rival designs in planning, creative implementation paths inside boundaries, failure read as fresh evidence, and delivery celebrated. Stop-hook messages, the verify failure-ladder directives, the learn directive, and the `check --check-only` pass message gained the same encouraging tone while keeping every pinned prefix. `SKILL.md` declares an Innovation Stance, `references/plan.md`/`exec.md`/`philosophy.md` carry the divergent-thinking contract language, and the host listing starter prompt and both READMEs mention the channel. Guardrail messages (denials, boundary warnings, Git ownership) stay terse; no gate, boundary, or ownership semantics changed.
+
 ## [1.0.8] - 2026-11-13
 
 ### Added

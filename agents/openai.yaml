@@ -9,6 +9,6 @@
 interface:
   display_name: "Spec Harness"
   short_description: "Recoverable task packages for multi-step agent work"
-  default_prompt: "Use $spec to turn this project's goal into a tracked, verifiable task package."
+  default_prompt: "Use $spec to turn this goal into a tracked, verifiable task package — explore boldly, deliver confidently."
   policy:
     allow_implicit_invocation: true

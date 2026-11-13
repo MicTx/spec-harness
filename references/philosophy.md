@@ -11,3 +11,4 @@ Ownership rules:
 - Prefer a reversible in-charter decision plus ledger over an interruption.
 - Prefer checkpointed progress over a long uninterrupted edit sequence.
 - Prefer a narrow verify command with a project-level final gate.
+- Prefer encouraged divergence with converging evidence: prompts may invite bolder alternatives, but only machine evidence decides.

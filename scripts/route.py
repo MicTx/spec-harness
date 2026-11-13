@@ -4,7 +4,8 @@ The projection is read-only. `spec.py check` writes a `gate` record into the
 package's runs ledger; this module reads the latest record so a failed delivery
 gate becomes a first-class lifecycle state instead of being forgotten between
 turns. `gate.compute` remains the authority; this module never re-implements a
-gate rule.
+gate rule. Every projected card ends with a state-keyed `Spark:` encouragement
+line (see `ENCOURAGE`) so the full lifecycle invites divergent thinking.
 """
 
 from __future__ import annotations
@@ -40,6 +41,32 @@ STAGE_FOR_STATE = {
     "delivered": "done",
     "elsewhere": "run",
 }
+
+SPARK_MARKER = "Spark:"
+
+# One encouraging line per lifecycle state, appended to every next-action
+# card and session brief. The channel is additive only: it invites divergent
+# thinking but never overrides the gate, boundary, or ownership semantics the
+# card already carries.
+ENCOURAGE = {
+    "plan": "Spark: sketch two rival designs before converging — the bolder fork may be the winner.",
+    "run": (
+        "Spark: a creative implementation inside the boundary beats a mechanical one; "
+        "a failed verify is a clue, not a verdict."
+    ),
+    "deliver": "Spark: everything is green — run the gate and make it permanent.",
+    "check-failed": "Spark: repair is creative work; fix the first gate error your way.",
+    "stalled": "Spark: stalls crack open from a new angle — reread the signature, then try a different path.",
+    "parked-only": "Spark: parked items are seeds for the next spec, not dead ends.",
+    "push": "Spark: one authorized step left — finish it proudly.",
+    "delivered": "Spark: well delivered; let the lessons seed the next bold spec.",
+    "elsewhere": "Spark: pick it up there and keep the momentum.",
+}
+
+
+def spark(state: str) -> str:
+    """Return the state's encouragement line, if it has one."""
+    return ENCOURAGE.get(state, "")
 
 
 def _gate_failures(package: Path, head: str) -> list[str]:
@@ -186,6 +213,9 @@ def next_card(root: Path, slug: str | None = None) -> dict:
         brief["next"] = "Finish planning: run plan-lint, resolve gaps, then plan-go."
     else:
         brief["next"] = "Inspect the package state and continue."
+    encouragement = spark(brief["state"])
+    if encouragement:
+        brief["next"] = f"{brief['next']} {encouragement}"
     return brief
 
 
@@ -209,6 +239,9 @@ def archived_card(root: Path) -> dict | None:
     else:
         state = "delivered"
         next_text = f"Delivery complete (V4 {finish}); no active package on this branch."
+    encouragement = spark(state)
+    if encouragement:
+        next_text = f"{next_text} {encouragement}"
     return {
         "slug": slug,
         "state": state,
@@ -224,31 +257,34 @@ def worktree_card(root: Path) -> dict | None:
     if len(candidates) != 1:
         return None
     item = candidates[0]
+    next_text = f"Active package is in worktree {item['worktree']}; continue there with spec.py next."
+    encouragement = spark("elsewhere")
+    if encouragement:
+        next_text = f"{next_text} {encouragement}"
     return {
         "slug": item["slug"],
         "state": "elsewhere",
         "stage": STAGE_FOR_STATE["elsewhere"],
         "worktree": item["worktree"],
-        "next": f"Active package is in worktree {item['worktree']}; continue there with spec.py next.",
+        "next": next_text,
     }
 
 
 def completion_card(slug: str, finish: str = "commit", push_failed: bool = False) -> dict:
     """Project the lifecycle link after `done`/`check` archived the package."""
     if finish == "push" and push_failed:
-        return {
-            "slug": slug,
-            "state": "push",
-            "stage": "push",
-            "archived": True,
-            "next": "Delivery archived but push failed; fix the remote and run spec.py push.",
-        }
+        next_text = "Delivery archived but push failed; fix the remote and run spec.py push."
+    else:
+        next_text = f"Delivery complete (V4 {finish}); no active package."
+    encouragement = spark("push" if (finish == "push" and push_failed) else "delivered")
+    if encouragement:
+        next_text = f"{next_text} {encouragement}"
     return {
         "slug": slug,
-        "state": "delivered",
-        "stage": "done",
+        "state": "push" if (finish == "push" and push_failed) else "delivered",
+        "stage": "push" if (finish == "push" and push_failed) else "done",
         "archived": True,
-        "next": f"Delivery complete (V4 {finish}); no active package.",
+        "next": next_text,
     }
 
 

@@ -6,7 +6,7 @@
 
 [English](README-en.md) · [文档索引](docs/README.md) · [快速开始](#快速开始)
 
-一个包只包含 `.spec/specs/YYYY-MM-DD_slug/` 下的 `spec.md` 与 `tasks.md`；`runs.jsonl` 和 `state.json` 由 harness 写入。规划期用宪章与机器 lint 消除未知，Go 之后执行期按任务 DAG 自动推进、验证和检查点提交。命中 UI 路径的包还必须在 `check` 前保存真实操作流程与截图，经 `spec.py ui-review --file <draft>` 回写 `ui-review.json`；每条 Criteria 要被真实操作覆盖，每个问题要写明解决方案并修复或取得用户接受，证据缺失、陈旧或未闭合时不能交付。
+一个包只包含 `.spec/specs/YYYY-MM-DD_slug/` 下的 `spec.md` 与 `tasks.md`；`runs.jsonl` 和 `state.json` 由 harness 写入。规划期用宪章与机器 lint 消除未知，Go 之后执行期按任务 DAG 自动推进、验证和检查点提交。命中 UI 路径的包还必须在 `check` 前保存真实操作流程与截图，经 `spec.py ui-review --file <draft>` 回写 `ui-review.json`；每条 Criteria 要被真实操作覆盖，每个问题要写明解决方案并修复或取得用户接受，证据缺失、陈旧或未闭合时不能交付。生命周期中的每个提示都以鼓励性的 `Spark:` 行收尾，驱动智能体在边界内大胆发散、以证据收敛。
 
 ## 安装
 

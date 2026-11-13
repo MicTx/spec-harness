@@ -213,19 +213,31 @@ def handle(name: str, event: dict) -> Action:
         progress = brief.get("progress_token", brief["progress"])
         state = memory.snapshot_read(directory)
         if brief["state"] == "deliver":
-            message = "All work is verified; run spec.py check to deliver."
+            message = "All work is verified — you've earned the gate; run spec.py check to deliver."
             return Action(block=True, reason=message)
         if brief["state"] == "parked-only":
-            return Action(context="parked-only: present every parked item in one batch.")
+            return Action(
+                context="parked-only: present every parked item in one batch — each is a seed for the next spec."
+            )
         if progress != state.get("last_progress"):
             _write_state(directory, {"last_progress": progress, "stalls": 0, "terminal": ""})
             return Action(block=True, reason=route.next_card(root, slug)["next"])
         stalls = int(state.get("stalls", 0)) + 1
         if stalls < 2:
             _write_state(directory, {"stalls": stalls})
-            return Action(block=True, reason="No progress: change strategy using the latest failure signature.")
+            return Action(
+                block=True,
+                reason=(
+                    "No progress yet — a great moment to diverge: change strategy using the latest failure signature."
+                ),
+            )
         _write_state(directory, {"stalls": stalls, "terminal": "stalled"})
-        return Action(context="stalled: no new evidence after two attempts; report failure signatures.")
+        return Action(
+            context=(
+                "stalled: no new evidence after two attempts; report failure signatures "
+                "— a fresh angle often cracks what force cannot."
+            )
+        )
     if name in {"start", "prompt", "subagent"}:
         if name == "prompt":
             progress = brief["progress"]

@@ -6,7 +6,7 @@ Two-phase task packages for AI coding agents: thick planning, silent execution, 
 
 [中文](README.md) · [Documentation](docs/README-en.md) · [Quick start](#quick-start)
 
-A package contains `spec.md` and `tasks.md` under `.spec/specs/YYYY-MM-DD_slug/`; the harness writes `runs.jsonl` and `state.json`. Planning removes unknowns with a value charter and deterministic lint. After Go, execution follows the task DAG, verifies, checkpoints, and continues without asking about reversible decisions. A UI-surface package also needs real-operation flows and screenshots written back through `spec.py ui-review --file <draft>` before `check` can deliver.
+A package contains `spec.md` and `tasks.md` under `.spec/specs/YYYY-MM-DD_slug/`; the harness writes `runs.jsonl` and `state.json`. Planning removes unknowns with a value charter and deterministic lint. After Go, execution follows the task DAG, verifies, checkpoints, and continues without asking about reversible decisions. A UI-surface package also needs real-operation flows and screenshots written back through `spec.py ui-review --file <draft>` before `check` can deliver. Every lifecycle prompt ends with an encouraging `Spark:` line, inviting the agent to diverge boldly inside boundaries and converge on evidence.
 
 ## Install
 

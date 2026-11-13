@@ -195,7 +195,9 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 result["next"] = route.next_card(root, slug)
                 if args.check_only and result.get("passed"):
-                    result["next"]["next"] = "Delivery gate passed; run spec.py check to archive and deliver."
+                    result["next"]["next"] = (
+                        "Delivery gate passed; run spec.py check to archive and deliver. " + route.spark("deliver")
+                    )
         elif args.command == "ui-review":
             result = ui_review.write_record(root, slug, Path(args.file))
         elif args.command == "done":

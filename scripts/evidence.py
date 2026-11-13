@@ -37,16 +37,24 @@ def _matching_failures(package: Path, task_id: str, signature: str) -> list[dict
 
 
 def ladder_directive(package: Path, task_id: str, signature: str) -> str:
+    """One directive per failure rung; each invites divergence, never scolds."""
     attempt = len(_matching_failures(package, task_id, signature))
     if attempt == 0:
-        return "Read the failure output and make the smallest fix."
+        return "Fresh evidence in hand — read the failure output and make the smallest fix that could work."
     if attempt == 1:
         return (
-            "Same failure signature: build a minimal reproduction or add diagnostics instead of editing the same place."
+            "Same failure signature — time to diverge: build a minimal reproduction "
+            "or add diagnostics somewhere new instead of editing the same place."
         )
     if attempt == 2:
-        return "Same failure signature three times: compare the last green checkpoint and change implementation path."
-    return "No new evidence after changing path: park the task with evidence and continue another ready task."
+        return (
+            "Same failure signature three times — be bold: compare the last green checkpoint "
+            "and change implementation path."
+        )
+    return (
+        "No new evidence after changing path: park the task with evidence "
+        "and point the creative energy at another ready task."
+    )
 
 
 def should_block(package: Path, task_id: str, signature: str) -> bool:
@@ -174,7 +182,9 @@ def run_tasks(root: Path, slug: str, selected: list[str] | None = None, final: b
             if not final:
                 record["checkpoint"] = checkpoint_commit(root, slug, task.title, task.globs)
             if had_failure:
-                directive = 'Record one reusable lesson with spec.py learn "<when>" "<do>".'
+                directive = (
+                    'Hard-won green — celebrate by recording one reusable lesson with spec.py learn "<when>" "<do>".'
+                )
         else:
             directive = ladder_directive(package, task.id, signature)
             if timeout:
