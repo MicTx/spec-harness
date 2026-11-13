@@ -679,7 +679,7 @@ EOF_BODY
       cat <<EOF_BODY
 # /$command_name
 
-Audit and close: run the delivery gate (task state, evidence, criteria, and the structure audit over changed paths) and write failures back. When the gate passes, spec.py check runs done automatically — final-tree re-verify, archive, commit, and the V4 delivery. Use spec.py check --check-only for a gate-only probe; do not merge or push outside the declared V4 finish.
+Audit and close: run the delivery gate (task state, evidence, criteria, structure audit, and required UI/UX review) and write failures back. For UI-surface packages, perform real browser operations and screenshots, cover every criterion, record each finding plus its solution, and close findings as verified fixes or user-accepted decisions; then write ui-review.json with spec.py ui-review --file <draft>. When the gate passes, spec.py check runs done automatically — final-tree re-verify, archive, commit, and the V4 delivery. Use spec.py check --check-only for a gate-only probe; do not merge or push outside the declared V4 finish.
 EOF_BODY
       ;;
     push)

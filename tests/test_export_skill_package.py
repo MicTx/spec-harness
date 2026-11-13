@@ -42,6 +42,7 @@ def test_collect_includes_core_scripts():
     assert "route.py" in files
     assert "gate.py" in files
     assert "check_all.py" in files
+    assert "ui_review.py" in files
     assert "done.py" in files
     assert "push.py" in files
     assert "spec.py" in files

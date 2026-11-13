@@ -6,9 +6,17 @@ All notable user-facing changes to Spec Harness are recorded here. Internal deve
 
 ## [Unreleased]
 
+## [1.0.8] - 2026-11-13
+
 ### Added
 
+- **UI/UX delivery review**: `check` now requires structured real-operation flows, in-package screenshots, criterion coverage, and closed findings for UI-surface packages. `spec.py ui-review --file <draft>` records screenshot digests and a product-tree fingerprint; missing, stale, failed, or unresolved review blocks `done`. Non-UI packages and historical archives are unaffected.
 - **Worktree-bound concurrent execution**: `plan-go` on a protected branch now creates `spec/<slug>` in a linked worktree at `.spec/worktrees/<slug>` (excluded from dirty checks via `info/exclude`), moves the package there, and baselines inside it, so several specs execute concurrently while the main worktree keeps its branch and uncommitted changes. Shared `.spec/charter.md` and `.spec/lessons.md` resolve at the primary worktree, and `next` reports packages bound in other worktrees with their paths.
+
+### Fixed
+
+- **Lifecycle route continuity**: `check` now records every delivery-gate result in the package evidence ledger, so a failed gate becomes a concrete repair route for the Stop hook instead of an endless "run check" loop. `next` and session hooks also expose archived push/delivery states and point a primary worktree at the active linked worktree.
+- **Five-stage command surface documentation**: the architecture index and release tool help now describe the five-stage command surface, and the skill keeps `update` as a planning mode rather than a user command.
 
 ## [1.0.7] - 2026-11-12
 

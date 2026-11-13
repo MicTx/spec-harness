@@ -20,6 +20,7 @@ import memory  # noqa: E402
 import package  # noqa: E402
 import plan  # noqa: E402
 import route  # noqa: E402
+import ui_review  # noqa: E402
 
 STALE_EVIDENCE_SUFFIX = "evidence is stale for the current command or tree"
 
@@ -57,6 +58,8 @@ def parser() -> argparse.ArgumentParser:
     check.add_argument("--check-only", action="store_true")
     check.add_argument("--lesson-used", action="append", default=[])
     check.add_argument("--lesson-wrong", action="append", default=[])
+    review = commands.add_parser("ui-review")
+    review.add_argument("--file", required=True)
     commands.add_parser("push")
     doctor = commands.add_parser("doctor")
     doctor.add_argument("--fix", action="store_true")
@@ -92,7 +95,14 @@ def append_decision(root: Path, slug: str, args: argparse.Namespace) -> dict:
 
 
 def finish_delivery(root: Path, slug: str, lesson_used: list[str], lesson_wrong: list[str]) -> tuple[dict, int]:
-    result = done.finish(root, slug, lesson_used, lesson_wrong)
+    try:
+        result = done.finish(root, slug, lesson_used, lesson_wrong)
+    except (OSError, ValueError, KeyError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        # A passing gate that cannot complete delivery must remain a visible
+        # repair state instead of looping the next route back to `deliver`.
+        if package.package_dir(root, slug).is_dir():
+            gate.record(root, slug, {"passed": False, "errors": [f"delivery: {exc}"], "parked": []})
+        raise
     if result["finish"] in {"merge", "push"}:
         import push
 
@@ -127,6 +137,17 @@ def main(argv: list[str] | None = None) -> int:
         root = package.resolve_root(args.root)
         if args.command == "push":
             slug = package.resolve_archived_slug(root, args.slug)
+        elif args.command == "next":
+            try:
+                slug = package.resolve_slug(root, args.slug)
+            except ValueError:
+                # A delivered package may be the only lifecycle link left on
+                # this branch; surface it instead of losing the push step.
+                archived = route.archived_card(root) if args.slug is None else None
+                if archived is None:
+                    raise
+                print(json.dumps(archived, ensure_ascii=False, indent=2))
+                return 0
         else:
             slug = package.resolve_slug(root, args.slug)
         if args.command == "next":
@@ -155,6 +176,7 @@ def main(argv: list[str] | None = None) -> int:
             result = {"lesson": memory.lessons_add(root, args.when, args.do)}
         elif args.command == "check":
             result = gate.compute(root, slug)
+            gate.record(root, slug, result)
             # Stale-evidence errors are curable: done's final re-verify refreshes
             # them. Any other probe error, parked work, or --check-only returns
             # the gate result without attempting delivery.
@@ -163,21 +185,40 @@ def main(argv: list[str] | None = None) -> int:
                 delivered, code = finish_delivery(root, slug, args.lesson_used, args.lesson_wrong)
                 result.update(delivered)
                 result.update({"passed": code == 0, "errors": [], "parked": []})
+                result["next"] = route.completion_card(
+                    slug,
+                    str(result.get("finish", "commit")),
+                    bool(isinstance(result.get("push"), dict) and result["push"].get("error")),
+                )
                 if code:
                     return code
+            else:
+                result["next"] = route.next_card(root, slug)
+                if args.check_only and result.get("passed"):
+                    result["next"]["next"] = "Delivery gate passed; run spec.py check to archive and deliver."
+        elif args.command == "ui-review":
+            result = ui_review.write_record(root, slug, Path(args.file))
         elif args.command == "done":
             result, code = finish_delivery(root, slug, args.lesson_used, args.lesson_wrong)
+            result["next"] = route.completion_card(
+                slug,
+                str(result.get("finish", "commit")),
+                bool(isinstance(result.get("push"), dict) and result["push"].get("error")),
+            )
             if code:
                 return code
         elif args.command == "push":
             import push
 
             result = push.deliver(root, slug, push_enabled=True)
+            result["next"] = route.completion_card(slug, "push")
         else:
             raise ValueError("unknown command")
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if args.command == "next":
             return 0
+        if args.command == "check" and args.check_only:
+            return 0 if result.get("passed", False) else 1
         return 0 if result.get("ready", result.get("passed", True)) else 1
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         print(f"error: {exc}", file=sys.stderr)

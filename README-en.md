@@ -6,7 +6,7 @@ Two-phase task packages for AI coding agents: thick planning, silent execution, 
 
 [中文](README.md) · [Documentation](docs/README-en.md) · [Quick start](#quick-start)
 
-A package contains `spec.md` and `tasks.md` under `.spec/specs/YYYY-MM-DD_slug/`; the harness writes `runs.jsonl` and `state.json`. Planning removes unknowns with a value charter and deterministic lint. After Go, execution follows the task DAG, verifies, checkpoints, and continues without asking about reversible decisions.
+A package contains `spec.md` and `tasks.md` under `.spec/specs/YYYY-MM-DD_slug/`; the harness writes `runs.jsonl` and `state.json`. Planning removes unknowns with a value charter and deterministic lint. After Go, execution follows the task DAG, verifies, checkpoints, and continues without asking about reversible decisions. A UI-surface package also needs real-operation flows and screenshots written back through `spec.py ui-review --file <draft>` before `check` can deliver.
 
 ## Install
 
@@ -43,7 +43,7 @@ Without a bound package `/spec` enters the `plan` planning flow, and a bound pac
 | `/spec <goal>` | Plan, or continue the package bound to this branch |
 | `/spec:plan <goal>` | Explicit planning entry: create or refine the package, lint, resolve forks, `plan-go` |
 | `/spec:run [goal]` | Execute the bound package to a terminal state; with a goal and no bound package, the built-in one-shot plans, executes, and delivers in one chain |
-| `/spec:check` | Run the delivery gate (structure audit included); a pass archives, commits, and delivers per V4 automatically |
+| `/spec:check` | Run the delivery gate, structure audit, and required UI/UX real-operation review; a pass archives, commits, and delivers per V4 automatically |
 | `/spec:push` | Finish Git delivery after explicit authorization (resolves the archived package bound to the current branch) |
 | `/spec:doctor` | Check and repair runtime and host hooks |
 

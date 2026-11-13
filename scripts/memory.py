@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -25,7 +26,7 @@ def snapshot_write(package: Path, event: dict, brief: dict) -> None:
         "updated": now(),
         "task": task or None,
         "attempts": attempts,
-        "last_failures": last_failures(package),
+        "last_failures": brief.get("failures") or last_failures(package),
         "progress": brief.get("progress"),
         "pending": event.get("pending", []),
     }
@@ -40,12 +41,26 @@ def snapshot_read(package: Path) -> dict:
     return value if isinstance(value, dict) else {}
 
 
-def progress_tuple(package: Path, head: str) -> tuple[int, int, str]:
+def progress_tuple(package: Path, head: str) -> tuple[int, int, str, str]:
+    """Return a stall-detection tuple that includes the latest gate outcome.
+
+    A failed `check` changes no task marker, so without the gate component two
+    consecutive Stop hooks would look idle even though the failure signature is
+    fresh evidence.
+    """
     records = runs(package)
     latest = latest_runs(package)
     done = len([record for record in latest.values() if record.get("exit") == 0])
     signatures = len({record["sig"] for record in records if record.get("exit") not in (None, 0) and record.get("sig")})
-    return done, signatures, head
+    gate = next((record for record in reversed(records) if record.get("kind") == "gate"), {})
+    gate_sig = ""
+    if gate:
+        payload = json.dumps(
+            {"passed": gate.get("passed"), "head": gate.get("head"), "errors": gate.get("errors", [])},
+            sort_keys=True,
+        )
+        gate_sig = hashlib.sha256(payload.encode()).hexdigest()[:12]
+    return done, signatures, head, gate_sig
 
 
 def last_failures(package: Path) -> list[str]:

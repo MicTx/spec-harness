@@ -9,6 +9,7 @@ import evidence
 import gate
 import gitx
 import push
+import ui_review
 from memory import lesson_proposals, lessons_adjust, lessons_top
 from package import (
     _baseline_dirty,
@@ -36,6 +37,9 @@ def build_summary(root: Path, slug: str) -> str:
         "",
         "## Evidence",
         "- Final-tree verifies passed; see runs.jsonl.",
+        "",
+        "## UI Review",
+        *ui_review.summary_lines(root, slug),
         "",
         "## Decisions",
     ]

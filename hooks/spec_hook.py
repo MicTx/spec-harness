@@ -45,10 +45,17 @@ def _active(event: dict) -> tuple[Path, str] | None:
 
 
 def _delivery_binding(event: dict) -> bool:
-    if _active(event):
-        return True
+    """Return True when this branch owns an active or archived package."""
     try:
         root = package.resolve_root(event.get("cwd") or Path.cwd())
+    except (OSError, ValueError):
+        return False
+    try:
+        package.resolve_slug(root)
+        return True
+    except (OSError, ValueError):
+        pass
+    try:
         package.resolve_archived_slug(root)
         return True
     except (OSError, ValueError):
@@ -169,6 +176,17 @@ def handle(name: str, event: dict) -> Action:
         return Action()
     active = _active(event)
     if not active:
+        if name in {"start", "subagent"}:
+            try:
+                root = package.resolve_root(event.get("cwd") or Path.cwd())
+            except (OSError, ValueError):
+                return Action()
+            card = route.archived_card(root) or route.worktree_card(root)
+            if card:
+                context = f"Spec {card['slug']}: {card['state']}\n{card['next']}"
+                if card.get("worktree"):
+                    context += f"\nWorktree: {card['worktree']}"
+                return Action(context=context[:1500])
         return Action()
     root, slug = active
     directory, spec, tasks = package.read_package(root, slug)
@@ -192,7 +210,7 @@ def handle(name: str, event: dict) -> Action:
     if name == "stop":
         if event.get("continuing"):
             return Action()
-        progress = brief["progress"]
+        progress = brief.get("progress_token", brief["progress"])
         state = memory.snapshot_read(directory)
         if brief["state"] == "deliver":
             message = "All work is verified; run spec.py check to deliver."

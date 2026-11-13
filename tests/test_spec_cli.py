@@ -24,6 +24,19 @@ def test_user_command_surface():
         assert retired not in skill
 
 
+def test_user_commands_and_references_require_real_ui_review():
+    from pathlib import Path
+
+    root = Path(__file__).parents[1]
+    skill = (root / "SKILL.md").read_text()
+    execution = (root / "references/exec.md").read_text()
+    installer = (root / "install.sh").read_text()
+    assert "UI/UX review" in skill
+    assert "## UI/UX Review" in execution
+    assert "spec.py ui-review --file" in execution
+    assert "ui-review.json" in installer
+
+
 def test_done_reports_archived_result_and_recovery_when_push_fails(tmp_path):
     repo(tmp_path)
     package = make_package(tmp_path)

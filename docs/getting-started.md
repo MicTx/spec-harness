@@ -6,13 +6,13 @@
 
 ## 准备
 
-按 [安装说明](../README.md) 安装 Spec Harness 1.0.0，并准备 Git、Python 3.9+ 和 Bash。创建一个干净练习仓库：
+按 [安装说明](../README.md) 安装 Spec Harness 1.0.0，并准备 Git、Python 3.9+、pytest 和 Bash。创建一个干净练习仓库：
 
 ```bash
 mkdir -p /tmp/spec-practice/tests && cd /tmp/spec-practice
 git init -b main
 printf 'def add(a, b):\n    return a - b\n' > calc.py
-printf 'import unittest\nfrom calc import add\n\nclass T(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(add(2, 3), 5)\n' > tests/test_calc.py
+printf 'from calc import add\n\ndef test_add():\n    assert add(2, 3) == 5\n' > tests/test_calc.py
 git add . && git commit -m "test: add failing addition example"
 SPEC="$HOME/.claude/skills/spec/scripts/spec.py"
 ```
@@ -45,7 +45,7 @@ $spec 修复 add 函数，保持行为由现有测试定义
 - [ ] 修复加法
   - id: task-add
   - boundary: calc.py
-  - verify: `python3 -B -m unittest discover -s tests -v`
+  - verify: `python3 -m pytest -q tests/test_calc.py`
   - expect: green
 ```
 
@@ -88,3 +88,5 @@ python3 "$SPEC" learn "当 add 输出为 5" "不要重新实现运算符；优�
 ```
 
 完成后，归档保留 `spec.md`、`tasks.md`、`runs.jsonl`、状态和完成报告，是下一轮恢复与审计的真源。
+
+若任务命中 UI 路径，`check` 还要求真实浏览器操作与截图：用 `spec.py ui-review --file <draft>` 写入 `ui-review.json`，把每条 Criteria 映射到实际步骤，把每个问题、解决方案和修复任务或用户接受决策回写包内；源码变化后重跑流程并刷新证据。

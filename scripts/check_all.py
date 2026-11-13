@@ -14,6 +14,7 @@ from pathlib import Path
 
 import gitx
 import package
+import ui_review
 
 SLUG = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}_[a-z0-9][a-z0-9_-]*$")
 COMMIT_INTERVAL = re.compile(
@@ -89,6 +90,7 @@ def package_errors(root: Path, path: Path, archived: bool, lint_only: bool) -> l
         archive_runs = path / "runs.jsonl"
         if not archive_runs.is_file():
             errors.append(f"{path}: archived evidence is missing")
+        errors.extend(f"{path}: {item}" for item in ui_review.archived_errors(path, spec, tasks))
     elif not archived and not lint_only and not errors:
         from gate import compute
 

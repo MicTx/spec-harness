@@ -69,6 +69,16 @@ def read_package(root: Path, slug: str) -> tuple[Path, str, str]:
     )
 
 
+def read_archived_package(root: Path, slug: str) -> tuple[Path, str, str]:
+    """Read a delivered package from the archive tree."""
+    directory = specs_root(root) / "archive" / slug
+    return (
+        directory,
+        (directory / "spec.md").read_text(encoding="utf-8"),
+        (directory / "tasks.md").read_text(encoding="utf-8"),
+    )
+
+
 def extract_branch(spec: str) -> str:
     match = re.search(r"^- branch:\s*`?([^\s`;]+)`?", spec, re.MULTILINE)
     if not match:
@@ -406,6 +416,14 @@ def latest_runs(package: Path) -> dict[str, dict]:
         for record in runs(package)
         if record.get("kind", "run") == "run" and isinstance(record.get("task"), str)
     }
+
+
+def latest_gate(package: Path) -> dict:
+    """Return the most recent delivery-gate record, if the harness wrote one."""
+    for record in reversed(runs(package)):
+        if record.get("kind") == "gate":
+            return record
+    return {}
 
 
 def append_run(package: Path, record: dict) -> None:

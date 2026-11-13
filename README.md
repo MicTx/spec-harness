@@ -6,7 +6,7 @@
 
 [English](README-en.md) · [文档索引](docs/README.md) · [快速开始](#快速开始)
 
-一个包只包含 `.spec/specs/YYYY-MM-DD_slug/` 下的 `spec.md` 与 `tasks.md`；`runs.jsonl` 和 `state.json` 由 harness 写入。规划期用宪章与机器 lint 消除未知，Go 之后执行期按任务 DAG 自动推进、验证和检查点提交。
+一个包只包含 `.spec/specs/YYYY-MM-DD_slug/` 下的 `spec.md` 与 `tasks.md`；`runs.jsonl` 和 `state.json` 由 harness 写入。规划期用宪章与机器 lint 消除未知，Go 之后执行期按任务 DAG 自动推进、验证和检查点提交。命中 UI 路径的包还必须在 `check` 前保存真实操作流程与截图，经 `spec.py ui-review --file <draft>` 回写 `ui-review.json`；每条 Criteria 要被真实操作覆盖，每个问题要写明解决方案并修复或取得用户接受，证据缺失、陈旧或未闭合时不能交付。
 
 ## 安装
 
@@ -43,7 +43,7 @@ bash install.sh
 | `/spec <目标>` | 规划新包，或续跑当前分支绑定的包 |
 | `/spec:plan <目标>` | 显式规划入口：创建或修订任务包，lint、定岔、`plan-go` |
 | `/spec:run [目标]` | 执行绑定包至终态；未绑定且带目标时内置一条龙：规划、执行、验收、交付 |
-| `/spec:check` | 运行交付门禁（含结构审计）；通过即自动归档、提交并完成 V4 交付 |
+| `/spec:check` | 运行交付门禁（结构审计与命中 UI 时的真实操作、截屏和回写）；通过即自动归档、提交并完成 V4 交付 |
 | `/spec:push` | 用户明确授权后完成 Git 交付（按当前分支解析已归档包） |
 | `/spec:doctor` | 检查并修复运行时与宿主 hook |
 
