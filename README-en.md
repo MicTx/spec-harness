@@ -18,7 +18,7 @@ cd /tmp/spec-harness
 bash install.sh
 ```
 
-Without `INSTALL_HOSTS`, the installer detects hosts. `core` and `full` are compatibility aliases with identical payloads. Session hooks are merged incrementally, preserving non-Spec entries and backing up files first.
+Without `INSTALL_HOSTS`, the installer detects hosts. `core` and `full` are compatibility aliases with identical payloads. Session hooks are merged incrementally, preserving non-Spec entries and backing up files first. `DRY_RUN=1` prints an upgrade preview: per host target, whether it would install fresh, upgrade in place, back up and replace, or refuse (symlink/user-owned skill) — zero writes, user additions visible first.
 
 | Host | `INSTALL_HOSTS` |
 | --- | --- |
@@ -27,6 +27,7 @@ Without `INSTALL_HOSTS`, the installer detects hosts. `core` and `full` are comp
 | OpenCode / OpenClaw / Hermes | `opencode` / `openclaw` / `hermes` |
 | Pi / ZCode / Devin | `pi` / `zcode` / `devin` |
 | DeepSeek Harness / Cursor | `dsh` / `cursor` |
+| Generic agent hosts (shared `.agents/skills` tree) | `agents` |
 
 ## Quick Start
 
@@ -43,6 +44,7 @@ Without a bound package `/spec` enters the `plan` planning flow, and a bound pac
 | `/spec <goal>` | Plan, or continue the package bound to this branch |
 | `/spec:plan <goal>` | Explicit planning entry: create or refine the package, lint, resolve forks, `plan-go` |
 | `/spec:run [goal]` | Execute the bound package to a terminal state; with a goal and no bound package, the built-in one-shot plans, executes, and delivers in one chain |
+| `/spec:repair <archived-slug>` | Scaffold a repair package from a delivered archive: thin planning, full gate, consistent with the original spec |
 | `/spec:check` | Run the delivery gate, structure audit, and required UI/UX real-operation review; a pass archives, commits, and delivers per V4 automatically |
 | `/spec:push` | Finish Git delivery after explicit authorization (resolves the archived package bound to the current branch) |
 | `/spec:doctor` | Check and repair runtime and host hooks |

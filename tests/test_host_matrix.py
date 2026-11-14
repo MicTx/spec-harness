@@ -20,7 +20,10 @@ from doctor import main as doctor_main  # noqa: E402
 
 def test_every_installer_host_is_in_adapter_matrix():
     text = (ROOT / "install.sh").read_text(encoding="utf-8")
-    expected = "claude claude-desktop codex devin cursor gemini grok opencode openclaw hermes pi zcode dsh".split()
+    expected = (
+        "claude claude-desktop agents codex devin cursor gemini".split()
+        + "grok opencode openclaw hermes pi zcode dsh".split()
+    )
     hosts = {host for host in expected if re.search(rf"\b{re.escape(host)}\b", text)}
     assert hosts == set(expected)
     assert hosts == set(HOSTS)

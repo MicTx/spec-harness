@@ -27,6 +27,7 @@ requires_bash = pytest.mark.skipif(
 ALL_HOST_ROOTS = (
     ("claude", ".claude"),
     ("claude-desktop", ".claude-desktop"),
+    ("agents", ".agents"),
     ("codex", ".codex"),
     ("devin", ".config/devin"),
     ("cursor", ".cursor"),
@@ -70,6 +71,7 @@ def sandbox_env(home: Path, stub_dir: Path | None = None) -> dict[str, str]:
         "DSH_SKILLS_DIR",
         "DSH_HOME",
         "CLAUDE_DESKTOP_SKILLS_DIR",
+        "AGENTS_SKILLS_DIR",
         "GEMINI_SKILLS_DIR",
         "GROK_SKILLS_DIR",
         "OPENCODE_SKILLS_DIR",

@@ -22,7 +22,7 @@ After Go, do not ask about reversible in-scope decisions. Apply the charter, rec
 
 ## Innovation Stance
 
-Every lifecycle prompt ends with an encouraging `Spark:` line — fuel for rival designs, creative paths inside boundaries, failure read as fresh evidence, delivery celebrated. Encouragement never overrides the rules above; divergence is welcome where the charter allows.
+Every lifecycle prompt ends with an encouraging `Spark:` line — rival designs, creative paths inside boundaries, failure as fresh evidence. Encouragement never overrides the rules; divergence is welcome where the charter allows.
 
 ## Hard Rules
 
@@ -40,9 +40,10 @@ Every lifecycle prompt ends with an encouraging `Spark:` line — fuel for rival
 | --- | --- |
 | `/spec <goal>` | Plan when no package is bound; otherwise continue execution |
 | `/spec:plan <goal>` | Create or refine the package: lint, forks, `plan-go` |
-| `/spec:run [goal]` | Execute the bound package to a terminal state; a goal with no package runs the built-in one-shot |
+| `/spec:run [goal]` | Execute the bound package to a terminal state; a goal without a package runs the one-shot |
+| `/spec:repair <slug>` | Repair a delivered archive: thin planning, full gate |
 | `/spec:check` | Delivery gate, structure and UI/UX review; a pass runs `done` |
 | `/spec:push` | Authorized finish: merge and push the archived package bound to this branch |
 | `/spec:doctor` | Check or repair installed runtime and session hooks |
 
-Planning contract: [`references/plan.md`](references/plan.md). Execution contract: [`references/exec.md`](references/exec.md). Format: [`references/format.md`](references/format.md). Philosophy: [`references/philosophy.md`](references/philosophy.md). Git ownership: [`references/git.md`](references/git.md).
+Planning: [`references/plan.md`](references/plan.md). Execution: [`references/exec.md`](references/exec.md). Format: [`references/format.md`](references/format.md). Philosophy: [`references/philosophy.md`](references/philosophy.md). Git: [`references/git.md`](references/git.md).

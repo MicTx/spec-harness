@@ -18,7 +18,7 @@ def test_user_command_surface():
     from pathlib import Path
 
     skill = (Path(__file__).parents[1] / "SKILL.md").read_text()
-    for stage in ("/spec:plan", "/spec:run", "/spec:check", "/spec:push", "/spec:doctor"):
+    for stage in ("/spec:plan", "/spec:run", "/spec:repair", "/spec:check", "/spec:push", "/spec:doctor"):
         assert stage in skill
     for retired in ("/spec:new", "/spec:done", "/spec:goal", "/spec:update", "/spec:organize", "/spec:status"):
         assert retired not in skill

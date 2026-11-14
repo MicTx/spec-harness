@@ -14,6 +14,7 @@ Decide what you want to accomplish first, then pick the one document that does i
 
 ## I want to operate it
 
+- Repair a delivered spec: `/spec:repair <archived-slug>` scaffolds a repair package from `.spec/specs/archive` — thin planning, full gate.
 - [Git workflow (English)](git-workflow.en.md)
 - [Git 工作流（中文）](git-workflow.md)
 - Root [README (English)](../README-en.md): installation, host selection, and runtime export.

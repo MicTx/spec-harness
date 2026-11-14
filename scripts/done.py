@@ -14,6 +14,7 @@ from memory import lesson_proposals, lessons_adjust, lessons_top
 from package import (
     _baseline_dirty,
     _unstage_baseline_dirty,
+    append_run,
     now,
     parse_charter,
     parse_ledger,
@@ -73,6 +74,20 @@ def finish(root: Path, slug: str, lesson_used: list[str] | None = None, lesson_w
             "delivery gate failed: " + "; ".join(result["errors"] + [item["id"] for item in result["parked"]])
         )
     package, spec, _tasks = read_package(root, slug)
+    # The delivery gate passed on the final tree; record that fact before the
+    # package leaves the active tree so the archived ledger ends green instead
+    # of showing only pre-refresh stale-evidence failures.
+    append_run(
+        package,
+        {
+            "kind": "gate",
+            "passed": True,
+            "errors": [],
+            "parked": [],
+            "final": True,
+            "ts": now(),
+        },
+    )
     records = parse_tasks(_tasks)
     patterns = [pattern for record in records for pattern in record.globs]
     baseline = _baseline_dirty(root, package)

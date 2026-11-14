@@ -145,7 +145,7 @@ def test_core_profile_writes_core_stage_set(tmp_path):
 
     core = parse_stage_list("CORE_STAGES")
     user = parse_stage_list("USER_STAGES")
-    assert core == user == ("plan", "run", "check", "push", "doctor")
+    assert core == user == ("plan", "run", "repair", "check", "push", "doctor")
     assert template_names(home) == expected_names(core)
 
 

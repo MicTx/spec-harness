@@ -6,7 +6,7 @@ REPO_URL="${REPO_URL:-}"
 REPO_REF="${REPO_REF:-}"
 INSTALL_HOSTS="${INSTALL_HOSTS:-}"
 # Install profile is a compatibility alias pair. Both values ship the same
-# five-stage command payload; validation still rejects unknown values.
+# six-stage command payload; validation still rejects unknown values.
 INSTALL_PROFILE="${INSTALL_PROFILE:-}"
 # Empty INSTALL_HOSTS means auto-detect (only hosts with a real presence on
 # this machine); an explicit value, including `all`, always bypasses probing.
@@ -23,6 +23,8 @@ CURSOR_SKILLS_DIR="${CURSOR_SKILLS_DIR:-$HOME/.cursor/skills}"
 # Each host skills directory below follows that agent's own standard location,
 # so the installed skill is picked up directly by the host CLI.
 CLAUDE_DESKTOP_SKILLS_DIR="${CLAUDE_DESKTOP_SKILLS_DIR:-$HOME/.claude-desktop/skills}"
+# Generic agent hosts read one shared skills tree at ~/.agents/skills.
+AGENTS_SKILLS_DIR="${AGENTS_SKILLS_DIR:-$HOME/.agents/skills}"
 GEMINI_SKILLS_DIR="${GEMINI_SKILLS_DIR:-$HOME/.gemini/skills}"
 GROK_SKILLS_DIR="${GROK_SKILLS_DIR:-$HOME/.grok/skills}"
 OPENCODE_SKILLS_DIR="${OPENCODE_SKILLS_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills}"
@@ -36,6 +38,9 @@ SKILL_NAME="${SKILL_NAME:-spec}"
 BACKUP_ROOT="${BACKUP_ROOT:-$HOME/.spec-skill-backups}"
 KEEP_TEMP="${KEEP_TEMP:-0}"
 FORCE="${FORCE:-0}"
+# Upgrade preview: DRY_RUN=1 reports each host install/upgrade decision
+# and writes nothing, so user additions are visible before an upgrade.
+DRY_RUN="${DRY_RUN:-0}"
 PYTHON_BIN="${PYTHON_BIN:-}"
 
 # Hermes home resolution follows the Hermes agent's own lookup order:
@@ -140,8 +145,8 @@ resolve_python() {
 # User-facing stages for Claude command files. Single source: the stage list
 # documented in SKILL.md. CORE_STAGES is the same
 # kernel surface under its compatibility alias name.
-USER_STAGES=(plan run check push doctor)
-CORE_STAGES=(plan run check push doctor)
+USER_STAGES=(plan run repair check push doctor)
+CORE_STAGES=(plan run repair check push doctor)
 RETIRED_STAGES=(goal autoplan autorun update status organize assemble combat marshal new done)
 
 format_stage_aliases() {
@@ -181,11 +186,12 @@ abs_path() {
 # directory and no host-specific command files are written. Pi left this
 # list in F4: it now also receives native prompt-template commands
 # (install_pi) alongside the skill copy.
-SKILL_ONLY_HOSTS=(claude-desktop codex devin cursor gemini grok opencode openclaw hermes zcode dsh)
+SKILL_ONLY_HOSTS=(claude-desktop agents codex devin cursor gemini grok opencode openclaw hermes zcode dsh)
 
 skill_dir_for() {
   case "$1" in
     claude-desktop) printf '%s\n' "$CLAUDE_DESKTOP_SKILLS_DIR" ;;
+    agents) printf '%s\n' "$AGENTS_SKILLS_DIR" ;;
     codex) printf '%s\n' "$CODEX_SKILLS_DIR" ;;
     devin) printf '%s\n' "$DEVIN_SKILLS_DIR" ;;
     cursor) printf '%s\n' "$CURSOR_SKILLS_DIR" ;;
@@ -204,6 +210,7 @@ skill_dir_for() {
 host_label_for() {
   case "$1" in
     claude-desktop) printf '%s\n' "Claude Desktop" ;;
+    agents) printf '%s\n' "Shared Agents" ;;
     codex) printf '%s\n' "Codex" ;;
     devin) printf '%s\n' "Devin" ;;
     cursor) printf '%s\n' "Cursor" ;;
@@ -222,6 +229,7 @@ host_label_for() {
 default_skill_dir_for() {
   case "$1" in
     claude-desktop) printf '%s\n' "$HOME/.claude-desktop/skills" ;;
+    agents) printf '%s\n' "$HOME/.agents/skills" ;;
     codex) printf '%s\n' "$HOME/.codex/skills" ;;
     devin) printf '%s\n' "$HOME/.config/devin/skills" ;;
     cursor) printf '%s\n' "$HOME/.cursor/skills" ;;
@@ -268,6 +276,7 @@ host_dir_probe_root() {
   case "$1" in
     claude) printf '%s\n' "$HOME/.claude" ;;
     claude-desktop) printf '%s\n' "$HOME/.claude-desktop" ;;
+    agents) printf '%s\n' "$HOME/.agents" ;;
     codex) printf '%s\n' "$HOME/.codex" ;;
     devin) printf '%s\n' "$HOME/.config/devin" ;;
     cursor) printf '%s\n' "$HOME/.cursor" ;;
@@ -346,7 +355,7 @@ host_enabled() {
     grok) tokens="grok grokbuild" ;;
     devin) tokens="devin devin-desktop" ;;
     cursor) tokens="cursor cursor-cli" ;;
-    claude-desktop|gemini|opencode|openclaw|hermes|pi|zcode|dsh) tokens="$host" ;;
+    claude-desktop|agents|gemini|opencode|openclaw|hermes|pi|zcode|dsh) tokens="$host" ;;
     *) return 1 ;;
   esac
   local IFS=' '
@@ -366,12 +375,12 @@ validate_hosts() {
   local host enabled=0
   for host in $INSTALL_HOSTS; do
     case "$host" in
-      all|claude|claude-desktop|codex|codex-desktop|cursor|cursor-cli|desktop|devin|devin-desktop|gemini|grok|grokbuild|opencode|openclaw|hermes|pi|rpi|zcode|dsh) enabled=1 ;;
+      all|agents|claude|claude-desktop|codex|codex-desktop|cursor|cursor-cli|desktop|devin|devin-desktop|gemini|grok|grokbuild|opencode|openclaw|hermes|pi|rpi|zcode|dsh) enabled=1 ;;
       "") ;;
       *) fail "unknown INSTALL_HOSTS entry: $host" ;;
     esac
   done
-  [ "$enabled" = "1" ] || fail "INSTALL_HOSTS must include a supported host: all, claude, claude-desktop, codex, codex-desktop, cursor, cursor-cli, desktop, devin, devin-desktop, gemini, grok, grokbuild, opencode, openclaw, hermes, pi, rpi, zcode, or dsh"
+  [ "$enabled" = "1" ] || fail "INSTALL_HOSTS must include a supported host: all, agents, claude, claude-desktop, codex, codex-desktop, cursor, cursor-cli, desktop, devin, devin-desktop, gemini, grok, grokbuild, opencode, openclaw, hermes, pi, rpi, zcode, or dsh"
 }
 
 validate_stage_profiles() {
@@ -512,6 +521,7 @@ backup_namespace() {
     "$HOME/.config/devin/skills") printf '%s\n' ".config-devin-skills" ;;
     "$HOME/.cursor/skills") printf '%s\n' ".cursor-skills" ;;
     "$HOME/.claude-desktop/skills") printf '%s\n' ".claude-desktop-skills" ;;
+    "$HOME/.agents/skills") printf '%s\n' ".agents-skills" ;;
     "$HOME/.gemini/skills") printf '%s\n' ".gemini-skills" ;;
     "$HOME/.grok/skills") printf '%s\n' ".grok-skills" ;;
     "$HOME/.config/opencode/skills") printf '%s\n' ".config-opencode-skills" ;;
@@ -650,6 +660,7 @@ stage_description() {
     base) printf '%s\n' "Spec: resolve the next action" ;;
     plan) printf '%s\n' "Spec: plan and freeze a task package" ;;
     run) printf '%s\n' "Spec: execute the package to a terminal state" ;;
+    repair) printf '%s\n' "Spec: scaffold a repair package for a delivered spec" ;;
     check) printf '%s\n' "Spec: audit and deliver on gate pass" ;;
     push) printf '%s\n' "Spec: finish delivery and push" ;;
     doctor) printf '%s\n' "Spec: environment self-check and repair" ;;
@@ -673,6 +684,13 @@ EOF_BODY
 # /$command_name
 
 Execute the bound package: follow spec.py next, work each ready task inside its boundary, run its declared verify, and continue to a terminal state. With a goal argument and no bound package this is the built-in one-shot: plan, go, execute, check, and deliver in one chain; with a bound package the goal is ignored.
+EOF_BODY
+      ;;
+    repair)
+      cat <<EOF_BODY
+# /$command_name
+
+Repair a delivered spec: pick the archived package under .spec/specs/archive, scaffold with spec.py repair --of <archived-slug>, then refine the repair task's boundary and verify against the observed failure, run spec.py plan-lint to zero, and freeze with spec.py plan-go. Planning is thin; the delivery gate, evidence, and UI/UX review rules are identical to a standard package.
 EOF_BODY
       ;;
     check)
@@ -1033,6 +1051,35 @@ zcode_link_current() {
   return 1
 }
 
+preview_target_for() {
+  case "$1" in
+    claude) printf '%s\n' "$CLAUDE_SKILLS_DIR/$SKILL_NAME" ;;
+    pi) printf '%s\n' "$PI_SKILLS_DIR/$SKILL_NAME" ;;
+    *) printf '%s\n' "$(skill_dir_for "$1")/$SKILL_NAME" ;;
+  esac
+}
+
+# DRY_RUN report: classify every enabled host target with the same decision
+# logic as a real install (owned/foreign/symlink), then stop before any write.
+dry_run_report() {
+  local host target
+  for host in claude pi "${SKILL_ONLY_HOSTS[@]}"; do
+    host_enabled "$host" || continue
+    target="$(preview_target_for "$host")"
+    if [ -L "$target" ]; then
+      printf 'would refuse symlink target: %s (%s)\n' "$(host_label_for "$host")" "$target"
+    elif ! target_exists "$target"; then
+      printf 'would install %s skill: %s\n' "$(host_label_for "$host")" "$target"
+    elif is_installer_owned "$target"; then
+      printf 'would upgrade %s skill in place: %s\n' "$(host_label_for "$host")" "$target"
+    elif [ "$FORCE" = "1" ]; then
+      printf 'would back up and replace user skill: %s (%s)\n' "$(host_label_for "$host")" "$target"
+    else
+      printf 'would refuse user-owned skill (set FORCE=1 to back it up and replace): %s (%s)\n' "$(host_label_for "$host")" "$target"
+    fi
+  done
+}
+
 main() {
   need_cmd mktemp
   PYTHON_BIN="$(resolve_python)" || fail "missing a working python3 or python on PATH (Windows: the python3 stub may be broken; install Python or ensure python is on PATH)"
@@ -1047,11 +1094,15 @@ main() {
       return 0
     fi
   fi
+  if [ "$DRY_RUN" = "1" ]; then
+    dry_run_report
+    return 0
+  fi
   prepare_source
   INSTALL_TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/spec-skill-install.XXXXXX")"
   runtime_dir="$INSTALL_TEMP_DIR/runtime"
 
-  log "Install profile: $INSTALL_PROFILE — five-stage command kernel ($(printf '%s ' "${USER_STAGES[@]}" | sed 's/ $//'))"
+  log "Install profile: $INSTALL_PROFILE — six-stage command kernel ($(printf '%s ' "${USER_STAGES[@]}" | sed 's/ $//'))"
 
   export_runtime "$PREPARED_SOURCE_DIR" "$runtime_dir"
   CLAUDE_ALIASES=("${USER_STAGES[@]}")

@@ -113,6 +113,7 @@ HOSTS = {
         "capabilities": ("prompt", "pre_tool", "post_edit"),
     },
     "claude-desktop": {"config": "", "style": "none", "events": {}, "capabilities": ()},
+    "agents": {"config": "", "style": "none", "events": {}, "capabilities": ()},
 }
 
 MATCHERS = {

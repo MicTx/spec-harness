@@ -4,11 +4,22 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
-## [Unreleased]
+## [1.1.0] - 2026-11-14
 
 ### Added
 
 - **Encouraging lifecycle prompts**: every next-action card, session brief, and archived or completion card now ends with a state-keyed `Spark:` line that invites divergent thinking — rival designs in planning, creative implementation paths inside boundaries, failure read as fresh evidence, and delivery celebrated. Stop-hook messages, the verify failure-ladder directives, the learn directive, and the `check --check-only` pass message gained the same encouraging tone while keeping every pinned prefix. `SKILL.md` declares an Innovation Stance, `references/plan.md`/`exec.md`/`philosophy.md` carry the divergent-thinking contract language, and the host listing starter prompt and both READMEs mention the channel. Guardrail messages (denials, boundary warnings, Git ownership) stay terse; no gate, boundary, or ownership semantics changed.
+- **Repair packages**: a sixth user stage `/spec:repair <archived-slug>` (command surface now plan/run/repair/check/push/doctor) scaffolds a thin-planning package (`kind: repair`, `repair-of`) anchored to a delivered archive; planning is thin, the delivery gate is identical, and minimal archived origins get charter/scope defaults.
+- **Cross-artifact plan lint**: `PLAN-011` rejects charter values outside their closed vocabularies and names the allowed set; `PLAN-012` requires every `task-` reference in `spec.md` to resolve in `tasks.md`; `PLAN-013` rejects positional fallback ids so task ids stay stable semantic slugs.
+- **Shared `.agents/skills` host**: the new `agents` `INSTALL_HOSTS` value installs the runtime once into `$HOME/.agents/skills/spec` — hookless, marker-protected, idempotent — for generic agent hosts.
+- **Package inventory**: `spec.py list` prints a JSON inventory of active and archived packages (branch, frozen binding, task/criteria progress) for hooks and tooling.
+- **Installer upgrade preview and hardening**: `DRY_RUN=1` reports per host whether an install would be fresh, in-place, backed-up-and-replaced or refused, with zero writes; pin tests lock bracketed/space paths, symlink refusal and unowned-target protection.
+- **Card scaffolding**: `task-card` prints ready-to-paste v3 cards; `--tdd` emits red/green pairs with stable derived ids and guards against invalid ids; `--append` (optionally `--criterion`) writes cards into an unfrozen plan after candidate static lint, refusing duplicates and frozen packages, with per-file atomic replacement and rollback on caught failures.
+- **Refinement suggestions**: `plan-lint --suggest` appends read-only `SUGGEST-001/002` proposals for red/green planning traps, and `next` surfaces the top suggestions for unfrozen plans with a hint.
+
+### Fixed
+
+- **Ledger integrity**: delivered packages now end `runs.jsonl` with a passing final delivery-gate record (`final: true`), while earlier failed or stale gate rows remain visible as history.
 
 ## [1.0.8] - 2026-11-13
 

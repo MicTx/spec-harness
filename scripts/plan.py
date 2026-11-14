@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import os
 import re
 import shutil
@@ -14,19 +15,23 @@ import charter
 import gitx
 from memory import lessons_top
 from package import (
+    SLUG_RE,
     append_run,
     criteria,
     dependency_errors,
     extract_branch,
     now,
     package_baseline,
+    package_kind,
     parse_charter,
     parse_forks,
     parse_tasks,
     path_matches,
     read_package,
+    repair_origin,
     scope_patterns,
     section,
+    specs_root,
 )
 from runtime_budget import project_verify_timeout
 
@@ -110,11 +115,13 @@ def _charter_gaps(spec: str) -> list[dict]:
         if not value:
             gaps.append(_gap("PLAN-004", f"missing charter {index}", "Fill the charter through a planning card."))
         elif value not in allowed:
+            # PLAN-011: closed-vocabulary drift gets its own rule code so enum
+            # inconsistencies are distinguishable from generic format gaps.
             gaps.append(
                 _gap(
-                    "PLAN-004",
-                    f"unknown charter value {index}={value}",
-                    "Use one of: " + ", ".join(sorted(allowed)),
+                    "PLAN-011",
+                    f"unknown charter value {index}={value}; use one of: " + ", ".join(sorted(allowed)),
+                    "Pick a value from the charter vocabulary.",
                 )
             )
     priority = values.get("V1", "")
@@ -123,8 +130,61 @@ def _charter_gaps(spec: str) -> list[dict]:
     return gaps
 
 
-def lint(root: Path, slug: str, static: bool = False, record: bool = False) -> dict:
+def _suggestions(records: list) -> list[dict]:
+    """Read-only refinement proposals for known red/green planning traps."""
+    result = []
+    for task in records:
+        if task.expect != "red" or not task.command:
+            continue
+        proposed = ""
+        for pattern in task.globs:
+            if pattern.startswith("new:"):
+                path = pattern[4:]
+                if path in task.command and "--collect-only" not in task.command:
+                    proposed = f"python3 -m pytest {path} --collect-only -q"
+                    break
+        shared = any(
+            other.expect == "green" and other.command == task.command and task.id in other.depends_on
+            for other in records
+        )
+        if shared:
+            if not proposed and task.command.startswith("python3 -m pytest "):
+                proposed = task.command + " --collect-only -q"
+            result.append(
+                {
+                    "task": task.id,
+                    "rule": "SUGGEST-001",
+                    "detail": "red card shares the green card verify; split into a collection proof",
+                    "proposed_verify": proposed,
+                }
+            )
+        elif proposed:
+            result.append(
+                {
+                    "task": task.id,
+                    "rule": "SUGGEST-002",
+                    "detail": "red verify runs a not-yet-created new: path; use a collection proof",
+                    "proposed_verify": proposed,
+                }
+            )
+    return result
+
+
+def lint(
+    root: Path,
+    slug: str,
+    static: bool = False,
+    record: bool = False,
+    *,
+    contents: tuple[str, str] | None = None,
+    suggest: bool = False,
+) -> dict:
+    """Validate disk truth, or a read-only candidate before a planning edit."""
+    if contents is not None and (not static or record):
+        raise ValueError("candidate contents require static=True and record=False")
     package, spec, tasks = read_package(root, slug)
+    if contents is not None:
+        spec, tasks = contents
     gaps: list[dict] = []
     if "spec-format: 3" not in spec:
         return {
@@ -145,14 +205,60 @@ def lint(root: Path, slug: str, static: bool = False, record: bool = False) -> d
         gaps.append(_gap("PLAN-004", "Goal.goal is missing", "State the observable outcome."))
     if not any(line.startswith("done means:") for line in section(spec, "Goal")):
         gaps.append(_gap("PLAN-004", "Goal.done means is missing", "State how completion is observed."))
+    if package_kind(spec) == "repair":
+        # Repair packages keep thin planning but must stay anchored to a real
+        # archived delivery so the full gate can audit spec consistency.
+        origin = repair_origin(spec)
+        if not origin:
+            gaps.append(
+                _gap(
+                    "PLAN-004",
+                    "kind: repair requires repair-of: <archived-slug>",
+                    "Name the archived package this repair refers to.",
+                )
+            )
+        elif not SLUG_RE.fullmatch(origin) or not (specs_root(root) / "archive" / origin).is_dir():
+            gaps.append(
+                _gap(
+                    "PLAN-004",
+                    f"repair-of must name an existing archived package: {origin}",
+                    "Deliver or archive the origin first, or fix the slug.",
+                )
+            )
 
     try:
         records = parse_tasks(tasks)
     except ValueError as exc:
+        # PLAN-013: a missing id becomes a positional task_NNNN fallback, which
+        # parse_tasks rejects; surface it as the stable-semantic-id rule.
+        positional = re.search(r"invalid task id: (task_\d{4})", str(exc))
+        if positional:
+            return {
+                "ready": False,
+                "gaps": [
+                    _gap(
+                        "PLAN-013",
+                        f"positional fallback id {positional.group(1)} is not a stable semantic slug",
+                        "Give every task an explicit id that survives edits and reordering.",
+                    )
+                ],
+            }
         return {"ready": False, "gaps": [_gap("PLAN-004", str(exc), "Give every task one unique stable id.")]}
     if not records:
         gaps.append(_gap("PLAN-004", "no tasks", "Write executable task cards."))
     gaps.extend(_gap("PLAN-005", error, "Close the task dependency graph.") for error in dependency_errors(records))
+    # PLAN-012: every task reference anywhere in spec.md must resolve in
+    # tasks.md, so edits cannot silently renumber or drop a referenced id.
+    known_ids = {record.id for record in records}
+    for token in sorted(set(re.findall(r"\btask-[a-z0-9][a-z0-9-]*", spec))):
+        if token not in known_ids:
+            gaps.append(
+                _gap(
+                    "PLAN-012",
+                    f"spec.md references unknown task {token}",
+                    "Point the reference at an existing task id or add the task.",
+                )
+            )
     known = {task.id for task in records}
     criterion_lines = criteria(spec)
     if not criterion_lines:
@@ -283,12 +389,15 @@ def lint(root: Path, slug: str, static: bool = False, record: bool = False) -> d
                 gaps.append(_gap("PLAN-008", fork["id"], "Irreversible choices require user authority."))
         elif fork["by"] and not re.fullmatch(r"(V[1-7]|F\d+|user .+)", fork["by"]):
             gaps.append(_gap("PLAN-008", fork["id"], "Cite V<n>, F<n>, or user <reference>."))
-    return {
+    payload = {
         "ready": not any(gap["rule"] != "PLAN-010" for gap in gaps),
         "gaps": gaps,
         "durations": durations,
         "lessons": lessons_top(root, [pattern for task in records for pattern in task.globs]),
     }
+    if suggest:
+        payload["suggestions"] = _suggestions(records)
+    return payload
 
 
 def _exclude_worktrees(root: Path) -> None:
@@ -383,7 +492,25 @@ def go(root: Path, slug: str) -> dict:
         (package / "spec.md").write_text(frozen, encoding="utf-8")
     charter.merge(root, parse_charter(spec))
     dirty = gitx.dirty_paths(root, exclude=(".spec/",))
-    append_run(package, {"kind": "baseline", "task": "package", "head": gitx.head(root), "dirty": dirty, "ts": now()})
+    # Plan summary snapshot: lets revision_summary diff task ids and line
+    # counts exactly even though package files may not be Git-tracked yet.
+    frozen_spec = (package / "spec.md").read_text(encoding="utf-8")
+    frozen_tasks = (package / "tasks.md").read_text(encoding="utf-8")
+    append_run(
+        package,
+        {
+            "kind": "baseline",
+            "task": "package",
+            "head": gitx.head(root),
+            "dirty": dirty,
+            "task_ids": [record.id for record in parse_tasks(frozen_tasks)],
+            "spec_lines": len(frozen_spec.splitlines()),
+            "tasks_lines": len(frozen_tasks.splitlines()),
+            "spec_fp": hashlib.sha256(frozen_spec.encode()).hexdigest(),
+            "tasks_fp": hashlib.sha256(frozen_tasks.encode()).hexdigest(),
+            "ts": now(),
+        },
+    )
     result = {"ready": True, "slug": slug, "branch": branch}
     if worktree is not None:
         result["worktree"] = str(worktree)

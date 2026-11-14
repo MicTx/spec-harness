@@ -15,7 +15,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 INSTALLER = ROOT / "install.sh"
 EXPORTER = ROOT / "scripts" / "export_skill_package.py"
-CORE_STAGES = ("plan", "run", "check", "push", "doctor")
+CORE_STAGES = ("plan", "run", "repair", "check", "push", "doctor")
 RETIRED_STAGES = (
     "goal",
     "autoplan",
@@ -203,7 +203,7 @@ def test_sandbox_profiles_install_identical_kernel(tmp_path, profile):
     result = run_installer(home, {"INSTALL_PROFILE": profile})
     assert result.returncode == 0, result.stderr
     assert f"Install profile: {profile}" in result.stdout
-    assert "five-stage command kernel" in result.stdout
+    assert "six-stage command kernel" in result.stdout
 
     skill = home / ".claude" / "skills" / "spec"
     assert_kernel_tree(skill)

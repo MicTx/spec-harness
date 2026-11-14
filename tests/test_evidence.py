@@ -72,7 +72,7 @@ def test_package_only_checkpoint_preserves_other_task_evidence_freshness(tmp_pat
         for line in (tmp_path / ".spec/specs/archive" / SLUG / "runs.jsonl").read_text().splitlines()
         if line
     ]
-    final = [record for record in runs if record.get("final") is True]
+    final = [record for record in runs if record.get("final") is True and "task" in record]
     assert {record["task"] for record in final} == {"task-one", "task-two"}
 
 

@@ -13,18 +13,21 @@ from __future__ import annotations
 from pathlib import Path
 
 import gitx
+import plan
 import ui_review
 from memory import last_failures, progress_tuple
 from package import (
     criteria_status,
     latest_gate,
     package_baseline,
+    package_kind,
     parse_charter,
     parse_ledger,
     parse_tasks,
     read_archived_package,
     read_package,
     ready_tasks,
+    repair_origin,
     resolve_archived_slug,
     resolve_slug,
     worktree_packages,
@@ -163,9 +166,17 @@ def decide(root: Path, slug: str | None = None) -> dict:
     )
     task = ready[0] if ready else None
     failures = evidence_failures + [f"gate: {item}" for item in gate_failures]
+    suggestions: list = []
+    if not frozen:
+        try:
+            suggestions = plan.lint(root, selected, static=True, suggest=True).get("suggestions", [])[:3]
+        except ValueError:
+            suggestions = []
     goal = next((line[2:] for line in spec.splitlines() if line.startswith("- goal:")), "")
     result = {
         "slug": selected,
+        "kind": package_kind(spec),
+        "repair_of": repair_origin(spec),
         "state": state,
         "stage": STAGE_FOR_STATE.get(state, "run"),
         "goal": goal,
@@ -184,6 +195,7 @@ def decide(root: Path, slug: str | None = None) -> dict:
             {"id": key, "text": text, "task": task_id, "passed": passed} for key, text, task_id, passed in latest
         ],
         "failures": failures,
+        "suggestions": suggestions,
         "gate": {"passed": not gate_failures, "errors": gate_failures},
         "ui_review": ui_status,
         # `progress` keeps its original 3-field public shape; the hook uses
@@ -213,6 +225,15 @@ def next_card(root: Path, slug: str | None = None) -> dict:
         brief["next"] = "Finish planning: run plan-lint, resolve gaps, then plan-go."
     else:
         brief["next"] = "Inspect the package state and continue."
+    if brief.get("kind") == "repair":
+        brief["next"] = (
+            f"Repair of {brief['repair_of']}: thin planning, full gate; "
+            "keep the change consistent with the archived spec. " + brief["next"]
+        )
+    if brief.get("suggestions"):
+        brief["next"] = (
+            f"plan-lint --suggest lists {len(brief['suggestions'])} refinement(s) for this plan. " + brief["next"]
+        )
     encouragement = spark(brief["state"])
     if encouragement:
         brief["next"] = f"{brief['next']} {encouragement}"

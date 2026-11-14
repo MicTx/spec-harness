@@ -18,7 +18,7 @@ cd /tmp/spec-harness
 bash install.sh
 ```
 
-未设置 `INSTALL_HOSTS` 时自动探测宿主；`core` 与 `full` 是兼容别名，载荷完全相同。安装器增量合并会话 hook，保留非 Spec 条目并先备份。
+未设置 `INSTALL_HOSTS` 时自动探测宿主；`core` 与 `full` 是兼容别名，载荷完全相同。安装器增量合并会话 hook，保留非 Spec 条目并先备份。`DRY_RUN=1` 输出升级预检：每个宿主目标将被全新安装、原地升级、备份替换还是拒绝（符号链接/用户自有技能），零写入先看清用户改动的去留。
 
 | 宿主 | `INSTALL_HOSTS` |
 | --- | --- |
@@ -27,6 +27,7 @@ bash install.sh
 | OpenCode / OpenClaw / Hermes | `opencode` / `openclaw` / `hermes` |
 | Pi / ZCode / Devin | `pi` / `zcode` / `devin` |
 | DeepSeek Harness / Cursor | `dsh` / `cursor` |
+| 通用 Agent 宿主（共享技能目录 `.agents/skills`） | `agents` |
 
 ## 快速开始
 
@@ -43,6 +44,7 @@ bash install.sh
 | `/spec <目标>` | 规划新包，或续跑当前分支绑定的包 |
 | `/spec:plan <目标>` | 显式规划入口：创建或修订任务包，lint、定岔、`plan-go` |
 | `/spec:run [目标]` | 执行绑定包至终态；未绑定且带目标时内置一条龙：规划、执行、验收、交付 |
+| `/spec:repair <归档包>` | 从已交付归档包脚手架修复包：薄规划、全门禁，保持与原规格一致 |
 | `/spec:check` | 运行交付门禁（结构审计与命中 UI 时的真实操作、截屏和回写）；通过即自动归档、提交并完成 V4 交付 |
 | `/spec:push` | 用户明确授权后完成 Git 交付（按当前分支解析已归档包） |
 | `/spec:doctor` | 检查并修复运行时与宿主 hook |

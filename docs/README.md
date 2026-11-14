@@ -14,6 +14,7 @@
 
 ## 我想操作它
 
+- 修复已交付规格：`/spec:repair <归档包>` 从 `.spec/specs/archive` 脚手架修复包，薄规划、全门禁。
 - [Git 工作流（中文）](git-workflow.md)
 - [Git workflow (English)](git-workflow.en.md)
 - 根目录 [README（中文）](../README.md)：安装、宿主选择与导出运行时包。
