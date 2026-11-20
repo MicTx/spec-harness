@@ -101,12 +101,19 @@ def test_checkpoint_skips_ignored_optional_memory_files(tmp_path):
 
 def test_failure_changes_strategy_instead_of_repeating(tmp_path):
     repo(tmp_path)
-    started_package(tmp_path, verify="test ! -e fail-marker")
+    package = started_package(tmp_path, verify="test ! -e fail-marker")
     (tmp_path / "fail-marker").write_text("fail\n", encoding="utf-8")
     first = cli(tmp_path, "verify", "task-value")
     second = cli(tmp_path, "verify", "task-value")
     assert "smallest fix" in first.stdout
     assert "minimal reproduction" in second.stdout
+    failures = [
+        json.loads(line)
+        for line in (package / "runs.jsonl").read_text(encoding="utf-8").splitlines()
+        if '"kind": "run"' in line
+    ]
+    assert "smallest fix" in failures[0]["directive"]
+    assert "minimal reproduction" in failures[1]["directive"]
 
 
 def test_final_evidence_is_explicitly_marked(tmp_path):

@@ -238,7 +238,7 @@ def test_hook_ladder_directives_stay_kind_and_discriminating(tmp_path):
     assert "creative energy" in fourth
 
 
-def test_hook_learn_directive_celebrates_the_hard_won_green(tmp_path):
+def test_hook_learn_directive_points_at_an_enforce_target(tmp_path):
     repo(tmp_path)
     started_package(tmp_path, verify="test ! -e fail-marker")
     (tmp_path / "fail-marker").write_text("fail\n", encoding="utf-8")
@@ -252,6 +252,7 @@ def test_hook_learn_directive_celebrates_the_hard_won_green(tmp_path):
     assert "spec.py learn" in directive
     assert "Hard-won green" in directive
     assert "reusable lesson" in directive
+    assert "--enforce" in directive
 
 
 def test_hook_check_only_pass_message_encourages(tmp_path):

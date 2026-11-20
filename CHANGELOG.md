@@ -4,6 +4,35 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [2.0.0] - 2026-11-20
+
+### Breaking
+
+- **Lessons ledger is enforce-backed and append-only**: `spec.py learn` now requires a `--enforce <repo path>` target on every lesson, records it on the ledger row, and appends a `kind: learn` row to the active package's `runs.jsonl`; omitting the flag is rejected before any ledger write. `done` writes the package's lessons into the archived summary and refuses a missing or stale enforcement target. The `--lesson-wrong` flag is removed from `learn`, `done` and `check`, the `hits` counter and `lesson_proposals` proposals are gone, and archived summaries no longer print a `Promote:` line or point at `.spec/lessons.md`. These removals are the MAJOR compatibility surface: scripts that passed `--lesson-wrong`, read `hits`, or consumed `Promote` output must switch to `--enforce` plus `done --lesson-used`.
+
+### Added
+
+- **Local-only evidence**: `spec.py purge` keeps `.spec` task packages, plans, run logs and historical records local by removing only their Git index entries; file bytes stay on disk, and the command never commits, pushes or rewrites history. `.spec/architecture` stays tracked, shared Git excludes plus the project `.gitignore` carry the policy into linked worktrees and new clones, delivery paths skip local evidence, and local archives are saved to the primary worktree before worktree cleanup.
+- **Loop continuity**: a compacted session's `start` brief can project up to a few advisory pending clues from the package snapshot (matching-task only; the live route and runs ledger stay authoritative), and the failure-ladder directive is recorded on failing `kind: run` evidence so a cold `spec.py next` can still show the current rung.
+- **Executable recovery routing**: stale-only delivery-gate errors point at `spec.py check` (whose final re-verify refreshes evidence), while mixed gate errors surface the concrete non-stale repair first instead of a no-op `verify --all`.
+- **Post-Go plan integrity**: `plan-go` freezes the Goal section as `goal_fp` and the accepted per-task commands. The delivery gate blocks a post-Go Goal edit or an unauthorized verify change; a strict package accepts only a `kind: amend` record with `by: user <reference>`, while an adjacent-fixes package also accepts `by: V1`. `plan-amend --revise` replaces a checked card in place (same id, boundary, depends-on and origin), clears `[x]`, records the amend and requires re-verify before the gate is green again.
+- **Executable architecture contract**: `tests/test_module_dag.py` proves the scripts registry is closed, the five previously unregistered support scripts are in `.spec/architecture/contracts.json`, no forbidden layer import exists, and `contract-baseline.json` holds only `entries: []`.
+- **Package inventory over the full archive**: `spec.py list` skips non-v3 historical packages instead of failing on `task_0001`; historical fixtures pin the behavior in `tests/test_inventory.py`.
+- **Autonomy prompt tier**: the installer selects the full or compact autonomy ladder, and lifecycle cards, stop hooks and route surfaces self-resolve.
+- **Runtime hot-path cache**: parse caches and fingerprint memoization shorten repeated lifecycle reads; final-evidence reuse skips a fresh final re-verify when the command and tree are unchanged.
+- **Autonomy hardening**: the aggressive tier and evidence-ledger surfaces ship with pinned tests and references language.
+
+### Fixed
+
+- **Fresh verification evidence**: product-tree fingerprints are recomputed from current content, so repeated edits with unchanged Git status cannot reuse stale passing evidence inside one process.
+- **Gate-aware prompt dedup**: per-session prompt deduplication now includes the gate-aware `progress_token` and current task/recovery state, so a newly failing gate is not swallowed as a repeated brief; start and subagent events compute one route projection per event and a continuing stop computes none.
+- **Avalanche-proof briefs**: session briefs in every prompt tier keep the state line, actionable next step, first failure and the complete `Spark:` line inside the tier budget; long goal, parked and lesson text are capped first.
+- **Provenance notes**: [docs/loop-continuity.md](docs/loop-continuity.md) records which external ideas were adopted, which were rejected, and the per-host event limits behind them.
+- **Release payload startup**: the install payload ships `scripts/path_safety.py` (af6de934), so an unpacked archive starts instead of failing with `ModuleNotFoundError`.
+- **Docs and metadata drift**: ADR 0008 is indexed, the stale "Spec Harness 1.0.0" install pin is gone, and `pyproject.toml`'s description matches `README-en.md`.
+- **Skill-only host symlink awareness**: the installer now upgrades through installer-owned symlinks on every skill-only host (claude-desktop, agents, codex, devin, cursor, gemini, grok, opencode, openclaw, hermes, zcode, dsh). When a host's `spec` skill is a symlink pointing at another enabled host's install target this run keeps current (a Magpie-style fan-out link), the host is skipped as already current with a log line, the link survives untouched, and `DRY_RUN=1` reports the same decision — instead of failing closed with "refusing to use symlink path". Dangling links, chained links (a link whose target is itself a link), links to non-enabled or foreign targets, and every other ownership guard keep failing exactly as before.
+- **Preview matches the real install on link layouts**: `DRY_RUN=1` now resolves the Claude skill link before classifying hosts, exactly like the real install's collision preflight. On a fan-out layout where `~/.claude/skills/spec` and the other hosts all link to one shared entity, the preview reports `already current via symlink` for the aliased hosts and `would upgrade ... in place` for the entity, instead of wrongly reporting `would refuse symlink target` for every host. Links a real install refuses stay reported as refusals and the preview still writes nothing and exits zero.
+
 ## [1.1.0] - 2026-11-14
 
 ### Added

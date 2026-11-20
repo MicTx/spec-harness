@@ -26,6 +26,8 @@ import route  # noqa: E402
 SHELLS = {"sh", "bash", "zsh", "dash"}
 WRAPPERS = {"command", "exec", "nohup", "sudo"}
 GIT_DENY = "Spec owns Git actions while a package is active; use spec.py verify/check or /spec:push."
+# Hard host ceiling for any injected context; the tier budget is usually lower.
+CONTEXT_LIMIT = 1500
 
 
 @dataclass
@@ -160,7 +162,46 @@ def _git_bypass_reason(invocations: list[tuple[str, list[str]]]) -> str:
     return ""
 
 
+def _session_id(event: dict) -> str:
+    for key in ("session_id", "sessionId", "conversation_id"):
+        value = event.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def _short_line(value: str, limit: int) -> str:
+    text = " ".join(value.split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _context_extras(root: Path, name: str, event: dict, spec: str, card: dict) -> list[str]:
+    """Reserve a small host-only tail before rendering the shared projection.
+
+    Compact recovery remains in the route's Pending line; it is not copied
+    from state here. Small Charter/Lessons summaries stay visible without
+    allowing a long goal or lesson avalanche to crowd out Next and Spark.
+    """
+    extras: list[str] = []
+    if name == "start":
+        if event.get("source") == "compact":
+            extras.append("Continue the frozen plan; do not replan.")
+        extras.append("Charter: " + _short_line(charter.summary_line(root), 90))
+        task = card.get("task") or {}
+        lessons = memory.lessons_top(root, paths=list(task.get("boundary") or []))
+        if lessons:
+            extras.append("Lessons: " + _short_line(lessons[-1], 80))
+    elif name == "subagent":
+        scope = [line[2:] for line in spec.splitlines() if line.startswith(("- in:", "- out:"))]
+        extras.append("Scope: " + _short_line("; ".join(scope), 200))
+    return extras
+
+
 def handle(name: str, event: dict) -> Action:
+    # A continuation is the hook's own follow-up, not a new progress attempt.
+    # Release it before package reads, replay bookkeeping, or any projection.
+    if name == "stop" and event.get("continuing"):
+        return Action()
     if name == "pre_tool":
         command = str(event.get("command", ""))
         invocations = _git_invocations(command)
@@ -208,8 +249,6 @@ def handle(name: str, event: dict) -> Action:
         return Action()
     brief = route.decide(root, slug)
     if name == "stop":
-        if event.get("continuing"):
-            return Action()
         progress = brief.get("progress_token", brief["progress"])
         state = memory.snapshot_read(directory)
         if brief["state"] == "deliver":
@@ -217,11 +256,14 @@ def handle(name: str, event: dict) -> Action:
             return Action(block=True, reason=message)
         if brief["state"] == "parked-only":
             return Action(
-                context="parked-only: present every parked item in one batch — each is a seed for the next spec."
+                context=(
+                    "parked-only: present every parked item in one batch — each is a seed for the next spec."
+                    " List what you already tried before anything reaches the user."
+                )
             )
         if progress != state.get("last_progress"):
             _write_state(directory, {"last_progress": progress, "stalls": 0, "terminal": ""})
-            return Action(block=True, reason=route.next_card(root, slug)["next"])
+            return Action(block=True, reason=route.next_card(root, slug, projection=brief)["next"])
         stalls = int(state.get("stalls", 0)) + 1
         if stalls < 2:
             _write_state(directory, {"stalls": stalls})
@@ -236,27 +278,24 @@ def handle(name: str, event: dict) -> Action:
             context=(
                 "stalled: no new evidence after two attempts; report failure signatures "
                 "— a fresh angle often cracks what force cannot."
+                " Choose the recovery yourself; do not ask the user to choose."
             )
         )
     if name in {"start", "prompt", "subagent"}:
         if name == "prompt":
-            progress = brief["progress"]
-            state = memory.snapshot_read(directory)
-            if state.get("last_prompt_progress") == progress:
+            if not memory.prompt_fresh(directory, _session_id(event), memory.prompt_token(directory, brief)):
                 return Action()
-            _write_state(directory, {"last_prompt_progress": progress})
-        prefix = route.brief(root, slug)
-        if name == "start" and event.get("source") == "compact":
-            prefix += "\nContinue the frozen plan; do not replan."
-        if name == "start":
-            prefix += "\nCharter: " + charter.summary_line(root)
-            lessons = memory.lessons_top(root)
-            if lessons:
-                prefix += "\nLessons:\n" + "\n".join(lessons)
-        if name == "subagent":
-            scope = [line[2:] for line in spec.splitlines() if line.startswith(("- in:", "- out:"))]
-            prefix += "\nScope: " + "; ".join(scope)
-        return Action(context=prefix[:1500])
+        # One decision, one card: the route renderer owns the brief budget
+        # and its priority order, so start/subagent cost exactly one route
+        # computation per event and never render a second Spark line.
+        card = route.next_card(root, slug, projection=brief)
+        limit = min(CONTEXT_LIMIT, route.brief_budget())
+        extras = _context_extras(root, name, event, spec, card)
+        # At most 230 characters of host context: reserve them before the
+        # renderer allocates space, rather than clipping Next/Spark afterward.
+        reserve = sum(len(line) + 1 for line in extras)
+        prefix = route.brief(root, slug, projection=card, budget=limit - reserve)
+        return Action(context="\n".join([prefix, *extras]))
     if name in {"pre_compact", "end"}:
         memory.snapshot_write(directory, event, brief)
     return Action()
@@ -274,9 +313,11 @@ def main(argv: list[str] | None = None) -> int:
         from adapters import decode, encode
 
         event = decode(args.host, payload)
-        active = _active(event)
-        if args.event == "stop" and active and not event.get("continuing"):
-            if memory.seen(package.package_dir(*active), event):
+        if args.event == "stop":
+            if event.get("continuing"):
+                return 0
+            active = _active(event)
+            if active and memory.seen(package.package_dir(*active), event):
                 return 0
         action = handle(args.event, event)
         output = encode(args.host, args.event, action)

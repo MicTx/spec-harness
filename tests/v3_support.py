@@ -20,9 +20,10 @@ def repo(root: Path) -> None:
     git(root, "init", "-q", "-b", "main")
     git(root, "config", "user.email", "fixture@example.invalid")
     git(root, "config", "user.name", "Fixture")
-    # Mirror the real repo's ignore rules for optional package memory files so
-    # git_add_paths exercises the untracked-ignored skip branch.
-    (root / ".gitignore").write_text(".spec/charter.md\n.spec/lessons.md\n", encoding="utf-8")
+    # Mirror the real repo's ignore rules for optional package memory files and
+    # the runtime cache spill so git_add_paths exercises the untracked-ignored
+    # skip branch and delivery cleanliness matches the real checkout.
+    (root / ".gitignore").write_text(".spec/charter.md\n.spec/lessons.md\n.spec/cache/\n", encoding="utf-8")
     (root / "app.py").write_text("VALUE = 0\n", encoding="utf-8")
     git(root, "add", ".")
     git(root, "commit", "-qm", "initial")

@@ -59,3 +59,34 @@ def test_relative_links_resolve():
             elif anchor and resolved.suffix == ".md" and anchor.lower() not in _anchors(resolved):
                 broken.append(f"{doc.relative_to(ROOT)} -> {target} (missing heading)")
     assert not broken, "\n".join(broken)
+
+
+INDEXES = ("README.md", "README-en.md", "docs/README.md", "docs/README-en.md")
+ROOT_USER_DOCS = ("README.md", "README-en.md", "CONTRIBUTING.md", "RELEASE.md", "SECURITY.md", "SUPPORT.md")
+
+
+def _reachable() -> set[Path]:
+    seen: set[Path] = set()
+    stack = [ROOT / name for name in INDEXES if (ROOT / name).exists()]
+    while stack:
+        page = stack.pop()
+        if page in seen:
+            continue
+        seen.add(page)
+        for target in LINK.findall(_prose(page.read_text(encoding="utf-8"))):
+            if re.match(r"^[a-z]+:", target) or target.startswith("<"):
+                continue
+            file_part = target.partition("#")[0]
+            if not file_part:
+                continue
+            resolved = (page.parent / file_part).resolve()
+            if resolved.suffix == ".md" and resolved.exists() and ROOT in resolved.parents and resolved not in seen:
+                stack.append(resolved)
+    return seen
+
+
+def test_all_docs_are_reachable():
+    expected = {path.resolve() for path in (ROOT / "docs").rglob("*.md")}
+    expected |= {(ROOT / name).resolve() for name in ROOT_USER_DOCS if (ROOT / name).exists()}
+    missing = sorted(path.relative_to(ROOT).as_posix() for path in expected - _reachable())
+    assert not missing, "unreachable documentation pages:\n" + "\n".join(missing)

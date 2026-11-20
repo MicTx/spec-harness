@@ -6,7 +6,7 @@
 
 ## 准备
 
-按 [安装说明](../README.md) 安装 Spec Harness 1.0.0，并准备 Git、Python 3.9+、pytest 和 Bash。创建一个干净练习仓库：
+按 [安装说明](../README.md) 安装 Spec Harness，并准备 Git、Python 3.9+、pytest 和 Bash。创建一个干净练习仓库：
 
 ```bash
 mkdir -p /tmp/spec-practice/tests && cd /tmp/spec-practice
@@ -84,8 +84,10 @@ python3 "$SPEC" done
 
 ```bash
 python3 "$SPEC" decide --fork F1
-python3 "$SPEC" learn "当 add 输出为 5" "不要重新实现运算符；优先检查测试输入"
+python3 "$SPEC" learn "当 add 输出为 5" "不要重新实现运算符；优先检查测试输入" --enforce tests/test_calc.py
 ```
+
+必填的 `--enforce <repo path>` 指向仓库内已跟踪、位于包外的规则目标；enforce 目标必须在 learn 与 done 时存在，`done` 归档前会重新校验，已删除或未跟踪的目标会让交付失败。
 
 完成后，归档保留 `spec.md`、`tasks.md`、`runs.jsonl`、状态和完成报告，是下一轮恢复与审计的真源。
 

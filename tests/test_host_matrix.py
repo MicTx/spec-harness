@@ -82,6 +82,50 @@ def test_fresh_config_install_records_ownership_and_stays_idempotent(tmp_path):
     assert target.read_text(encoding="utf-8") == first
 
 
+def test_codex_fresh_install_keeps_schema_clean_and_uses_sidecar(tmp_path):
+    """Codex rejects unknown top-level keys in hooks.json, so a fresh install
+    must keep the config free of the ownership key and record it in a sidecar,
+    while staying idempotent."""
+    target = install_session_hooks("codex", home=tmp_path)
+    config = json.loads(target.read_text(encoding="utf-8"))
+    assert list(config) == ["hooks"]
+    sidecar = target.with_name("hooks.json.spec-owned.json")
+    record = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert record["x-spec-owned"]["commands"] == [
+        f"python3 {ROOT / 'hooks' / 'spec_hook.py'} --host codex {event}" for event in capabilities("codex")
+    ]
+
+    install_session_hooks("codex", home=tmp_path)
+    assert json.loads(target.read_text(encoding="utf-8")) == config
+    assert json.loads(sidecar.read_text(encoding="utf-8")) == record
+
+
+def test_codex_upgrade_migrates_inline_ownership_to_sidecar(tmp_path):
+    """An existing install whose ownership was recorded inline (the pre-fix
+    layout that Codex rejects) migrates to the sidecar on upgrade without
+    duplicating hook entries and without leaving the inline key behind."""
+    target = tmp_path / ".codex" / "hooks.json"
+    target.parent.mkdir()
+    legacy_command = "python3 /old/spec/hooks/spec_hook.py --host codex stop"
+    target.write_text(
+        json.dumps(
+            {
+                "hooks": {"Stop": [{"matcher": "*", "hooks": [{"type": "command", "command": legacy_command}]}]},
+                "x-spec-owned": {"commands": [legacy_command]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    install_session_hooks("codex", home=tmp_path)
+    config = json.loads(target.read_text(encoding="utf-8"))
+    assert "x-spec-owned" not in config
+    assert legacy_command not in target.read_text(encoding="utf-8")
+    stop_commands = [entry["command"] for group in config["hooks"]["Stop"] for entry in group["hooks"]]
+    assert stop_commands == [f"python3 {ROOT / 'hooks' / 'spec_hook.py'} --host codex stop"]
+    sidecar = json.loads(target.with_name("hooks.json.spec-owned.json").read_text(encoding="utf-8"))
+    assert legacy_command not in sidecar["x-spec-owned"]["commands"]
+
+
 def test_config_install_migrates_legacy_ownership_without_external_hook_event_keys(tmp_path, monkeypatch):
     target = tmp_path / ".claude" / "settings.json"
     target.parent.mkdir()

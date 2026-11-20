@@ -16,10 +16,13 @@ import gitx
 from memory import lessons_top
 from package import (
     SLUG_RE,
+    TASK_RE,
+    amend_authorized,
     append_run,
     criteria,
     dependency_errors,
     extract_branch,
+    goal_fingerprint,
     now,
     package_baseline,
     package_kind,
@@ -29,9 +32,11 @@ from package import (
     path_matches,
     read_package,
     repair_origin,
+    runs,
     scope_patterns,
     section,
     specs_root,
+    tree_fingerprint,
 )
 from runtime_budget import project_verify_timeout
 
@@ -97,7 +102,24 @@ def _component_covers(scope: str, boundary: str) -> bool:
     return not any(char in boundary for char in "*?[") and bool(fnmatch.fnmatchcase(boundary, scope))
 
 
-def _verify(root: Path, command: str) -> tuple[int, float, str]:
+def _verify(root: Path, command: str, package: Path | None = None) -> tuple[int, float, str]:
+    """Run one task verify command, or reuse a fresh recorded exit for it.
+
+    With ``package`` set, a prior ``run``/``baseline`` record for the exact
+    command that exited 0 against the current tree fingerprint counts as fresh
+    evidence: the command is not re-executed and ``(0, 0.0, "")`` is returned.
+    A stale fingerprint, nonzero exit, or different command forces a real run.
+    """
+    if package is not None:
+        fingerprint = tree_fingerprint(root)
+        for record in runs(package):
+            if (
+                record.get("kind") in ("run", "baseline")
+                and record.get("cmd") == command
+                and record.get("exit") == 0
+                and record.get("tree_fp") == fingerprint
+            ):
+                return 0, 0.0, ""
     started = time.monotonic()
     timeout = project_verify_timeout()
     try:
@@ -323,7 +345,10 @@ def lint(
                 _gap("PLAN-001", "missing executable verify", "Provide one backticked repeatable command.", task.id)
             )
         elif not static:
-            code, duration, detail = _verify(root, task.command)
+            # F2: record=False (plan-lint) stays fully read-only — the reuse
+            # lookup only reads runs.jsonl; records are appended below solely
+            # when record=True (plan-go) freezes the baseline.
+            code, duration, detail = _verify(root, task.command, package)
             durations[task.id] = duration
             expected = task.expect or "green"
             if (expected == "red" and code == 0) or (expected == "green" and code != 0):
@@ -345,6 +370,8 @@ def lint(
                     )
                 )
             if record:
+                # F3: `tree_fp` is additive — it lets a later lint reuse this
+                # exit without re-running, and older consumers ignore it.
                 append_run(
                     package,
                     {
@@ -355,6 +382,7 @@ def lint(
                         "expect": expected,
                         "duration": duration,
                         "ts": now(),
+                        "tree_fp": tree_fingerprint(root),
                     },
                 )
     for task in records:
@@ -504,6 +532,7 @@ def go(root: Path, slug: str) -> dict:
             "head": gitx.head(root),
             "dirty": dirty,
             "task_ids": [record.id for record in parse_tasks(frozen_tasks)],
+            "goal_fp": goal_fingerprint(frozen_spec),
             "spec_lines": len(frozen_spec.splitlines()),
             "tasks_lines": len(frozen_tasks.splitlines()),
             "spec_fp": hashlib.sha256(frozen_spec.encode()).hexdigest(),
@@ -517,9 +546,90 @@ def go(root: Path, slug: str) -> dict:
     return result
 
 
-def amend(root: Path, slug: str, task_text: str) -> dict:
-    package, _spec, tasks = read_package(root, slug)
-    if charter.load(root).get("V2", "strict") == "strict":
+def _revised_task_block(existing, replacement) -> str:
+    """Render the replacement card while keeping the Go-frozen identity fields.
+
+    ``--revise`` replaces the check, not the task: id, boundary, depends-on and
+    origin come from the frozen card, and the marker is always cleared so the
+    new command must earn fresh evidence.
+    """
+    lines = [
+        f"- [ ] {replacement.title}",
+        f"  - id: {existing.id}",
+        f"  - boundary: {existing.boundary}",
+        f"  - verify: {replacement.verify}",
+        f"  - expect: {replacement.expect or existing.expect}",
+    ]
+    if existing.depends_on:
+        lines.append("  - depends-on: " + ", ".join(existing.depends_on))
+    lines.append(f"  - origin: {existing.origin}")
+    return "\n".join(lines)
+
+
+def _replace_task_block(tasks: str, task_id: str, block: str) -> str:
+    """Swap one card's block in place, keeping the file's trailing blank lines."""
+    lines = tasks.splitlines()
+    task_indexes = [index for index, line in enumerate(lines) if TASK_RE.match(line)]
+    for position, index in enumerate(task_indexes):
+        end = task_indexes[position + 1] if position + 1 < len(task_indexes) else len(lines)
+        chunk = lines[index:end]
+        if re.search(rf"(?m)^\s*- id:\s*{re.escape(task_id)}\s*$", "\n".join(chunk)):
+            tail = []
+            for line in reversed(chunk):
+                if line.strip():
+                    break
+                tail.append(line)
+            lines[index:end] = block.splitlines() + tail[::-1]
+            return "\n".join(lines) + "\n"
+    raise ValueError(f"task not found: {task_id}")
+
+
+def _revise_task(root: Path, slug: str, task_text: str, by: str) -> dict:
+    """Replace one frozen card's check in place under the package's own V2.
+
+    Replace-only: the card keeps its id, boundary, depends-on and origin, the
+    ``[x]`` marker is cleared to force re-verify, and a ``kind: amend`` record
+    carries the new command with the authority the gate will re-check.
+    """
+    package, spec, tasks = read_package(root, slug)
+    v2 = parse_charter(spec).get("V2", "strict")
+    authority = by.strip()
+    if not authority:
+        raise ValueError("plan-amend --revise requires --by: V<n>/F<n> or user <reference>")
+    if not amend_authorized(authority, v2):
+        allowed = "user <reference>" if v2 == "strict" else "V<n>, F<n> or user <reference>"
+        raise ValueError(f"charter V2={v2} does not accept --by {authority!r}; use {allowed}")
+    replacements = parse_tasks(task_text)
+    if len(replacements) != 1:
+        raise ValueError("plan-amend --revise replaces exactly one existing task card")
+    replacement = replacements[0]
+    if not replacement.command:
+        raise ValueError("plan-amend --revise requires one executable verify command")
+    if replacement.verify != f"`{replacement.command}`":
+        raise ValueError("revise verify must contain exactly one complete backticked command")
+    existing = next((record for record in parse_tasks(tasks) if record.id == replacement.id), None)
+    if existing is None:
+        raise ValueError(f"unknown task id: {replacement.id}")
+    updated = _replace_task_block(tasks, existing.id, _revised_task_block(existing, replacement))
+    (package / "tasks.md").write_text(updated, encoding="utf-8")
+    append_run(
+        package,
+        {
+            "kind": "amend",
+            "task": existing.id,
+            "cmd": replacement.command,
+            "by": authority,
+            "ts": now(),
+        },
+    )
+    return lint(root, slug)
+
+
+def amend(root: Path, slug: str, task_text: str, revise: bool = False, by: str = "") -> dict:
+    if revise:
+        return _revise_task(root, slug, task_text, by)
+    package, spec, tasks = read_package(root, slug)
+    if parse_charter(spec).get("V2", "strict") == "strict":
         raise ValueError("charter V2=strict does not allow emergent tasks")
     addition = task_text.strip()
     if not re.search(r"(?m)^\s*-\s*origin:", addition):

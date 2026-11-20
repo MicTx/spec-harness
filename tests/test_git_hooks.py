@@ -278,8 +278,11 @@ def _spec_push_repo(tmp_path: Path, slug: str = "2026-01-01_push-archive-resolut
     repo = tmp_path / "repo"
     init_repo(repo)
     git(repo, "checkout", "-b", "main")
+    # Mirror the real repo: the runtime cache spill is ignored, so implicit
+    # archive resolution during `push` cannot dirty the delivery worktree.
+    (repo / ".gitignore").write_text(".spec/cache/\n", encoding="utf-8")
     (repo / "README.md").write_text("main\n", encoding="utf-8")
-    git(repo, "add", "README.md")
+    git(repo, "add", ".gitignore", "README.md")
     git(repo, "commit", "-m", "main")
 
     git(repo, "checkout", "-b", f"spec/{slug}")

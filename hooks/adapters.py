@@ -51,6 +51,11 @@ HOSTS = {
         "style": "claude",
         "events": CLAUDE_EVENTS,
         "capabilities": EVENTS,
+        # Codex 0.171.0 parses hooks.json with a strict schema (only
+        # `description` and `hooks` at the top level) and rejects the whole
+        # file on any unknown key, so hook ownership must live in a sidecar
+        # file next to the config instead of an inline `x-spec-owned` key.
+        "ownership": "sidecar",
     },
     "devin": {
         "config": "~/.config/devin/config.json",

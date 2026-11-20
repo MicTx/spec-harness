@@ -22,14 +22,14 @@ import done  # noqa: E402
 import evidence  # noqa: E402
 import gate  # noqa: E402
 import gitx  # noqa: E402
+import local_evidence  # noqa: E402
 import memory  # noqa: E402
 import package  # noqa: E402
 import plan  # noqa: E402
 import route  # noqa: E402
 import ui_review  # noqa: E402
+from package import STALE_EVIDENCE_SUFFIX  # noqa: E402
 from path_safety import safe_child  # noqa: E402
-
-STALE_EVIDENCE_SUFFIX = "evidence is stale for the current command or tree"
 
 
 def parser() -> argparse.ArgumentParser:
@@ -45,6 +45,8 @@ def parser() -> argparse.ArgumentParser:
     repair.add_argument("--of", required=True, help="archived package slug to repair")
     amend = commands.add_parser("plan-amend")
     amend.add_argument("--file", required=True)
+    amend.add_argument("--revise", action="store_true", help="replace one existing task card in place")
+    amend.add_argument("--by", default="", help="authority for --revise: V<n>, F<n> or user <reference>")
     commands.add_parser("next")
     commands.add_parser("list")
     commands.add_parser("diff")
@@ -76,16 +78,19 @@ def parser() -> argparse.ArgumentParser:
     learn = commands.add_parser("learn")
     learn.add_argument("when")
     learn.add_argument("do")
+    learn.add_argument("--enforce", required=True, help="existing git-tracked repository path the lesson enforces")
     finish = commands.add_parser("done")
     finish.add_argument("--lesson-used", action="append", default=[])
-    finish.add_argument("--lesson-wrong", action="append", default=[])
     check = commands.add_parser("check")
     check.add_argument("--check-only", action="store_true")
     check.add_argument("--lesson-used", action="append", default=[])
-    check.add_argument("--lesson-wrong", action="append", default=[])
     review = commands.add_parser("ui-review")
     review.add_argument("--file", required=True)
     commands.add_parser("push")
+    purge = commands.add_parser("purge", help="keep the .spec evidence layer local and out of Git")
+    purge.add_argument(
+        "--check", action="store_true", help="report the current policy and size without changing anything"
+    )
     doctor = commands.add_parser("doctor")
     doctor.add_argument("--fix", action="store_true")
     doctor.add_argument("--host", action="append", default=[])
@@ -119,9 +124,9 @@ def append_decision(root: Path, slug: str, args: argparse.Namespace) -> dict:
     return {"id": identifier, "section": section_name, "by": args.by}
 
 
-def finish_delivery(root: Path, slug: str, lesson_used: list[str], lesson_wrong: list[str]) -> tuple[dict, int]:
+def finish_delivery(root: Path, slug: str, lesson_used: list[str]) -> tuple[dict, int]:
     try:
-        result = done.finish(root, slug, lesson_used, lesson_wrong)
+        result = done.finish(root, slug, lesson_used)
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         # A passing gate that cannot complete delivery must remain a visible
         # repair state instead of looping the next route back to `deliver`.
@@ -143,6 +148,40 @@ def finish_delivery(root: Path, slug: str, lesson_used: list[str], lesson_wrong:
             )
             return result, 1
     return result, 0
+
+
+def learn_command(root: Path, args: argparse.Namespace) -> dict:
+    """Record a lesson and attach it to the active package when one resolves.
+
+    Without an active package the lesson still lands in the global ledger, but
+    the caller is told on stderr because nothing will archive it.
+    """
+    slug: str | None = None
+    if args.slug:
+        slug = package.resolve_slug(root, args.slug)
+    else:
+        try:
+            slug = package.resolve_slug(root)
+        except ValueError as exc:
+            if "does not bind one active" not in str(exc):
+                raise
+    package_path = package.package_dir(root, slug) if slug else None
+    lesson = memory.lessons_add(root, args.when, args.do, args.enforce, package_path)
+    record = {
+        "kind": "learn",
+        "task": "learn",
+        "lesson": lesson,
+        "enforce": args.enforce.strip(),
+        "ts": package.now(),
+    }
+    if package_path is not None:
+        package.append_run(package_path, record)
+        return {**record, "package": slug}
+    print(
+        f"note: no active package; {lesson} was written only to the global lessons ledger.",
+        file=sys.stderr,
+    )
+    return {**record, "package": None}
 
 
 def task_card_lines(args: argparse.Namespace) -> list[str]:
@@ -359,7 +398,17 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("--criterion requires --append")
             print("\n".join(task_card_lines(args)))
             return 0
+        if args.command == "purge":
+            top = gitx.toplevel(Path(args.root))
+            if top is None:
+                raise ValueError("purge requires a Git worktree")
+            result = local_evidence.purge(top, dry_run=args.check)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
         root = package.resolve_root(args.root)
+        if args.command == "learn":
+            print(json.dumps(learn_command(root, args), ensure_ascii=False, indent=2))
+            return 0
         if args.command == "repair":
             result = package.scaffold_repair(root, args.of)
             result["next"] = (
@@ -400,7 +449,7 @@ def main(argv: list[str] | None = None) -> int:
             amendment = Path(args.file)
             if not amendment.is_absolute():
                 amendment = root / amendment
-            result = plan.amend(root, slug, amendment.read_text(encoding="utf-8"))
+            result = plan.amend(root, slug, amendment.read_text(encoding="utf-8"), revise=args.revise, by=args.by)
         elif args.command == "verify":
             selected = None if args.all else args.tasks
             if selected is None and not args.all:
@@ -410,8 +459,6 @@ def main(argv: list[str] | None = None) -> int:
             result = evidence.unblock_task(root, slug, args.task_id, args.reason)
         elif args.command == "decide":
             result = append_decision(root, slug, args)
-        elif args.command == "learn":
-            result = {"lesson": memory.lessons_add(root, args.when, args.do)}
         elif args.command == "check":
             result = gate.compute(root, slug)
             gate.record(root, slug, result)
@@ -420,7 +467,7 @@ def main(argv: list[str] | None = None) -> int:
             # the gate result without attempting delivery.
             curable_only = all(e.endswith(STALE_EVIDENCE_SUFFIX) for e in result["errors"])
             if not args.check_only and curable_only and not result["parked"]:
-                delivered, code = finish_delivery(root, slug, args.lesson_used, args.lesson_wrong)
+                delivered, code = finish_delivery(root, slug, args.lesson_used)
                 result.update(delivered)
                 result.update({"passed": code == 0, "errors": [], "parked": []})
                 result["next"] = route.completion_card(
@@ -439,7 +486,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "ui-review":
             result = ui_review.write_record(root, slug, Path(args.file))
         elif args.command == "done":
-            result, code = finish_delivery(root, slug, args.lesson_used, args.lesson_wrong)
+            result, code = finish_delivery(root, slug, args.lesson_used)
             result["next"] = route.completion_card(
                 slug,
                 str(result.get("finish", "commit")),

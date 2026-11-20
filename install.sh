@@ -8,6 +8,10 @@ INSTALL_HOSTS="${INSTALL_HOSTS:-}"
 # Install profile is a compatibility alias pair. Both values ship the same
 # six-stage command payload; validation still rejects unknown values.
 INSTALL_PROFILE="${INSTALL_PROFILE:-}"
+# Prompt tier picks the baked-in command body density: `full` keeps the
+# complete per-stage instructions, `compact` ships a short body that still
+# carries one autonomy line. Validation rejects unknown values.
+SPEC_PROMPT_TIER="${SPEC_PROMPT_TIER:-}"
 # Empty INSTALL_HOSTS means auto-detect (only hosts with a real presence on
 # this machine); an explicit value, including `all`, always bypasses probing.
 CLAUDE_SKILLS_DIR="${CLAUDE_SKILLS_DIR:-${INSTALL_DIR:-$HOME/.claude/skills}}"
@@ -401,9 +405,18 @@ validate_profile() {
   esac
 }
 
+validate_prompt_tier() {
+  case "$SPEC_PROMPT_TIER" in
+    "") SPEC_PROMPT_TIER="full" ;;
+    full|compact|aggressive) ;;
+    *) fail "unknown SPEC_PROMPT_TIER: $SPEC_PROMPT_TIER (expected full, compact, or aggressive)" ;;
+  esac
+}
+
 validate_inputs() {
   [ "$SKILL_NAME" = "spec" ] || fail "SKILL_NAME must be spec; custom skill names would break /spec:xx aliases"
   validate_profile
+  validate_prompt_tier
   validate_stage_profiles
   validate_hosts
   validate_backup_root
@@ -499,7 +512,6 @@ for name in (
     "payload_contract.py",
     "skill_watermark.py",
     "public_secret_scan.py",
-    "path_safety.py",
     "verify_install_parity.py",
 ):
     (output / "scripts" / name).unlink(missing_ok=True)
@@ -632,6 +644,7 @@ installed_by=spec/install.sh
 source=${PREPARED_SOURCE_DIR:-$source_dir}
 version=${runtime_version}
 profile=${INSTALL_PROFILE}
+tier=${SPEC_PROMPT_TIER}
 EOF_MARKER
   backup_existing "$target_dir"
   if ! mv "$staging" "$target_dir"; then
@@ -646,11 +659,11 @@ EOF_MARKER
 write_install_manifest() {
   local host="$1"
   local target_dir="$2"
-  "$PYTHON_BIN" - "$target_dir" "$host" "$INSTALL_PROFILE" "${runtime_version:-unknown}" <<'PY_MANIFEST'
+  "$PYTHON_BIN" - "$target_dir" "$host" "$INSTALL_PROFILE" "${runtime_version:-unknown}" "$SPEC_PROMPT_TIER" <<'PY_MANIFEST'
 import json, sys
 from pathlib import Path
-root, host, profile, version = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-manifest = {"host": host, "path": root, "profile": profile, "version": version}
+root, host, profile, version, prompt_tier = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+manifest = {"host": host, "path": root, "profile": profile, "version": version, "prompt_tier": prompt_tier}
 Path(root, "install-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 PY_MANIFEST
 }
@@ -671,19 +684,27 @@ stage_description() {
 command_body() {
   local command_name="$1"
   local stage="$2"
+  if [ "$SPEC_PROMPT_TIER" = "aggressive" ]; then
+    command_body_aggressive "$command_name" "$stage"
+    return 0
+  fi
+  if [ "$SPEC_PROMPT_TIER" = "compact" ]; then
+    command_body_compact "$command_name" "$stage"
+    return 0
+  fi
   case "$stage" in
     plan)
       cat <<EOF_BODY
 # /$command_name
 
-Plan the task package: read-only recon, intent clarification, charter values, then write .spec package files, run spec.py plan-lint to zero, resolve forks, and freeze with spec.py plan-go. A bound package that is not yet frozen follows the same update flow.
+Plan the task package: read-only recon, intent clarification, charter values, then write .spec package files, run spec.py plan-lint to zero, resolve forks, and freeze with spec.py plan-go. A bound package that is not yet frozen follows the same update flow. Resolve from repo evidence before asking; batch at most four cards.
 EOF_BODY
       ;;
     run)
       cat <<EOF_BODY
 # /$command_name
 
-Execute the bound package: follow spec.py next, work each ready task inside its boundary, run its declared verify, and continue to a terminal state. With a goal argument and no bound package this is the built-in one-shot: plan, go, execute, check, and deliver in one chain; with a bound package the goal is ignored.
+Execute the bound package: follow spec.py next, work each ready task inside its boundary, run its declared verify, and continue to a terminal state. With a goal argument and no bound package this is the built-in one-shot: plan, go, execute, check, and deliver in one chain; with a bound package the goal is ignored. Reversible blockers are decided by V1 and logged, not asked; park the irreversible and continue.
 EOF_BODY
       ;;
     repair)
@@ -697,7 +718,7 @@ EOF_BODY
       cat <<EOF_BODY
 # /$command_name
 
-Audit and close: run the delivery gate (task state, evidence, criteria, structure audit, and required UI/UX review) and write failures back. For UI-surface packages, perform real browser operations and screenshots, cover every criterion, record each finding plus its solution, and close findings as verified fixes or user-accepted decisions; then write ui-review.json with spec.py ui-review --file <draft>. When the gate passes, spec.py check runs done automatically — final-tree re-verify, archive, commit, and the V4 delivery. Use spec.py check --check-only for a gate-only probe; do not merge or push outside the declared V4 finish.
+Audit and close: run the delivery gate (task state, evidence, criteria, structure audit, and required UI/UX review) and write failures back. For UI-surface packages, perform real browser operations and screenshots, cover every criterion, record each finding plus its solution, and close findings as verified fixes or user-accepted decisions; then write ui-review.json with spec.py ui-review --file <draft>. When the gate passes, spec.py check runs done automatically — final-tree re-verify, archive, commit, and the V4 delivery. Use spec.py check --check-only for a gate-only probe; do not merge or push outside the declared V4 finish. Close every open question from evidence; only user-accepted findings cite by: user.
 EOF_BODY
       ;;
     push)
@@ -712,6 +733,124 @@ EOF_BODY
 # /$command_name
 
 Run the spec environment doctor for Python, Git, the install manifest, rendered Git hooks, and session hook wiring. Report findings and repair advisories.
+EOF_BODY
+      ;;
+    *)
+      cat <<EOF_BODY
+# /$command_name
+
+Use the installed spec skill for this workflow request.
+EOF_BODY
+      ;;
+  esac
+}
+
+# Compact tier: token-tight hosts get a two-to-three sentence body per stage.
+# Every body keeps exactly one autonomy instruction so the decide-first
+# contract survives the trim; the full tier above remains the default.
+command_body_compact() {
+  local command_name="$1"
+  local stage="$2"
+  case "$stage" in
+    plan)
+      cat <<EOF_BODY
+# /$command_name
+
+Plan the task package: read-only recon, charter values, .spec package files, spec.py plan-lint to zero, then freeze with spec.py plan-go. Resolve forks from repo evidence yourself before asking.
+EOF_BODY
+      ;;
+    run)
+      cat <<EOF_BODY
+# /$command_name
+
+Execute the bound package: follow spec.py next, work each ready task inside its boundary, and run its declared verify to a terminal state. Reversible blockers are decided by you and logged, not asked; park the irreversible and continue.
+EOF_BODY
+      ;;
+    repair)
+      cat <<EOF_BODY
+# /$command_name
+
+Repair a delivered spec: scaffold with spec.py repair --of <archived-slug>, sharpen the boundary and verify against the observed failure, then freeze with spec.py plan-go. Planning stays thin; the delivery gate and evidence rules keep full strength.
+EOF_BODY
+      ;;
+    check)
+      cat <<EOF_BODY
+# /$command_name
+
+Run the delivery gate and write failures back; a pass archives, commits, and delivers automatically. Close every open question from evidence yourself; only user-accepted findings cite by: user.
+EOF_BODY
+      ;;
+    push)
+      cat <<EOF_BODY
+# /$command_name
+
+User authorization for Git handoff: follow the installed skill to safety-precheck, archive the delivery, merge the bound branch into main, and push. This command is the authorization; run the steps without re-asking.
+EOF_BODY
+      ;;
+    doctor)
+      cat <<EOF_BODY
+# /$command_name
+
+Run the spec environment doctor for Python, Git, the install manifest, rendered Git hooks, and session hook wiring. Apply the safe repairs yourself from the advisories; report only what needs a user decision.
+EOF_BODY
+      ;;
+    *)
+      cat <<EOF_BODY
+# /$command_name
+
+Use the installed spec skill for this workflow request.
+EOF_BODY
+      ;;
+  esac
+}
+
+# Aggressive tier: the shortest body that still carries the full autonomy
+# contract. Each stage gets two-to-three sentences and exactly one hard
+# autonomy instruction, so the decide-first rule cannot be trimmed away.
+command_body_aggressive() {
+  local command_name="$1"
+  local stage="$2"
+  case "$stage" in
+    plan)
+      cat <<EOF_BODY
+# /$command_name
+
+Plan the task package from repo evidence: read-only recon, charter values, .spec package files, spec.py plan-lint to zero, then freeze with spec.py plan-go. Every card is cleared from repo evidence before it reaches the user; one batch of four, no more.
+EOF_BODY
+      ;;
+    run)
+      cat <<EOF_BODY
+# /$command_name
+
+Execute the bound package to a terminal state: follow spec.py next, stay inside each task boundary, and run its declared verify. Reversible blockers are decided and logged by you, not asked — asks carry their evidence ledger or they do not leave the session.
+EOF_BODY
+      ;;
+    repair)
+      cat <<EOF_BODY
+# /$command_name
+
+Repair a delivered spec: scaffold with spec.py repair --of <archived-slug>, sharpen the boundary and verify against the observed failure, then freeze with spec.py plan-go. Planning stays thin, but the delivery gate and evidence rules keep full strength; decide reversible forks yourself and log them.
+EOF_BODY
+      ;;
+    check)
+      cat <<EOF_BODY
+# /$command_name
+
+Run the delivery gate and write failures back; a pass archives, commits, and delivers automatically. Close every open question from evidence yourself. Asks cite by: user only for genuinely irreversible findings.
+EOF_BODY
+      ;;
+    push)
+      cat <<EOF_BODY
+# /$command_name
+
+User authorization for Git handoff: follow the installed skill to safety-precheck, archive, merge the bound branch into main, and push. This command is the authorization — run the steps without re-asking.
+EOF_BODY
+      ;;
+    doctor)
+      cat <<EOF_BODY
+# /$command_name
+
+Run the spec environment doctor for Python, Git, the install manifest, rendered Git hooks, and session hook wiring. Apply every safe repair yourself from the advisories; surface only the decision that truly needs the user.
 EOF_BODY
       ;;
     *)
@@ -825,7 +964,7 @@ check_name_collisions() {
   fi
   for host in "${SKILL_ONLY_HOSTS[@]}"; do
     host_enabled "$host" || continue
-    if [ "$host" = zcode ] && zcode_link_current; then
+    if skill_link_current "$host"; then
       continue
     fi
     target="$(skill_dir_for "$host")/$SKILL_NAME"
@@ -876,7 +1015,7 @@ preflight_targets() {
   fi
   for host in "${SKILL_ONLY_HOSTS[@]}"; do
     host_enabled "$host" || continue
-    if [ "$host" = zcode ] && zcode_link_current; then
+    if skill_link_current "$host"; then
       continue
     fi
     dir="$(skill_dir_for "$host")"
@@ -1034,21 +1173,56 @@ install_skill_only_host() {
   "$PYTHON_BIN" "$runtime_dir/scripts/install_hooks.py" --host "$host" --installed-root "$target"
 }
 
-# ZCode users often symlink ~/.zcode/skills/spec to another host's install.
-# When the symlink points at a target this installer keeps current, it already
-# delivers the latest skill and no separate copy is needed.
-zcode_link_current() {
-  local link="$ZCODE_SKILLS_DIR/$SKILL_NAME"
-  local target
+# Resolve one symlink hop to its absolute target directory, or fail with a
+# non-zero status. Unlike resolve_claude_skill_link this helper never aborts
+# the run: callers that only report (DRY_RUN) need a verdict, not a fatal
+# error, for the same layouts a real install refuses.
+skill_link_resolve() {
+  local link="$1" target resolved
   [ -L "$link" ] || return 1
   target="$(readlink "$link")"
-  if host_enabled claude && [ "$target" = "$CLAUDE_SKILLS_DIR/$SKILL_NAME" ]; then
+  case "$target" in
+    /*) resolved="$target" ;;
+    *) resolved="$(cd "$(dirname "$link")" && cd "$(dirname "$target")" 2>/dev/null && printf '%s/%s\n' "$(pwd)" "$(basename "$target")")" ;;
+  esac
+  # Dangling, chained and non-directory links never resolve.
+  [ -n "$resolved" ] || return 1
+  [ -e "$resolved" ] || return 1
+  [ ! -L "$resolved" ] || return 1
+  [ -d "$resolved" ] || return 1
+  printf '%s\n' "$resolved"
+}
+
+# Skill-only hosts often alias their `spec` directory to another host's
+# install (Magpie-managed fan-out links are the common case). When the
+# symlink points at a target this run keeps current, the link already
+# delivers the latest skill and no separate copy is needed.
+skill_link_current() {
+  local host="$1"
+  local link resolved
+  link="$(skill_dir_for "$host")/$SKILL_NAME"
+  resolved="$(skill_link_resolve "$link")" || return 1
+  # Only a target this installer owns and keeps current this run counts.
+  if host_enabled claude && [ "$resolved" = "$CLAUDE_SKILLS_DIR/$SKILL_NAME" ]; then
     return 0
   fi
-  if host_enabled codex && [ "$target" = "$CODEX_SKILLS_DIR/$SKILL_NAME" ]; then
+  if host_enabled pi && [ "$resolved" = "$PI_SKILLS_DIR/$SKILL_NAME" ]; then
     return 0
   fi
+  local other
+  for other in "${SKILL_ONLY_HOSTS[@]}"; do
+    host_enabled "$other" || continue
+    if [ "$other" != "$host" ] && [ "$resolved" = "$(skill_dir_for "$other")/$SKILL_NAME" ]; then
+      return 0
+    fi
+  done
   return 1
+}
+
+# zcode keeps its historical name for the logs; the semantics are the
+# shared skill_link_current contract above.
+zcode_link_current() {
+  skill_link_current zcode
 }
 
 preview_target_for() {
@@ -1062,10 +1236,30 @@ preview_target_for() {
 # DRY_RUN report: classify every enabled host target with the same decision
 # logic as a real install (owned/foreign/symlink), then stop before any write.
 dry_run_report() {
-  local host target
+  local host target resolved_claude
+  # Mirror the real install's ordering: a real install resolves the Claude
+  # skill link inside check_name_collisions before any skill-only verdict, so
+  # the preview must resolve it too. A link the real install would refuse
+  # (dangling, chained, non-owned) stays unresolved here and is reported as a
+  # symlink refusal instead of aborting a zero-write preview.
+  if host_enabled claude; then
+    if resolved_claude="$(skill_link_resolve "$CLAUDE_SKILLS_DIR/$SKILL_NAME")"; then
+      if is_installer_owned "$resolved_claude"; then
+        CLAUDE_SKILLS_DIR="$(dirname "$resolved_claude")"
+      fi
+    fi
+  fi
   for host in claude pi "${SKILL_ONLY_HOSTS[@]}"; do
     host_enabled "$host" || continue
     target="$(preview_target_for "$host")"
+    case " ${SKILL_ONLY_HOSTS[*]} " in
+      *" $host "*)
+        if skill_link_current "$host"; then
+          printf 'already current via symlink: %s (%s)\n' "$(host_label_for "$host")" "$target"
+          continue
+        fi
+        ;;
+    esac
     if [ -L "$target" ]; then
       printf 'would refuse symlink target: %s (%s)\n' "$(host_label_for "$host")" "$target"
     elif ! target_exists "$target"; then
@@ -1102,7 +1296,7 @@ main() {
   INSTALL_TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/spec-skill-install.XXXXXX")"
   runtime_dir="$INSTALL_TEMP_DIR/runtime"
 
-  log "Install profile: $INSTALL_PROFILE — six-stage command kernel ($(printf '%s ' "${USER_STAGES[@]}" | sed 's/ $//'))"
+  log "Install profile: $INSTALL_PROFILE — six-stage command kernel ($(printf '%s ' "${USER_STAGES[@]}" | sed 's/ $//')); prompt tier: $SPEC_PROMPT_TIER"
 
   export_runtime "$PREPARED_SOURCE_DIR" "$runtime_dir"
   CLAUDE_ALIASES=("${USER_STAGES[@]}")
@@ -1118,8 +1312,8 @@ main() {
   local host
   for host in "${SKILL_ONLY_HOSTS[@]}"; do
     host_enabled "$host" || continue
-    if [ "$host" = zcode ] && zcode_link_current; then
-      log "ZCode skill already current via symlink: $ZCODE_SKILLS_DIR/$SKILL_NAME -> $(readlink "$ZCODE_SKILLS_DIR/$SKILL_NAME")"
+    if skill_link_current "$host"; then
+      log "$(host_label_for "$host") skill already current via symlink: $(skill_dir_for "$host")/$SKILL_NAME -> $(readlink "$(skill_dir_for "$host")/$SKILL_NAME")"
       continue
     fi
     install_skill_only_host "$host" "$runtime_dir"

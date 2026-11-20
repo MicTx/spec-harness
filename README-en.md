@@ -20,6 +20,8 @@ bash install.sh
 
 Without `INSTALL_HOSTS`, the installer detects hosts. `core` and `full` are compatibility aliases with identical payloads. Session hooks are merged incrementally, preserving non-Spec entries and backing up files first. `DRY_RUN=1` prints an upgrade preview: per host target, whether it would install fresh, upgrade in place, back up and replace, or refuse (symlink/user-owned skill) — zero writes, user additions visible first.
 
+Set the `SPEC_PROMPT_TIER` environment variable to pick the generated command body density: `full` (default) keeps the complete stage instructions, `compact` ships a two-to-three sentence body that retains one compact autonomy line; the tier is recorded in the install marker and `install-manifest.json`, and compact mode lowers the runtime session-brief truncation cap to 900 characters. The `aggressive` tier trims bodies further while every stage still keeps one hard autonomy instruction and the evidence-ledger rule, and it lowers the session-brief cap to 700 characters.
+
 | Host | `INSTALL_HOSTS` |
 | --- | --- |
 | Claude Code / Desktop | `claude` / `claude-desktop` |
@@ -48,8 +50,11 @@ Without a bound package `/spec` enters the `plan` planning flow, and a bound pac
 | `/spec:check` | Run the delivery gate, structure audit, and required UI/UX real-operation review; a pass archives, commits, and delivers per V4 automatically |
 | `/spec:push` | Finish Git delivery after explicit authorization (resolves the archived package bound to the current branch) |
 | `/spec:doctor` | Check and repair runtime and host hooks |
+| `/spec /purge` | `spec.py purge`: remove evidence records from the Git index, keep local files; `--check` previews |
 
 Codex/ZCode may use `$spec`. Small fixes, read-only investigation, and experiments do not need a package.
+
+`python3 scripts/spec.py purge` keeps `.spec` packages, plans, run logs and historical records local while preserving `.spec/architecture` source contracts. Shared Git excludes cover linked worktrees; this repository's `.gitignore` also carries the rules into new clones. File bytes stay unchanged: the command does not commit, push or rewrite past commits. Later `verify` / `done` commits contain source changes only, and local archives are copied to the primary checkout before worktree cleanup. New clones lack machine-local history: historical-only audits explicitly skip missing records, while new deliveries still require the full evidence gate.
 
 ## Runtime Payload
 

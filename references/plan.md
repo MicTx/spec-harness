@@ -8,7 +8,7 @@
 4. **Plan**: write v3 spec.md/tasks.md and reason backward from failure: edits, failure modes, red baseline, minimal boundary. Sketch two rival designs, converge, keep the rejected one as a fork. UI plans add real-operation flows, screenshots, Criteria coverage and evidence paths for check.
 5. **Forks and Go**: resolve reversible choices and irreversible pre-authorizations, present the Go card, run spec.py plan-go; put bold options beside conservative ones.
 
-Ask at most four cards per batch; each names its consequence. Later packages usually need only Intent, Forks and Go.
+Ask at most four cards per batch; each names its consequence; resolve from disk evidence first — a card disk evidence can answer is a planning defect. Later packages usually need only Intent, Forks and Go.
 
 ## Plan vs Update
 
@@ -39,11 +39,11 @@ Ask at most four cards per batch; each names its consequence. Later packages usu
 
 `task-card --append [--criterion TEXT]` writes into the current unfrozen plan; use global `--slug` to select an unbound plan. Existing binding must match. Criteria ids continue above the maximum C number, one row per card; without TEXT existing Criteria must cover the cards. With `--tdd --append`, omit `--title` and `--depends-on` and refine the generated pair afterward.
 
-Candidates pass static lint before writing; `lint_mode: static` runs no verify and still needs Go. Invalid input/lint leaves originals unchanged. Caught publish failures roll back; recovery failure retains backups. Cleanup failure after publishing returns success with warnings. Writes preserve bytes/modes, not crash-atomicity across both files. Frozen plans use `plan-amend`.
+Candidates pass static lint before writing; `lint_mode: static` runs no verify and still needs Go. Invalid input/lint keeps originals; cleanup failure succeeds with warnings. Writes preserve bytes/modes, not crash-atomicity across both files. Frozen plans use `plan-amend`.
 
 ## Suggestions
 
-`plan-lint --suggest` appends read-only proposals without changing readiness or files: `SUGGEST-001` = red card shares its green `depends-on` verify (use `--collect-only`); `SUGGEST-002` = red verify runs its own new: path. Apply, then rerun lint.
+`plan-lint --suggest` appends read-only proposals without changing readiness or files: `SUGGEST-001` = red card shares its green `depends-on` verify (use `--collect-only`); `SUGGEST-002` = red verify runs its own new: path.
 
 ## Lint
 

@@ -11,6 +11,8 @@
 ## 我想先理解它
 
 - [Spec Harness 介绍](introduction.md)：从一个长程任务为什么会失控开始，理解任务包、验证和 Git 收尾各自解决什么问题。
+- [用两相运行时完成长程任务](tutorial.md)：规划轮与执行轮的分工、`.spec/` 里每份文件的作用，以及 Go 之后为什么只剩薄执行。
+- [循环连续性说明](loop-continuity.md)：从外部归档筛选出的恢复、去重与预算机制，以及各宿主的真实事件边界。
 
 ## 我想操作它
 
@@ -26,7 +28,7 @@
 - [Releases](../RELEASE.md)：版本、归档、校验和回滚。
 - [Security](../SECURITY.md)：漏洞报告。
 - [Support](../SUPPORT.md)：安装或运行失败时应提供哪些信息。
-- 架构决策记录（ADR，`adr/` 目录）：[会话生成与窗口生命周期](adr/0001-terminal-spawn-window-lifecycle.md)、[阶段契约拆分](adr/0002-stage-contracts-by-file.md)、[推送门禁归属区间](adr/0003-push-gate-attribution-and-inflight-split.md)、[Adapt SDD workflow semantics](adr/0004-adapt-sdd-workflow-semantics.md)、[External facts in package planning](adr/0005-external-facts.md)、[Evidence-based correction stopping](adr/0006-evidence-based-correction-stopping.md)、[Bash write coverage gap](adr/0007-bash-write-gap.md)；不进运行时导出树。
+- 架构决策记录（ADR，`adr/` 目录）：[会话生成与窗口生命周期](adr/0001-terminal-spawn-window-lifecycle.md)、[阶段契约拆分](adr/0002-stage-contracts-by-file.md)、[推送门禁归属区间](adr/0003-push-gate-attribution-and-inflight-split.md)、[Adapt SDD workflow semantics](adr/0004-adapt-sdd-workflow-semantics.md)、[External facts in package planning](adr/0005-external-facts.md)、[Evidence-based correction stopping](adr/0006-evidence-based-correction-stopping.md)、[Bash write coverage gap](adr/0007-bash-write-gap.md)、[两相自治运行时](adr/0008-two-phase-autonomous-runtime.md)；不进运行时导出树。
 
 ## 入口归类
 

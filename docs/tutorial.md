@@ -9,7 +9,7 @@ v3 把长期工作分为两个阶段：规划阶段允许提问、写假设和�
 - `spec.md`：目标、范围、Charter、假设、分叉、决策与成功标准。
 - `tasks.md`：依赖图、边界、红绿验证和状态。
 - `runs.jsonl`：真实验证记录。
-- `state.json` / `lessons.md`：恢复、停机和跨包学习状态。
+- `.spec/specs/<slug>/state.json` / `.spec/lessons.md`：包内恢复与尝试计数、跨包经验账本。
 
 ## 规划轮
 

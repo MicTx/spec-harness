@@ -57,6 +57,48 @@ def _owned_commands(owned: object) -> set[str]:
     return {command for command in owned.values() if isinstance(command, str)}
 
 
+OWNERSHIP_KEY = "x-spec-owned"
+
+
+def _ownership_target(host: str, config_target: Path) -> Path:
+    """Where hook ownership is recorded for this host.
+
+    Hosts with a strict config schema (Codex) reject unknown top-level keys
+    and would discard the whole hooks file, so their ownership record lives
+    in a sidecar JSON file next to the config.
+    """
+    if HOSTS[host].get("ownership") == "sidecar":
+        return config_target.with_name(config_target.name + ".spec-owned.json")
+    return config_target
+
+
+def _read_inline_ownership(config_target: Path) -> dict:
+    try:
+        data = json.loads(config_target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    owned = data.get(OWNERSHIP_KEY, {}) if isinstance(data, dict) else {}
+    return {OWNERSHIP_KEY: owned} if owned else {}
+
+
+def _load_ownership(host: str, config_target: Path) -> set[str]:
+    """Commands this installer previously wrote, wherever they are recorded.
+
+    Sidecar and inline records are both consulted so a migration from either
+    direction recognizes stale Spec hooks.
+    """
+    commands = _owned_commands(_read_inline_ownership(config_target).get(OWNERSHIP_KEY))
+    sidecar = _ownership_target(host, config_target)
+    if sidecar != config_target:
+        try:
+            commands |= _owned_commands(
+                json.loads(sidecar.read_text(encoding="utf-8")).get(OWNERSHIP_KEY, {})  # type: ignore[union-attr]
+            )
+        except (OSError, ValueError):
+            pass
+    return commands
+
+
 def _rendered_commands(rendered: dict) -> dict[str, str]:
     return {
         event: entries[0]["hooks"][0]["command"] if _uses_nested_hooks(entries) else entries[0]["command"]
@@ -64,24 +106,33 @@ def _rendered_commands(rendered: dict) -> dict[str, str]:
     }
 
 
-def _merge_hook_config(existing: dict, rendered: dict) -> dict:
-    owned = _owned_commands(existing.get("x-spec-owned", {}))
+def _merge_hook_config(host: str, existing: dict, rendered: dict, config_target: Path) -> dict:
+    """Merge rendered hooks into the host config.
+
+    Previously-owned Spec commands (inline or sidecar) are removed first so
+    re-install replaces instead of appending. On sidecar hosts the config
+    document stays free of the ownership key; the fresh sidecar record is
+    written by the caller.
+    """
+    owned = _load_ownership(host, config_target) | _owned_commands(existing.get(OWNERSHIP_KEY, {}))
     data = _remove_commands(existing, owned)
+    data.pop(OWNERSHIP_KEY, None)
     hooks = data.get("hooks", {})
     if not isinstance(hooks, dict):
         raise ValueError("host hooks config must be a JSON object")
     for event, entries in rendered["hooks"].items():
         hooks.setdefault(event, []).extend(entries)
     data["hooks"] = hooks
-    data["x-spec-owned"] = {"commands": list(_rendered_commands(rendered).values())}
+    if _ownership_target(host, config_target) == config_target:
+        data[OWNERSHIP_KEY] = {"commands": list(_rendered_commands(rendered).values())}
     return data
 
 
-def _owned_hook_config(rendered: dict) -> dict:
-    return {
-        **rendered,
-        "x-spec-owned": {"commands": list(_rendered_commands(rendered).values())},
-    }
+def _owned_hook_config(host: str, rendered: dict, config_target: Path) -> dict:
+    data = dict(rendered)
+    if _ownership_target(host, config_target) == config_target:
+        data = {**rendered, OWNERSHIP_KEY: {"commands": list(_rendered_commands(rendered).values())}}
+    return data
 
 
 def _install_shim(host: str, target: Path) -> None:
@@ -120,9 +171,13 @@ def install_session_hooks(host: str, home: Path | None = None, installed_root: P
             data = {}
         if not isinstance(data, dict):
             raise ValueError(f"host config must be a JSON object: {target}")
-        data = _merge_hook_config(data, rendered)
+        data = _merge_hook_config(host, data, rendered, target)
     else:
-        data = _owned_hook_config(rendered)
+        data = _owned_hook_config(host, rendered, target)
+    sidecar = _ownership_target(host, target)
+    if sidecar != target:
+        record = {OWNERSHIP_KEY: {"commands": list(_rendered_commands(rendered).values())}}
+        sidecar.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     temporary = target.with_name(target.name + ".spec-tmp")
     temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     temporary.replace(target)

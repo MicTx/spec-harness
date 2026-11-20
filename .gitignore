@@ -14,8 +14,14 @@ __pycache__/
 # Agent-host local state (memory, runtime); never source assets.
 .agents/
 
-# Structure-audit scratch notes. Durable conclusions live in the task package.
-.spec/artifacts/
+# Spec evidence stays local, including frozen history; source contracts stay tracked.
+/.spec/specs/
+/.spec/docs/
+/.spec/plans/
+/.spec/archive/
+/.spec/autoplan/
+/.spec/autorun/
+/.spec/artifacts/
 
 dist/
 build/
@@ -31,3 +37,17 @@ tmp/
 .spec/worktrees/
 .spec/charter.md
 .spec/lessons.md
+
+# Runtime hot-path caches (process-local memo spill). Never source assets.
+.spec/cache/
+
+# Spec-task-package evidence screenshots (ui-review). Too heavy for the repo; keep local only.
+.spec/**/*.png
+.spec/**/*.jpg
+.spec/**/*.jpeg
+.spec/**/*.webp
+.spec/**/*.gif
+.spec/**/*.bmp
+
+# Local marketing builds (sales kits with heavy screenshots); never commit.
+marketing/

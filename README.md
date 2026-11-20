@@ -20,6 +20,8 @@ bash install.sh
 
 未设置 `INSTALL_HOSTS` 时自动探测宿主；`core` 与 `full` 是兼容别名，载荷完全相同。安装器增量合并会话 hook，保留非 Spec 条目并先备份。`DRY_RUN=1` 输出升级预检：每个宿主目标将被全新安装、原地升级、备份替换还是拒绝（符号链接/用户自有技能），零写入先看清用户改动的去留。
 
+环境变量 `SPEC_PROMPT_TIER` 选择生成的命令正文密度：`full`（默认）保留完整阶段指令，`compact` 输出两三句短正文并保留一条紧凑自主性指令；档位同时写入安装标记与 `install-manifest.json`，compact 档还会把运行时会话简报的截断上限降到 900 字符。`aggressive` 档正文更短，但每个阶段仍保留一条自主性硬指令和证据台账要求，并把运行时简报上限进一步降到 700 字符。
+
 | 宿主 | `INSTALL_HOSTS` |
 | --- | --- |
 | Claude Code / Desktop | `claude` / `claude-desktop` |
@@ -48,8 +50,11 @@ bash install.sh
 | `/spec:check` | 运行交付门禁（结构审计与命中 UI 时的真实操作、截屏和回写）；通过即自动归档、提交并完成 V4 交付 |
 | `/spec:push` | 用户明确授权后完成 Git 交付（按当前分支解析已归档包） |
 | `/spec:doctor` | 检查并修复运行时与宿主 hook |
+| `/spec /purge` | `spec.py purge`：证据记录退出 Git 索引，原文件留本地；`--check` 仅预览 |
 
 Codex/ZCode 可写 `$spec`。小修、只读调查和一次性实验不必建包。
+
+`python3 scripts/spec.py purge` 将 `.spec` 的任务包、规划、运行日志和历史记录切为本地证据，保留 `.spec/architecture` 源码契约。共享 Git exclude 覆盖 linked worktree；本仓库的 `.gitignore` 同时让新克隆继承规则。原文件字节保持不变，命令不提交、不推送，也不改写旧提交历史。后续 `verify` / `done` 只提交源码，本地归档在 worktree 清理前保存到主工作树。新克隆没有本机历史证据：历史专项审计显式跳过，新交付仍须通过完整证据门禁。
 
 ## 运行时载荷
 

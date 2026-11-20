@@ -14,11 +14,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import gitx
+import local_evidence
 
 SLUG_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_[a-z0-9][a-z0-9_-]*$")
 TASK_RE = re.compile(r"^-\s*\[([ x!>])\]\s+(.+)$")
 PROTECTED = {"main", "master", "develop"}
 CHUNK = 64 * 1024
+
+# Shared suffix of gate stale-evidence errors. Both route.py (next-action
+# projection) and spec.py (curable-only delivery path) match on it, so it
+# lives in this shared-support module: support modules must not import the
+# command entry points.
+STALE_EVIDENCE_SUFFIX = "evidence is stale for the current command or tree"
 
 
 def now() -> str:
@@ -60,13 +67,25 @@ def package_dir(root: Path, slug: str) -> Path:
     return specs_root(root) / slug
 
 
+# Hot-path read cache for the (spec.md, tasks.md) pair.  Entries are keyed by
+# the package directory and validated against each file's (st_mtime_ns,
+# st_size) stamp, so an in-place rewrite is always visible to the next read.
+_READ_PACKAGE_CACHE: dict[Path, tuple[tuple[tuple[int, int], tuple[int, int]], str, str]] = {}
+
+
 def read_package(root: Path, slug: str) -> tuple[Path, str, str]:
     directory = package_dir(root, slug)
-    return (
-        directory,
-        (directory / "spec.md").read_text(encoding="utf-8"),
-        (directory / "tasks.md").read_text(encoding="utf-8"),
-    )
+    spec_path = directory / "spec.md"
+    tasks_path = directory / "tasks.md"
+    spec_info, tasks_info = spec_path.stat(), tasks_path.stat()
+    stamps = ((spec_info.st_mtime_ns, spec_info.st_size), (tasks_info.st_mtime_ns, tasks_info.st_size))
+    cached = _READ_PACKAGE_CACHE.get(directory)
+    if cached is not None and cached[0] == stamps:
+        return directory, cached[1], cached[2]
+    spec = spec_path.read_text(encoding="utf-8")
+    tasks = tasks_path.read_text(encoding="utf-8")
+    _READ_PACKAGE_CACHE[directory] = (stamps, spec, tasks)
+    return directory, spec, tasks
 
 
 def read_archived_package(root: Path, slug: str) -> tuple[Path, str, str]:
@@ -96,6 +115,10 @@ def inventory(root: Path) -> list[dict]:
             if not (child / "spec.md").is_file() or not (child / "tasks.md").is_file():
                 continue
             spec = (child / "spec.md").read_text(encoding="utf-8")
+            if "spec-format: 3" not in spec:
+                # Frozen pre-v3 packages stay untouched on disk but are not
+                # inventory entries; same membership test as check_all.
+                continue
             records = parse_tasks((child / "tasks.md").read_text(encoding="utf-8"))
             latest = latest_runs(child)
             criterion = criteria(spec)
@@ -183,23 +206,73 @@ def resolve_slug(root: Path, explicit: str | None = None) -> str:
     raise ValueError("multiple active packages bind the current branch: " + ", ".join(matches))
 
 
-def resolve_archived_slug(root: Path, explicit: str | None = None) -> str:
+def _scan_archived_branches(root: Path) -> dict[str, str]:
+    """Linear archive scan returning slug -> bound branch for parseable specs."""
     archive = specs_root(root) / "archive"
-    packages = sorted(path.name for path in archive.iterdir() if path.is_dir()) if archive.is_dir() else []
+    branches: dict[str, str] = {}
+    if not archive.is_dir():
+        return branches
+    for child in sorted(archive.iterdir()):
+        if not child.is_dir():
+            continue
+        try:
+            branches[child.name] = extract_branch((child / "spec.md").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+    return branches
+
+
+def archived_branch_index(root: Path) -> dict[str, str]:
+    """Disk-cached archive branch index (slug -> bound branch).
+
+    The cache at `.spec/cache/archive-index.json` is valid while the archive
+    directory's ``st_mtime_ns`` is unchanged and the stored entry count still
+    describes the stored mapping; otherwise rescan and write back.  Writing is
+    best effort: a read-only tree just pays the scan on every call.
+    """
+    archive = specs_root(root) / "archive"
+    if not archive.is_dir():
+        return {}
+    try:
+        archive_ns = archive.stat().st_mtime_ns
+    except OSError:
+        return {}
+    cache = root / ".spec" / "cache" / "archive-index.json"
+    try:
+        data = json.loads(cache.read_text(encoding="utf-8"))
+        branches = data["branches"]
+        if (
+            data.get("archive_ns") == archive_ns
+            and data.get("count") == len(branches)
+            and isinstance(branches, dict)
+            and all(isinstance(key, str) and isinstance(value, str) for key, value in branches.items())
+        ):
+            return branches
+    except (OSError, ValueError, TypeError, KeyError):
+        pass
+    branches = _scan_archived_branches(root)
+    try:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(
+            json.dumps({"archive_ns": archive_ns, "count": len(branches), "branches": branches}, sort_keys=True),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+    return branches
+
+
+def resolve_archived_slug(root: Path, explicit: str | None = None) -> str:
     if explicit:
         if not SLUG_RE.fullmatch(explicit):
             raise ValueError("invalid Development Record slug")
-        if explicit not in packages:
+        archive = specs_root(root) / "archive"
+        known = {path.name for path in archive.iterdir() if path.is_dir()} if archive.is_dir() else set()
+        if explicit not in known:
             raise ValueError(f"archived package not found: {explicit}")
         return explicit
     branch = gitx.branch(root)
-    matches = []
-    for slug in packages:
-        try:
-            if extract_branch((archive / slug / "spec.md").read_text(encoding="utf-8")) == branch:
-                matches.append(slug)
-        except (OSError, ValueError):
-            continue
+    matches = sorted(slug for slug, bound in archived_branch_index(root).items() if bound == branch)
     if len(matches) == 1:
         return matches[0]
     if not matches:
@@ -318,6 +391,21 @@ def parse_charter(spec: str) -> dict[str, str]:
         if match:
             result[f"V{match.group(1)}"] = match.group(3).strip()
     return result
+
+
+def amend_authorized(by: str, v2: str) -> bool:
+    """Whether an amendment authority satisfies the package's own V2.
+
+    A strict package accepts only ``user <reference>``. Adjacent work accepts
+    the same vocabulary ``decide`` and plan.lint accept for reversible forks:
+    ``V<n>``, ``F<n>`` or ``user <reference>``.
+    """
+    value = by.strip()
+    if not value:
+        return False
+    if v2 == "strict":
+        return bool(re.fullmatch(r"user \S.*", value))
+    return bool(re.fullmatch(r"(V[1-7]|F\d+|user .+)", value))
 
 
 def scope_patterns(spec: str, include: bool = True) -> list[str]:
@@ -530,11 +618,26 @@ def unblock(root: Path, slug: str, task_id: str) -> None:
     raise ValueError(f"task not found: {task_id}")
 
 
+# Hot-path parse cache for runs.jsonl.  Keyed by the jsonl path and validated
+# against its (st_mtime_ns, st_size) stamp; append_run rewrites the file, so a
+# stale entry invalidates itself and no write-through is needed.
+_RUNS_CACHE: dict[Path, tuple[tuple[int, int], list[dict]]] = {}
+
+
 def runs(package: Path) -> list[dict]:
     path = package / "runs.jsonl"
-    if not path.exists():
+    try:
+        info = path.stat()
+    except FileNotFoundError:
+        _RUNS_CACHE.pop(path, None)
         return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    stamp = (info.st_mtime_ns, info.st_size)
+    cached = _RUNS_CACHE.get(path)
+    if cached is not None and cached[0] == stamp:
+        return list(cached[1])
+    records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    _RUNS_CACHE[path] = (stamp, records)
+    return list(records)
 
 
 def latest_runs(package: Path) -> dict[str, dict]:
@@ -558,14 +661,15 @@ def append_run(package: Path, record: dict) -> None:
         stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
 
 
-def tree_fingerprint(root: Path) -> str:
+def _hash_tree(root: Path) -> str:
+    """Hash product files and source architecture contracts, excluding local evidence."""
     if gitx.toplevel(root) is None:
         raise ValueError("v3 evidence requires a Git worktree")
     digest = hashlib.sha256()
     files = gitx.git(root, "ls-files", "--cached", "--others", "--exclude-standard", "-z", text=False).stdout
     for raw in sorted(item for item in files.split(b"\0") if item):
         name = os.fsdecode(raw)
-        if name == ".spec" or name.startswith(".spec/"):
+        if name == ".spec" or (name.startswith(".spec/") and not name.startswith(".spec/architecture/")):
             continue
         path = root / name
         digest.update(raw + b"\0")
@@ -585,6 +689,27 @@ def tree_fingerprint(root: Path) -> str:
             raise ValueError(f"unsupported file type in evidence fingerprint: {name}")
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+def tree_fingerprint(root: Path) -> str:
+    """Hash the current product tree, reading every tracked or untracked file.
+
+    The hash must be recomputed on every call: Git status describes path states,
+    not content, so memoizing across calls would let later content edits with an
+    unchanged porcelain entry reuse stale evidence. Callers that need one hash
+    for several checks pass it explicitly (for example ``gate.compute``).
+    """
+    return _hash_tree(root)
+
+
+def goal_fingerprint(spec: str) -> str:
+    """Hash the accepted problem definition: the Goal ledger rows.
+
+    plan-go records this hash in the package baseline; the delivery gate
+    compares it with the current Goal section, so a post-Go rewrite of the
+    problem is visible while Criteria, Decisions and Parked stay editable.
+    """
+    return hashlib.sha256("\n".join(section(spec, "Goal")).encode()).hexdigest()
 
 
 def criteria_status(spec: str, package: Path) -> list[tuple[str, str, str, bool]]:
@@ -641,9 +766,13 @@ def changed_paths(root: Path, base: str | None = None) -> list[str]:
     cumulative: once a task checkpoint commits its edits, a HEAD-relative diff
     would forget them.
     """
-    args = ["diff", "--name-only"] + ([base] if base else ["HEAD"])
-    tracked = gitx.git(root, *args, check=False).stdout.splitlines()
-    untracked = gitx.git(root, "ls-files", "--others", "--exclude-standard").stdout.splitlines()
+    args = ["diff", "--name-only", "-z"] + ([base] if base else ["HEAD"])
+    tracked = [os.fsdecode(name) for name in gitx.git(root, *args, check=False, text=False).stdout.split(b"\0") if name]
+    untracked = [
+        os.fsdecode(name)
+        for name in gitx.git(root, "ls-files", "--others", "--exclude-standard", "-z", text=False).stdout.split(b"\0")
+        if name
+    ]
     return sorted(set(tracked + untracked))
 
 
@@ -733,20 +862,52 @@ def _unstage_baseline_dirty(root: Path, baseline: set[str], patterns: tuple[str,
             gitx.git(root, "rm", "--cached", "-q", "--", path, check=False)
 
 
+_GIT_PATH_CHUNK = 200
+
+
+def _tracked_paths(root: Path, candidates: list[str]) -> set[str]:
+    """Batched index lookup: one `ls-files` per 200-path chunk (ARG_MAX guard)."""
+    tracked: set[str] = set()
+    for start in range(0, len(candidates), _GIT_PATH_CHUNK):
+        chunk = candidates[start : start + _GIT_PATH_CHUNK]
+        out = gitx.git(root, "ls-files", "-z", "--", *chunk, text=False).stdout
+        tracked.update(os.fsdecode(name) for name in out.split(b"\0") if name)
+    return tracked
+
+
+def _ignored_paths(root: Path, candidates: list[str]) -> set[str]:
+    """Batched ignore lookup: one `check-ignore --stdin` per chunk; exit 1,
+    empty out means nothing in the chunk is ignored."""
+    ignored: set[str] = set()
+    for start in range(0, len(candidates), _GIT_PATH_CHUNK):
+        chunk = candidates[start : start + _GIT_PATH_CHUNK]
+        payload = b"\0".join(os.fsencode(path) for path in chunk) + b"\0"
+        result = gitx.git(root, "check-ignore", "-z", "--stdin", check=False, text=False, input=payload)
+        ignored.update(os.fsdecode(name) for name in result.stdout.split(b"\0") if name)
+    return ignored
+
+
 def git_add_paths(root: Path, paths: list[str]) -> None:
-    """Stage only concrete changed paths admitted by the requested patterns."""
+    """Stage only concrete changed paths admitted by the requested patterns.
+
+    Pattern matching stays in Python; the per-path `ls-files --error-unmatch` /
+    `check-ignore -q` pairs collapse into at most one batched call per chunk
+    per question, so a wide boundary no longer costs two git processes per
+    changed file.  Selection semantics are unchanged: a path is admitted when
+    it is tracked or not ignored.
+    """
     changed = gitx.dirty_paths(root, exclude=())
-    selected = {
-        path
-        for path in changed
-        if any(path_matches(path, pattern) for pattern in paths if pattern)
-        and (
-            gitx.git(root, "ls-files", "--error-unmatch", "--", path, check=False).returncode == 0
-            or gitx.git(root, "check-ignore", "-q", "--", path, check=False).returncode != 0
-        )
-    }
+    candidates = sorted(path for path in changed if any(path_matches(path, pattern) for pattern in paths if pattern))
+    if any(local_evidence.is_evidence_path(path) for path in candidates) and local_evidence.is_local(root):
+        candidates = [path for path in candidates if not local_evidence.is_evidence_path(path)]
+    if not candidates:
+        return
+    tracked = _tracked_paths(root, candidates)
+    untracked = [path for path in candidates if path not in tracked]
+    ignored = _ignored_paths(root, untracked)
+    selected = [path for path in candidates if path in tracked or path not in ignored]
     if selected:
-        gitx.git(root, "add", "-A", "--", *sorted(selected))
+        gitx.git(root, "add", "-A", "--", *selected)
 
 
 def checkpoint_commit(root: Path, slug: str, title: str, patterns: tuple[str, ...] = ()) -> str:
@@ -757,10 +918,15 @@ def checkpoint_commit(root: Path, slug: str, title: str, patterns: tuple[str, ..
     the index again; it remains recoverable in the user's worktree.
     """
     package = package_dir(root, slug)
+    if local_evidence.is_local(root):
+        # Evidence is local-only: never stage it, and retire any package files
+        # still tracked on a branch created before the policy was enabled.
+        local_evidence.ensure(root)
+        local_evidence.untrack(root)
     if not gitx.dirty_paths(root, exclude=()):
         return ""
     paths = [pattern.removeprefix("new:") for pattern in patterns if pattern]
-    paths.extend([f".spec/specs/{slug}", ".spec/charter.md", ".spec/lessons.md"])
+    paths.extend([f".spec/specs/{slug}", ".spec/charter.md"])
     git_add_paths(root, paths)
     _unstage_baseline_dirty(root, _baseline_dirty(root, package), patterns)
     status = gitx.git(root, "diff", "--cached", "--quiet", check=False)

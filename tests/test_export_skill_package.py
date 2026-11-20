@@ -129,7 +129,8 @@ def test_export_end_to_end():
         assert not (output / "agents" / "orchestrator.md").exists()
         assert not (output / "references" / "orchestration.md").exists()
         assert not (output / "scripts" / "export_skill_package.py").exists()
-        assert not (output / "scripts" / "path_safety.py").exists()
+        # path_safety.py is a runtime dependency of spec.py and must ship.
+        assert (output / "scripts" / "path_safety.py").exists()
         assert not (output / "scripts" / "skill_watermark.py").exists()
         assert not (output / ".watermark-key").exists()
         assert not (output / ".watermark-identity.json").exists()

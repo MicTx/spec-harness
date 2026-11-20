@@ -141,6 +141,44 @@ def run_tasks(root: Path, slug: str, selected: list[str] | None = None, final: b
         chosen = _selected_tasks(records, selected)
     results = []
     for task in chosen:
+        if final:
+            # C1/F1: consult only the latest per-task kind:run record (the same
+            # latest_runs view evaluate_runs reads).  A record that passed with
+            # the identical command on the identical tree skips the subprocess;
+            # a changed tree or a failing latest record forces a re-run.  The
+            # appended record carries the same cmd/tree_fp/final triple a real
+            # re-run would, so gate freshness rules are unchanged.
+            fingerprint = tree_fingerprint(root)
+            latest = latest_runs(package).get(task.id, {})
+            if (
+                latest.get("kind", "run") == "run"
+                and latest.get("task") == task.id
+                and latest.get("cmd") == task.command
+                and latest.get("exit") == 0
+                and latest.get("tree_fp") == fingerprint
+            ):
+                previous = [
+                    record
+                    for record in runs(package)
+                    if record.get("task") == task.id and record.get("kind", "run") == "run"
+                ]
+                record = {
+                    "kind": "run",
+                    "task": task.id,
+                    "cmd": task.command,
+                    "exit": 0,
+                    "sig": latest.get("sig", ""),
+                    "attempt": len(previous) + 1,
+                    "head": gitx.head(root),
+                    "duration": 0.0,
+                    "final": True,
+                    "ts": now(),
+                    "tree_fp": fingerprint,
+                    "reused": True,
+                }
+                append_run(package, record)
+                results.append({**record, "directive": ""})
+                continue
         started = time.monotonic()
         timeout = False
         verify_timeout = project_verify_timeout()
@@ -183,12 +221,14 @@ def run_tasks(root: Path, slug: str, selected: list[str] | None = None, final: b
                 record["checkpoint"] = checkpoint_commit(root, slug, task.title, task.globs)
             if had_failure:
                 directive = (
-                    'Hard-won green — celebrate by recording one reusable lesson with spec.py learn "<when>" "<do>".'
+                    "Hard-won green — celebrate by recording one reusable lesson with "
+                    'spec.py learn "<when>" "<do>" --enforce <repo path>.'
                 )
         else:
             directive = ladder_directive(package, task.id, signature)
             if timeout:
                 directive = f"Verify timed out. {directive}"
+            record["directive"] = directive
             block_task = not final and should_block(package, task.id, signature)
             if block_task:
                 record["blocked"] = True
@@ -230,13 +270,17 @@ def unblock_task(root: Path, slug: str, task_id: str, reason: str) -> dict:
     return {"slug": slug, "task": task_id, "unblocked": True, "reason": reason, "checkpoint": checkpoint}
 
 
-def evaluate_runs(root: Path, slug: str, final: bool = False) -> list[str]:
+def evaluate_runs(root: Path, slug: str, final: bool = False, *, tree_fp: str | None = None) -> list[str]:
     package, _spec, tasks = read_package(root, slug)
     latest = latest_runs(package)
     # Hook --index checks may still evaluate an active package on a
     # checkout-index tree that has no .git; the fingerprint dimension is
-    # unverifiable there and must degrade instead of failing.
-    fingerprint = tree_fingerprint(root) if gitx.toplevel(root) is not None else None
+    # unverifiable there and must degrade instead of failing. Callers that
+    # already hold this compute's fingerprint (gate) pass tree_fp so the
+    # tree is hashed at most once.
+    fingerprint = (
+        tree_fp if tree_fp is not None else (tree_fingerprint(root) if gitx.toplevel(root) is not None else None)
+    )
     errors = []
     for task in parse_tasks(tasks):
         if not task.command:

@@ -15,7 +15,6 @@ SCRIPT_BLACKLIST = frozenset(
         "payload_contract.py",
         "skill_watermark.py",
         "public_secret_scan.py",
-        "path_safety.py",
         "verify_install_parity.py",
     }
 )
