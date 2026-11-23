@@ -202,6 +202,59 @@ def test_update_preserves_shared_symlinks(home, release, monkeypatch):
     assert "version=2.2.0" in (entity / ".spec-skill-install").read_text(encoding="utf-8")
 
 
+def test_update_preserves_agents_chain_with_published_legacy_installer(home, tmp_path, monkeypatch):
+    install(home, "claude")
+    entity = home / "library/skills/spec"
+    entity.parent.mkdir(parents=True)
+    claude = home / ".claude/skills/spec"
+    shutil.move(str(claude), str(entity))
+    claude.symlink_to(entity, target_is_directory=True)
+    shared = home / ".agents/skills/spec"
+    shared.parent.mkdir(parents=True)
+    shared.symlink_to(claude, target_is_directory=True)
+    version = "2.2.0"
+    make_release(tmp_path, version)
+    source = tmp_path / f"spec-harness-{version}"
+    installer = source / "install.sh"
+    text = installer.read_text(encoding="utf-8")
+    text = text.replace("  local link resolved link_target claude_link\n", "  local link resolved\n")
+    start = text.index('  if ! resolved="$(skill_link_resolve "$link")"; then\n')
+    end = text.index("  # Only a target this installer owns", start)
+    text = text[:start] + '  resolved="$(skill_link_resolve "$link")" || return 1\n' + text[end:]
+    installer.write_text(text, encoding="utf-8")
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+        tar.add(source, arcname=source.name)
+    fake_download(monkeypatch, version, buffer.getvalue())
+
+    before = snapshot(home)
+    assert update_release.main(["update", "--dry-run"]) == 0
+    assert snapshot(home) == before
+    assert update_release.main(["update"]) == 0
+    assert claude.is_symlink() and shared.is_symlink()
+    assert "version=2.2.0" in (entity / ".spec-skill-install").read_text(encoding="utf-8")
+
+
+def test_update_refuses_agents_chain_through_chained_claude(home, release, monkeypatch):
+    install(home, "claude")
+    entity = home / "library/skills/spec"
+    entity.parent.mkdir(parents=True)
+    claude = home / ".claude/skills/spec"
+    shutil.move(str(claude), str(entity))
+    intermediary = home / "intermediary"
+    intermediary.symlink_to(entity, target_is_directory=True)
+    claude.symlink_to(intermediary, target_is_directory=True)
+    shared = home / ".agents/skills/spec"
+    shared.parent.mkdir(parents=True)
+    shared.symlink_to(claude, target_is_directory=True)
+    version, archive = release
+    fake_download(monkeypatch, version, archive)
+    before = snapshot(home)
+
+    assert update_release.main(["update"]) == 1
+    assert snapshot(home) == before
+
+
 def test_bad_checksum_and_network_failure_leave_installation_untouched(home, release, monkeypatch):
     install(home, "codex")
     before = snapshot(home)
@@ -210,7 +263,7 @@ def test_bad_checksum_and_network_failure_leave_installation_untouched(home, rel
     assert update_release.main(["update"]) == 1
     assert snapshot(home) == before
 
-    def offline(version):
+    def offline(version, source="github"):
         raise update_release.UpdateError("network unavailable")
 
     monkeypatch.setattr(update_release, "release_info", offline)
@@ -264,6 +317,81 @@ def test_download_falls_back_to_curl_after_proxy_failure(monkeypatch):
     assert update_release.fetch("https://github.com/file", 100) == (b"archive", "https://github.com/file")
     with pytest.raises(update_release.UpdateError, match="size limit"):
         update_release.fetch("https://github.com/file", 3)
+
+
+def test_auto_source_uses_mirror_for_lookup_and_download(home, release, monkeypatch, capsys):
+    install(home, "codex")
+    version, archive = release
+    archive_name = f"spec-harness-{version}.tar.gz"
+    requests = []
+
+    def fetch(url, limit, *, head=False):
+        requests.append(url)
+        if not url.startswith(update_release.CHINA_MIRROR):
+            raise update_release.UpdateError("GitHub unavailable")
+        if "/api.github.com/" in url:
+            return json.dumps(
+                {
+                    "tag_name": f"v{version}",
+                    "draft": False,
+                    "prerelease": False,
+                    "assets": [{"name": archive_name}, {"name": "SHA256SUMS"}],
+                }
+            ).encode(), url
+        if url.endswith("/SHA256SUMS"):
+            return f"{hashlib.sha256(archive).hexdigest()}  {archive_name}\n".encode(), url
+        assert url.endswith("/" + archive_name)
+        return archive, url
+
+    monkeypatch.setattr(update_release, "fetch", fetch)
+    assert update_release.main(["update"]) == 0
+    assert "version=2.2.0" in marker(home, "codex")
+    assert "source: china" in capsys.readouterr().out
+    assert requests[0].startswith("https://github.com/")
+    assert all(url.startswith(update_release.CHINA_MIRROR) for url in requests[1:])
+
+
+def test_mirror_metadata_rejects_unstable_or_mismatched_release(monkeypatch):
+    metadata = {"tag_name": "v2.2.0", "draft": False, "prerelease": False, "assets": []}
+    monkeypatch.setattr(update_release, "download", lambda url, limit: json.dumps(metadata).encode())
+    with pytest.raises(update_release.UpdateError, match="missing"):
+        update_release.release_info(None, "china")
+    metadata["prerelease"] = True
+    with pytest.raises(update_release.UpdateError, match="stable"):
+        update_release.release_info(None, "china")
+    metadata["prerelease"] = False
+    with pytest.raises(update_release.UpdateError, match="does not match"):
+        update_release.release_info("2.1.0", "china")
+
+
+def test_download_fallback_checks_digest_from_each_source(monkeypatch):
+    archive_name = "spec-harness-2.2.0.tar.gz"
+    archive = b"valid archive"
+    requested = []
+
+    def download(url, limit):
+        requested.append(url)
+        mirror = url.startswith(update_release.CHINA_MIRROR)
+        if url.endswith("/SHA256SUMS"):
+            digest = hashlib.sha256(archive).hexdigest() if mirror else "0" * 64
+            return f"{digest}  {archive_name}\n".encode()
+        return archive
+
+    monkeypatch.setattr(update_release, "download", download)
+    data, source = update_release.download_release("2.2.0", archive_name, "auto", "github")
+    assert data == archive and source == "china"
+    assert len(requested) == 4
+    with pytest.raises(update_release.UpdateError, match="SHA-256"):
+        update_release.download_release("2.2.0", archive_name, "github", "github")
+
+
+def test_source_option_and_environment_validate(home, monkeypatch, capsys):
+    install(home, "codex")
+    monkeypatch.setenv("SPEC_UPDATE_SOURCE", "invalid")
+    assert update_release.main(["update", "--check"]) == 1
+    assert "SPEC_UPDATE_SOURCE" in capsys.readouterr().err
+    monkeypatch.setattr(update_release, "release_info", lambda version, source: ("2.2.0", "archive"))
+    assert update_release.main(["update", "--check", "--source", "china"]) == 0
 
 
 def test_update_preflights_all_groups_before_changing_any_host(home, release, monkeypatch):

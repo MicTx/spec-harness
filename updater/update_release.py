@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import http.client
 import io
+import json
 import os
 import re
 import shutil
@@ -22,10 +23,12 @@ from pathlib import Path, PurePosixPath
 REPOSITORY = "MicTx/spec-harness"
 RELEASES = f"https://github.com/{REPOSITORY}/releases"
 DOWNLOADS = f"https://github.com/{REPOSITORY}/releases/download"
+CHINA_MIRROR = "https://gh-proxy.com/"
 VERSION_PATTERN = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 MAX_METADATA = 2 * 1024 * 1024
 MAX_ARCHIVE = 50 * 1024 * 1024
 MAX_EXTRACTED = 100 * 1024 * 1024
+SOURCE_CHOICES = ("auto", "github", "china")
 
 
 class UpdateError(Exception):
@@ -151,9 +154,40 @@ def installed_hosts() -> list[dict[str, str]]:
     return installations
 
 
-def release_info(version: str | None) -> tuple[str, str]:
+def release_info(version: str | None, source: str = "github") -> tuple[str, str]:
     if version is not None and not VERSION_PATTERN.fullmatch(version):
         raise UpdateError("version must be a stable version such as 2.0.0")
+    if source == "china":
+        endpoint = f"https://api.github.com/repos/{REPOSITORY}/releases"
+        endpoint += f"/tags/v{version}" if version else "/latest"
+        try:
+            metadata = json.loads(download(CHINA_MIRROR + endpoint, MAX_METADATA))
+        except (UnicodeError, ValueError) as exc:
+            raise UpdateError("mirror release metadata is not valid JSON") from exc
+        if (
+            not isinstance(metadata, dict)
+            or metadata.get("draft") is not False
+            or metadata.get("prerelease") is not False
+        ):
+            raise UpdateError("mirror metadata does not identify a published stable release")
+        tag = metadata.get("tag_name")
+        if not isinstance(tag, str) or not tag.startswith("v") or not VERSION_PATTERN.fullmatch(tag[1:]):
+            raise UpdateError("mirror release tag is not a stable vMAJOR.MINOR.PATCH version")
+        found_version = tag[1:]
+        if version is not None and version != found_version:
+            raise UpdateError("mirror release tag does not match the requested version")
+        archive_name = f"spec-harness-{found_version}.tar.gz"
+        assets = metadata.get("assets")
+        names = (
+            {item["name"] for item in assets if isinstance(item, dict) and isinstance(item.get("name"), str)}
+            if isinstance(assets, list)
+            else set()
+        )
+        if not {archive_name, "SHA256SUMS"}.issubset(names):
+            raise UpdateError("mirror metadata is missing the archive or SHA256SUMS")
+        return found_version, archive_name
+    if source != "github":
+        raise UpdateError(f"unknown release source: {source}")
     url = f"{RELEASES}/tag/v{version}" if version else f"{RELEASES}/latest"
     _data, resolved_url = fetch(url, MAX_METADATA, head=True)
     resolved = urllib.parse.urlsplit(resolved_url)
@@ -175,8 +209,10 @@ def release_info(version: str | None) -> tuple[str, str]:
     return found_version, archive_name
 
 
-def verified_archive(version: str, archive_name: str) -> bytes:
-    base = f"{DOWNLOADS}/v{version}"
+def verified_archive(version: str, archive_name: str, source: str = "github") -> bytes:
+    if source not in ("github", "china"):
+        raise UpdateError(f"unknown release source: {source}")
+    base = f"{CHINA_MIRROR if source == 'china' else ''}{DOWNLOADS}/v{version}"
     try:
         checksum_text = download(f"{base}/SHA256SUMS", MAX_METADATA).decode("utf-8")
     except UnicodeError as exc:
@@ -192,6 +228,37 @@ def verified_archive(version: str, archive_name: str) -> bytes:
     if hashlib.sha256(data).hexdigest() != matches[0]:
         raise UpdateError("release archive SHA-256 does not match SHA256SUMS")
     return data
+
+
+def sources(selected: str) -> tuple[str, ...]:
+    return ("github", "china") if selected == "auto" else (selected,)
+
+
+def select_release(version: str | None, selected: str) -> tuple[str, str, str]:
+    failures = []
+    for source in sources(selected):
+        try:
+            found, archive_name = release_info(version) if source == "github" else release_info(version, source)
+            return found, archive_name, source
+        except UpdateError as exc:
+            failures.append(f"{source}: {exc}")
+    raise UpdateError("release lookup failed: " + "; ".join(failures))
+
+
+def download_release(version: str, archive_name: str, selected: str, preferred: str) -> tuple[bytes, str]:
+    ordered = (preferred,) + tuple(source for source in sources(selected) if source != preferred)
+    failures = []
+    for source in ordered:
+        try:
+            data = (
+                verified_archive(version, archive_name)
+                if source == "github"
+                else verified_archive(version, archive_name, source)
+            )
+            return data, source
+        except UpdateError as exc:
+            failures.append(f"{source}: {exc}")
+    raise UpdateError("verified download failed: " + "; ".join(failures))
 
 
 def extract_archive(data: bytes, version: str, destination: Path) -> Path:
@@ -263,12 +330,41 @@ def run_installer(root: Path, installations: list[dict[str, str]], dry_run: bool
         groups.setdefault((item["profile"], item["tier"]), []).append(item["host"])
     owners: dict[Path, tuple[str, str]] = {}
     roots = host_roots()
+    shared_target = roots["agents"] / "spec"
+    claude_target = roots["claude"] / "spec"
+    shared_link = None
+    if shared_target.is_symlink() and claude_target.is_symlink():
+        candidate = Path(os.readlink(shared_target))
+        shared_link = candidate if candidate.is_absolute() else shared_target.parent / candidate
+    shared_through_claude = shared_link is not None and os.path.abspath(shared_link) == os.path.abspath(claude_target)
+    has_claude = any(item["host"] == "claude" for item in installations)
+    if shared_through_claude:
+        try:
+            destination = Path(os.readlink(claude_target))
+            destination = destination if destination.is_absolute() else claude_target.parent / destination
+            destination = Path(os.path.abspath(destination))
+        except OSError as exc:
+            raise UpdateError("cannot inspect the Claude skill link") from exc
+        marker = destination / ".spec-skill-install"
+        if (
+            not has_claude
+            or destination.is_symlink()
+            or not destination.is_dir()
+            or marker.is_symlink()
+            or not marker.is_file()
+        ):
+            raise UpdateError("shared Agents link requires an installer-owned, single-hop Claude skill")
     for item in installations:
         target = (roots[item["host"]] / "spec").resolve()
         group = (item["profile"], item["tier"])
         if target in owners and owners[target] != group:
             raise UpdateError("hosts sharing a skill must use the same profile and prompt tier")
         owners[target] = group
+    if shared_through_claude and has_claude:
+        for hosts in groups.values():
+            if "agents" in hosts:
+                hosts.remove("agents")
+        print("Shared Agents skill follows the Claude installation; preserving both links.", flush=True)
     release_installer = root / "install.sh"
     try:
         supports_preflight = "\nSPEC_UPDATE_PREFLIGHT=1\n" in release_installer.read_text(encoding="utf-8")
@@ -329,6 +425,12 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--dry-run", action="store_true", help="download and preview without changing installations")
     update.add_argument("--version", dest="release_version", help="select a stable version, including for rollback")
     update.add_argument("--reinstall", action="store_true", help="reinstall even when already on this version")
+    update.add_argument(
+        "--source",
+        choices=SOURCE_CHOICES,
+        default=os.environ.get("SPEC_UPDATE_SOURCE") or "auto",
+        help="release source: auto, github, or china (default: auto)",
+    )
     args = parser.parse_args(argv)
     if not args.version and args.command is None:
         parser.print_help()
@@ -341,8 +443,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{item['host']}: {item['version']} (profile {item['profile']}, tier {item['tier']})", flush=True)
         if args.version:
             return 0
-        version, archive_name = release_info(args.release_version)
-        print(f"Selected stable release: {version}", flush=True)
+        if args.source not in SOURCE_CHOICES:
+            raise UpdateError("SPEC_UPDATE_SOURCE must be auto, github, or china")
+        version, archive_name, source = select_release(args.release_version, args.source)
+        print(f"Selected stable release: {version} (source: {source})", flush=True)
         if args.check:
             if all(item["version"] == version for item in installations):
                 print("All installer-owned hosts are current.")
@@ -359,7 +463,8 @@ def main(argv: list[str] | None = None) -> int:
         if not args.reinstall and not args.dry_run and all(item["version"] == version for item in installations):
             print("All installer-owned hosts are already current. Use --reinstall to repair them.")
             return 0
-        data = verified_archive(version, archive_name)
+        data, source = download_release(version, archive_name, args.source, source)
+        print(f"Verified download source: {source}", flush=True)
         with tempfile.TemporaryDirectory(prefix="spec-harness-update-") as temporary:
             root = extract_archive(data, version, Path(temporary))
             run_installer(root, installations, args.dry_run)

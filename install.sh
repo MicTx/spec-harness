@@ -1262,9 +1262,23 @@ skill_link_resolve() {
 # delivers the latest skill and no separate copy is needed.
 skill_link_current() {
   local host="$1"
-  local link resolved
+  local link resolved link_target claude_link
   link="$(skill_dir_for "$host")/$SKILL_NAME"
-  resolved="$(skill_link_resolve "$link")" || return 1
+  if ! resolved="$(skill_link_resolve "$link")"; then
+    [ "$host" = "agents" ] || return 1
+    [ -L "$link" ] || return 1
+    host_enabled claude || return 1
+    claude_link="$HOME/.claude/skills/$SKILL_NAME"
+    [ -L "$claude_link" ] || return 1
+    link_target="$(readlink "$link")"
+    case "$link_target" in
+      /*) ;;
+      *) link_target="$(cd "$(dirname "$link")" && cd "$(dirname "$link_target")" 2>/dev/null && printf '%s/%s\n' "$(pwd)" "$(basename "$link_target")")" || return 1 ;;
+    esac
+    [ "$link_target" = "$claude_link" ] || return 1
+    resolved="$(skill_link_resolve "$claude_link")" || return 1
+    is_installer_owned "$resolved" || return 1
+  fi
   # Only a target this installer owns and keeps current this run counts.
   if host_enabled claude && [ "$resolved" = "$CLAUDE_SKILLS_DIR/$SKILL_NAME" ]; then
     return 0

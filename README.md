@@ -39,10 +39,11 @@ bash install.sh
 spec-harness update           # 更新所有已安装的宿主到最新稳定版
 spec-harness update --check   # 只检查版本
 spec-harness update --dry-run # 下载并预览，不修改安装
+spec-harness update --source china # 使用国内镜像
 spec-harness --version        # 查看各宿主已安装版本
 ```
 
-命令自动下载并校验发布包，保留各宿主的配置，更新前备份旧版本；完成后重启智能体会话。也可以让智能体“更新 Spec Harness”。如果提示找不到命令，将 `~/.local/bin` 加入 `PATH`，或改用 `~/.local/bin/spec-harness update`。已有旧版需要先用包含此功能的版本运行一次 `bash install.sh`。升级、指定版本及回退详见 [RELEASE.md](RELEASE.md)。
+默认先连接 GitHub，不通时使用国内第三方镜像；镜像也可通过 `SPEC_UPDATE_SOURCE=china` 指定。命令校验发布包，保留各宿主配置并备份旧版本；完成后重启智能体会话。也可让智能体“更新 Spec Harness”。如果找不到命令，将 `~/.local/bin` 加入 `PATH`，或改用 `~/.local/bin/spec-harness update`。已有旧版需要先用包含此功能的版本运行一次 `bash install.sh`。升级、指定版本及回退详见 [RELEASE.md](RELEASE.md)。
 
 ## 快速开始
 

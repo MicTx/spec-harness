@@ -4,6 +4,16 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [2.2.0] - 2026-11-23
+
+### Added
+
+- **China update mirror**: `spec-harness update` falls back to a third-party China mirror when GitHub is unavailable; `--source` and `SPEC_UPDATE_SOURCE` select the channel explicitly.
+
+### Fixed
+
+- **Magpie shared skill links**: upgrades preserve the shared Agents link through an installer-owned Claude skill target.
+
 ## [2.1.0] - 2026-11-23
 
 ### Added

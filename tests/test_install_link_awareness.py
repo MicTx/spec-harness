@@ -224,3 +224,27 @@ def test_preview_still_refuses_chained_and_dangling_links(tmp_path):
     refused = [line for line in preview.stdout.splitlines() if "would refuse symlink" in line]
     assert len(refused) == 2, preview.stdout
     assert chain.is_symlink() and dangling.is_symlink()
+
+
+@requires_bash
+def test_shared_agents_link_through_claude_preserves_magpie_chain(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    entity = tmp_path / "magpie" / "library" / "skills" / "spec"
+    assert run_installer(home, {"INSTALL_HOSTS": "claude"}).returncode == 0
+    import shutil
+
+    entity.parent.mkdir(parents=True)
+    shutil.move(str(claude_target(home)), str(entity))
+    claude_target(home).symlink_to(entity, target_is_directory=True)
+    shared = home / ".agents/skills/spec"
+    shared.parent.mkdir(parents=True)
+    shared.symlink_to(claude_target(home), target_is_directory=True)
+
+    preview = run_installer(home, {"INSTALL_HOSTS": "claude,agents", "DRY_RUN": "1"})
+    assert preview.returncode == 0, preview.stderr
+    assert "already current via symlink: Shared Agents" in preview.stdout
+    result = run_installer(home, {"INSTALL_HOSTS": "claude,agents"})
+    assert result.returncode == 0, result.stderr
+    assert shared.is_symlink() and claude_target(home).is_symlink()
+    assert shared.resolve() == entity.resolve()

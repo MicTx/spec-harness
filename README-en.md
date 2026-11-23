@@ -39,10 +39,11 @@ After installation, run from any directory:
 spec-harness update           # Update installed hosts to the latest stable release
 spec-harness update --check   # Check versions without installing
 spec-harness update --dry-run # Download and preview without changing installations
+spec-harness update --source china # Use the China mirror
 spec-harness --version        # Show the installed version for each host
 ```
 
-The command verifies the release archive, preserves each host's settings, and backs up the previous version. You can also ask your agent to update Spec Harness. Restart your agent session afterward. If the command is not found, add `~/.local/bin` to `PATH` or run `~/.local/bin/spec-harness update`. Existing installations need a one-time `bash install.sh` from a version that includes this feature. See [RELEASE.md](RELEASE.md) for updates, selecting versions, and rollback.
+The updater tries GitHub and falls back to a third-party China mirror; `SPEC_UPDATE_SOURCE=china` selects it explicitly. It verifies the archive, preserves host settings, and backs up the previous version. You can also ask your agent to update Spec Harness. Restart your agent session afterward. If the command is not found, add `~/.local/bin` to `PATH` or run `~/.local/bin/spec-harness update`. Existing installations need a one-time `bash install.sh` from a version that includes this feature. See [RELEASE.md](RELEASE.md) for updates, selecting versions, and rollback.
 
 ## Quick Start
 
