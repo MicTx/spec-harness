@@ -3,7 +3,7 @@
 A repair package (`kind: repair`) runs the standard DAG and full gate; only planning is thinner; its `repair-of` names the origin spec.
 `spec.py diff` summarizes revisions vs the plan-go baseline: changed files, spec/tasks deltas, task-id adds/removes; excludes `.spec/`; frozen only.
 
-After `plan-go`, execution has no planning conversation. `/spec:run` drives this loop: take the first ready task from the dependency DAG, change only its boundary, run its exact verify, and let the harness tick and checkpoint it. Inside a task boundary a creative implementation beats a mechanical one — the verify command is the judge. With a goal argument and no bound package, `/spec:run` is the built-in one-shot — plan, `plan-go`, execute, `check`, deliver — so a separate `goal` entry does not exist; with a bound package the goal argument is ignored. `verify <id>` rejects blocked, checked, or dependency-blocked tasks; `verify --all` runs the unfinished unblocked DAG in stable topological order and stops at the first failure. Use `plan-amend` only when the charter allows adjacent work and the new task passes the same lint. Project verify budget: 1800s; override with `SPEC_PROJECT_VERIFY_TIMEOUT` for a slower host.
+After `plan-go`, execution has no planning conversation. `/spec:run` drives this loop: take the first ready task from the dependency DAG, change only its boundary, run its exact verify, and let the harness tick and checkpoint it. Inside a boundary a creative implementation beats a mechanical one — the verify command is the judge. With a goal and no bound package, `/spec:run` is the built-in one-shot — plan, `plan-go`, execute, `check`, deliver — so no separate `goal` entry exists; with a bound package the goal is ignored. `verify <id>` rejects blocked, checked, or dependency-blocked tasks; `verify --all` runs the unfinished unblocked DAG in topological order and stops at the first failure. Use `plan-amend` only when the charter allows adjacent work and the new task passes lint. Project verify budget: 1800s; override with `SPEC_PROJECT_VERIFY_TIMEOUT` for a slower host.
 
 Compaction recovery: a `start` brief for a compacted session may restore bounded advisory pending clues from `state.json` (matching task only; live route and runs stay authoritative). Prompt dedup keys on `progress_token`, so a new failing gate is not swallowed; a continuing stop computes no projection.
 
@@ -27,12 +27,12 @@ When `Scope.in`, task boundaries, extra `patterns`, or actual changed paths hit 
 | Irreversible or beyond V2/V5/V6 | Add a `P` row, block dependents, continue ready work. |
 | Only parked items remain | Present them once; record the user answer as `D` with `user <reference>`. |
 
-Question budget: one batched ask — at most four cards, in planning. After Go the only user-bound channel is `## Parked`; everything reversible is decided by V1 and logged.
-Every ask that does reach the user carries its ledger: what was consulted, what was tried, and why the survivors are irreversible; an ask without that record is a violation.
+Question budget: one batched ask, at most four cards, in planning. After Go the only user-bound channel is `## Parked`; everything reversible is decided by V1 and logged. Iron rule: never assign the user work; a mid-work problem is the agent's to close — agent loop, subagents, retries, or any means — never the user's.
+Every ask that does reach the user carries its ledger: consulted, tried, why the survivors are irreversible; an ask without that record is a violation.
 
 ## Failure Ladder
 
-Each rung is an invitation to diverge, not a scolding: the ladder exists to spend creativity on new evidence instead of repetition.
+Each rung is an invitation to diverge: seek new evidence, not repetition.
 
 1. First failure: fresh evidence in hand — read the output and make the smallest fix that could work.
 2. Same signature again: time to diverge — build a minimal reproduction or add diagnostics somewhere new.
@@ -43,4 +43,4 @@ After new root-cause evidence exists, run `spec.py unblock <task-id> --reason "<
 
 ## Final Report
 
-Report delivery, concrete evidence, every decision made for the user and its reversal, then parked items or the evidence-backed stalled state. Close by celebrating what shipped and promoting the lessons worth keeping. The only Stop release states are `delivered`, `parked-only`, and `stalled`.
+Report delivery, concrete evidence, every decision made for the user and its reversal, then parked items or the evidence-backed stalled state. Close by celebrating what shipped. The only Stop release states are `delivered`, `parked-only`, and `stalled`.

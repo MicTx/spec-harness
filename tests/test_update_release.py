@@ -1,0 +1,346 @@
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import io
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+INSTALLER = ROOT / "install.sh"
+SPEC = importlib.util.spec_from_file_location("update_release", ROOT / "updater/update_release.py")
+assert SPEC and SPEC.loader
+update_release = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(update_release)
+
+
+def install(home: Path, hosts: str, tier: str = "full", profile: str = "core") -> None:
+    environment = {
+        "HOME": str(home),
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "INSTALL_HOSTS": hosts,
+        "SPEC_PROMPT_TIER": tier,
+        "INSTALL_PROFILE": profile,
+    }
+    result = subprocess.run(["bash", str(INSTALLER)], cwd=ROOT, env=environment, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.fixture
+def home(tmp_path, monkeypatch):
+    path = tmp_path / "home with spaces"
+    path.mkdir()
+    monkeypatch.setenv("HOME", str(path))
+    for variable in (
+        "INSTALL_HOSTS",
+        "SOURCE_DIR",
+        "SPEC_PROMPT_TIER",
+        "INSTALL_PROFILE",
+        "FORCE",
+        "DRY_RUN",
+        "PREFLIGHT_ONLY",
+        "SPEC_UPDATE_OWNED_ONLY",
+        "CLAUDE_SKILLS_DIR",
+        "CODEX_SKILLS_DIR",
+        "AGENTS_SKILLS_DIR",
+        "INSTALL_DIR",
+        "BACKUP_ROOT",
+    ):
+        monkeypatch.delenv(variable, raising=False)
+    return path
+
+
+def make_release(tmp_path: Path, version: str, *, legacy: bool = False) -> bytes:
+    root = tmp_path / f"spec-harness-{version}"
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/export_skill_package.py"), "--root", str(ROOT), "--output", str(root)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    project = root / "pyproject.toml"
+    project.write_text(
+        re.sub(r'(?m)^version\s*=\s*"[^"]+"', f'version = "{version}"', project.read_text(encoding="utf-8"), count=1)
+    )
+    (root / "VERSION").write_text(version + "\n", encoding="utf-8")
+    (root / "BUILD_INFO").write_text(f"version={version}\n", encoding="utf-8")
+    if legacy:
+        installer = root / "install.sh"
+        text = installer.read_text(encoding="utf-8")
+        text = text.replace("SPEC_UPDATE_PREFLIGHT=1\n", "", 1)
+        text = text.replace(
+            '  if [ "$PREFLIGHT_ONLY" = "1" ]; then\n    log "Installer preflight passed."\n    return 0\n  fi\n', "", 1
+        )
+        text = text.replace('  install_update_launcher "$runtime_dir"\n', "", 1)
+        installer.write_text(text, encoding="utf-8")
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        archive.add(root, arcname=root.name)
+    return buffer.getvalue()
+
+
+@pytest.fixture
+def release(tmp_path):
+    version = "2.2.0"
+    return version, make_release(tmp_path, version)
+
+
+def fake_download(monkeypatch, version: str, archive: bytes, *, checksum: str | None = None):
+    archive_name = f"spec-harness-{version}.tar.gz"
+    digest = checksum or hashlib.sha256(archive).hexdigest()
+    requests = []
+
+    def release_info(selected):
+        requests.append("release")
+        assert selected is None or selected == version
+        return version, archive_name
+
+    def download(url, limit):
+        requests.append(url)
+        if url.endswith("/SHA256SUMS"):
+            return f"{digest}  {archive_name}\n".encode()
+        if url.endswith("/" + archive_name):
+            return archive
+        raise AssertionError(url)
+
+    monkeypatch.setattr(update_release, "release_info", release_info)
+    monkeypatch.setattr(update_release, "download", download)
+    return requests
+
+
+def snapshot(home: Path) -> dict[str, bytes | str]:
+    return {
+        str(path.relative_to(home)): os.readlink(path) if path.is_symlink() else path.read_bytes()
+        for path in home.rglob("*")
+        if path.is_file() or path.is_symlink()
+    }
+
+
+def marker(home: Path, host: str) -> str:
+    return (home / f".{host}" / "skills" / "spec" / ".spec-skill-install").read_text(encoding="utf-8")
+
+
+def test_installer_exposes_version_command_and_preserves_foreign_executable(home):
+    install(home, "codex")
+    launcher = home / ".local/bin/spec-harness"
+    result = subprocess.run([str(launcher), "--version"], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "codex: 2.1.0" in result.stdout
+
+    other_home = home.parent / "other"
+    foreign = other_home / ".local/bin/spec-harness"
+    foreign.parent.mkdir(parents=True)
+    foreign.write_text("user command\n", encoding="utf-8")
+    install(other_home, "codex")
+    assert foreign.read_text(encoding="utf-8") == "user command\n"
+    assert (other_home / ".codex/skills/spec/SKILL.md").is_file()
+
+
+def test_update_preview_and_upgrade_preserve_hosts_and_preferences(home, release, monkeypatch, capsys):
+    install(home, "claude", "compact", "full")
+    install(home, "codex", "aggressive", "core")
+    foreign = home / ".gemini/skills/spec/SKILL.md"
+    foreign.parent.mkdir(parents=True)
+    foreign.write_text("user skill\n", encoding="utf-8")
+    project = home / "project/.spec/specs/active/spec.md"
+    project.parent.mkdir(parents=True)
+    project.write_text("user package\n", encoding="utf-8")
+    settings = home / ".claude/settings.json"
+    config = json.loads(settings.read_text(encoding="utf-8"))
+    config["user-setting"] = "preserved"
+    settings.write_text(json.dumps(config), encoding="utf-8")
+    version, archive = release
+    requests = fake_download(monkeypatch, version, archive)
+
+    before = snapshot(home)
+    assert update_release.main(["update", "--check"]) == 0
+    assert len(requests) == 1
+    assert snapshot(home) == before
+    assert update_release.main(["update", "--dry-run"]) == 0
+    assert snapshot(home) == before
+    assert update_release.main(["update"]) == 0
+
+    assert "version=2.2.0" in marker(home, "claude")
+    assert "profile=full" in marker(home, "claude") and "tier=compact" in marker(home, "claude")
+    assert "profile=core" in marker(home, "codex") and "tier=aggressive" in marker(home, "codex")
+    assert foreign.read_text(encoding="utf-8") == "user skill\n"
+    assert project.read_text(encoding="utf-8") == "user package\n"
+    assert json.loads(settings.read_text(encoding="utf-8"))["user-setting"] == "preserved"
+    assert (home / ".spec-skill-backups/.claude-skills").is_dir()
+    assert "Updated Spec Harness to 2.2.0" in capsys.readouterr().out
+
+    requests.clear()
+    after = snapshot(home)
+    assert update_release.main(["update"]) == 0
+    assert len(requests) == 1
+    assert snapshot(home) == after
+
+
+def test_update_preserves_shared_symlinks(home, release, monkeypatch):
+    install(home, "claude")
+    entity = home / "library/skills/spec"
+    entity.parent.mkdir(parents=True)
+    claude = home / ".claude/skills/spec"
+    shutil.move(str(claude), str(entity))
+    claude.symlink_to(entity, target_is_directory=True)
+    codex = home / ".codex/skills/spec"
+    codex.parent.mkdir(parents=True)
+    codex.symlink_to(entity, target_is_directory=True)
+    version, archive = release
+    fake_download(monkeypatch, version, archive)
+
+    assert update_release.main(["update"]) == 0
+    assert claude.is_symlink() and codex.is_symlink()
+    assert "version=2.2.0" in (entity / ".spec-skill-install").read_text(encoding="utf-8")
+
+
+def test_bad_checksum_and_network_failure_leave_installation_untouched(home, release, monkeypatch):
+    install(home, "codex")
+    before = snapshot(home)
+    version, archive = release
+    fake_download(monkeypatch, version, archive, checksum="0" * 64)
+    assert update_release.main(["update"]) == 1
+    assert snapshot(home) == before
+
+    def offline(version):
+        raise update_release.UpdateError("network unavailable")
+
+    monkeypatch.setattr(update_release, "release_info", offline)
+    assert update_release.main(["update"]) == 1
+    assert snapshot(home) == before
+
+
+@pytest.mark.parametrize(
+    "entry", ["spec-harness-2.1.0/../../escape", "/absolute", "spec-harness-2.1.0/link", "spec-harness-2.1.0/C:/escape"]
+)
+def test_archive_rejects_traversal_and_links(tmp_path, entry):
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        member = tarfile.TarInfo(entry)
+        if entry.endswith("/link"):
+            member.type = tarfile.SYMTYPE
+            member.linkname = "../../escape"
+        archive.addfile(member)
+    with pytest.raises(update_release.UpdateError, match="unsafe release archive entry"):
+        update_release.extract_archive(buffer.getvalue(), "2.1.0", tmp_path)
+    assert not (tmp_path.parent / "escape").exists()
+
+
+@pytest.mark.parametrize(
+    "resolved",
+    [
+        "https://github.com/MicTx/spec-harness/releases/tag/v2.1.0-rc1",
+        "https://example.org/MicTx/spec-harness/releases/tag/v2.1.0",
+        "https://github.com/other/spec-harness/releases/tag/v2.1.0",
+    ],
+)
+def test_release_page_rejects_prereleases_and_other_hosts(monkeypatch, resolved):
+    monkeypatch.setattr(update_release, "fetch", lambda *args, **kwargs: (b"", resolved))
+    with pytest.raises(update_release.UpdateError):
+        update_release.release_info(None)
+
+
+def test_download_falls_back_to_curl_after_proxy_failure(monkeypatch):
+    class Opener:
+        def open(self, request, timeout):
+            raise update_release.http.client.BadStatusLine("proxy failure")
+
+    def run(command, **kwargs):
+        destination = Path(command[command.index("--output") + 1])
+        destination.write_bytes(b"archive")
+        return subprocess.CompletedProcess(command, 0, "https://github.com/file", "")
+
+    monkeypatch.setattr(update_release.urllib.request, "build_opener", lambda *_: Opener())
+    monkeypatch.setattr(update_release.shutil, "which", lambda name: "/usr/bin/curl")
+    monkeypatch.setattr(update_release.subprocess, "run", run)
+    assert update_release.fetch("https://github.com/file", 100) == (b"archive", "https://github.com/file")
+    with pytest.raises(update_release.UpdateError, match="size limit"):
+        update_release.fetch("https://github.com/file", 3)
+
+
+def test_update_preflights_all_groups_before_changing_any_host(home, release, monkeypatch):
+    install(home, "claude", "compact")
+    install(home, "codex", "aggressive")
+    custom = home / "custom/skills"
+    custom.mkdir(parents=True)
+    shutil.move(str(home / ".codex/skills/spec"), str(custom / "spec"))
+    monkeypatch.setenv("CODEX_SKILLS_DIR", str(custom))
+    before = snapshot(home)
+    version, archive = release
+    fake_download(monkeypatch, version, archive)
+
+    assert update_release.main(["update"]) == 1
+    assert snapshot(home) == before
+
+    monkeypatch.setenv("FORCE", "1")
+    assert update_release.main(["update"]) == 0
+    assert "version=2.2.0" in marker(home, "claude")
+    assert "version=2.2.0" in (custom / "spec/.spec-skill-install").read_text(encoding="utf-8")
+
+
+def test_custom_root_force_never_overwrites_foreign_command(home, release, monkeypatch):
+    install(home, "claude")
+    custom = home / "custom/commands"
+    command = custom / "spec/plan.md"
+    command.parent.mkdir(parents=True)
+    command.write_text("user command\n", encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_COMMANDS_DIR", str(custom))
+    monkeypatch.setenv("FORCE", "1")
+    version, archive = release
+    fake_download(monkeypatch, version, archive)
+    before = snapshot(home)
+
+    assert update_release.main(["update"]) == 1
+    assert snapshot(home) == before
+
+
+def test_rollback_requires_explicit_version(home, release, monkeypatch):
+    install(home, "codex")
+    installed_marker = home / ".codex/skills/spec/.spec-skill-install"
+    installed_marker.write_text(marker(home, "codex").replace("version=2.1.0", "version=3.0.0"), encoding="utf-8")
+    version, archive = release
+    fake_download(monkeypatch, version, archive)
+    assert update_release.main(["update"]) == 1
+    assert "version=3.0.0" in marker(home, "codex")
+    assert update_release.main(["update", "--version", version]) == 0
+    assert "version=2.2.0" in marker(home, "codex")
+
+
+def test_rollback_to_pre_updater_release_previews_without_writes(home, tmp_path, monkeypatch):
+    install(home, "codex")
+    installed_marker = home / ".codex/skills/spec/.spec-skill-install"
+    installed_marker.write_text(marker(home, "codex").replace("version=2.1.0", "version=2.2.0"), encoding="utf-8")
+    archive = make_release(tmp_path, "2.0.0", legacy=True)
+    fake_download(monkeypatch, "2.0.0", archive)
+    before = snapshot(home)
+
+    assert update_release.main(["update", "--version", "2.0.0", "--dry-run"]) == 0
+    assert snapshot(home) == before
+    assert update_release.main(["update", "--version", "2.0.0"]) == 0
+    assert "version=2.0.0" in marker(home, "codex")
+    assert (home / ".local/bin/spec-harness").is_file()
+
+
+def test_rollback_against_real_legacy_release(home, monkeypatch):
+    archive_path = ROOT / "release/spec-harness-2.0.0.tar.gz"
+    if not archive_path.is_file():
+        pytest.skip("legacy release archive is not included in public source exports")
+    install(home, "codex")
+    installed_marker = home / ".codex/skills/spec/.spec-skill-install"
+    installed_marker.write_text(marker(home, "codex").replace("version=2.1.0", "version=2.2.0"), encoding="utf-8")
+    fake_download(monkeypatch, "2.0.0", archive_path.read_bytes())
+    before = snapshot(home)
+
+    assert update_release.main(["update", "--version", "2.0.0", "--dry-run"]) == 0
+    assert snapshot(home) == before
+    assert update_release.main(["update", "--version", "2.0.0"]) == 0
+    assert "version=2.0.0" in marker(home, "codex")
+    assert (home / ".local/bin/spec-harness").is_file()

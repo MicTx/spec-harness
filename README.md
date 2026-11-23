@@ -31,6 +31,19 @@ bash install.sh
 | DeepSeek Harness / Cursor | `dsh` / `cursor` |
 | 通用 Agent 宿主（共享技能目录 `.agents/skills`） | `agents` |
 
+## 更新
+
+安装完成后，在任意目录运行：
+
+```bash
+spec-harness update           # 更新所有已安装的宿主到最新稳定版
+spec-harness update --check   # 只检查版本
+spec-harness update --dry-run # 下载并预览，不修改安装
+spec-harness --version        # 查看各宿主已安装版本
+```
+
+命令自动下载并校验发布包，保留各宿主的配置，更新前备份旧版本；完成后重启智能体会话。也可以让智能体“更新 Spec Harness”。如果提示找不到命令，将 `~/.local/bin` 加入 `PATH`，或改用 `~/.local/bin/spec-harness update`。已有旧版需要先用包含此功能的版本运行一次 `bash install.sh`。升级、指定版本及回退详见 [RELEASE.md](RELEASE.md)。
+
 ## 快速开始
 
 在项目中启用 Skill 后，用一句话给出目标：
@@ -67,7 +80,8 @@ spec/
 ├── agents/
 ├── hooks/
 ├── references/
-└── scripts/
+├── scripts/
+└── updater/
 ```
 
 `references/` 只保留规划、执行、格式、哲学和 Git 五页。安装式宿主获得对应配置；OpenCode、Pi、OpenClaw、Hermes 使用转发垫片。
@@ -76,7 +90,7 @@ spec/
 
 ```bash
 python3 -m pytest -q
-python3 -m ruff check scripts hooks tests
+python3 -m ruff check scripts hooks updater tests
 python3 scripts/export_skill_package.py --output /tmp/spec
 ```
 

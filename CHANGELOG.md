@@ -4,6 +4,12 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [2.1.0] - 2026-11-23
+
+### Added
+
+- **Convenient updates**: `spec-harness update` checks the latest stable release, verifies its archive, and upgrades installer-owned hosts while preserving each host's profile and prompt tier. Version checks, a no-write preview, explicit rollback, reinstall, and previous-installation backups are available without a local Git checkout.
+
 ## [2.0.0] - 2026-11-20
 
 ### Breaking

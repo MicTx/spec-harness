@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 set -euo pipefail
 
+SPEC_UPDATE_PREFLIGHT=1
 REPO_URL="${REPO_URL:-}"
 REPO_REF="${REPO_REF:-}"
 INSTALL_HOSTS="${INSTALL_HOSTS:-}"
@@ -45,6 +46,7 @@ FORCE="${FORCE:-0}"
 # Upgrade preview: DRY_RUN=1 reports each host install/upgrade decision
 # and writes nothing, so user additions are visible before an upgrade.
 DRY_RUN="${DRY_RUN:-0}"
+PREFLIGHT_ONLY="${PREFLIGHT_ONLY:-0}"
 PYTHON_BIN="${PYTHON_BIN:-}"
 
 # Hermes home resolution follows the Hermes agent's own lookup order:
@@ -500,7 +502,7 @@ for name in ("SKILL.md", "install.sh", "pyproject.toml", "LICENSE", "VERSION", "
     path = source / name
     if path.is_file():
         shutil.copy2(path, output / name)
-for name in ("agents", "hooks", "references", "scripts"):
+for name in ("agents", "hooks", "references", "scripts", "updater"):
     path = source / name
     if path.is_dir():
         shutil.copytree(path, output / name, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store"))
@@ -584,7 +586,7 @@ ensure_replaceable() {
   local target="$1"
   reject_symlink "$target"
   target_exists "$target" || return 0
-  if is_installer_owned "$target" || [ "$FORCE" = "1" ]; then
+  if is_installer_owned "$target" || { [ "$FORCE" = "1" ] && [ "${SPEC_UPDATE_OWNED_ONLY:-0}" != "1" ]; }; then
     return 0
   fi
   fail "refusing to replace user-owned target without valid marker: $target (set FORCE=1 to back it up and replace it)"
@@ -984,7 +986,7 @@ check_name_collisions() {
   log "this one would replace the other. The existing target was not installed by"
   log "this installer, so it will not be touched automatically."
   log ""
-  if [ "$FORCE" = "1" ]; then
+  if [ "$FORCE" = "1" ] && [ "${SPEC_UPDATE_OWNED_ONLY:-0}" != "1" ]; then
     log "FORCE=1 is set: each target above will be backed up under $BACKUP_ROOT"
     log "before being replaced."
     return 0
@@ -1173,6 +1175,67 @@ install_skill_only_host() {
   "$PYTHON_BIN" "$runtime_dir/scripts/install_hooks.py" --host "$host" --installed-root "$target"
 }
 
+install_update_launcher() {
+  local runtime_dir="$1"
+  local bin_dir="$HOME/.local/bin"
+  local update_dir="$HOME/.local/share/spec-harness"
+  local launcher="$bin_dir/spec-harness"
+  local updater="$update_dir/update_release.py"
+  local updater_installer="$update_dir/install.sh"
+  local target
+  for target in "$bin_dir" "$update_dir"; do
+    if [ -L "$target" ] || { [ -e "$target" ] && [ ! -d "$target" ]; }; then
+      log "Update command not installed: unsafe directory $target"
+      return 0
+    fi
+  done
+  for target in "$launcher" "$updater" "$updater_installer" "$launcher.spec-skill-install" "$updater.spec-skill-install" "$updater_installer.spec-skill-install"; do
+    if [ -L "$target" ] || { target_exists "$target" && ! is_installer_owned "$target"; }; then
+      log "Update command not installed: user-owned target $target"
+      return 0
+    fi
+  done
+  mkdir -p "$bin_dir" "$update_dir"
+  backup_existing "$updater"
+  cp "$runtime_dir/updater/update_release.py" "$updater"
+  write_update_file "$updater.spec-skill-install" <<'EOF_UPDATER_MARKER'
+installed_by=spec/install.sh
+EOF_UPDATER_MARKER
+  backup_existing "$updater_installer"
+  cp "$runtime_dir/install.sh" "$updater_installer"
+  write_update_file "$updater_installer.spec-skill-install" <<'EOF_INSTALLER_MARKER'
+installed_by=spec/install.sh
+EOF_INSTALLER_MARKER
+  backup_existing "$launcher"
+  write_update_file "$launcher" <<'EOF_UPDATER_LAUNCHER'
+#!/usr/bin/env bash
+set -euo pipefail
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import sys' >/dev/null 2>&1; then
+  exec python3 "$HOME/.local/share/spec-harness/update_release.py" "$@"
+elif command -v python >/dev/null 2>&1 && python -c 'import sys' >/dev/null 2>&1; then
+  exec python "$HOME/.local/share/spec-harness/update_release.py" "$@"
+fi
+printf '%s\n' 'error: a working Python 3.9+ is required' >&2
+exit 1
+EOF_UPDATER_LAUNCHER
+  chmod 755 "$launcher"
+  write_update_file "$launcher.spec-skill-install" <<'EOF_LAUNCHER_MARKER'
+installed_by=spec/install.sh
+EOF_LAUNCHER_MARKER
+  log "Update: $launcher update"
+  case ":$PATH:" in
+    *":$bin_dir:"*) ;;
+    *) log "Add $bin_dir to PATH to use: spec-harness update" ;;
+  esac
+}
+
+write_update_file() {
+  local target="$1" temporary
+  temporary="$(mktemp "$(dirname "$target")/.spec-update.XXXXXX")"
+  cat > "$temporary"
+  mv -f "$temporary" "$target"
+}
+
 # Resolve one symlink hop to its absolute target directory, or fail with a
 # non-zero status. Unlike resolve_claude_skill_link this helper never aborts
 # the run: callers that only report (DRY_RUN) need a verdict, not a fatal
@@ -1302,6 +1365,10 @@ main() {
   CLAUDE_ALIASES=("${USER_STAGES[@]}")
   check_name_collisions
   preflight_targets
+  if [ "$PREFLIGHT_ONLY" = "1" ]; then
+    log "Installer preflight passed."
+    return 0
+  fi
 
   if host_enabled claude; then
     install_claude "$runtime_dir"
@@ -1318,6 +1385,7 @@ main() {
     fi
     install_skill_only_host "$host" "$runtime_dir"
   done
+  install_update_launcher "$runtime_dir"
 
   log ""
   log "Installed spec skill. Verify with:"

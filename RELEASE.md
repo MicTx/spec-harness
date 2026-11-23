@@ -49,9 +49,24 @@ A tagged checkout is preferable to an unpinned main checkout when reproducibilit
 
 ## Upgrade and Roll Back
 
-Keep the installed host directory backed up when changing versions. Re-run the installer from the selected release or checkout. It preserves user-owned settings and refuses to overwrite an unrelated skill directory without an explicit override.
+After installing a version with the update command, run:
 
-To roll back, install a previous tag or release archive:
+    spec-harness --version
+    spec-harness update --check
+    spec-harness update --dry-run
+    spec-harness update
+
+The updater discovers installer-owned host skills, checks the latest stable release, downloads its archive and `SHA256SUMS` over HTTPS, verifies the archive, and calls the release's installer. It preserves each host's profile and prompt tier; the installer backs up replaced files and preserves unrelated settings. Restart agent sessions after updating. `--check` reads versions without downloading the archive; `--dry-run` downloads and verifies it, then previews and preflights the installation without changing user files. `spec-harness update --reinstall` repairs an installation even if its version already matches.
+
+If `~/.local/bin` is not on `PATH`, run `~/.local/bin/spec-harness update`. If that name already belongs to another program, the installer leaves it untouched; use `python3 <installed-skill>/updater/update_release.py update` instead. An older installation needs a one-time `bash install.sh` from a release or checkout that includes this updater. Windows users can run the command from Git Bash with Python and Bash on `PATH`.
+
+Custom skill roots must be supplied using the same environment variables as installation; set `FORCE=1` to allow those roots. The updater still refuses to replace unmarked user files. A network, checksum, or preflight error stops before installation. SHA-256 downloaded from the same release channel verifies transfer integrity; it is not an independent publisher signature.
+
+To install a specific stable version or roll back explicitly:
+
+    spec-harness update --version 2.0.0
+
+The updater never automatically downgrades a newer installation. As an alternative, rerun the installer from a selected tag or release archive:
 
     git fetch --tags origin
     git checkout v0.13.15

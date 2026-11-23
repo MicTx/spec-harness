@@ -185,7 +185,7 @@ def test_payload_contract_has_one_copy_dir_source():
     sys.path.insert(0, str(ROOT / "scripts"))
     import payload_contract  # noqa: E402
 
-    assert payload_contract.COPY_DIRS == ("agents", "hooks", "references")
+    assert payload_contract.COPY_DIRS == ("agents", "hooks", "references", "updater")
     assert payload_contract.PROFILE_VALUES == ("core", "full")
     assert not hasattr(payload_contract, "CORE_EXCLUDED_DIRS")
     installer = (ROOT / "install.sh").read_text(encoding="utf-8")

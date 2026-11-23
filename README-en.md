@@ -31,6 +31,19 @@ Set the `SPEC_PROMPT_TIER` environment variable to pick the generated command bo
 | DeepSeek Harness / Cursor | `dsh` / `cursor` |
 | Generic agent hosts (shared `.agents/skills` tree) | `agents` |
 
+## Update
+
+After installation, run from any directory:
+
+```bash
+spec-harness update           # Update installed hosts to the latest stable release
+spec-harness update --check   # Check versions without installing
+spec-harness update --dry-run # Download and preview without changing installations
+spec-harness --version        # Show the installed version for each host
+```
+
+The command verifies the release archive, preserves each host's settings, and backs up the previous version. You can also ask your agent to update Spec Harness. Restart your agent session afterward. If the command is not found, add `~/.local/bin` to `PATH` or run `~/.local/bin/spec-harness update`. Existing installations need a one-time `bash install.sh` from a version that includes this feature. See [RELEASE.md](RELEASE.md) for updates, selecting versions, and rollback.
+
 ## Quick Start
 
 Enable the skill in a project and state the goal:
@@ -67,7 +80,8 @@ spec/
 ├── agents/
 ├── hooks/
 ├── references/
-└── scripts/
+├── scripts/
+└── updater/
 ```
 
 `references/` contains only planning, execution, format, philosophy, and Git pages. Command-style hosts receive generated config; OpenCode, Pi, OpenClaw, and Hermes use forwarding shims.
@@ -76,7 +90,7 @@ spec/
 
 ```bash
 python3 -m pytest -q
-python3 -m ruff check scripts hooks tests
+python3 -m ruff check scripts hooks updater tests
 python3 scripts/export_skill_package.py --output /tmp/spec
 ```
 

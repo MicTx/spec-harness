@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 ROOT_FILES = ("SKILL.md", "install.sh", "pyproject.toml", "LICENSE")
-COPY_DIRS = ("agents", "hooks", "references")
+COPY_DIRS = ("agents", "hooks", "references", "updater")
 IGNORE_PATTERNS = ("__pycache__", "*.pyc", ".DS_Store")
 SCRIPT_BLACKLIST = frozenset(
     {

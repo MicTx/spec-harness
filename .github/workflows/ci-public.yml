@@ -32,13 +32,13 @@ jobs:
           HOME="$empty_home" INSTALL_HOSTS=claude bash install.sh > install.log 2>&1
           test -f "$empty_home/.claude/skills/spec/SKILL.md"
       - name: Compile Python tree
-        run: python3 -m compileall -q scripts hooks tests
+        run: python3 -m compileall -q scripts hooks updater tests
       - name: Check installer syntax
         run: bash -n install.sh
       - name: Run pytest
         run: |
           python3 -m pytest tests/
       - name: Ruff check
-        run: ruff check scripts/ hooks/ tests/
+        run: ruff check scripts/ hooks/ updater/ tests/
       - name: Ruff format check
-        run: ruff format --check scripts/ hooks/ tests/
+        run: ruff format --check scripts/ hooks/ updater/ tests/
