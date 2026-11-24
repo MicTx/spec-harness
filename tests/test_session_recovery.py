@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.v3_support import SLUG, cli, make_package, repo, started_package
+from tests.v3_support import SLUG, cli, git, make_package, repo, started_package
 
 HOOKS = Path(__file__).resolve().parents[1] / "hooks"
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
@@ -411,7 +411,7 @@ def test_prompt_dedup_keys_on_gate_aware_token(tmp_path):
     first = handle("prompt", _event(root))
     assert first.context, "the first prompt injects the brief"
     # Same 3-field progress, new gate record: the second prompt must inject.
-    _gate(package, root, [f"task-value: {route.STALE_EVIDENCE_SUFFIX}"])
+    _gate(package, root, [f"task-value: {disk.STALE_EVIDENCE_SUFFIX}"])
     second = handle("prompt", _event(root))
     assert second.context, "a gate-only change must not be deduplicated away"
     # An identical repeat with no new evidence injects nothing.
@@ -548,34 +548,86 @@ def test_legacy_three_field_progress_state_still_works(tmp_path):
 # --- gate routing: stale self-heal, mixed repairs, unknown honesty ---
 
 
-def test_stale_only_gate_error_routes_to_check_self_heal():
-    stale = [f"task-value: {route.STALE_EVIDENCE_SUFFIX}"]
-    routed = route.gate_next(stale)
-    assert "spec.py check" in routed
-    assert "verify --all" not in routed
+def test_stop_does_not_start_from_frozen_planning_without_execution(tmp_path):
+    repo(tmp_path)
+    started_package(tmp_path)
+    assert not handle("stop", _event(tmp_path)).block
 
-    mixed = [f"task-a: {route.STALE_EVIDENCE_SUFFIX}", "task-b: changed path outside task boundary: other.txt"]
-    routed = route.gate_next(mixed)
-    assert "Move the change inside" in routed
-    assert "verify --all" not in routed
 
-    criterion = [f"task-a: {route.STALE_EVIDENCE_SUFFIX}", "criterion not proven: C1"]
-    routed = route.gate_next(criterion)
-    assert "criterion" in routed
-    assert "verify --all" not in routed
+def test_probe_and_read_only_session_do_not_arm_check_loop(tmp_path):
+    repo(tmp_path)
+    started_package(tmp_path)
+    assert cli(tmp_path, "verify", "task-value").returncode == 0
+    handle("prompt", _event(tmp_path))
+    assert cli(tmp_path, "check", "--check-only").returncode == 0
+    assert not handle("stop", _event(tmp_path)).block
 
-    # "stale" as a plain word is not the canonical stale-evidence signature.
-    deceptive = ["task-x: remove the stale build cache before linking"]
-    routed = route.gate_next(deceptive)
-    assert "remove the stale build cache" in routed
-    assert "self-heal" not in routed
 
-    assert "delivery gate failed" in route.gate_next([])
-    mixed_unknown = [f"task-value: {route.STALE_EVIDENCE_SUFFIX}", "unknown compiler error: OBJECT-MISSING"]
-    for errors in (mixed_unknown, list(reversed(mixed_unknown))):
-        routed = route.gate_next(errors)
-        assert "OBJECT-MISSING" in routed
-        assert "verify --all" not in routed and "self-heal" not in routed
+def test_weak_edits_cannot_retrigger_the_same_failed_verify_indefinitely(tmp_path):
+    repo(tmp_path)
+    directory = started_package(tmp_path, verify="printf x >> .spec/count; grep -q 'VALUE = 0' app.py")
+    assert cli(tmp_path, "verify", "task-value").returncode == 0
+    baseline = (tmp_path / ".spec/count").read_text()
+    app = tmp_path / "app.py"
+    app.write_text("VALUE = 1\n")
+    assert cli(tmp_path, "check").returncode == 1
+    assert (tmp_path / ".spec/count").read_text() == baseline + "x"
+    app.write_text("VALUE = 1\n# irrelevant\n")
+    assert cli(tmp_path, "check", "--attempt", "Inspected the first failure; unrelated edit").returncode == 1
+    assert (tmp_path / ".spec/count").read_text() == baseline + "xx"
+    assert cli(tmp_path, "check").returncode == 1
+    assert (tmp_path / ".spec/count").read_text() == baseline + "xx"
+    assert cli(tmp_path, "check", "--retry", "Confirmed a new runtime environment").returncode == 1
+    assert (tmp_path / ".spec/count").read_text() == baseline + "xxx"
+    app.write_text("VALUE = 0\n")
+    assert cli(tmp_path, "check").returncode == 0
+    assert (tmp_path / ".spec/count").read_text() == baseline + "xxxx"
+    assert not directory.exists()
+
+
+def test_diagnostic_only_session_without_host_session_id_does_not_resume(tmp_path):
+    repo(tmp_path)
+    started_package(tmp_path)
+    assert cli(tmp_path, "verify", "task-value").returncode == 0
+    event = {"cwd": str(tmp_path)}
+    handle("prompt", event)
+    assert handle("stop", event) == Action()
+
+
+def test_check_recovery_budget_is_durable_and_ignores_gate_replays(tmp_path):
+    repo(tmp_path)
+    directory = started_package(tmp_path, verify="grep -q 'VALUE = 0' app.py")
+    assert cli(tmp_path, "verify", "task-value").returncode == 0
+    (tmp_path / "app.py").write_text("VALUE = 7\n")
+    first = json.loads(cli(tmp_path, "check").stdout)
+    assert first["next"]["recovery"]["round"] == 0
+    assert handle("stop", {"cwd": str(tmp_path)}).block
+    assert not handle("stop", {"cwd": str(tmp_path), "continuing": True}).block
+    replay = json.loads(cli(tmp_path, "check").stdout)
+    assert replay["next"]["recovery"]["round"] == 0
+    for expected in range(1, 4):
+        attempted = cli(tmp_path, "check", "--attempt", f"strategy {expected}: reproduce with targeted input")
+        attempt = json.loads(attempted.stdout)
+        assert not attempt["passed"]
+        assert attempt["next"]["recovery"]["round"] == expected
+    assert attempt["next"]["state"] == "stalled"
+    assert not handle("stop", _event(tmp_path, session_id="cold-resume")).block
+    runs = disk.runs(directory)
+    assert [row["strategy"] for row in runs if row.get("kind") == "gate-repair"] == [
+        f"strategy {i}: reproduce with targeted input" for i in range(1, 4)
+    ]
+
+
+def test_legacy_diagnostic_text_does_not_authorize_an_action(tmp_path):
+    repo(tmp_path)
+    directory = started_package(tmp_path)
+    assert cli(tmp_path, "verify", "task-value").returncode == 0
+    for text in (disk.STALE_EVIDENCE_SUFFIX, "UI review: fictional error", "changed path outside scope"):
+        _gate(directory, tmp_path, [text])
+        card = _next_json(tmp_path)
+        assert card["gate"]["action"] is None
+        assert "spec.py check --check-only" in card["next"]
+        assert text in card["gate"]["errors"]
 
 
 def test_stale_gate_card_uses_check_when_verify_all_has_no_work(tmp_path):
@@ -583,8 +635,9 @@ def test_stale_gate_card_uses_check_when_verify_all_has_no_work(tmp_path):
     package = started_package(tmp_path)
     assert cli(tmp_path, "verify", "task-value").returncode == 0
     (tmp_path / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
-    _gate(package, tmp_path, [f"task-value: {route.STALE_EVIDENCE_SUFFIX}"])
+    assert cli(tmp_path, "check", "--check-only").returncode == 1
     card = _next_json(tmp_path)
+    assert card["gate"]["action"]["code"] == "evidence-refresh"
     assert card["state"] == "check-failed"
     assert card["ready"] == []
     assert "spec.py check" in card["next"]
@@ -602,17 +655,15 @@ def test_route_surfaces_recorded_gate_and_its_repair_action(tmp_path):
     repo(root)
     package = started_package(root)
     assert cli(root, "verify", "task-value").returncode == 0
-    errors = [
-        f"task-value: {route.STALE_EVIDENCE_SUFFIX}",
-        "changed path outside all task boundaries: other.txt",
-    ]
-    _gate(package, root, errors)
+    (root / "other.txt").write_text("staged\n")
+    git(root, "add", "other.txt")
+    assert cli(root, "check", "--check-only").returncode == 1
 
     card = route.next_card(root)
 
     assert card["state"] == "check-failed"
-    assert card["gate"]["errors"] == errors
-    assert "Move the change inside" in card["next"]
+    assert {item["code"] for item in card["gate"]["findings"]} == {"evidence-refresh", "boundary-index"}
+    assert "Inspect ownership of other.txt" in card["next"]
 
     _gate(package, root, [], passed=True)
     card = route.next_card(root)
@@ -807,7 +858,7 @@ def test_new_ready_task_does_not_inherit_previous_tasks_failure_directive(tmp_pa
     assert not next_card["recovery"].get("directive")
 
 
-def test_failed_final_verification_recovers_through_done(tmp_path, monkeypatch):
+def test_failed_final_verification_recovers_through_check(tmp_path, monkeypatch):
     repo(tmp_path)
     monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
     command = 'python3 -c "from app import VALUE; assert VALUE == 0"'
@@ -827,17 +878,15 @@ def test_failed_final_verification_recovers_through_done(tmp_path, monkeypatch):
     assert card["recovery"]["task"] == "task-value"
     assert card["recovery"]["final_failed"] is True
     assert card["recovery"]["directive"] == failed["directive"]
-    assert "spec.py done" in card["next"]
+    assert "spec.py check" in card["next"]
     assert "verify --all" not in card["next"]
     assert {name: (package / name).read_bytes() for name in before} == before
     for tier in TIERS:
         monkeypatch.setenv("SPEC_PROMPT_TIER", tier)
         context = handle("start", _event(tmp_path, source="compact")).context
-        _assert_budgeted_core(context, tier, "stalled", "task-value", "spec.py done", "smallest fix")
+        _assert_budgeted_core(context, tier, "stalled", "task-value", "spec.py check", "smallest fix")
     (tmp_path / "app.py").write_text("VALUE = 0\n", encoding="utf-8")
-    # `done` is the documented retry primitive after a failed final verification:
-    # it re-runs the final-tree verify instead of a no-op `verify --all`.
-    delivered = cli(tmp_path, "done")
+    delivered = cli(tmp_path, "check")
     assert delivered.returncode == 0, delivered.stderr
     final_card = _next_json(tmp_path)
     assert final_card["state"] == "delivered"

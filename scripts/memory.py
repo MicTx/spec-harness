@@ -11,14 +11,10 @@ from pathlib import Path
 import gitx
 from package import latest_runs, now, primary_root, runs
 
-# Bounded recovery clues: at most five one-line strings of 160 characters.
 PENDING_LIMIT = 5
 PENDING_CLUE_MAX = 160
-# Distinct host sessions remembered for prompt deduplication.
 PROMPT_SESSIONS = 8
-# A clue that contains one of these line shapes could impersonate protocol
-# context when rendered into a session brief, so such entries are discarded
-# instead of flattened and shown.
+# Reject clues that could impersonate hook protocol lines.
 PROTOCOL_PREFIXES = ("Next:", "Pending:", "Parked:", "Failure:", "Spec ", "Scope:", "Charter:", "Lessons:")
 
 
@@ -30,8 +26,6 @@ def _clean_pending(value: object) -> list[str]:
     for item in value[: PENDING_LIMIT * 4]:
         if not isinstance(item, str):
             continue
-        # Inspect only a bounded prefix; protocol-shaped multiline payloads are
-        # rejected whole, other control/format characters become spaces.
         prefix = item[: PENDING_CLUE_MAX * 8]
         if any(line.strip().startswith(PROTOCOL_PREFIXES) for line in prefix.splitlines()):
             continue
@@ -67,15 +61,9 @@ def snapshot_write(package: Path, event: dict, brief: dict) -> None:
         ]
     )
     previous = snapshot_read(package)
-    # A missing `pending` key must not erase clues saved by an earlier event
-    # (an `end` event after a `pre_compact` carries no pending of its own),
-    # while an explicit empty list clears them on purpose.
+    # Omitted clues preserve their original task anchor; empty clears them.
     explicit = "pending" in event
     pending = _clean_pending(event.get("pending")) if explicit else _clean_pending(previous.get("pending"))
-    # Anchor the clues to the task they belong to. When the event carries no
-    # pending of its own, the anchor must not silently rebind to whatever
-    # task the projection now reports; legacy snapshots without an anchor
-    # fall back to the task they stored.
     anchor = task_id if explicit else _pending_task(previous)
     if not isinstance(anchor, str) or not pending:
         anchor = ""
@@ -93,13 +81,7 @@ def snapshot_write(package: Path, event: dict, brief: dict) -> None:
 
 
 def snapshot_pending(package: Path, task: dict | None) -> list[str]:
-    """Return bounded recovery clues, but only for the task that saved them.
-
-    The clues are advisory compact-continuity hints: a missing or corrupt
-    snapshot, a snapshot without a matching task anchor, or garbage payload
-    types all degrade to an empty list instead of leaking stale state into a
-    different task, the live progress tuple, or a gate decision.
-    """
+    """Read advisory clues only for the task that saved them."""
     if not isinstance(task, dict):
         return []
     task_id = task.get("id")
@@ -120,12 +102,7 @@ def snapshot_read(package: Path) -> dict:
 
 
 def progress_tuple(package: Path, head: str) -> tuple[int, int, str, str]:
-    """Return a stall-detection tuple that includes the latest gate outcome.
-
-    A failed `check` changes no task marker, so without the gate component two
-    consecutive Stop hooks would look idle even though the failure signature is
-    fresh evidence.
-    """
+    """Include gate outcome without treating timestamps as progress."""
     records = runs(package)
     latest = latest_runs(package)
     done = len([record for record in latest.values() if record.get("exit") == 0])
@@ -233,14 +210,7 @@ def seen(package: Path, event: dict) -> bool:
 
 
 def prompt_token(package: Path, brief: dict) -> str:
-    """Hash live progress and the current route projection, not saved markers.
-
-    Gate content comes from `progress_token`; duplicate gate records with new
-    timestamps are not new progress. Task/command changes, explicit unblocks,
-    and changes to matching advisory recovery clues refresh the brief when the
-    stall tuple stays unchanged. Old three-field markers trigger one migration
-    injection, never suppress a different session's first prompt.
-    """
+    """Deduplicate meaningful routing changes rather than ledger timestamps."""
     unblock = next((record for record in reversed(runs(package)) if record.get("kind") == "unblock"), {})
     payload = {
         "progress": brief.get("progress_token") or brief.get("progress"),
@@ -255,12 +225,7 @@ def prompt_token(package: Path, brief: dict) -> str:
 
 
 def prompt_fresh(package: Path, session: str, token: str) -> bool:
-    """Remember bounded per-session gate-aware tokens, retaining legacy state.
-
-    Hosts with a session id never consume the old global marker. Hosts without
-    one retain that fallback; older list-valued markers migrate on first use.
-    Session ids are hashed so payload length does not inflate the snapshot.
-    """
+    """Deduplicate per session; hosts without an ID use the legacy marker."""
     state = snapshot_read(package)
     if session:
         key = hashlib.sha256(session.encode()).hexdigest()

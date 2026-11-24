@@ -122,6 +122,75 @@ def test_local_delivery_falls_back_to_primary_archive_without_indexing_it(tmp_pa
     assert f"explicit package slug not found: {SLUG}" not in result.stdout
 
 
+def test_old_v3_archive_retains_its_frozen_task_interpretation(tmp_path):
+    from package import goal_fingerprint
+
+    _repo(tmp_path)
+    head = _delivery(tmp_path)
+    archive = _archive(tmp_path, delivery_head=head)
+    spec_path, tasks_path, ledger_path = (archive / name for name in ("spec.md", "tasks.md", "runs.jsonl"))
+    spec = spec_path.read_text().replace("## Decisions", "- C2 | Extra evidence | task-extra\n## Decisions")
+    spec_path.write_text(spec)
+    tasks_path.write_text(
+        tasks_path.read_text() + "\n- [x] Extra\n  - id: task-extra\n  - boundary: app.py\n"
+        "  - verify: `true`\n  - expect: green\n"
+    )
+    records = [json.loads(line) for line in ledger_path.read_text().splitlines()]
+    records[0].update(goal_fp=goal_fingerprint(spec), task_ids=["task-value"])
+    records.insert(1, {"kind": "baseline", "task": "task-value", "cmd": "true"})
+    records.insert(-2, {"kind": "run", "task": "task-extra", "cmd": "true", "exit": 0, "final": True})
+    ledger_path.write_text("\n".join(json.dumps(row) for row in records) + "\n")
+    result = _check(tmp_path, "--revision", head, "--slug", SLUG)
+    assert result.returncode == 0, result.stdout + result.stderr
+    original_tasks = tasks_path.read_text()
+    tasks_path.write_text(original_tasks.replace("  - verify: `true`", "  - verify: `false`", 1))
+    frozen_proof = next(row for row in records if row.get("kind") == "run" and row.get("task") == "task-value")
+    frozen_proof["cmd"] = "false"
+    ledger_path.write_text("\n".join(json.dumps(row) for row in records) + "\n")
+    altered = _check(tmp_path, "--revision", head, "--slug", SLUG)
+    assert altered.returncode != 0 and "task-value: verify changed after plan-go" in altered.stdout
+    frozen_proof["cmd"] = "true"
+    tasks_path.write_text(original_tasks)
+    proof = next(row for row in records if row.get("kind") == "run" and row.get("task") == "task-extra")
+    proof["final"] = False
+    ledger_path.write_text("\n".join(json.dumps(row) for row in records) + "\n")
+    invalid = _check(tmp_path, "--revision", head, "--slug", SLUG)
+    assert invalid.returncode != 0 and "task-extra: final verification is missing or invalid" in invalid.stdout
+    proof["final"] = True
+    # Pre-change gates allowed an absent per-task baseline or an authorized
+    # amendment without a command; preserve both historical interpretations.
+    baseline = records.pop(1)
+    ledger_path.write_text("\n".join(json.dumps(row) for row in records) + "\n")
+    missing = _check(tmp_path, "--revision", head, "--slug", SLUG)
+    assert missing.returncode == 0, missing.stdout + missing.stderr
+    records.insert(1, baseline)
+    records.insert(2, {"kind": "amend", "task": "task-value", "by": "user historical"})
+    records.insert(3, {"kind": "amend", "task": "task-value", "by": "user later", "cmd": "other"})
+    tasks_path.write_text(original_tasks.replace("  - verify: `true`", "  - verify: `false`", 1))
+    next(row for row in records if row.get("kind") == "run" and row.get("task") == "task-value")["cmd"] = "false"
+    ledger_path.write_text("\n".join(json.dumps(row) for row in records) + "\n")
+    amended = _check(tmp_path, "--revision", head, "--slug", SLUG)
+    assert amended.returncode == 0, amended.stdout + amended.stderr
+    tasks_path.write_text(original_tasks)
+    del records[2:4]
+    next(row for row in records if row.get("kind") == "run" and row.get("task") == "task-value")["cmd"] = "true"
+    records[0]["ui_criteria"] = []
+    next(row for row in records if row.get("kind") == "gate")["ui_review"] = {
+        "version": 1,
+        "required": False,
+        "criteria": [],
+        "record_sha256": None,
+    }
+    ledger_path.write_text("\n".join(json.dumps(row) for row in records) + "\n")
+    result = _check(tmp_path, "--revision", head, "--slug", SLUG)
+    assert result.returncode != 0 and "task-extra: added after plan-go" in result.stdout
+    # An assessment proves the archive is new even if its baseline was altered.
+    del records[0]["ui_criteria"]
+    ledger_path.write_text("\n".join(json.dumps(row) for row in records) + "\n")
+    result = _check(tmp_path, "--revision", head, "--slug", SLUG)
+    assert result.returncode != 0 and "task-extra: added after plan-go" in result.stdout
+
+
 def test_local_delivery_missing_archive_fails_closed(tmp_path):
     _repo(tmp_path)
     head = _delivery(tmp_path)

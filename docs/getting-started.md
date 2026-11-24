@@ -77,18 +77,17 @@ python3 "$SPEC" unblock task-add --reason "已定位并修复根因"
 
 ```bash
 python3 "$SPEC" check
-python3 "$SPEC" done
 ```
 
-`done` 要求所有任务已勾选且没有 `[!]`，随后按依赖顺序复验最终树。它会生成完成报告，按用户在 Charter `V4` 中的预授权决定提交、合并或推送；合并/推送前会解析绑定 worktree 与目标 worktree，脏目标或重复绑定会先失败。只有授权为 `push` 时才会执行推送。遇到阻塞时使用：
+通过后自动复验最终树、归档、提交，并按 V4 交付。不通过时按 `next` 修复并回到同一个 `check`；`--check-only` 仅诊断。若正式验收已通过但 Git 移交不可达，agent 会给出等待或仅本地提交的选项，不把修复工作交给用户。详见[恢复循环](../references/exec.md)。记录已选分岔或复用教训时使用：
 
 ```bash
 python3 "$SPEC" decide --fork F1
 python3 "$SPEC" learn "当 add 输出为 5" "不要重新实现运算符；优先检查测试输入" --enforce tests/test_calc.py
 ```
 
-必填的 `--enforce <repo path>` 指向仓库内已跟踪、位于包外的规则目标；enforce 目标必须在 learn 与 done 时存在，`done` 归档前会重新校验，已删除或未跟踪的目标会让交付失败。
+`--enforce <repo path>` 必须指向包外已跟踪的规则目标；归档会自动收录本包已记录的教训，并重新验证该路径。
 
 完成后，归档保留 `spec.md`、`tasks.md`、`runs.jsonl`、状态和完成报告，是下一轮恢复与审计的真源。
 
-若任务命中 UI 路径，`check` 还要求真实浏览器操作与截图：用 `spec.py ui-review --file <draft>` 写入 `ui-review.json`，把每条 Criteria 映射到实际步骤，把每个问题、解决方案和修复任务或用户接受决策回写包内；源码变化后重跑流程并刷新证据。
+实际前端变化或计划承诺的 UI 验收需要真实操作与截图。用 `spec.py ui-review --file <draft>` 回写适用 Criteria 和 findings；目录名只是线索，源码改动后仍按当前树重跑实际流程。

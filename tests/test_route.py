@@ -3,7 +3,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from tests.v3_support import SLUG, cli, make_package, repo, started_package
+from tests.v3_support import SLUG, cli, git, make_package, repo, started_package
 
 HOOKS = Path(__file__).resolve().parents[1] / "hooks"
 sys.path.insert(0, str(HOOKS))
@@ -69,18 +69,19 @@ def test_failed_check_is_recorded_and_routed_to_repair(tmp_path):
     package = started_package(tmp_path)
     assert cli(tmp_path, "verify", "task-value").returncode == 0
     (tmp_path / "other.txt").write_text("outside the task boundary\n", encoding="utf-8")
+    git(tmp_path, "add", "other.txt")
 
     checked = cli(tmp_path, "check", "--check-only")
 
     assert checked.returncode == 1
     gate = [record for record in _gate_records(package) if record.get("kind") == "gate"][-1]
     assert gate["passed"] is False
-    assert any("changed path outside" in error for error in gate["errors"])
+    assert any(item["code"] == "boundary-index" for item in gate["findings"])
     routed = _card(tmp_path)
     assert routed["state"] == "check-failed"
     assert routed["stage"] == "check"
-    assert "Move the change inside the owning task boundary" in routed["next"]
-    assert any("changed path outside" in error for error in routed["gate"]["errors"])
+    assert "Inspect ownership of other.txt" in routed["next"]
+    assert routed["gate"]["action"]["code"] == "boundary-index"
 
 
 def test_stop_after_failed_check_reports_gate_error_then_stalls(tmp_path):
@@ -88,16 +89,14 @@ def test_stop_after_failed_check_reports_gate_error_then_stalls(tmp_path):
     started_package(tmp_path)
     assert cli(tmp_path, "verify", "task-value").returncode == 0
     (tmp_path / "other.txt").write_text("outside the task boundary\n", encoding="utf-8")
-    assert cli(tmp_path, "check", "--check-only").returncode == 1
+    git(tmp_path, "add", "other.txt")
+    assert cli(tmp_path, "check").returncode == 1
 
     first = handle("stop", {"cwd": str(tmp_path)})
     second = handle("stop", {"cwd": str(tmp_path)})
-    third = handle("stop", {"cwd": str(tmp_path)})
 
-    assert first.block and "Move the change inside the owning task boundary" in first.reason
-    assert second.block
-    assert not third.block
-    assert third.context.startswith("stalled:")
+    assert first.block and "Inspect ownership of other.txt" in first.reason
+    assert not second.block and second.context.startswith("stalled:")
 
 
 def test_start_hook_points_to_the_active_linked_worktree(tmp_path):

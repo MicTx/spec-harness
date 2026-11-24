@@ -3,20 +3,24 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 import gitx
 import route
 from package import (
+    STALE_EVIDENCE_SUFFIX,
     append_run,
     checkpoint_commit,
+    checkpoint_paths,
     dependency_errors,
     failure_signature,
+    frozen_commands,
     latest_runs,
     now,
+    package_baseline,
     parse_tasks,
-    read_package,
     require_execution_started,
     runs,
     subprocess_output,
@@ -140,7 +144,13 @@ def run_tasks(root: Path, slug: str, selected: list[str] | None = None, final: b
             raise ValueError("choose task ids or --all")
         chosen = _selected_tasks(records, selected)
     results = []
+    drift = frozen_commands(package, _spec, records)
+    if drift or (chosen and not package_baseline(package).get("task_ids")):
+        raise ValueError("; ".join(drift) or "no frozen verify commands; restore the package baseline")
     for task in chosen:
+        if not final:
+            checkpoint_paths(root, slug, task.globs)
+        tree_before = tree_fingerprint(root) if final else None
         if final:
             # C1/F1: consult only the latest per-task kind:run record (the same
             # latest_runs view evaluate_runs reads).  A record that passed with
@@ -148,7 +158,7 @@ def run_tasks(root: Path, slug: str, selected: list[str] | None = None, final: b
             # a changed tree or a failing latest record forces a re-run.  The
             # appended record carries the same cmd/tree_fp/final triple a real
             # re-run would, so gate freshness rules are unchanged.
-            fingerprint = tree_fingerprint(root)
+            fingerprint = tree_before
             latest = latest_runs(package).get(task.id, {})
             if (
                 latest.get("kind", "run") == "run"
@@ -232,8 +242,11 @@ def run_tasks(root: Path, slug: str, selected: list[str] | None = None, final: b
             block_task = not final and should_block(package, task.id, signature)
             if block_task:
                 record["blocked"] = True
-            print(f"--- {task.id} stdout ---\n{stdout[-4096:]}\n--- stderr ---\n{stderr[-4096:]}")
-        record["tree_fp"] = tree_fingerprint(root)
+            print(
+                f"--- {task.id} stdout ---\n{stdout[-4096:]}\n--- stderr ---\n{stderr[-4096:]}",
+                file=sys.stderr if final else sys.stdout,
+            )
+        record["tree_fp"] = tree_before or tree_fingerprint(root)
         if block_task:
             tick(root, slug, task.id, blocked=True)
             append_run(package, record)
@@ -270,26 +283,14 @@ def unblock_task(root: Path, slug: str, task_id: str, reason: str) -> dict:
     return {"slug": slug, "task": task_id, "unblocked": True, "reason": reason, "checkpoint": checkpoint}
 
 
-def evaluate_runs(root: Path, slug: str, final: bool = False, *, tree_fp: str | None = None) -> list[str]:
-    package, _spec, tasks = read_package(root, slug)
-    latest = latest_runs(package)
-    # Hook --index checks may still evaluate an active package on a
-    # checkout-index tree that has no .git; the fingerprint dimension is
-    # unverifiable there and must degrade instead of failing. Callers that
-    # already hold this compute's fingerprint (gate) pass tree_fp so the
-    # tree is hashed at most once.
-    fingerprint = (
-        tree_fp if tree_fp is not None else (tree_fingerprint(root) if gitx.toplevel(root) is not None else None)
-    )
-    errors = []
-    for task in parse_tasks(tasks):
-        if not task.command:
-            continue
-        record = latest.get(task.id, {})
-        if record.get("exit") != 0:
-            errors.append(f"{task.id}: latest verify did not pass")
-        elif record.get("cmd") != task.command or (fingerprint is not None and record.get("tree_fp") != fingerprint):
-            errors.append(f"{task.id}: evidence is stale for the current command or tree")
-        elif final and not record.get("final"):
-            errors.append(f"{task.id}: final-tree verify has not run")
-    return errors
+def evidence_status(task, record: dict, fingerprint: str | None, final: bool) -> tuple[str, str]:
+    """Return an evidence code and display text; only the gate assigns actions."""
+    if record.get("exit") not in (None, 0):
+        return "verify-failed", f"{task.id}: latest verify did not pass"
+    if record.get("exit") != 0:
+        return "evidence-refresh", f"{task.id}: latest verify did not pass"
+    if record.get("cmd") != task.command or (fingerprint is not None and record.get("tree_fp") != fingerprint):
+        return "evidence-refresh", f"{task.id}: {STALE_EVIDENCE_SUFFIX}"
+    if final and not record.get("final"):
+        return "evidence-refresh", f"{task.id}: final-tree verify has not run"
+    return "", ""

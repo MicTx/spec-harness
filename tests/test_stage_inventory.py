@@ -1,6 +1,8 @@
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -24,7 +26,10 @@ def test_check_stage_requires_ui_review_in_documented_command_surface():
 
 
 def test_architecture_index_documents_the_six_stage_surface():
-    index = (ROOT / ".spec" / "architecture" / "module-index.md").read_text(encoding="utf-8")
+    index_path = ROOT / ".spec" / "architecture" / "module-index.md"
+    if not index_path.is_file() and (ROOT / "PUBLIC_MANIFEST.json").is_file():
+        pytest.skip("private development architecture index is not part of the public export")
+    index = index_path.read_text(encoding="utf-8")
     assert "three-command" not in index
     assert "six-stage host surface" in index
     for stage in ("/spec:plan", "/spec:run", "/spec:repair", "/spec:check", "/spec:push", "/spec:doctor"):

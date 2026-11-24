@@ -4,6 +4,11 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the policy in [RELEASE.md](RELEASE.md) § Versioning Policy (Semantic Versioning with an explicit 0.x interpretation; the deciding question is whether a compatibility surface moved, not whether behavior changed).
 
+## [Unreleased]
+
+- `/spec:check` now returns structured blockers, refreshes authorized evidence, and routes bounded agent recovery back to the same command. Pi consumes native continuation. Unresolvable handoff choices are explicit, durable, and do not bypass acceptance or Git authorization.
+- Actual frontend changes and declared UI criteria still require real proof; broad directory hints and non-criterion advisories no longer block. Unrelated staged changes are never swept into a checkpoint.
+
 ## [2.2.0] - 2026-11-23
 
 ### Added

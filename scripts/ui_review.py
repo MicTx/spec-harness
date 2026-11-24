@@ -45,7 +45,7 @@ STATIC_ASSET_EXTENSIONS = frozenset(
 SCREENSHOT_FORMATS = {".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg"}
 SCREENSHOT_HASH = re.compile(r"^[0-9a-f]{64}$")
 FLOW_RESULTS = frozenset({"pass", "fail"})
-FINDING_STATUSES = frozenset({"fixed", "accepted"})
+FINDING_STATUSES = frozenset({"fixed", "accepted", "advisory"})
 USER_DECISION = re.compile(r"by:\s*user\s+\S")
 TOP_LEVEL_KEYS = frozenset(
     {"schema_version", "generated_at", "tree_fp", "patterns", "flows", "screenshots", "findings"}
@@ -164,10 +164,10 @@ def record_patterns(record: dict) -> tuple[list[str], list[str]]:
 
 def load_record(directory: Path) -> tuple[dict, list[str]]:
     path = directory / RECORD_NAME
-    if not path.exists():
-        return {}, ["ui-review.json is missing"]
     if path.is_symlink():
         return {}, ["ui-review.json must not be a symlink"]
+    if not path.is_file():
+        return {}, ["ui-review.json is missing or not a regular file"]
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -184,44 +184,51 @@ def activation(
     tasks: str,
     extra_patterns: tuple[str, ...] | list[str] = (),
 ) -> dict:
-    scope = package.scope_patterns(spec)
-    try:
-        boundaries = [pattern for task in package.parse_tasks(tasks) for pattern in task.globs]
-    except ValueError:
-        boundaries = []
-    declared = [pattern.removeprefix("new:").lower() for pattern in [*scope, *boundaries]]
-    safe_patterns = tuple(_safe_pattern(pattern) for pattern in extra_patterns)
-    safe_patterns = tuple(pattern for pattern in safe_patterns if pattern)
-    scope_ui = [pattern for pattern in scope if _pattern_is_ui(pattern)]
-    boundary_ui = [pattern for pattern in boundaries if _pattern_is_ui(pattern)]
-    extra_ui = [
-        extra
-        for extra in safe_patterns
-        if any(package.path_matches(extra, declared_pattern) for declared_pattern in declared)
-    ]
-    baseline = package.package_baseline(directory)
-    base = baseline.get("head") or gitx.head(root)
-    preexisting = set(baseline.get("dirty", []))
-    try:
-        changes = package.changed_paths(root, base)
-    except (OSError, ValueError):
-        changes = []
-    changed_ui = [
+    cards = package.parse_tasks(tasks)
+    scopes = package.scope_patterns(spec)
+    boundaries = [pattern for card in cards for pattern in card.globs]
+    base = package.package_baseline(directory).get("head") or gitx.head(root)
+    changes = package.changed_paths(root, base) if base else []
+    owned = [
         path
         for path in changes
-        if not path.startswith(".spec/") and path not in preexisting and is_ui_path(path, safe_patterns)
+        if not path.startswith(".spec/") and any(package.path_matches(path, p) for p in boundaries)
     ]
-    return {
-        "required": bool(scope_ui or boundary_ui or extra_ui or changed_ui),
-        "scope": scope_ui,
-        "boundaries": boundary_ui,
-        "extra": extra_ui,
-        "changed": changed_ui,
-        "patterns": list(safe_patterns),
-    }
+    if not base:  # Preserve the conservative shape for snapshots without Git metadata.
+        owned = [path for path in boundaries if not any(ch in path for ch in "*?[")]
+    extra = [path for path in owned if any(package.path_matches(path.lower(), p) for p in extra_patterns)]
+    strong = sorted(set(extra) | {path for path in owned if _strong_ui(path)})
+    explicit = package.ui_criteria(spec)
+    rows = package.criteria(spec)
+    by_task = {card.id for card in cards if any(package.path_matches(path, p) for p in card.globs for path in strong)}
+    mapped = {task for key, _, task in rows if key in explicit}
+    required = set(explicit) | {key for key, _, task in rows if task in by_task - mapped}
+    if strong and (not required or not by_task <= {task for _, _, task in rows}):
+        required.update(key for key, _, _ in rows)
+    advisory = sorted({p for p in [*scopes, *boundaries, *owned] if _pattern_is_ui(p)} - set(strong))
+    return dict(
+        required=bool(strong or explicit),
+        criteria=sorted(required),
+        changed=strong,
+        advisory=advisory,
+        scope=[p for p in scopes if _pattern_is_ui(p)],
+        boundaries=[p for p in boundaries if _pattern_is_ui(p)],
+        extra=extra,
+        patterns=list(extra_patterns),
+    )
 
 
-def _validate_flows(record: dict, spec: str, errors: list[str]) -> tuple[set[str], set[str], set[str], dict[str, str]]:
+def _strong_ui(path: str) -> bool:
+    suffix = PurePosixPath(path.lower()).suffix
+    parts = set(_pattern_parts(path)[:-1])
+    return (
+        suffix in FRONTEND_EXTENSIONS
+        or bool(parts & STATIC_DIRECTORY_MARKERS and suffix in STATIC_ASSET_EXTENSIONS)
+        or bool(parts & {"components", "views", "templates", "pages"} and suffix in {".js", ".ts", ".mjs"})
+    )
+
+
+def _validate_flows(record: dict, spec: str, errors: list[str], required: list[str] | None) -> tuple:
     flows = record.get("flows")
     if not isinstance(flows, list) or not flows:
         errors.append("flows must be a non-empty list")
@@ -249,7 +256,7 @@ def _validate_flows(record: dict, spec: str, errors: list[str]) -> tuple[set[str
         for field_name in ("action", "target", "expected", "observed"):
             _text_field(flow, field_name, label, errors)
         result = flow.get("result")
-        if result not in FLOW_RESULTS:
+        if not isinstance(result, str) or result not in FLOW_RESULTS:
             errors.append(f"{label}.result must be pass or fail")
         criteria = flow.get("criteria")
         if not isinstance(criteria, list) or not criteria:
@@ -271,7 +278,7 @@ def _validate_flows(record: dict, spec: str, errors: list[str]) -> tuple[set[str
                 finding_refs[flow_id] = finding.strip()
         elif finding not in (None, ""):
             errors.append(f"{label}.finding is only valid for result fail")
-    missing = sorted(known_criteria - covered)
+    missing = sorted((known_criteria if required is None else set(required)) - covered)
     if missing:
         errors.append("criteria not covered by a passing UI flow: " + ", ".join(missing))
     return flow_ids, failed, covered, finding_refs
@@ -282,7 +289,11 @@ def _validate_screenshots(record: dict, directory: Path, flow_ids: set[str], err
     if not isinstance(screenshots, list) or not screenshots:
         errors.append("screenshots must be a non-empty list")
         return set()
-    evidence_root = (directory / EVIDENCE_DIR).resolve()
+    evidence_root = directory / EVIDENCE_DIR
+    if evidence_root.is_symlink():
+        errors.append("evidence directory must not be a symlink")
+        return set()
+    evidence_root = evidence_root.resolve()
     seen_paths: set[str] = set()
     steps: set[str] = set()
     for index, screenshot in enumerate(screenshots):
@@ -340,6 +351,7 @@ def _validate_findings(
     failed_steps: set[str],
     finding_refs: dict[str, str],
     errors: list[str],
+    allow_advisory: bool,
 ) -> dict[str, dict]:
     findings = record.get("findings", [])
     if findings is None:
@@ -377,14 +389,19 @@ def _validate_findings(
             else:
                 finding_steps.add(step)
         status = finding.get("status")
-        if status not in FINDING_STATUSES:
-            errors.append(f"{label}.status must be fixed or accepted")
+        if not isinstance(status, str) or status not in FINDING_STATUSES:
+            errors.append(f"{label}.status must be fixed, accepted, or advisory")
             continue
         if not isinstance(finding_id, str) or not finding_id.strip():
             continue
         fix_task = finding.get("fix_task")
         accepted_decision = finding.get("accepted_decision")
-        if status == "fixed":
+        if status == "advisory":
+            if not allow_advisory or finding_id in finding_refs.values() or step in failed_steps:
+                errors.append(f"{label}: advisory findings cannot close a failed flow")
+            if fix_task or accepted_decision:
+                errors.append(f"{label}: advisory findings cannot claim a fix or a decision")
+        elif status == "fixed":
             if accepted_decision not in (None, ""):
                 errors.append(f"{label}.accepted_decision is not valid for a fixed finding")
             task = task_map.get(fix_task) if isinstance(fix_task, str) else None
@@ -423,6 +440,7 @@ def validate_record(
     record: dict,
     tree_fp: str | None = None,
     tree_required: bool = True,
+    required: list[str] | None = None,
 ) -> list[str]:
     errors: list[str] = []
     if not isinstance(record, dict):
@@ -442,9 +460,19 @@ def validate_record(
         errors.append("generated_at must be a non-empty string")
     _patterns, pattern_errors = record_patterns(record)
     errors.extend(pattern_errors)
-    flow_ids, failed_steps, _covered, finding_refs = _validate_flows(record, spec, errors)
+    flow_ids, failed_steps, _covered, finding_refs = _validate_flows(record, spec, errors, required)
     _validate_screenshots(record, directory, flow_ids, errors)
-    _validate_findings(record, directory, spec, tasks, flow_ids, failed_steps, finding_refs, errors)
+    _validate_findings(
+        record,
+        directory,
+        spec,
+        tasks,
+        flow_ids,
+        failed_steps,
+        finding_refs,
+        errors,
+        allow_advisory=required is not None,
+    )
     return errors
 
 
@@ -458,29 +486,33 @@ def review_status(
     directory, spec_text, tasks_text = package.read_package(root, slug)
     spec_text = spec or spec_text
     record, load_errors = load_record(directory)
-    patterns, pattern_errors = record_patterns(record)
+    patterns, _ = record_patterns(record)
     status = activation(root, directory, spec_text, tasks_text, patterns)
     result = {
         "required": status["required"],
         "activation": status,
+        "criteria": status["criteria"],
+        "record_sha256": None,
         "errors": [],
         "flows": len(record.get("flows", [])) if isinstance(record.get("flows", []), list) else 0,
         "screenshots": len(record.get("screenshots", [])) if isinstance(record.get("screenshots", []), list) else 0,
         "findings": len(record.get("findings", [])) if isinstance(record.get("findings", []), list) else 0,
     }
-    if not status["required"]:
-        result["ignored_errors"] = load_errors + pattern_errors
+    path = directory / RECORD_NAME
+    if not path.exists() and not path.is_symlink() and not status["required"]:
         return result
     if load_errors:
         result["errors"] = load_errors
         return result
-    result["errors"] = pattern_errors + validate_record(
+    result["record_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    result["errors"] = validate_record(
         directory,
         spec_text,
         tasks_text,
         record,
         tree_fp=tree_fp,
         tree_required=tree_required,
+        required=status["criteria"],
     )
     return result
 
@@ -499,7 +531,10 @@ def write_record(root: Path, slug: str, source: Path) -> dict:
     screenshots = normalized.get("screenshots")
     if not isinstance(screenshots, list):
         raise ValueError("UI review screenshots must be a list")
-    evidence_root = (directory / EVIDENCE_DIR).resolve()
+    evidence_root = directory / EVIDENCE_DIR
+    if evidence_root.is_symlink() or (directory / RECORD_NAME).is_symlink():
+        raise ValueError("UI evidence paths must not be symlinks")
+    evidence_root = evidence_root.resolve()
     rewritten = []
     for screenshot in screenshots:
         if not isinstance(screenshot, dict):
@@ -524,7 +559,9 @@ def write_record(root: Path, slug: str, source: Path) -> dict:
     normalized["generated_at"] = package.now()
     fingerprint = package.tree_fingerprint(root)
     normalized["tree_fp"] = fingerprint
-    errors = validate_record(directory, spec, tasks, normalized, tree_fp=fingerprint, tree_required=True)
+    patterns, _ = record_patterns(normalized)
+    required = activation(root, directory, spec, tasks, patterns)["criteria"]
+    errors = validate_record(directory, spec, tasks, normalized, tree_fp=fingerprint, required=required)
     if errors:
         raise ValueError("UI review is invalid: " + "; ".join(errors))
     (directory / RECORD_NAME).write_text(
@@ -543,24 +580,38 @@ def write_record(root: Path, slug: str, source: Path) -> dict:
 
 
 def archived_errors(directory: Path, spec: str, tasks: str) -> list[str]:
-    if not (directory / RECORD_NAME).exists():
-        return []
-    record, load_errors = load_record(directory)
-    if load_errors:
-        return [f"ui-review.json: {item}" for item in load_errors]
-    errors = validate_record(directory, spec, tasks, record, tree_required=False)
-    return [f"ui-review.json: {item}" for item in errors]
+    gate = package.latest_gate(directory)
+    proof = gate.get("ui_review")
+    path = directory / RECORD_NAME
+    if "ui_criteria" in package.package_baseline(directory) and not isinstance(proof, dict):
+        return ["final gate UI assessment is missing"]
+    if proof is not None and (
+        not isinstance(proof, dict)
+        or not isinstance(proof.get("required"), bool)
+        or not isinstance(proof.get("criteria"), list)
+        or proof.get("version", 1) != 1
+    ):
+        return ["invalid final gate UI assessment"]
+    if not path.exists() and not path.is_symlink():
+        required = proof and (proof["required"] or proof.get("record_sha256"))
+        return [f"required {RECORD_NAME} is missing"] if required else []
+    record, errors = load_record(directory)
+    if not errors:
+        errors = validate_record(
+            directory, spec, tasks, record, tree_required=False, required=proof["criteria"] if proof else None
+        )
+        if proof and (
+            record.get("tree_fp") != gate.get("tree_fp")
+            or hashlib.sha256(path.read_bytes()).hexdigest() != proof.get("record_sha256")
+        ):
+            errors.append("tree_fp or record digest differs from the final gate evidence")
+    return [f"{RECORD_NAME}: {item}" for item in errors]
 
 
-def summary_lines(root: Path, slug: str) -> list[str]:
-    status = review_status(root, slug, tree_required=False)
-    if not status["required"]:
-        return ["- Not required: no UI surface was changed."]
-    directory, _spec, _tasks = package.read_package(root, slug)
-    record, load_errors = load_record(directory)
-    if load_errors:
-        return [f"- Invalid: {item}" for item in load_errors]
+def summary_lines(status: dict) -> list[str]:
+    if not status["record_sha256"]:
+        return ["- Not required: no confirmed UI change or declared UI criterion."]
     return [
-        f"- Required: {status['flows']} real flows, {status['screenshots']} screenshots, "
-        f"{status['findings']} closed findings; see {RECORD_NAME} and {EVIDENCE_DIR}/.",
+        f"- {status['flows']} real flows, {status['screenshots']} screenshots, "
+        f"{status['findings']} findings; see {RECORD_NAME} and {EVIDENCE_DIR}/."
     ]

@@ -676,7 +676,7 @@ stage_description() {
     plan) printf '%s\n' "Spec: plan and freeze a task package" ;;
     run) printf '%s\n' "Spec: execute the package to a terminal state" ;;
     repair) printf '%s\n' "Spec: scaffold a repair package for a delivered spec" ;;
-    check) printf '%s\n' "Spec: audit and deliver on gate pass" ;;
+    check) printf '%s\n' "Spec: recover, verify and deliver" ;;
     push) printf '%s\n' "Spec: finish delivery and push" ;;
     doctor) printf '%s\n' "Spec: environment self-check and repair" ;;
     *) printf '%s\n' "Spec workflow stage" ;;
@@ -706,7 +706,7 @@ EOF_BODY
       cat <<EOF_BODY
 # /$command_name
 
-Execute the bound package: follow spec.py next, work each ready task inside its boundary, run its declared verify, and continue to a terminal state. With a goal argument and no bound package this is the built-in one-shot: plan, go, execute, check, and deliver in one chain; with a bound package the goal is ignored. Reversible blockers are decided by V1 and logged, not asked; park the irreversible and continue.
+Execute the bound package: follow spec.py next, complete ready tasks in scope, then use the delivery recovery loop in references/exec.md. With a goal and no bound package this is the built-in one-shot: plan, go, execute, check, deliver. Reversible blockers are decided by V1 and logged, not asked; park the irreversible and continue.
 EOF_BODY
       ;;
     repair)
@@ -720,7 +720,7 @@ EOF_BODY
       cat <<EOF_BODY
 # /$command_name
 
-Audit and close: run the delivery gate (task state, evidence, criteria, structure audit, and required UI/UX review) and write failures back. For UI-surface packages, perform real browser operations and screenshots, cover every criterion, record each finding plus its solution, and close findings as verified fixes or user-accepted decisions; then write ui-review.json with spec.py ui-review --file <draft>. When the gate passes, spec.py check runs done automatically — final-tree re-verify, archive, commit, and the V4 delivery. Use spec.py check --check-only for a gate-only probe; do not merge or push outside the declared V4 finish. Close every open question from evidence; only user-accepted findings cite by: user.
+Run spec.py check and follow its typed next action, not just the error list. Repair eligible blockers yourself, then recheck with --attempt and fresh evidence under references/exec.md. Continue until delivered, waiting for an authorized choice, or stalled with evidence. For required UI, operate real flows and write screenshots and findings to ui-review.json via spec.py ui-review --file. Use --check-only only for diagnosis; report options only when authority is missing.
 EOF_BODY
       ;;
     push)
@@ -765,7 +765,7 @@ EOF_BODY
       cat <<EOF_BODY
 # /$command_name
 
-Execute the bound package: follow spec.py next, work each ready task inside its boundary, and run its declared verify to a terminal state. Reversible blockers are decided by you and logged, not asked; park the irreversible and continue.
+Follow spec.py next through ready tasks and the delivery recovery loop in references/exec.md. Reversible blockers are decided by you and logged, not asked; park the irreversible and continue.
 EOF_BODY
       ;;
     repair)
@@ -779,7 +779,7 @@ EOF_BODY
       cat <<EOF_BODY
 # /$command_name
 
-Run the delivery gate and write failures back; a pass archives, commits, and delivers automatically. Close every open question from evidence yourself; only user-accepted findings cite by: user.
+Run spec.py check, repair its next action and recheck with evidence per references/exec.md. Stop at delivery, an authority choice, or an exhausted budget; --check-only never delivers.
 EOF_BODY
       ;;
     push)
@@ -824,7 +824,7 @@ EOF_BODY
       cat <<EOF_BODY
 # /$command_name
 
-Execute the bound package to a terminal state: follow spec.py next, stay inside each task boundary, and run its declared verify. Reversible blockers are decided and logged by you, not asked — asks carry their evidence ledger or they do not leave the session.
+Follow spec.py next through ready tasks and delivery recovery (references/exec.md). Decide reversible blockers yourself; asks carry their evidence ledger or do not leave the session.
 EOF_BODY
       ;;
     repair)
@@ -838,7 +838,7 @@ EOF_BODY
       cat <<EOF_BODY
 # /$command_name
 
-Run the delivery gate and write failures back; a pass archives, commits, and delivers automatically. Close every open question from evidence yourself. Asks cite by: user only for genuinely irreversible findings.
+Run spec.py check; repair, record evidence, and recheck per references/exec.md. Stop only at delivery, required authority, or exhausted recovery; --check-only is diagnostic.
 EOF_BODY
       ;;
     push)
@@ -1124,8 +1124,7 @@ EOF_TEMPLATE
 description: "$description"
 argument-hint: "[stage arguments]"
 ---
-Use the installed skill \`$SKILL_NAME\` and follow the \`$stage\` ownership
-contract in its runtime references. Resume from package disk state.
+Use the installed skill \`$SKILL_NAME\` and follow the \`$stage\` contract. For run/check, drive the repair loop in \`references/exec.md\` before replying.
 Forward user arguments unchanged: \$@
 EOF_TEMPLATE
   fi

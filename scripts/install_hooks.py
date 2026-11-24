@@ -61,12 +61,7 @@ OWNERSHIP_KEY = "x-spec-owned"
 
 
 def _ownership_target(host: str, config_target: Path) -> Path:
-    """Where hook ownership is recorded for this host.
-
-    Hosts with a strict config schema (Codex) reject unknown top-level keys
-    and would discard the whole hooks file, so their ownership record lives
-    in a sidecar JSON file next to the config.
-    """
+    """Strict host schemas require ownership in a sidecar."""
     if HOSTS[host].get("ownership") == "sidecar":
         return config_target.with_name(config_target.name + ".spec-owned.json")
     return config_target
@@ -82,11 +77,7 @@ def _read_inline_ownership(config_target: Path) -> dict:
 
 
 def _load_ownership(host: str, config_target: Path) -> set[str]:
-    """Commands this installer previously wrote, wherever they are recorded.
-
-    Sidecar and inline records are both consulted so a migration from either
-    direction recognizes stale Spec hooks.
-    """
+    """Accept both legacy inline and sidecar ownership."""
     commands = _owned_commands(_read_inline_ownership(config_target).get(OWNERSHIP_KEY))
     sidecar = _ownership_target(host, config_target)
     if sidecar != config_target:
@@ -107,13 +98,7 @@ def _rendered_commands(rendered: dict) -> dict[str, str]:
 
 
 def _merge_hook_config(host: str, existing: dict, rendered: dict, config_target: Path) -> dict:
-    """Merge rendered hooks into the host config.
-
-    Previously-owned Spec commands (inline or sidecar) are removed first so
-    re-install replaces instead of appending. On sidecar hosts the config
-    document stays free of the ownership key; the fresh sidecar record is
-    written by the caller.
-    """
+    """Replace owned hooks without touching foreign commands."""
     owned = _load_ownership(host, config_target) | _owned_commands(existing.get(OWNERSHIP_KEY, {}))
     data = _remove_commands(existing, owned)
     data.pop(OWNERSHIP_KEY, None)
@@ -128,20 +113,20 @@ def _merge_hook_config(host: str, existing: dict, rendered: dict, config_target:
     return data
 
 
-def _owned_hook_config(host: str, rendered: dict, config_target: Path) -> dict:
-    data = dict(rendered)
-    if _ownership_target(host, config_target) == config_target:
-        data = {**rendered, OWNERSHIP_KEY: {"commands": list(_rendered_commands(rendered).values())}}
-    return data
-
-
-def _install_shim(host: str, target: Path) -> None:
+def _install_shim(host: str, target: Path, installed_root: Path) -> None:
     source = SHIM_SOURCES[host]
     if target.exists() and "spec-harness" not in target.read_text(encoding="utf-8"):
         raise ValueError(f"refusing to overwrite non-Spec shim: {target}")
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, target)
-    shutil.copy2(HOOKS / "spec_hook.py", target.parent / "spec_hook.py")
+    if host == "pi":
+        dispatcher = installed_root / "hooks" / "spec_hook.py"
+        target.write_text(
+            source.read_text(encoding="utf-8").replace("__SPEC_DISPATCHER__", json.dumps(str(dispatcher))),
+            encoding="utf-8",
+        )
+    else:
+        shutil.copy2(source, target)
+        shutil.copy2(HOOKS / "spec_hook.py", target.parent / "spec_hook.py")
 
 
 def install_session_hooks(host: str, home: Path | None = None, installed_root: Path | None = None) -> Path | None:
@@ -150,10 +135,10 @@ def install_session_hooks(host: str, home: Path | None = None, installed_root: P
     target = config_path(host)
     if home is not None:
         target = home / str(HOSTS[host]["config"]).removeprefix("~/")
+    hook_root = installed_root.resolve() if installed_root is not None else Path(__file__).resolve().parent.parent
     if host in SHIM_SOURCES:
-        _install_shim(host, target)
+        _install_shim(host, target, hook_root)
         return target
-    hook_root = installed_root if installed_root is not None else Path(__file__).resolve().parent.parent
     rendered = render_config(host, hook_root / "hooks" / "spec_hook.py")
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
@@ -173,7 +158,7 @@ def install_session_hooks(host: str, home: Path | None = None, installed_root: P
             raise ValueError(f"host config must be a JSON object: {target}")
         data = _merge_hook_config(host, data, rendered, target)
     else:
-        data = _owned_hook_config(host, rendered, target)
+        data = _merge_hook_config(host, {}, rendered, target)
     sidecar = _ownership_target(host, target)
     if sidecar != target:
         record = {OWNERSHIP_KEY: {"commands": list(_rendered_commands(rendered).values())}}

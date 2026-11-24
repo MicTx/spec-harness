@@ -29,8 +29,10 @@ def test_surfaces_direct_autonomy():
     installer = (ROOT / "install.sh").read_text(encoding="utf-8")
     hook = (ROOT / "hooks/spec_hook.py").read_text(encoding="utf-8")
     router = (ROOT / "scripts/route.py").read_text(encoding="utf-8")
-    agents_md = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    agents_path = ROOT / "AGENTS.md"
     assert "decided by V1 and logged, not asked" in installer
     assert "do not ask the user to choose" in hook
     assert "only parked items reach the user" in router
-    assert "plan run repair check push doctor" in agents_md
+    if agents_path.is_file() or not (ROOT / "PUBLIC_MANIFEST.json").is_file():
+        agents_md = agents_path.read_text(encoding="utf-8")
+        assert "plan run repair check push doctor" in agents_md

@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import gitx
-from package import extract_branch, path_matches, specs_root
+from package import effective_finish, extract_branch, handoff_completed, parse_charter, path_matches, specs_root
+
+
+class HandoffBlocked(ValueError):
+    def __init__(self, subject: str, detail: str):
+        super().__init__(detail)
+        self.subject = subject
 
 
 def _branch_entries(worktrees: list[dict], branch: str) -> list[dict]:
@@ -48,7 +55,7 @@ def _delivery_topology(
         dirty = gitx.dirty_paths(target_worktree, exclude=())
         if dirty:
             lines = "\n".join(f"  - {path}" for path in dirty)
-            raise ValueError(f"target worktree is not clean: {target_worktree}\n{lines}")
+            raise HandoffBlocked("target-dirty", f"target worktree is not clean: {target_worktree}\n{lines}")
     anchor = target_worktree or delivery
     return delivery, target_worktree, anchor
 
@@ -74,17 +81,22 @@ def _remove_linked_worktrees(root: Path, branch: str) -> list[dict]:
     return removed
 
 
-def main_branch(root: Path, remote: str) -> str:
-    result = gitx.git(root, "ls-remote", "--symref", remote, "HEAD", check=False)
+def main_branch(root: Path, remote: str, *, require_remote: bool = False) -> str:
+    try:
+        result = gitx.git(root, "ls-remote", "--symref", remote, "HEAD", check=False, timeout=20)
+    except subprocess.TimeoutExpired as exc:
+        raise HandoffBlocked("remote-unavailable", "Git remote HEAD lookup timed out") from exc
     if result.returncode == 0:
         for line in result.stdout.splitlines():
             if line.startswith("ref: refs/heads/") and line.endswith("\tHEAD"):
                 return line.removeprefix("ref: refs/heads/").removesuffix("\tHEAD")
+    if require_remote:
+        raise HandoffBlocked("remote-unavailable", "Git remote HEAD is unavailable or has no default branch")
     branches = gitx.git(root, "branch", "--format=%(refname:short)").stdout.splitlines()
     for candidate in ("main", "master"):
         if candidate in branches:
             return candidate
-    raise ValueError("cannot resolve the delivery main branch")
+    raise HandoffBlocked("target-unknown", "cannot resolve the delivery main branch")
 
 
 def _delivery_preconditions(
@@ -92,20 +104,19 @@ def _delivery_preconditions(
     slug: str,
     branch: str,
     bound: str,
+    *,
+    require_remote: bool = False,
 ) -> tuple[str, str, list[dict], tuple[Path, Path | None, Path]]:
-    """Shared deterministic delivery checks used by ``preflight`` and ``deliver``.
-
-    Returns ``(remote, target, worktrees, topology)`` so callers do not re-resolve them.
-    """
+    """Resolve the unique delivery/target worktrees before mutation."""
     if branch in {"main", "master", "develop"}:
         raise ValueError(f"delivery for {slug} requires the package branch, current branch is {branch}")
     if bound != branch:
         raise ValueError(f"package is bound to {bound}, current branch is {branch}")
     remotes = gitx.git(root, "remote").stdout.splitlines()
     if not remotes:
-        raise ValueError("no Git remote is configured")
+        raise HandoffBlocked("remote-missing", "no Git remote is configured")
     remote = "origin" if "origin" in remotes else remotes[0]
-    target = main_branch(root, remote)
+    target = main_branch(root, remote, require_remote=require_remote)
     worktrees = _worktrees(root)
     if not worktrees:
         raise ValueError("cannot enumerate Git worktrees")
@@ -114,32 +125,22 @@ def _delivery_preconditions(
 
 
 def preflight(root: Path, slug: str, spec_text: str, globs: list[str]) -> None:
-    """Fail fast on deterministic delivery blockers before the package is archived.
-
-    Mirrors the checks ``deliver`` runs after archive, plus a residual-dirty
-    prediction so ``done`` never strands an archived package mid-delivery.
-    Every dirty path inside a task boundary — including pre-Go baseline dirt —
-    is committed by delivery, so only outside-boundary residue can block.
-    """
+    """Reject topology or residual dirt before archiving."""
     branch = gitx.branch(root)
     bound = extract_branch(spec_text)
-    _delivery_preconditions(root, slug, branch, bound)
+    _delivery_preconditions(root, slug, branch, bound, require_remote=parse_charter(spec_text).get("V4") == "push")
     dirty = gitx.dirty_paths(root, exclude=())
-    residual = []
-    for path in dirty:
-        if path.startswith(".spec/"):
-            continue
-        if any(path_matches(path, pattern) for pattern in globs):
-            continue
-        residual.append(path)
+    residual = [
+        path
+        for path in dirty
+        if not path_matches(path, f".spec/specs/{slug}") and not any(path_matches(path, pattern) for pattern in globs)
+    ]
     if not residual:
         return
-    outside = residual
-    lines = [f"delivery for {slug} would leave uncommitted changes that block merge/push:"]
-    if outside:
-        lines.append("outside task boundary (commit or stash before done):")
-        lines.extend(f"  - {p}" for p in outside)
-    raise ValueError("\n".join(lines))
+    raise HandoffBlocked(
+        "residual-dirty",
+        f"delivery for {slug} would leave uncommitted changes outside task boundary: " + ", ".join(residual[:10]),
+    )
 
 
 def deliver(root: Path, slug: str, push_enabled: bool) -> dict:
@@ -150,8 +151,15 @@ def deliver(root: Path, slug: str, push_enabled: bool) -> dict:
     if gitx.dirty_paths(root, exclude=()):
         raise ValueError("working tree is not clean")
     spec = (archive / "spec.md").read_text(encoding="utf-8")
+    finish, requested = effective_finish(archive, spec)
+    if finish == "commit" and requested != finish:
+        raise ValueError("this package was authorized for local commit only; no handoff is pending")
+    if finish == "merge" and push_enabled and not handoff_completed(archive, "merge"):
+        raise ValueError("merge recovery cannot implicitly authorize a push")
     bound = extract_branch(spec)
-    remote, target, _worktrees, (_delivery_wt, target_wt, anchor) = _delivery_preconditions(root, slug, branch, bound)
+    remote, target, _worktrees, (_delivery_wt, target_wt, anchor) = _delivery_preconditions(
+        root, slug, branch, bound, require_remote=push_enabled
+    )
     merge_wt = target_wt or _delivery_wt
     checked_out_target = False
     try:
@@ -172,10 +180,7 @@ def deliver(root: Path, slug: str, push_enabled: bool) -> dict:
         if remote_head != gitx.head(merge_wt):
             raise ValueError(f"remote {target} does not contain the delivered head")
     except Exception:
-        # Leave the caller rerunnable: drop any in-progress merge, and if this
-        # call checked out the delivery target on the root worktree, return it
-        # to the spec branch. A completed merge stays on the target branch so a
-        # retry merges "Already up to date" and continues at the failed step.
+        # Abort an incomplete merge; leave a completed merge for a push retry.
         gitx.git(merge_wt, "merge", "--abort", check=False)
         if checked_out_target:
             gitx.git(root, "checkout", branch, check=False)

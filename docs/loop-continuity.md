@@ -29,10 +29,10 @@ assume that a module's presence proved its activation.
   failure and the complete `Spark:` line are protected first; goal, parked and
   lesson text are capped per tier. Repeated injections are deterministic and
   do not grow recursively.
-- **Executable recovery routing.** Stale-only delivery-gate errors route to
-  `spec.py check`, whose final re-verify refreshes evidence. Mixed gate errors
-  surface the concrete non-stale repair first; `spec.py verify --all` is not
-  offered as a no-op when every task is already checked.
+- **Executable recovery routing.** The current [recovery loop](../references/exec.md)
+  uses typed findings rather than matching diagnostic text. The same `check`
+  refreshes authorized evidence after a fix. Mixed failures prioritize the
+  unsafe boundary or actual acceptance failure over routine re-verification.
 - **Single projection per event.** `route.next_card(..., projection=...)`
   and `route.brief(..., projection=...)` reuse a computed projection; the
   earlier `decision=` argument remains compatible. Start/subagent cost one
@@ -41,9 +41,8 @@ assume that a module's presence proved its activation.
   failure-ladder guidance as an additive ledger field; a cold next-action
   projection uses it without a host callback. When no independent task is
   ready, a blocked card names the task and the existing `spec.py unblock`
-  action. A checked task that fails final re-verification instead retains its
-  failure guidance and points to `spec.py done` after the underlying fix;
-  merely rerunning `check` does not refresh a latest failing run. The tree
+  action. A checked task that fails final re-verification retains its failure
+  guidance and returns to `spec.py check` after the underlying fix. The tree
   fingerprint reads current file content instead of reusing
   a Git-status-only cache, so repeated in-process edits invalidate old passing
   evidence. Tracked `.spec/architecture` contracts are source inputs and stay
@@ -78,8 +77,10 @@ or quality gains from running the external plugin.
 
 ## Host availability
 
-Spec installs hook configuration, but a configuration file does not prove
-that a running host emits the event. This project's DSH adapter declares
+Current Pi consumes `agent_before_settle` to request continuation without a
+fake user turn. Claude-style Stop adapters honor reentry protection. Hosts
+without continuation use the loop in the current `/spec:check` turn. A config
+file alone does not prove a host emits events. The DSH adapter declares
 only `pre_tool` and `stop`. The inspected DSH 0.2.2-rc.3 application does not
 bundle the optional Claude hooks bridge; this observation says nothing about
 additional components in a user's active profile. The installer and `doctor`

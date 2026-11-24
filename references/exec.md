@@ -1,46 +1,27 @@
 # Execution Phase
 
-A repair package (`kind: repair`) runs the standard DAG and full gate; only planning is thinner; its `repair-of` names the origin spec.
-`spec.py diff` summarizes revisions vs the plan-go baseline: changed files, spec/tasks deltas, task-id adds/removes; excludes `.spec/`; frozen only.
+After `plan-go`, `/spec:run` works the ready DAG inside each boundary, runs the declared verify, checkpoints, then enters `/spec:check`. With a goal and no package, run plans, freezes and delivers in one chain. `verify --all` stops at the first failure and never re-runs checked cards. Repair packages use the same loop. Use `plan-amend` for authorized additions or revisions; `spec.py list` and `spec.py diff` are read-only inventory and change projections. Project verify timeout: 1800s (`SPEC_PROJECT_VERIFY_TIMEOUT` overrides it).
 
-After `plan-go`, execution has no planning conversation. `/spec:run` drives this loop: take the first ready task from the dependency DAG, change only its boundary, run its exact verify, and let the harness tick and checkpoint it. Inside a boundary a creative implementation beats a mechanical one — the verify command is the judge. With a goal and no bound package, `/spec:run` is the built-in one-shot — plan, `plan-go`, execute, `check`, deliver — so no separate `goal` entry exists; with a bound package the goal is ignored. `verify <id>` rejects blocked, checked, or dependency-blocked tasks; `verify --all` runs the unfinished unblocked DAG in topological order and stops at the first failure. Use `plan-amend` only when the charter allows adjacent work and the new task passes lint. Project verify budget: 1800s; override with `SPEC_PROJECT_VERIFY_TIMEOUT` for a slower host.
+## Delivery Recovery
 
-Compaction recovery: a `start` brief for a compacted session may restore bounded advisory pending clues from `state.json` (matching task only; live route and runs stay authoritative). Prompt dedup keys on `progress_token`, so a new failing gate is not swallowed; a continuing stop computes no projection.
+Start with `spec.py check`, not a probe. `check` and `done` share one verdict. `findings` classify each issue by `code`, `severity`, `owner`, `subject` and `action`. Warnings do not block. Binding, frozen commands, actual failed acceptance, bad evidence and unsafe staged/committed changes still block. Never stash, reset or absorb unknown changes. Unstaged outside changes can remain for a local commit; merge/push must still pass preflight. Recorded lessons are included automatically; enforce targets are still checked.
 
-`check` runs the delivery gate: every task checked and no `[!]` task, criteria proven, evidence fresh, the structure audit over changed paths, and any required UI review. Every check writes a `gate` record into the package's `runs.jsonl`; a failed gate becomes the `check-failed` route state and the Stop hook blocks with the first repair action. When the gate passes, `spec.py check` executes `done` automatically: it re-runs all machine verifies on the final tree, then archives, commits, and performs the declared V4 delivery. A pass returns a completion card (`delivered`, or `push` on a failed V4 push). `check --check-only` probes without delivering; `done` retries delivery. Execution requires `plan-go` and the bound branch.
+1. Follow `next` in the JSON: finish independent ready cards first, then address the selected blocker. A changed tree or missing/stale evidence triggers the declared final verify when safe. Fix a failed verify, then use **the same check** to finish. No implicit verify expansion.
+2. Repair within the charter: inspect the ledger, run the real flow or isolate a change. Use `spec.py check --attempt '<strategy and evidence>'` after a distinct recovery attempt. Use `--retry '<diagnosed environment change>'` for a same-tree verification retry. Do not blindly repeat. Ledger counts survive sessions: three attempts per blocker, six overall. At exhaustion report findings, tried strategies and what remains; `--restart 'user <reference>'` opens a new budget only with explicit authority.
+3. Continue in this turn until delivered, parked, or stalled. Claude-style Stop and current Pi can request a bounded continuation; when the host has no continuation, loop here yourself. `spec.py next` is read-only. `check --check-only` records a probe, never verifies or delivers and never starts a loop. Respect pause/cancel and host stop reentry.
 
-`spec.py list` prints a JSON inventory of active and archived packages (branch, frozen, progress).
-
-`spec.py next` and session hooks also resolve an archived delivery on its branch: a pending V4 push or a completed delivery is projected as the next lifecycle state, and a primary-worktree session is pointed at the single active linked worktree.
+A pass completes final-tree verification, archives and commits, then applies V4. A handoff interrupted after archive remains pending; `spec.py push` retries it. Do not mistake a local archive for a completed merge or push.
 
 ## UI/UX Review
 
-When `Scope.in`, task boundaries, extra `patterns`, or actual changed paths hit a UI surface, the host must operate the running interface through real clicks, inputs, navigation, and screenshots. Store screenshots under `.spec/specs/<slug>/evidence/`, then write their paths, steps, expected/observed results, criteria ids, findings and solutions into `ui-review.json` via `spec.py ui-review --file <draft>`. The command fills `schema_version`, `generated_at`, screenshot `sha256`/`format`, and the product-tree fingerprint. Each criterion needs one passing real-operation flow; each step a screenshot. A failed step produces a finding: `fixed` with a checked verified task and solution, or `accepted` with `by: user <reference>` and a reason. Add fixes through `plan-amend`, record acceptance through `decide`, rerun affected verifies, then repeat the real operation and refresh the record. Any source-tree change invalidates the review until it is rerun. Non-UI packages are unaffected.
+Actual owned frontend changes, matching additive `patterns`, or `## UI Review` / `- criteria: C1, C2` trigger real UI evidence. Directory/scope hints alone are warnings. Cover the applicable Criteria, not unrelated backend criteria. Operate the interface through real clicks, inputs and navigation (project browser E2E can provide evidence). Capture screenshots in `evidence/`, then submit the flows and findings via `spec.py ui-review --file <draft>`. A failed flow requires a verified fix or explicitly accepted non-criterion finding; a required criterion still needs a passing flow. A purely advisory finding cannot close a failed flow. Rerun and recapture when the product tree changes; do not reuse screenshots as new results.
 
 ## Decisions
 
-| Situation | Action |
-| --- | --- |
-| A fork condition occurs | Apply its chosen option and record a `D` row citing `F<n>`. |
-| Unforeseen but reversible and in scope | Choose by V1, continue, and record reversal. |
-| Adjacent work and V2 allows | Amend the plan with `origin: emergent`. |
-| Irreversible or beyond V2/V5/V6 | Add a `P` row, block dependents, continue ready work. |
-| Only parked items remain | Present them once; record the user answer as `D` with `user <reference>`. |
+Apply chosen forks with `D` and cite `F<n>`. Decide reversible in-scope changes by V1 and record reversal. Park unauthorized work, then continue independent cards. Question budget: the only user-bound channel is `## Parked` and its projected decision cards. Ask once, up to four cards, only after checking evidence and exhausting safe options. Every ask that does reach the user carries its ledger: attempts, recommendation, alternatives and consequences; an ask without that record is a violation. Never assign the user a repair.
 
-Question budget: one batched ask, at most four cards, in planning. After Go the only user-bound channel is `## Parked`; everything reversible is decided by V1 and logged. Iron rule: never assign the user work; a mid-work problem is the agent's to close — agent loop, subagents, retries, or any means — never the user's.
-Every ask that does reach the user carries its ledger: consulted, tried, why the survivors are irreversible; an ask without that record is a violation.
+Use `spec.py decide --resolve P1 --choice resolve --by 'user <reference>' '<decision>'` to close a parked item without deleting history. `wait` leaves it pending without asking again. For blocked handoff `P0`, `wait` keeps V4; `local-commit` permits this package's local commit only. Neither choice waives proof or authorizes any additional remote action.
 
 ## Failure Ladder
 
-Each rung is an invitation to diverge: seek new evidence, not repetition.
-
-1. First failure: fresh evidence in hand — read the output and make the smallest fix that could work.
-2. Same signature again: time to diverge — build a minimal reproduction or add diagnostics somewhere new.
-3. Same signature a third time: be bold — compare the last green checkpoint and change implementation path.
-4. Still no new evidence: the harness marks the task `[!]`, records the blocking evidence, and points the creative energy at any independent ready work.
-
-After new root-cause evidence exists, run `spec.py unblock <task-id> --reason "<evidence>"` before retrying. The audit record is stored in `runs.jsonl`; `done` remains blocked until that task verifies and is checked.
-
-## Final Report
-
-Report delivery, concrete evidence, every decision made for the user and its reversal, then parked items or the evidence-backed stalled state. Close by celebrating what shipped. The only Stop release states are `delivered`, `parked-only`, and `stalled`.
+Each rung is an invitation to diverge: start with the smallest fix, use a minimal reproduction for the repeat, then compare last green and try another approach. After a fourth matching task failure, `[!]` blocks the card; continue independent work. Recover with `spec.py unblock <task-id> --reason '<new evidence>'`. Report what shipped, evidence, decisions and the remaining blocker if any.

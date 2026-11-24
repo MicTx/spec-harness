@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -299,6 +300,48 @@ def test_no_fake_alias_skills_in_pi_skills_dir(tmp_path):
     skills = home / ".pi" / "agent" / "skills"
     entries = sorted(path.name for path in skills.iterdir())
     assert entries == ["spec"], entries
+
+
+@requires_bash
+def test_pi_consumes_the_installed_stop_protocol(tmp_path):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is needed to exercise the Pi adapter without a model")
+    home = tmp_path / "home with spaces"
+    home.mkdir()
+    installation = run_installer(home)
+    assert installation.returncode == 0, installation.stdout + installation.stderr
+    extension = home / ".pi/agent/extensions/spec.ts"
+    dispatcher = home / ".pi/agent/skills/spec/hooks/spec_hook.py"
+    script = """
+const extension = (await import(process.argv[1])).default;
+const handlers = new Map();
+let armed = true, calls = 0;
+await extension({
+  on(name, callback) { handlers.set(name, callback); },
+  exec(exe, args) {
+    if (exe !== 'python3' || args[0] !== process.argv[2]) throw Error('not the installed dispatcher');
+    if (args[3] === 'stop') calls++;
+    return { stdout: JSON.stringify(armed ? { decision: 'block', reason: 'run spec.py check' } : {}) };
+  },
+});
+const ctx = { cwd: '/fixture', sessionManager: { getSessionId: () => 'fixture' } };
+const settle = handlers.get('agent_before_settle');
+if (typeof settle !== 'function') throw Error('Pi has no native continuation handler');
+const event = { entries: [], continue: false, outcome: 'completed', context: { canContinue: true } };
+const next = await settle(event, ctx);
+if (calls !== 1 || !next?.continue || next.entries[0].content !== 'run spec.py check') throw Error('not resumed');
+if (await settle({...event, outcome: 'aborted'}, ctx)) throw Error('resumed a cancelled run');
+armed = false;
+if ((await settle(event, ctx))?.continue) throw Error('resumed a terminal run');
+"""
+    result = subprocess.run(
+        [node, "--input-type=module", "-e", script, extension.as_uri(), str(dispatcher.resolve())],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @requires_bash

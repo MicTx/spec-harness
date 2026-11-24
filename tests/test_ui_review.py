@@ -33,6 +33,7 @@ def _ui_package(root: Path, *, extra_scope: str = "web/**", patch: bool = True) 
     subprocess.run(["git", "-C", str(root), "add", "web/app.py"], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(root), "commit", "-qm", "add UI target"], check=True, capture_output=True)
     if patch:
+        spec_path.write_text(spec + "\n## UI Review\n- criteria: C1\n", encoding="utf-8")
         (web / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
     return package
 
@@ -108,6 +109,65 @@ def test_path_activation_covers_ui_files_directories_and_extra_patterns():
     assert not ui_review.is_ui_path("../outside.css")
 
 
+def test_backend_under_app_does_not_require_ui_screenshots(tmp_path):
+    repo(tmp_path)
+    source = tmp_path / "app" / "api.py"
+    source.parent.mkdir()
+    source.write_text("def health(): return {'ok': True}\n")
+    subprocess.run(["git", "add", "app/api.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "track backend"], cwd=tmp_path, check=True)
+    package = make_package(tmp_path)
+    for name in ("spec.md", "tasks.md"):
+        path = package / name
+        path.write_text(path.read_text().replace("app.py", "app/api.py"))
+    assert cli(tmp_path, "plan-go").returncode == 0
+    source.write_text("def health(): return {'status': 'ok'}\n")
+    assert cli(tmp_path, "verify", "task-value").returncode == 0
+    result = cli(tmp_path, "check")
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert not payload["ui_review"]["required"]
+    assert any(finding["code"] == "ui-heuristic" for finding in payload["findings"])
+    archive = tmp_path / ".spec/specs/archive" / SLUG
+    assert not (archive / ui_review.RECORD_NAME).exists()
+
+
+def test_actual_frontend_change_requires_ui_but_not_backend_criteria(tmp_path):
+    repo(tmp_path)
+    package = make_package(tmp_path)
+    spec = package / "spec.md"
+    spec.write_text(
+        spec.read_text()
+        .replace("- in: app.py", "- in: app.py, web/**")
+        .replace("## Decisions", "- C2 | Save is visible | task-ui\n## Decisions")
+    )
+    tasks = package / "tasks.md"
+    tasks.write_text(
+        tasks.read_text() + "- [ ] Save UI\n  - id: task-ui\n  - boundary: new:web/app.tsx\n"
+        "  - verify: `true`\n  - expect: green\n"
+    )
+    assert cli(tmp_path, "plan-go").returncode == 0
+    page = tmp_path / "web/app.tsx"
+    page.parent.mkdir()
+    page.write_text("export default () => <button>Save</button>\n")
+    assert cli(tmp_path, "verify", "--all").returncode == 0
+    failed = json.loads(cli(tmp_path, "check").stdout)
+    assert failed["ui_review"]["required"] and failed["ui_review"]["criteria"] == ["C2"]
+    draft = _draft(package, tmp_path)
+    payload = json.loads(draft.read_text())
+    payload["flows"][0]["criteria"] = ["C2"]
+    finding = _accepted_finding()
+    finding.pop("accepted_decision")
+    finding.update(status="advisory", solution="Consider adding a tooltip later")
+    payload["findings"] = [finding]
+    draft.write_text(json.dumps(payload))
+    assert _write_review(tmp_path, draft).returncode == 0
+    payload["flows"][0].update(result="fail", finding="F1")
+    draft.write_text(json.dumps(payload))
+    assert "advisory findings cannot close" in _write_review(tmp_path, draft).stderr
+    assert cli(tmp_path, "check").returncode == 0
+
+
 def test_ui_package_check_fails_until_real_operation_evidence_is_written_back(tmp_path):
     package = _finished_ui_package(tmp_path)
 
@@ -143,9 +203,17 @@ def test_ui_review_auto_delivery_archives_structured_evidence_and_summary(tmp_pa
     assert record["schema_version"] == ui_review.SCHEMA_VERSION
     assert record["tree_fp"]
     assert record["screenshots"][0]["sha256"]
+    gates = [json.loads(line) for line in (archive / "runs.jsonl").read_text().splitlines() if line]
+    final = next(row for row in reversed(gates) if row.get("kind") == "gate")
+    assert final["ui_review"]["version"] == 1 and final["ui_review"]["criteria"] == ["C1"]
     assert (archive / ui_review.EVIDENCE_DIR / "flow.png").is_file()
     summary = (archive / "completion-summary.md").read_text(encoding="utf-8")
     assert "## UI Review" in summary and ui_review.RECORD_NAME in summary
+    final["ui_review"]["version"] = 99
+    (archive / "runs.jsonl").write_text("\n".join(json.dumps(row) for row in gates) + "\n")
+    assert "invalid final gate UI assessment" in ui_review.archived_errors(
+        archive, (archive / "spec.md").read_text(), (archive / "tasks.md").read_text()
+    )
 
 
 def test_non_ui_package_keeps_the_existing_four_step_lifecycle(tmp_path):
@@ -311,6 +379,7 @@ def test_extra_patterns_activate_a_backend_review_without_disabling_default_rule
     subprocess.run(["git", "-C", str(tmp_path), "add", "backend/routes.py"], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "add backend"], check=True, capture_output=True)
     assert cli(tmp_path, "plan-go").returncode == 0
+    (tmp_path / "backend" / "routes.py").write_text("ROUTE = 'settings'\n", encoding="utf-8")
     assert cli(tmp_path, "verify", "task-value").returncode == 0
 
     probe = cli(tmp_path, "check", "--check-only")
@@ -351,4 +420,6 @@ def test_archived_ui_record_is_statically_validated_without_tree_fingerprint(tmp
     record = json.loads(record_path.read_text(encoding="utf-8"))
     record["tree_fp"] = "stale"
     record_path.write_text(json.dumps(record), encoding="utf-8")
-    assert any("tree_fp" in item for item in package_errors(tmp_path, archive, True, False)) is False
+    assert any("tree_fp" in item for item in package_errors(tmp_path, archive, True, False))
+    record_path.unlink()
+    assert any("required ui-review.json is missing" in item for item in package_errors(tmp_path, archive, True, False))

@@ -64,7 +64,7 @@ def test_ledger_done_archives_recorded_lessons_with_enforce_targets(tmp_path):
     assert learn_rows[0]["enforce"] == "app.py"
 
 
-def test_ledger_done_rejects_recorded_lesson_without_lesson_used(tmp_path):
+def test_ledger_done_uses_recorded_lesson_without_requiring_a_flag(tmp_path):
     repo(tmp_path)
     started_package(tmp_path)
     assert cli(tmp_path, "verify", "task-value").returncode == 0
@@ -72,12 +72,11 @@ def test_ledger_done_rejects_recorded_lesson_without_lesson_used(tmp_path):
 
     done = cli(tmp_path, "done")
 
-    assert done.returncode == 1
-    assert "--lesson-used" in done.stderr
-    assert not (tmp_path / ".spec/specs/archive" / SLUG).exists()
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "- L1 | when: when | do: do | enforce: app.py" in _archive_summary(tmp_path)
 
 
-def test_ledger_done_requires_every_recorded_lesson(tmp_path):
+def test_ledger_done_unions_every_recorded_lesson_with_explicit_ids(tmp_path):
     repo(tmp_path)
     started_package(tmp_path)
     assert cli(tmp_path, "verify", "task-value").returncode == 0
@@ -86,9 +85,10 @@ def test_ledger_done_requires_every_recorded_lesson(tmp_path):
 
     done = cli(tmp_path, "done", "--lesson-used", "L1")
 
-    assert done.returncode == 1
-    assert "L2" in done.stderr
-    assert not (tmp_path / ".spec/specs/archive" / SLUG).exists()
+    assert done.returncode == 0, done.stdout + done.stderr
+    summary = _archive_summary(tmp_path)
+    assert summary.count("- L1 |") == 1
+    assert "- L2 |" in summary
 
 
 def test_ledger_done_rejects_missing_enforce_target(tmp_path):

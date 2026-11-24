@@ -62,7 +62,7 @@ def _evidence_errors(path: Path, tasks_text: str, spec: str) -> list[str]:
             errors.append(f"{task.id}: latest verify did not pass")
         if task.command and record.get("cmd") not in (None, task.command):
             errors.append(f"{task.id}: evidence command drift")
-    if package.parse_ledger(spec, "Parked", "P"):
+    if package.pending_parked(path, spec):
         errors.append("parked decisions remain")
     return errors
 
@@ -287,11 +287,12 @@ def _local_archive_errors(
         criteria = package.criteria(spec)
         deliveries = [record for record in records if record.get("kind") == "delivery"]
         if deliveries or pending:
-            from gate import freeze_errors
-
             errors.extend(package.dependency_errors(tasks))
-            errors.extend(freeze_errors(archive, spec, tasks))
-            if not package.package_baseline(archive):
+            frozen = package.package_baseline(archive)
+            final_gate = package.latest_gate(archive)
+            legacy = not pending and "ui_criteria" not in frozen and "ui_review" not in final_gate
+            errors.extend(package.frozen_commands(archive, spec, tasks, legacy=legacy))
+            if not frozen:
                 errors.append(f"{archive}: package baseline is missing")
             if not tasks or not criteria:
                 errors.append(f"{archive}: delivery has no tasks or criteria")
@@ -310,7 +311,6 @@ def _local_archive_errors(
                     or not record.get("final")
                 ):
                     errors.append(f"{archive}: {task.id}: final verification is missing or invalid")
-            final_gate = package.latest_gate(archive)
             if (
                 final_gate.get("passed") is not True
                 or final_gate.get("final") is not True
@@ -329,11 +329,11 @@ def _local_archive_errors(
                     ancestor = gitx.git(root, "merge-base", "--is-ancestor", delivery_head, revision, check=False)
                     if ancestor.returncode != 0:
                         errors.append(f"{archive}: delivery commit is not in the pushed history")
-            scope = package.scope_patterns(spec)
-            boundaries = [pattern for task in tasks for pattern in task.globs]
-            if any(ui_review._pattern_is_ui(pattern) for pattern in [*scope, *boundaries]):
-                if not (archive / ui_review.RECORD_NAME).is_file():
-                    errors.append(f"{archive}: required ui-review.json is missing")
+            if "ui_review" not in final_gate:
+                declared = [*package.scope_patterns(spec), *(pattern for task in tasks for pattern in task.globs)]
+                if any(ui_review._pattern_is_ui(pattern) for pattern in declared):
+                    if not (archive / ui_review.RECORD_NAME).is_file():
+                        errors.append(f"{archive}: required ui-review.json is missing")
         else:
             # Archives created before the local-delivery ledger have no
             # delivery record. Legacy semantics apply only when the archive

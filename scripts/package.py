@@ -21,10 +21,6 @@ TASK_RE = re.compile(r"^-\s*\[([ x!>])\]\s+(.+)$")
 PROTECTED = {"main", "master", "develop"}
 CHUNK = 64 * 1024
 
-# Shared suffix of gate stale-evidence errors. Both route.py (next-action
-# projection) and spec.py (curable-only delivery path) match on it, so it
-# lives in this shared-support module: support modules must not import the
-# command entry points.
 STALE_EVIDENCE_SUFFIX = "evidence is stale for the current command or tree"
 
 
@@ -452,6 +448,86 @@ def parse_ledger(spec: str, name: str, prefix: str) -> list[dict[str, str]]:
     return result
 
 
+HANDOFF_ID = "P0"
+HANDOFF_CHOICES = {
+    "wait": "Keep the original V4 and leave delivery pending",
+    "local-commit": "Commit locally only; no merge or push",
+}
+PARK_CHOICES = {
+    "wait": "Keep this decision pending without asking again",
+    "resolve": "Close this parked item with the recorded decision",
+}
+
+
+def park_decisions(directory: Path) -> dict[str, dict]:
+    return {
+        row["id"]: row
+        for row in runs(directory)
+        if row.get("kind") == "park-decision" and re.fullmatch(r"user\s+\S.*", str(row.get("by", "")))
+    }
+
+
+def pending_parked(directory: Path, spec: str) -> list[dict]:
+    decisions = park_decisions(directory)
+    return [
+        {**item, "status": "waiting" if decisions.get(item["id"], {}).get("choice") == "wait" else "open"}
+        for item in parse_ledger(spec, "Parked", "P")
+        if decisions.get(item["id"], {}).get("choice") != "resolve"
+    ]
+
+
+def effective_finish(directory: Path, spec: str) -> tuple[str, str]:
+    requested = parse_charter(spec).get("V4", "commit")
+    decision = park_decisions(directory).get(HANDOFF_ID, {})
+    if decision.get("choice") == "local-commit" and decision.get("requested") == requested:
+        return "commit", requested
+    return requested, requested
+
+
+def handoff_completed(directory: Path, finish: str) -> bool:
+    return any(row.get("kind") == "handoff" and row.get("finish") == finish for row in runs(directory))
+
+
+def resolve_parked(root: Path, slug: str, identifier: str, choice: str, by: str, reason: str) -> dict:
+    directory, spec, _ = require_execution_started(root, slug)
+    if not re.fullmatch(r"user\s+\S.*", by) or not reason or any(c in by + reason for c in "\r\n"):
+        raise ValueError("resolving a parked item requires --by 'user <reference>' and a one-line reason")
+    previous = park_decisions(directory).get(identifier, {})
+    requested = parse_charter(spec).get("V4", "commit")
+    if identifier == HANDOFF_ID:
+        if not package_baseline(directory).get("finish"):
+            raise ValueError("handoff choice requires a frozen V4; re-plan this legacy package")
+        if frozen_commands(directory, spec, parse_tasks(read_package(root, slug)[2])):
+            raise ValueError("handoff choice requires an intact frozen plan")
+        live = latest_gate(directory, execution=True)
+        eligible = live.get("head") == gitx.head(root) and live.get("tree_fp") == tree_fingerprint(root)
+        eligible = eligible and requested in {"merge", "push"} and not pending_parked(directory, spec)
+        eligible = eligible and previous.get("requested", requested) == requested
+        eligible = eligible and any(
+            item.get("code") == "handoff-blocked" and item.get("requested") == requested
+            for item in live.get("findings", [])
+        )
+        choices = HANDOFF_CHOICES
+    else:
+        eligible = any(item["id"] == identifier for item in pending_parked(directory, spec))
+        choices = PARK_CHOICES
+    if not eligible or choice not in choices or previous.get("choice") in {choice, "local-commit", "resolve"}:
+        raise ValueError(f"decision {identifier} does not offer {choice or 'an empty choice'} on the current package")
+    row = dict(kind="park-decision", id=identifier, choice=choice, by=by, reason=reason, requested=requested, ts=now())
+    append_run(directory, row)
+    return row
+
+
+def ui_criteria(spec: str) -> list[str]:
+    return [
+        key.strip()
+        for line in section(spec, "UI Review")
+        if line.startswith("criteria:")
+        for key in line.split(":", 1)[1].split(",")
+        if key.strip()
+    ]
+
+
 def criteria(spec: str) -> list[tuple[str, str, str]]:
     result = []
     for line in section(spec, "Criteria"):
@@ -648,12 +724,42 @@ def latest_runs(package: Path) -> dict[str, dict]:
     }
 
 
-def latest_gate(package: Path) -> dict:
-    """Return the most recent delivery-gate record, if the harness wrote one."""
-    for record in reversed(runs(package)):
-        if record.get("kind") == "gate":
-            return record
-    return {}
+def latest_gate(package: Path, *, execution: bool = False) -> dict:
+    return next(
+        (row for row in reversed(runs(package)) if row.get("kind") == "gate" and not (execution and row.get("probe"))),
+        {},
+    )
+
+
+def gate_actions(row: dict) -> list[dict]:
+    priority = {
+        "bound-worktree": 0,
+        "restore-plan": 0,
+        "plan": 0,
+        "isolate-change": 0,
+        "run-task": 1,
+        "fix-verify": 2,
+        "unblock": 3,
+        "review-ui": 4,
+        "inspect-delivery": 4,
+        "reverify": 5,
+        "choose-handoff": 6,
+    }
+    blockers = [item for item in row.get("findings", []) if item.get("severity") == "block"]
+    return sorted(blockers, key=lambda item: priority.get(item.get("action"), 4))
+
+
+def gate_recovery(directory: Path, primary: dict | None) -> dict:
+    rows = runs(directory)
+    start = next((i for i in range(len(rows) - 1, -1, -1) if rows[i].get("kind") == "gate-restart"), -1)
+    attempts = [row for row in rows[start + 1 :] if row.get("kind") == "gate-repair"]
+    key = [primary.get("code"), primary.get("subject")] if primary else []
+    matched = [row for row in attempts if row.get("finding") == key]
+    return dict(
+        round=len(attempts),
+        exhausted=len(attempts) >= 6 or len(matched) >= 3,
+        strategies=[row["strategy"] for row in matched[-3:]],
+    )
 
 
 def append_run(package: Path, record: dict) -> None:
@@ -692,23 +798,12 @@ def _hash_tree(root: Path) -> str:
 
 
 def tree_fingerprint(root: Path) -> str:
-    """Hash the current product tree, reading every tracked or untracked file.
-
-    The hash must be recomputed on every call: Git status describes path states,
-    not content, so memoizing across calls would let later content edits with an
-    unchanged porcelain entry reuse stale evidence. Callers that need one hash
-    for several checks pass it explicitly (for example ``gate.compute``).
-    """
+    """Recompute every time; Git status cannot detect content changes within one status."""
     return _hash_tree(root)
 
 
 def goal_fingerprint(spec: str) -> str:
-    """Hash the accepted problem definition: the Goal ledger rows.
-
-    plan-go records this hash in the package baseline; the delivery gate
-    compares it with the current Goal section, so a post-Go rewrite of the
-    problem is visible while Criteria, Decisions and Parked stay editable.
-    """
+    """Bind the problem definition independently of decisions and parked items."""
     return hashlib.sha256("\n".join(section(spec, "Goal")).encode()).hexdigest()
 
 
@@ -760,13 +855,8 @@ def _portable_path(value: str) -> str:
 
 
 def changed_paths(root: Path, base: str | None = None) -> list[str]:
-    """Tracked changes against *base* plus all untracked files.
-
-    Passing the package's recorded baseline head is what makes delivery audit
-    cumulative: once a task checkpoint commits its edits, a HEAD-relative diff
-    would forget them.
-    """
-    args = ["diff", "--name-only", "-z"] + ([base] if base else ["HEAD"])
+    """Include checkpointed changes from *base*, plus untracked files."""
+    args = ["diff", "--name-only", "--no-renames", "-z", base or "HEAD"]
     tracked = [os.fsdecode(name) for name in gitx.git(root, *args, check=False, text=False).stdout.split(b"\0") if name]
     untracked = [
         os.fsdecode(name)
@@ -828,6 +918,70 @@ def package_baseline(package: Path) -> dict:
     return {}
 
 
+def frozen_commands(directory: Path, spec: str, records: list[Task], *, legacy: bool = False) -> list[str]:
+    baseline = package_baseline(directory)
+    frozen = set(baseline.get("task_ids") or [])
+    if not baseline.get("goal_fp") or not frozen:
+        return []
+    errors = []
+    if goal_fingerprint(spec) != baseline["goal_fp"]:
+        errors.append("problem definition changed after plan-go")
+    frozen_criteria = {tuple(row) for row in baseline.get("criteria", [])}
+    if not frozen_criteria <= set(criteria(spec)):
+        errors.append("acceptance criteria changed after plan-go")
+    if "ui_criteria" in baseline and ui_criteria(spec) != baseline["ui_criteria"]:
+        errors.append("UI review criteria changed after plan-go")
+    if "charter" in baseline and parse_charter(spec) != baseline["charter"]:
+        errors.append("charter changed after plan-go; use an authorized package decision")
+    elif "finish" in baseline and parse_charter(spec).get("V4", "commit") != baseline["finish"]:
+        errors.append("V4 finish changed after plan-go; use a package decision")
+    if "task_boundaries" in baseline and any(
+        task.id in frozen and list(task.globs) != baseline["task_boundaries"].get(task.id) for task in records
+    ):
+        errors.append("task boundary changed after plan-go; use an authorized plan-amend")
+    if "task_depends" in baseline and any(
+        task.id in frozen and list(task.depends_on) != baseline["task_depends"].get(task.id) for task in records
+    ):
+        errors.append("task dependencies changed after plan-go")
+    for name in sorted(frozen - {task.id for task in records}):
+        errors.append(f"{name}: removed after plan-go; open a new package")
+    accepted, amended, old_amends = {}, {}, {}
+    v2 = parse_charter(spec).get("V2", "strict")
+    for row in runs(directory):
+        task = row.get("task")
+        if row.get("kind") == "baseline" and task in frozen:
+            accepted[task] = row.get("cmd")
+        if row.get("kind") == "amend" and amend_authorized(str(row.get("by", "")), v2):
+            amended[task] = row
+            old_amends.setdefault(task, set()).add(str(row.get("cmd") or ""))
+    for task in records:
+        authorization = amended.get(task.id, {})
+        skip = task.id not in frozen or not task.command or accepted.get(task.id, task.command) == task.command
+        if legacy and (skip or bool({"", task.command} & old_amends.get(task.id, set()))):
+            continue
+        boundary = authorization.get("boundary", list(task.globs))
+        authorized_amend = task.command == authorization.get("cmd") and list(task.globs) == boundary
+        if task.id not in frozen and "task_boundaries" in baseline:
+            authorized_amend = (
+                authorized_amend
+                and "boundary" in authorization
+                and list(task.depends_on) == authorization.get("depends", [])
+            )
+        if (
+            task.command
+            and task.verify == f"`{task.command}`"
+            and (task.command == accepted.get(task.id) or authorized_amend)
+        ):
+            continue
+        if task.id not in frozen:
+            errors.append(f"{task.id}: added after plan-go; use an authorized plan-amend")
+        elif v2 == "strict":
+            errors.append(f"{task.id}: verify changed after plan-go")
+        else:
+            errors.append(f"{task.id}: use plan-amend --revise")
+    return errors
+
+
 def require_execution_started(root: Path, slug: str) -> tuple[Path, str, str]:
     """Require a frozen package on its bound branch before execution."""
     package, spec, tasks = read_package(root, slug)
@@ -840,26 +994,16 @@ def require_execution_started(root: Path, slug: str) -> tuple[Path, str, str]:
     return package, spec, tasks
 
 
-def _baseline_dirty(root: Path, package: Path) -> set[str]:
-    del root
-    return set(package_baseline(package).get("dirty", []))
-
-
-def _unstage_baseline_dirty(root: Path, baseline: set[str], patterns: tuple[str, ...] = ()) -> None:
-    """Drop pre-Go dirt from the index unless it sits inside a task boundary.
-
-    Baseline changes matching a task boundary belong to the delivery: they are
-    staged by ``git_add_paths`` and must stay so the wip and delivery commits
-    carry them. Only baseline paths outside every boundary are unstaged back to
-    the worktree.
-    """
-    for path in sorted(baseline):
-        if any(path_matches(path, pattern) for pattern in patterns):
-            continue
-        if (root / path).exists():
-            gitx.git(root, "restore", "--staged", "--", path, check=False)
-        else:
-            gitx.git(root, "rm", "--cached", "-q", "--", path, check=False)
+def foreign_index_paths(root: Path, patterns: tuple[str, ...], *, local: bool) -> list[str]:
+    """Never consume or silently unstage someone else's index entries."""
+    result = gitx.git(root, "diff", "--cached", "--name-only", "--no-renames", "-z", text=False)
+    paths = (os.fsdecode(raw) for raw in result.stdout.split(b"\0") if raw)
+    return [
+        path
+        for path in paths
+        if not any(path_matches(path, pattern) for pattern in patterns)
+        and not (local and local_evidence.is_evidence_path(path))
+    ]
 
 
 _GIT_PATH_CHUNK = 200
@@ -910,25 +1054,21 @@ def git_add_paths(root: Path, paths: list[str]) -> None:
         gitx.git(root, "add", "-A", "--", *selected)
 
 
-def checkpoint_commit(root: Path, slug: str, title: str, patterns: tuple[str, ...] = ()) -> str:
-    """Commit only the task boundary and its package state.
+def checkpoint_paths(root: Path, slug: str, patterns: tuple[str, ...]) -> tuple[tuple[str, ...], bool]:
+    paths = (*patterns, f".spec/specs/{slug}", ".spec/charter.md")
+    local = local_evidence.is_local(root)
+    foreign = foreign_index_paths(root, paths, local=local)
+    if foreign:
+        raise ValueError("staged path outside the task boundary: " + ", ".join(foreign))
+    return paths, local
 
-    `git add -A` would capture unrelated dirt that existed before Go.  The
-    package baseline records that dirt, so it is staged and then removed from
-    the index again; it remains recoverable in the user's worktree.
-    """
-    package = package_dir(root, slug)
-    if local_evidence.is_local(root):
-        # Evidence is local-only: never stage it, and retire any package files
-        # still tracked on a branch created before the policy was enabled.
+
+def checkpoint_commit(root: Path, slug: str, title: str, patterns: tuple[str, ...] = ()) -> str:
+    paths, local = checkpoint_paths(root, slug, patterns)
+    if local:
         local_evidence.ensure(root)
         local_evidence.untrack(root)
-    if not gitx.dirty_paths(root, exclude=()):
-        return ""
-    paths = [pattern.removeprefix("new:") for pattern in patterns if pattern]
-    paths.extend([f".spec/specs/{slug}", ".spec/charter.md"])
-    git_add_paths(root, paths)
-    _unstage_baseline_dirty(root, _baseline_dirty(root, package), patterns)
+    git_add_paths(root, list(paths))
     status = gitx.git(root, "diff", "--cached", "--quiet", check=False)
     if status.returncode == 0:
         return ""

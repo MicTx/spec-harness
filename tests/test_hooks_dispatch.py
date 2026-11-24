@@ -22,7 +22,8 @@ def test_stop_without_active_package_releases(tmp_path):
 
 def test_stop_with_progress_blocks_once_then_stalls_after_two_attempts(tmp_path):
     repo(tmp_path)
-    package = make_package(tmp_path, verify="false")
+    package = started_package(tmp_path, verify="test ! -e fail-marker")
+    (tmp_path / "fail-marker").write_text("fail\n")
     assert cli(tmp_path, "verify", "task-value").returncode == 1
     first = handle("stop", event(tmp_path))
     second = handle("stop", event(tmp_path))

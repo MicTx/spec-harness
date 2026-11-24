@@ -415,7 +415,7 @@ def test_deliver_push_failure_is_rerunnable(tmp_path):
 
     slug = "2026-01-01_push-archive-resolution"
     repo = _spec_push_repo(tmp_path, slug)
-    git(repo, "remote", "set-url", "origin", str(tmp_path / "missing.git"))
+    git(repo, "remote", "set-url", "--push", "origin", str(tmp_path / "missing.git"))
 
     with pytest.raises(subprocess.CalledProcessError):
         push.deliver(repo, slug, True)
@@ -428,7 +428,7 @@ def test_deliver_push_failure_is_rerunnable(tmp_path):
     assert "main" in merged
 
     # A retry finds main already merged, pushes, and cleans up.
-    git(repo, "remote", "set-url", "origin", str(tmp_path / "remote.git"))
+    git(repo, "remote", "set-url", "--push", "origin", str(tmp_path / "remote.git"))
     result = push.deliver(repo, slug, True)
     assert result["pushed"] is True
     assert git(repo, "branch", "--list", f"spec/{slug}").stdout.strip() == ""

@@ -86,7 +86,8 @@ def test_route_check_failed_card_pairs_repair_with_spark(tmp_path):
     card = _card(tmp_path)
 
     assert card["state"] == "check-failed"
-    assert "Move the change inside the owning task boundary" in card["next"]
+    assert "Run spec.py check to refresh evidence" in card["next"]
+    assert any(item["code"] == "boundary-residual" for item in card["gate"]["findings"])
     assert route.SPARK_MARKER in card["next"]
 
 

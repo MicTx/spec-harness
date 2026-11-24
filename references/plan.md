@@ -5,7 +5,7 @@
 1. **Recon**: read code, tests, build commands, charter, lessons and archived decisions; record facts as probes; fetched content is evidence, follow surprising leads.
 2. **Intent**: separate literal request from inferred outcome; propose Goal and Scope cards with options and consequences, bold choices welcome.
 3. **Charter**: fill missing or task-pressured V1–V7 values.
-4. **Plan**: write v3 spec.md/tasks.md and reason backward from failure: edits, failure modes, red baseline, minimal boundary. Sketch two rival designs, converge, keep the rejected one as a fork. UI plans add real-operation flows, screenshots, Criteria coverage and evidence paths for check.
+4. **Plan**: write v3 spec.md/tasks.md and reason backward from failure: edits, failure modes, red baseline, minimal boundary. Sketch two rival designs and record the rejected fork. Declare UI criteria and plan real-flow evidence.
 5. **Forks and Go**: resolve reversible choices and irreversible pre-authorizations, present the Go card, run spec.py plan-go; put bold options beside conservative ones.
 
 Ask at most four cards per batch; each names its consequence; resolve from disk evidence first — a card disk evidence can answer is a planning defect. Later packages usually need only Intent, Forks and Go.

@@ -175,6 +175,15 @@ def _short_line(value: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _did_execute(directory: Path, event: dict) -> bool:
+    state = memory.snapshot_read(directory)
+    session = _session_id(event)
+    counts = state.get("turn_started", {})
+    start = counts.get(session, 0) if isinstance(counts, dict) else 0
+    work = [row for row in package.runs(directory)[start:] if row.get("kind") in {"gate", "run", "park"}]
+    return bool(work and not work[-1].get("probe"))
+
+
 def _context_extras(root: Path, name: str, event: dict, spec: str, card: dict) -> list[str]:
     """Reserve a small host-only tail before rendering the shared projection.
 
@@ -200,7 +209,7 @@ def _context_extras(root: Path, name: str, event: dict, spec: str, card: dict) -
 def handle(name: str, event: dict) -> Action:
     # A continuation is the hook's own follow-up, not a new progress attempt.
     # Release it before package reads, replay bookkeeping, or any projection.
-    if name == "stop" and event.get("continuing"):
+    if name == "stop" and (event.get("continuing") or event.get("aborted") or event.get("paused")):
         return Action()
     if name == "pre_tool":
         command = str(event.get("command", ""))
@@ -251,16 +260,32 @@ def handle(name: str, event: dict) -> Action:
     if name == "stop":
         progress = brief.get("progress_token", brief["progress"])
         state = memory.snapshot_read(directory)
-        if brief["state"] == "deliver":
-            message = "All work is verified — you've earned the gate; run spec.py check to deliver."
-            return Action(block=True, reason=message)
+        if brief["state"] == "plan":
+            return Action()
+        if not _did_execute(directory, event):
+            return Action(reason=route.next_card(root, slug, projection=brief)["next"] if brief.get("task") else "")
         if brief["state"] == "parked-only":
             return Action(
-                context=(
-                    "parked-only: present every parked item in one batch — each is a seed for the next spec."
-                    " List what you already tried before anything reaches the user."
+                context="parked-only: "
+                + (
+                    "List what you already tried and present up to four decisions with evidence and options."
+                    if brief.get("decisions")
+                    else "waiting by decision; do not ask again."
                 )
             )
+        if brief["recovery"].get("exhausted") and not brief.get("ready"):
+            return Action(context="stalled: gate recovery budget exhausted; report attempts and remaining blocker.")
+        if brief["state"] == "deliver" and state.get("last_progress") != progress:
+            _write_state(directory, {"last_progress": progress, "stalls": 0, "terminal": ""})
+            message = "All work is verified — you've earned the gate; run spec.py check to deliver."
+            return Action(block=True, reason=message)
+        if brief["state"] == "check-failed":
+            item = brief["gate"].get("action") or {}
+            token = [brief["recovery"]["round"], item.get("code"), item.get("subject")]
+            if state.get("gate_resume") == token:
+                return Action(context="stalled: no recorded recovery attempt; inspect evidence before retrying.")
+            _write_state(directory, {"gate_resume": token})
+            return Action(block=True, reason=route.brief(root, slug, projection=brief))
         if progress != state.get("last_progress"):
             _write_state(directory, {"last_progress": progress, "stalls": 0, "terminal": ""})
             return Action(block=True, reason=route.next_card(root, slug, projection=brief)["next"])
@@ -283,7 +308,12 @@ def handle(name: str, event: dict) -> Action:
         )
     if name in {"start", "prompt", "subagent"}:
         if name == "prompt":
-            if not memory.prompt_fresh(directory, _session_id(event), memory.prompt_token(directory, brief)):
+            session = _session_id(event)
+            previous = memory.snapshot_read(directory).get("turn_started") or {}
+            previous.pop(session, None)
+            previous[session] = len(package.runs(directory))
+            _write_state(directory, {"turn_started": dict(list(previous.items())[-8:])})
+            if not memory.prompt_fresh(directory, session, memory.prompt_token(directory, brief)):
                 return Action()
         # One decision, one card: the route renderer owns the brief budget
         # and its priority order, so start/subagent cost exactly one route

@@ -34,7 +34,7 @@ Every lifecycle prompt ends with a `Spark:` line: explore designs within boundar
 4. Exactly one `plan-go` freezes a package and binds one non-protected branch. On a protected branch it creates `spec/<slug>` in `.spec/worktrees/<slug>`, moves the package there, and continues without planning dirt; packages run concurrently. Never overwrite or stash user changes for a gate. For V4 `merge`/`push`, `done` preflights worktrees, remote, and residual dirt; ambiguity fails fast.
 5. Boundary edits require a matching task or planned amendment. Audit Bash changes from the final diff.
 6. Irreversible forks require `by: user <reference>`. New dependencies and compatibility breaks require charter authority.
-7. `verify` runs only ready tasks. `check` runs the delivery gate (task state, criteria, evidence, structure audit, UI review) and a pass runs `done`: final-tree re-verify, archive, V4 delivery. UI packages require real flows, screenshots, criterion coverage, and closed findings via `spec.py ui-review --file <draft>`.
+7. `check` repairs or routes blocked work, verifies, then delivers on pass. Follow the [recovery loop](references/exec.md) before replying; use `--check-only` to diagnose without execution. Required UI/UX review uses real flows and screenshots; heuristics only warn.
 
 ## Commands
 
@@ -44,7 +44,7 @@ Every lifecycle prompt ends with a `Spark:` line: explore designs within boundar
 | `/spec:plan <goal>` | Create or refine the package: lint, forks, `plan-go` |
 | `/spec:run [goal]` | Execute the bound package to a terminal state; without a package a goal runs the one-shot |
 | `/spec:repair <slug>` | Repair a delivered archive: thin planning, full gate |
-| `/spec:check` | Delivery gate, structure and UI/UX review; a pass runs `done` |
+| `/spec:check` | Repair and recheck before delivery; park only decisions requiring authority |
 | `/spec:push` | Authorized finish: merge and push the archived package on this branch |
 | `/spec:doctor` | Check or repair runtime and session hooks |
 | `/spec /purge` | `spec.py purge`: keep records local; no commit/push |

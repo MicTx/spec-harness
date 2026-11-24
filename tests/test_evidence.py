@@ -127,15 +127,7 @@ def test_final_evidence_is_explicitly_marked(tmp_path):
 
 def test_timeout_is_recorded_as_failure_evidence(tmp_path, monkeypatch):
     repo(tmp_path)
-    package = started_package(tmp_path)
-    tasks = package / "tasks.md"
-    tasks.write_text(
-        tasks.read_text(encoding="utf-8").replace(
-            "- verify: `true`",
-            "- verify: `python3 -c 'import time; time.sleep(3)'`",
-        ),
-        encoding="utf-8",
-    )
+    package = started_package(tmp_path, verify="true")
 
     class StubSubprocess:
         TimeoutExpired = subprocess.TimeoutExpired

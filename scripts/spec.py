@@ -28,7 +28,6 @@ import package  # noqa: E402
 import plan  # noqa: E402
 import route  # noqa: E402
 import ui_review  # noqa: E402
-from package import STALE_EVIDENCE_SUFFIX  # noqa: E402
 from path_safety import safe_child  # noqa: E402
 
 
@@ -71,6 +70,8 @@ def parser() -> argparse.ArgumentParser:
     decide.add_argument("--fork")
     decide.add_argument("--by", default="V1")
     decide.add_argument("--park", action="store_true")
+    decide.add_argument("--resolve", metavar="P_ID")
+    decide.add_argument("--choice", choices=("wait", "resolve", "local-commit"))
     decide.add_argument("--reversal")
     unblock = commands.add_parser("unblock")
     unblock.add_argument("task_id")
@@ -82,7 +83,13 @@ def parser() -> argparse.ArgumentParser:
     finish = commands.add_parser("done")
     finish.add_argument("--lesson-used", action="append", default=[])
     check = commands.add_parser("check")
-    check.add_argument("--check-only", action="store_true")
+    mode = check.add_mutually_exclusive_group()
+    mode.add_argument("--check-only", action="store_true")
+    mode.add_argument("--attempt", metavar="EVIDENCE", help="record a distinct recovery strategy and result")
+    mode.add_argument(
+        "--retry", metavar="EVIDENCE", help="retry an unchanged tree after a diagnosed environment change"
+    )
+    mode.add_argument("--restart", metavar="USER_REFERENCE", help="restart an exhausted budget with user authority")
     check.add_argument("--lesson-used", action="append", default=[])
     review = commands.add_parser("ui-review")
     review.add_argument("--file", required=True)
@@ -98,11 +105,15 @@ def parser() -> argparse.ArgumentParser:
 
 
 def append_decision(root: Path, slug: str, args: argparse.Namespace) -> dict:
+    if args.resolve or args.choice:
+        if not args.resolve or not args.choice or args.park or args.fork:
+            raise ValueError("use --resolve and --choice together, without --park or --fork")
+        return package.resolve_parked(root, slug, args.resolve, args.choice, args.by.strip(), (args.text or "").strip())
     directory, spec, _tasks = package.read_package(root, slug)
     section_name = "Parked" if args.park else "Decisions"
     prefix = "P" if args.park else "D"
     existing = package.parse_ledger(spec, section_name, prefix)
-    identifier = f"{prefix}{len(existing) + 1}"
+    identifier = f"{prefix}{1 + max((int(item['id'][1:]) for item in existing), default=0)}"
     if args.fork:
         fork = next((item for item in package.parse_forks(spec) if item["id"] == args.fork), None)
         if not fork:
@@ -121,33 +132,107 @@ def append_decision(root: Path, slug: str, args: argparse.Namespace) -> dict:
         spec = spec.rstrip() + f"\n\n## {section_name}\n"
     spec = spec.replace(f"## {section_name}\n", f"## {section_name}\n{line}\n", 1)
     (directory / "spec.md").write_text(spec, encoding="utf-8")
+    if args.park and package.package_baseline(directory):
+        package.append_run(directory, dict(kind="park", id=identifier, ts=package.now()))
     return {"id": identifier, "section": section_name, "by": args.by}
 
 
-def finish_delivery(root: Path, slug: str, lesson_used: list[str]) -> tuple[dict, int]:
+DELIVERY_ERRORS = (OSError, ValueError, KeyError, subprocess.SubprocessError)
+
+
+def _recovery_attempt(root: Path, slug: str, args: argparse.Namespace) -> bool:
+    strategy = next((s for s in (args.attempt, args.retry, args.restart) if s is not None), None)
+    if strategy is None:
+        return False
+    strategy = strategy.strip()
+    if not strategy or len(strategy) > 500 or not strategy.isprintable():
+        raise ValueError("recovery evidence must be one nonempty printable line (up to 500 characters)")
+    directory, _, _ = package.require_execution_started(root, slug)
+    actions = package.gate_actions(package.latest_gate(directory, execution=True))
+    current = next((item for item in actions if item["code"] != "recovery-exhausted"), None)
+    budget = package.gate_recovery(directory, current)
+    row = package.latest_runs(directory).get(current.get("subject"), {}) if current else {}
+    changed = bool(row.get("exit") not in (None, 0) and row.get("tree_fp"))
+    changed = changed and row["tree_fp"] != package.tree_fingerprint(root)
+    if args.restart is not None:
+        if not budget["exhausted"] or not re.fullmatch(r"user\s+\S.*", strategy):
+            raise ValueError("restart requires an exhausted budget and 'user <reference>'")
+        package.append_run(directory, dict(kind="gate-restart", by=strategy, ts=package.now()))
+    elif not current or current["owner"] == "user" or budget["exhausted"] or strategy in budget["strategies"]:
+        raise ValueError("no distinct authorized attempt remains for this blocker; see spec.py next")
+    else:
+        package.append_run(
+            directory,
+            dict(
+                kind="gate-repair",
+                finding=[current["code"], current["subject"]],
+                strategy=strategy,
+                tree_fp=package.tree_fingerprint(root),
+                ts=package.now(),
+            ),
+        )
+    return args.retry is not None or args.attempt is not None and changed
+
+
+def delivery_check(root: Path, slug: str, args: argparse.Namespace) -> dict:
+    probe = args.command == "check" and args.check_only
     try:
-        result = done.finish(root, slug, lesson_used)
-    except (OSError, ValueError, KeyError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-        # A passing gate that cannot complete delivery must remain a visible
-        # repair state instead of looping the next route back to `deliver`.
+        retry = args.command == "check" and not probe and _recovery_attempt(root, slug, args)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return {"passed": False, "errors": [str(exc)], "next": route.next_card(root, slug)}
+    try:
+        if probe:
+            result = gate.compute(root, slug)
+            gate.record(root, slug, result, probe=True)
+        else:
+            result = done.finish(root, slug, args.lesson_used, retry=retry)
+    except DELIVERY_ERRORS as exc:
+        result = gate.add(
+            dict(findings=[], parked=[], ui_review={}, tree_fp=None),
+            gate.finding("delivery-error", str(exc), action="inspect-delivery"),
+        )
         if package.package_dir(root, slug).is_dir():
-            gate.record(root, slug, {"passed": False, "errors": [f"delivery: {exc}"], "parked": []})
-        raise
-    if result["finish"] in {"merge", "push"}:
+            try:
+                gate.record(root, slug, result, probe=probe)
+            except DELIVERY_ERRORS:
+                pass
+    if not result.get("archive"):
+        try:
+            result["next"] = route.next_card(root, slug)
+        except DELIVERY_ERRORS:
+            result["next"] = {
+                "state": "check-failed",
+                "next": "Inspect the recorded package error, then run spec.py check.",
+            }
+        if probe and result["passed"]:
+            result["next"]["next"] = "Delivery gate passed; run spec.py check to archive and deliver. " + route.spark(
+                "deliver"
+            )
+        for error in result["errors"]:
+            print(f"error: {error}", file=sys.stderr)
+        return result
+    finish = result["finish"]
+    if finish in {"merge", "push"}:
         import push
 
         try:
-            result["push"] = push.deliver(root, slug, push_enabled=result["finish"] == "push")
-        except (OSError, ValueError, KeyError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            result["push"] = push.deliver(root, slug, push_enabled=finish == "push")
+            if finish == "merge":
+                package.append_run(Path(result["archive"]), {"kind": "handoff", "finish": finish, "ts": package.now()})
+        except DELIVERY_ERRORS as exc:
             result["push"] = {"error": str(exc)}
-            print(json.dumps(result, ensure_ascii=False, indent=2))
+            gate.add(result, gate.finding("handoff-error", str(exc), action="retry-handoff"))
             print(
-                f"delivery incomplete: the package is archived at {result['archive']}; "
-                "inspect the delivery branch, then rerun `spec.py push` from its spec branch.",
+                "delivery incomplete: archived locally; retry the authorized handoff with `spec.py push`.",
                 file=sys.stderr,
             )
-            return result, 1
-    return result, 0
+    result["next"] = route.completion_card(slug, finish, not result["passed"])
+    if finish == "commit" and result["requested_finish"] != finish:
+        result["next"]["next"] = "Committed locally by decision; no merge or push performed. " + route.spark(
+            "delivered"
+        )
+    return result
 
 
 def learn_command(root: Path, args: argparse.Namespace) -> dict:
@@ -185,8 +270,6 @@ def learn_command(root: Path, args: argparse.Namespace) -> dict:
 
 
 def task_card_lines(args: argparse.Namespace) -> list[str]:
-    # PLAN-013 discipline at generation time: a card with an unlintable id is
-    # wasted planning effort, so reject it here with the lint rule's wording.
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", args.id):
         raise ValueError(f"invalid task id: {args.id}; use a stable semantic slug")
     if args.tdd and not re.fullmatch(r"[a-z0-9][a-z0-9-]*", args.id + "-test"):
@@ -289,7 +372,6 @@ def _publish_plan_files(
                 temporary = staging / f"{path.name}.{suffix}"
                 temporary.write_bytes(data)
                 temporary.chmod(modes[path])
-        # Detect edits made since reading the plan. This is not a process lock.
         for path, data in before.items():
             if path.is_symlink() or path.read_bytes() != data or stat.S_IMODE(path.stat().st_mode) != modes[path]:
                 raise ValueError(f"plan file changed during append: {path}; retry from current contents")
@@ -321,7 +403,6 @@ def _publish_plan_files(
                 if committed:
                     warnings.append(warning)
                 else:
-                    # Do not hide the publish/rollback error with a cleanup error.
                     print(f"warning: {warning}", file=sys.stderr)
     return warnings
 
@@ -335,7 +416,6 @@ def append_task_card(args: argparse.Namespace) -> dict:
             raise ValueError("generated verify must contain exactly one complete backticked command")
     root = package.resolve_root(args.root)
     slug = package.resolve_slug(root, args.slug)
-    # Validate the slug and all write destinations before reading mutable text.
     package.package_dir(root, slug)
     directory = safe_child(safe_child(root, ".spec/specs"), slug)
     paths = [safe_child(directory, name) for name in ("spec.md", "tasks.md")]
@@ -459,46 +539,20 @@ def main(argv: list[str] | None = None) -> int:
             result = evidence.unblock_task(root, slug, args.task_id, args.reason)
         elif args.command == "decide":
             result = append_decision(root, slug, args)
-        elif args.command == "check":
-            result = gate.compute(root, slug)
-            gate.record(root, slug, result)
-            # Stale-evidence errors are curable: done's final re-verify refreshes
-            # them. Any other probe error, parked work, or --check-only returns
-            # the gate result without attempting delivery.
-            curable_only = all(e.endswith(STALE_EVIDENCE_SUFFIX) for e in result["errors"])
-            if not args.check_only and curable_only and not result["parked"]:
-                delivered, code = finish_delivery(root, slug, args.lesson_used)
-                result.update(delivered)
-                result.update({"passed": code == 0, "errors": [], "parked": []})
-                result["next"] = route.completion_card(
-                    slug,
-                    str(result.get("finish", "commit")),
-                    bool(isinstance(result.get("push"), dict) and result["push"].get("error")),
-                )
-                if code:
-                    return code
-            else:
-                result["next"] = route.next_card(root, slug)
-                if args.check_only and result.get("passed"):
-                    result["next"]["next"] = (
-                        "Delivery gate passed; run spec.py check to archive and deliver. " + route.spark("deliver")
-                    )
+        elif args.command in {"check", "done"}:
+            result = delivery_check(root, slug, args)
         elif args.command == "ui-review":
             result = ui_review.write_record(root, slug, Path(args.file))
-        elif args.command == "done":
-            result, code = finish_delivery(root, slug, args.lesson_used)
-            result["next"] = route.completion_card(
-                slug,
-                str(result.get("finish", "commit")),
-                bool(isinstance(result.get("push"), dict) and result["push"].get("error")),
-            )
-            if code:
-                return code
         elif args.command == "push":
             import push
 
-            result = push.deliver(root, slug, push_enabled=True)
-            result["next"] = route.completion_card(slug, "push")
+            archived, spec, _ = package.read_archived_package(root, slug)
+            finish, _ = package.effective_finish(archived, spec)
+            merge_pending = finish == "merge" and not package.handoff_completed(archived, "merge")
+            result = push.deliver(root, slug, push_enabled=not merge_pending)
+            if merge_pending:
+                package.append_run(archived, {"kind": "handoff", "finish": "merge", "ts": package.now()})
+            result["next"] = route.completion_card(slug, "merge" if merge_pending else "push")
         else:
             raise ValueError("unknown command")
         print(json.dumps(result, ensure_ascii=False, indent=2))

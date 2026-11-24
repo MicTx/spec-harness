@@ -14,12 +14,15 @@ import push
 import ui_review
 from memory import lessons_by_id, validate_enforce
 from package import (
-    _baseline_dirty,
-    _unstage_baseline_dirty,
     append_run,
+    checkpoint_paths,
+    effective_finish,
+    gate_actions,
+    gate_recovery,
     git_add_paths,
+    latest_gate,
     now,
-    parse_charter,
+    park_decisions,
     parse_ledger,
     parse_tasks,
     read_package,
@@ -37,19 +40,8 @@ def recorded_lessons(package: Path) -> list[dict]:
 
 
 def lesson_ids_for(package: Path, lesson_used: list[str] | None) -> list[str]:
-    """Union the recorded L-ids with --lesson-used, refusing a dropped lesson (F2)."""
     recorded = [record["lesson"] for record in recorded_lessons(package)]
-    used = list(dict.fromkeys(lesson_used or []))
-    missing = [lesson for lesson in recorded if lesson not in used]
-    if missing:
-        raise ValueError(
-            "this package recorded lessons "
-            + ", ".join(recorded)
-            + "; --lesson-used must name every recorded lesson (missing: "
-            + ", ".join(missing)
-            + ")"
-        )
-    return list(dict.fromkeys([*recorded, *used]))
+    return list(dict.fromkeys([*recorded, *(lesson_used or [])]))
 
 
 def lesson_lines(root: Path, package: Path, lesson_ids: list[str]) -> list[str]:
@@ -81,24 +73,29 @@ def lesson_archive(root: Path, package: Path, lesson_used: list[str] | None) -> 
     return lesson_ids, lines
 
 
-def build_summary(root: Path, slug: str, lesson_ids: list[str]) -> str:
+def build_summary(root: Path, slug: str, lesson_ids: list[str], result: dict) -> str:
     package, spec, tasks = read_package(root, slug)
     records = parse_tasks(tasks)
     decisions = parse_ledger(spec, "Decisions", "D")
     parked = parse_ledger(spec, "Parked", "P")
+    decisions += [
+        dict(id=row["id"], text=f"{row['choice']}: {row['reason']} | by: {row['by']}")
+        for row in park_decisions(package).values()
+    ]
     emergent = [record.title for record in records if record.origin == "emergent"]
     lessons = lesson_lines(root, package, lesson_ids)
     lines = [
         f"# {slug} - Completion Summary",
         "",
         "## Delivery",
+        f"- Authorized finish: {result['finish']} (requested: {result['requested_finish']}).",
         *[f"- {record.title}" for record in records if record.checked],
         "",
         "## Evidence",
         "- Final-tree verifies passed; see runs.jsonl.",
         "",
         "## UI Review",
-        *ui_review.summary_lines(root, slug),
+        *ui_review.summary_lines(result["ui_review"]),
         "",
         "## Decisions",
     ]
@@ -123,39 +120,40 @@ def build_summary(root: Path, slug: str, lesson_ids: list[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def finish(root: Path, slug: str, lesson_used: list[str] | None = None) -> dict:
-    package, _spec, _tasks = read_package(root, slug)
-    # F2 and the enforce targets are checked before the final re-verify so a
-    # dangling lesson cannot ride a green tree into the archive.
-    lesson_ids, _lines = lesson_archive(root, package, lesson_used)
+def finish(root: Path, slug: str, lesson_used: list[str] | None = None, *, retry: bool = False) -> dict:
+    package, spec, tasks = read_package(root, slug)
+    previous = gate_actions(latest_gate(package, execution=True))
+    result = gate.compute(root, slug)
+    primary = next((item for item in previous if item["code"] != "recovery-exhausted"), None)
+    if primary and gate_recovery(package, primary)["exhausted"]:
+        gate.add(
+            result,
+            gate.finding(
+                "recovery-exhausted", "recovery budget exhausted", primary["subject"], action="inspect-delivery"
+            ),
+        )
+    gate.record(root, slug, result)
+    if not gate.can_finish(result, retry=retry):
+        return result
+    lesson_ids, _ = lesson_archive(root, package, lesson_used)
+    patterns = tuple(pattern for task in parse_tasks(tasks) for pattern in task.globs)
+    delivery, requested = effective_finish(package, spec)
     evidence.run_tasks(root, slug, final=True)
     result = gate.compute(root, slug, final=True)
+    if result["passed"] and delivery in {"merge", "push"}:
+        try:
+            push.preflight(root, slug, spec, list(patterns))
+        except push.HandoffBlocked as exc:
+            gate.add(
+                result,
+                gate.finding(
+                    "handoff-blocked", str(exc), exc.subject, owner="user", action="choose-handoff", requested=requested
+                ),
+            )
+    gate.record(root, slug, result, final=True)
     if not result["passed"]:
-        raise ValueError(
-            "delivery gate failed: " + "; ".join(result["errors"] + [item["id"] for item in result["parked"]])
-        )
-    package, spec, _tasks = read_package(root, slug)
-    # The delivery gate passed on the final tree; record that fact before the
-    # package leaves the active tree so the archived ledger ends green instead
-    # of showing only pre-refresh stale-evidence failures.
-    append_run(
-        package,
-        {
-            "kind": "gate",
-            "passed": True,
-            "errors": [],
-            "parked": [],
-            "final": True,
-            "ts": now(),
-        },
-    )
-    records = parse_tasks(_tasks)
-    patterns = [pattern for record in records for pattern in record.globs]
-    baseline = _baseline_dirty(root, package)
-    values = parse_charter(spec)
-    if values.get("V4", "commit") in {"merge", "push"}:
-        push.preflight(root, slug, spec, patterns)
-    local = local_evidence.is_local(root)
+        return result
+    _, local = checkpoint_paths(root, slug, patterns)
     if local:
         local_evidence.preflight_archive(root, slug)
         local_evidence.ensure(root)
@@ -167,50 +165,22 @@ def finish(root: Path, slug: str, lesson_used: list[str] | None = None) -> dict:
         # Retire tracked records before moving the package; errors leave the
         # active package in place, rather than stranding it in the archive.
         local_evidence.untrack(root)
-    (package / "completion-summary.md").write_text(build_summary(root, slug, lesson_ids), encoding="utf-8")
+    result.update(finish=delivery, requested_finish=requested)
+    (package / "completion-summary.md").write_text(build_summary(root, slug, lesson_ids, result), encoding="utf-8")
     destination = package.parent / "archive" / slug
     if destination.exists():
         raise ValueError(f"archive exists: {destination}")
     shutil.move(str(package), str(destination))
-    if not local:
-        # The package may already be tracked by a wip checkpoint commit; a plain
-        # `git add` never records its deletion, leaving the active spec visible to
-        # --index hook checks on a git-less checkout-index tree.
-        gitx.git(root, "rm", "-r", "--cached", "--quiet", "--ignore-unmatch", "--", f".spec/specs/{slug}", check=False)
-        # The package move deletes the active directory from both the worktree and
-        # the index. Stage the spec tree as a unit so Git records the deletions and
-        # archive additions together. Preflight already rejected unrelated dirt.
-        gitx.git(root, "add", "-A", "--", ".spec/specs")
-    paths = [pattern.removeprefix("new:") for pattern in patterns]
-    paths.extend(
-        [
-            f".spec/specs/archive/{slug}",
-            ".spec/charter.md",
-        ]
-    )
-    remaining = sorted(
-        {
-            path.removeprefix("new:")
-            for path in paths
-            if not path.removeprefix("new:").startswith(".spec/specs/") and (root / path.removeprefix("new:")).exists()
-        }
-    )
-    if local:
-        git_add_paths(root, list(patterns))
-    elif remaining:
-        gitx.git(root, "add", "-A", "--", *remaining, check=False)
-    _unstage_baseline_dirty(root, baseline, tuple(patterns))
-    empty = gitx.git(root, "diff", "--cached", "--quiet", check=False).returncode == 0
-    if empty and not local:
-        raise ValueError("nothing to deliver after final verification")
-    extra = ["--allow-empty"] if empty else []
     try:
-        gitx.git(root, "commit", *extra, "-m", f"feat(spec): deliver {slug}\n\nSpec: {slug}")
+        paths = list(patterns)
+        if not local:
+            paths += [f".spec/specs/{slug}", f".spec/specs/archive/{slug}", ".spec/charter.md"]
+        git_add_paths(root, paths)
+        gitx.git(root, "commit", "--allow-empty", "-m", f"feat(spec): deliver {slug}\n\nSpec: {slug}")
     except Exception:
-        if local:
-            shutil.move(str(destination), str(package))
+        shutil.move(str(destination), str(package))
         raise
-    result = {"slug": slug, "archive": str(destination), "head": gitx.head(root), "finish": values.get("V4", "commit")}
+    result.update(slug=slug, archive=str(destination), head=gitx.head(root))
     if local:
         append_run(destination, {"kind": "delivery", "head": result["head"], "ts": now()})
         result["local_archive"] = local_evidence.sync_archive(root, destination, slug)

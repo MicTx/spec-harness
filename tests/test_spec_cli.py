@@ -37,7 +37,7 @@ def test_user_commands_and_references_require_real_ui_review():
     assert "ui-review.json" in installer
 
 
-def test_done_reports_archived_result_and_recovery_when_push_fails(tmp_path):
+def test_done_preserves_active_package_when_remote_is_unavailable(tmp_path):
     repo(tmp_path)
     package = make_package(tmp_path)
     spec_path = package / "spec.md"
@@ -63,16 +63,15 @@ def test_done_reports_archived_result_and_recovery_when_push_fails(tmp_path):
     assert result.returncode == 1
     assert result.stdout, result.stderr
     payload = json.loads(result.stdout)
-    assert payload["archive"].endswith(f".spec/specs/archive/{SLUG}")
-    assert payload["finish"] == "push"
-    assert payload["push"]["error"]
-    assert "delivery incomplete" in result.stderr
-    assert "spec.py push" in result.stderr
+    assert any(item["code"] == "handoff-blocked" for item in payload["findings"])
+    assert payload["next"]["decisions"][0]["id"] == "P0"
+    assert (tmp_path / ".spec/specs" / SLUG).is_dir()
+    assert "remote HEAD is unavailable" in result.stderr
 
     subprocess.run(["git", "remote", "set-url", "origin", str(remote)], cwd=tmp_path, check=True)
-    retry = cli(tmp_path, "push")
+    retry = cli(tmp_path, "check")
     assert retry.returncode == 0, retry.stderr
-    assert json.loads(retry.stdout)["pushed"] is True
+    assert json.loads(retry.stdout)["push"]["pushed"] is True
 
 
 def test_done_preflight_rejects_dirty_target_worktree_worktree_topology(tmp_path):
@@ -102,6 +101,77 @@ def test_done_preflight_rejects_dirty_target_worktree_worktree_topology(tmp_path
     assert "target worktree is not clean" in result.stderr
     assert (tmp_path / ".spec/specs" / SLUG / "spec.md").is_file()
     assert not (tmp_path / ".spec/specs/archive" / SLUG).exists()
+
+
+def test_waiting_for_handoff_still_reports_until_a_new_user_choice(tmp_path):
+    repo(tmp_path)
+    directory = make_package(tmp_path)
+    spec = directory / "spec.md"
+    spec.write_text(spec.read_text().replace("V4 finish: commit", "V4 finish: push"))
+    assert cli(tmp_path, "plan-go").returncode == 0
+    assert cli(tmp_path, "verify", "task-value").returncode == 0
+    assert cli(tmp_path, "check").returncode == 1
+    assert cli(tmp_path, "decide", "--resolve", "P0", "--choice", "wait", "--by", "user waits", "Wait").returncode == 0
+    probe = cli(tmp_path, "check", "--check-only")
+    assert probe.returncode == 0
+    paused = json.loads(cli(tmp_path, "next").stdout)
+    assert paused["state"] == "parked-only" and not paused["decisions"]
+    result = cli(tmp_path, "check")
+    payload = json.loads(result.stdout)
+    assert result.returncode == 1
+    assert payload["next"]["state"] == "parked-only"
+    assert not payload["next"]["decisions"]
+    assert payload["next"]["parked"][0]["status"] == "waiting"
+    assert "no Git remote" in result.stderr
+
+
+def test_parked_choice_is_linked_and_wait_does_not_finish_or_reask(tmp_path):
+    repo(tmp_path)
+    make_package(tmp_path)
+    assert cli(tmp_path, "plan-go").returncode == 0
+    assert cli(tmp_path, "verify", "task-value").returncode == 0
+    parked = cli(tmp_path, "decide", "Keep the optional follow-up?", "--park")
+    assert parked.returncode == 0
+    parked_id = json.loads(parked.stdout)["id"]
+    denied = cli(tmp_path, "decide", "--resolve", parked_id, "--choice", "wait", "No user authority")
+    assert denied.returncode == 1
+    waiting = cli(tmp_path, "decide", "--resolve", parked_id, "--choice", "wait", "--by", "user waiting", "Later")
+    assert waiting.returncode == 0, waiting.stderr
+    check = json.loads(cli(tmp_path, "check").stdout)
+    assert not check["passed"] and not check["next"]["decisions"]
+    assert check["parked"][0]["status"] == "waiting"
+    closed = cli(tmp_path, "decide", "--resolve", parked_id, "--choice", "resolve", "--by", "user approved", "Close it")
+    assert closed.returncode == 0, closed.stderr
+    assert cli(tmp_path, "check").returncode == 0
+    summary = (tmp_path / ".spec/specs/archive" / SLUG / "completion-summary.md").read_text()
+    assert "Close it" in summary and parked_id in summary
+
+
+def test_unavailable_handoff_offers_wait_or_authorized_local_commit(tmp_path):
+    repo(tmp_path)
+    directory = make_package(tmp_path)
+    spec = directory / "spec.md"
+    spec.write_text(spec.read_text().replace("V4 finish: commit", "V4 finish: push"), encoding="utf-8")
+    assert cli(tmp_path, "plan-go").returncode == 0
+    assert cli(tmp_path, "verify", "task-value").returncode == 0
+    main = _git_out(tmp_path, "rev-parse", "main")
+    check = cli(tmp_path, "check")
+    assert check.returncode == 1
+    card = json.loads(check.stdout)["next"]["decisions"][0]
+    assert {row["id"] for row in card["options"]} == {"wait", "local-commit"}
+    resolution = ("decide", "--resolve", card["id"], "--choice", "local-commit", "--by", "user approved", "Keep local")
+    app = tmp_path / "app.py"
+    app.write_text("VALUE = 1\n")
+    assert cli(tmp_path, *resolution).returncode == 1  # The card is for a different tree.
+    app.write_text("VALUE = 0\n")
+    decision = cli(tmp_path, *resolution)
+    assert decision.returncode == 0, decision.stderr
+    delivered = json.loads(cli(tmp_path, "check").stdout)
+    assert delivered["passed"] and delivered["finish"] == "commit" and delivered["requested_finish"] == "push"
+    assert _git_out(tmp_path, "rev-parse", "main") == main
+    assert "V4 finish: push" in (tmp_path / ".spec/charter.md").read_text()
+    assert json.loads(cli(tmp_path, "next").stdout)["state"] == "delivered"
+    assert "local commit only" in cli(tmp_path, "push").stderr
 
 
 def _git_out(root, *args) -> str:

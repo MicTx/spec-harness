@@ -1,12 +1,4 @@
-"""One next-action projection for CLI and session hooks.
-
-The projection is read-only. `spec.py check` writes a `gate` record into the
-package's runs ledger; this module reads the latest record so a failed delivery
-gate becomes a first-class lifecycle state instead of being forgotten between
-turns. `gate.compute` remains the authority; this module never re-implements a
-gate rule. Every projected card ends with a state-keyed `Spark:` encouragement
-line (see `ENCOURAGE`) so the full lifecycle invites divergent thinking.
-"""
+"""Read-only next-action projection for CLI and host hooks."""
 
 from __future__ import annotations
 
@@ -19,16 +11,23 @@ import plan
 import ui_review
 from memory import last_failures, progress_tuple, snapshot_pending
 from package import (
-    STALE_EVIDENCE_SUFFIX,
+    HANDOFF_CHOICES,
+    HANDOFF_ID,
+    PARK_CHOICES,
     criteria_status,
+    effective_finish,
+    extract_branch,
+    gate_actions,
+    gate_recovery,
+    handoff_completed,
     latest_gate,
     latest_runs,
     package_baseline,
     package_dir,
     package_kind,
-    parse_charter,
-    parse_ledger,
+    park_decisions,
     parse_tasks,
+    pending_parked,
     read_archived_package,
     read_package,
     ready_tasks,
@@ -52,16 +51,9 @@ STAGE_FOR_STATE = {
 
 SPARK_MARKER = "Spark:"
 
-# A long verify command is never shown half-cut in a brief: a truncated
-# command looks executable but is not. The marker names the read-only CLI
-# projection that always carries the full command.
 VERIFY_TRUNCATION_NOTE = "[verify truncated; run spec.py next for full command]"
 VERIFY_BRIEF_LIMIT = 120
 
-# Prompt tier: `full` keeps the standard brief budget, `compact` trims it for
-# token-tight hosts. The installer records the tier as a `tier=` line in the
-# installed skill's .spec-skill-install marker; a valid SPEC_PROMPT_TIER env
-# value overrides the marker, and anything unknown falls back to `full`.
 PROMPT_TIER_ENV = "SPEC_PROMPT_TIER"
 PROMPT_TIER_VALUES = ("full", "compact", "aggressive")
 BRIEF_BUDGET = 1450
@@ -69,9 +61,6 @@ COMPACT_BRIEF_BUDGET = 900
 AGGRESSIVE_BRIEF_BUDGET = 700
 INSTALL_MARKER = Path(__file__).resolve().parent.parent / ".spec-skill-install"
 
-# Bounds for the additive recovery block. They keep a corrupt or hostile
-# snapshot from growing the card without limit; `memory.snapshot_pending`
-# already sanitizes, and this is a second, renderer-side guarantee.
 RECOVERY_PENDING_LIMIT = 5
 RECOVERY_DIRECTIVE_LIMIT = 400
 
@@ -93,19 +82,11 @@ def prompt_tier(marker: Path | None = None) -> str:
 
 
 def brief_budget() -> int:
-    """Return the session-brief truncation budget for the active prompt tier."""
-    tier = prompt_tier(INSTALL_MARKER)
-    if tier == "aggressive":
-        return AGGRESSIVE_BRIEF_BUDGET
-    if tier == "compact":
-        return COMPACT_BRIEF_BUDGET
-    return BRIEF_BUDGET
+    return {"aggressive": AGGRESSIVE_BRIEF_BUDGET, "compact": COMPACT_BRIEF_BUDGET}.get(
+        prompt_tier(INSTALL_MARKER), BRIEF_BUDGET
+    )
 
 
-# One encouraging line per lifecycle state, appended to every next-action
-# card and session brief. The channel is additive only: it invites divergent
-# thinking but never overrides the gate, boundary, or ownership semantics the
-# card already carries.
 ENCOURAGE = {
     "plan": "Spark: sketch two rival designs before converging — the bolder fork may be the winner.",
     "run": (
@@ -127,50 +108,21 @@ def spark(state: str) -> str:
     return ENCOURAGE.get(state, "")
 
 
-def _gate_failures(package: Path, head: str) -> list[str]:
-    """Return current gate errors recorded by the latest check on this head."""
-    record = latest_gate(package)
-    if not record or record.get("passed"):
-        return []
-    recorded_head = str(record.get("head") or "")
-    if recorded_head and head and recorded_head != head:
-        return []
-    return [str(item) for item in record.get("errors", []) if str(item).strip()]
-
-
-def gate_next(errors: list[str]) -> str:
-    """Turn the gate errors into one executable repair action.
-
-    Stale-only failures are curable: `spec.py check` re-runs the final
-    verification and refreshes the evidence. When a non-stale error is also
-    present, that concrete repair is named first; a no-op `verify --all` is
-    never offered after every task is already checked.
-    """
-    cleaned = [error for error in errors if str(error).strip()]
-    stale = [error for error in cleaned if error.rstrip().endswith(STALE_EVIDENCE_SUFFIX)]
-    if cleaned and len(stale) == len(cleaned):
-        return "Rerun spec.py check — it self-heals stale evidence through the final re-verify."
-    concrete = [error for error in cleaned if error not in stale]
-    text = " ".join(concrete)
-    if "UI review" in text:
-        return "Complete the UI/UX review record with real flows and screenshots, then rerun spec.py check."
-    if "changed path outside" in text:
-        return "Move the change inside the owning task boundary or amend the plan, then rerun spec.py check."
-    if "branch binding" in text:
-        return "Switch to the package's bound branch, then rerun spec.py check."
-    if "criterion not proven" in text:
-        return "Re-run the criterion's task verify, then rerun spec.py check."
-    first = concrete[0] if concrete else (cleaned[0] if cleaned else "delivery gate failed")
-    return f"Fix the recorded delivery-gate failure ({first}), then rerun spec.py check."
+def _gate_action(item: dict) -> str:
+    subject = _single_line(item.get("subject"), 80)
+    return {
+        "bound-worktree": f"Use the package's bound worktree ({subject}); do not move user changes.",
+        "restore-plan": "Restore the frozen plan or apply an authorized amendment before verifying.",
+        "isolate-change": f"Inspect ownership of {subject}; leave user changes intact and isolate the delivery.",
+        "review-ui": "Operate the relevant UI, capture real evidence and write spec.py ui-review --file.",
+        "fix-verify": f"Investigate and fix the failing verify for {subject} within its task boundary.",
+        "reverify": "Run spec.py check to refresh evidence and verify the final tree.",
+        "unblock": f'Investigate {subject}; then use spec.py unblock {subject} --reason "<new evidence>".',
+    }.get(item.get("action"), "Inspect the recorded delivery evidence and repair within the charter.")
 
 
 def _single_line(value: object, limit: int) -> str:
-    """Normalize untrusted snapshot/ledger text to one bounded readable line.
-
-    Control characters are stripped before whitespace folding so they can
-    never forge a new `Next:`/`Failure:` line in the brief; the result is
-    plain advisory prose, never executed.
-    """
+    """Render untrusted ledger text as bounded, single-line prose."""
     if not isinstance(value, str):
         return ""
     cleaned = "".join(" " if ord(char) < 32 or ord(char) == 127 else char for char in value)
@@ -181,33 +133,14 @@ def _single_line(value: object, limit: int) -> str:
 
 
 def _latest_failed_run(package: Path, task_id: str, command: str = "") -> dict:
-    """Return the task's latest failed run record, if it is still current.
-
-    `latest_runs` keeps only the last record per task, so a later success
-    erases the failure rung naturally. A recorded command that no longer
-    matches the live card is stale evidence for another command and is
-    ignored instead of quoting its directive against the current task.
-    """
     record = latest_runs(package).get(task_id, {})
-    if not isinstance(record, dict) or record.get("kind", "run") != "run":
-        return {}
-    if record.get("exit") in (None, 0):
-        return {}
-    recorded_cmd = record.get("cmd")
-    if isinstance(recorded_cmd, str) and recorded_cmd and command and recorded_cmd != command:
-        return {}
-    return record
+    return record if record.get("exit") not in (None, 0) and record.get("cmd") in (None, "", command) else {}
 
 
 def _recovery_projection(
     package: Path, *, task: dict | None, blocked: list[dict], final_failed: dict | None = None
 ) -> dict:
-    """Read advisory clues for the live ready task, never snapshot authority.
-
-    A blocked or final-failed task may supply a failure directive, but never
-    pending clues: those apply only to the current ready task. A successful
-    or superseded run naturally drops its old directive.
-    """
+    """Project pending clues for the ready task and current failure directives."""
     recovery: dict = {"pending": snapshot_pending(package, task)}
     source = task or (blocked[0] if blocked else final_failed)
     if source:
@@ -226,72 +159,92 @@ def _recovery_projection(
     return recovery
 
 
-def _state_for(
-    *,
-    frozen: bool,
-    ready: list,
-    all_done: bool,
-    criteria_passed: bool,
-    parked: list[dict[str, str]],
-    unblocked_left: bool,
-    evidence_failures: list[str],
-    ui_failures: list[str],
-    gate_failures: list[str],
-    any_blocked: bool,
-) -> str:
-    if not frozen:
-        return "plan"
-    if ready:
-        return "run"
-    if evidence_failures or ui_failures or any_blocked:
-        return "stalled"
-    if gate_failures:
-        return "check-failed"
-    if parked and not unblocked_left:
-        return "parked-only"
-    if all_done and criteria_passed and not parked:
-        return "deliver"
-    # Remaining reachable case: some machine task cannot become ready but is
-    # not blocked (for example a malformed task without a verify command).
-    return "stalled"
-
-
 def decide(root: Path, slug: str | None = None) -> dict:
     selected = slug or resolve_slug(root)
     package, spec, tasks = read_package(root, selected)
     records = parse_tasks(tasks)
     frozen = bool(package_baseline(package))
-    ready = ready_tasks(records) if frozen else []
-    parked = parse_ledger(spec, "Parked", "P")
-    latest = criteria_status(spec, package)
-    all_done = bool(records) and all(record.checked for record in records)
-    criteria_passed = all(item[3] for item in latest)
-    evidence_failures = last_failures(package)
-    ui_status = (
-        ui_review.review_status(root, selected, spec=spec, tree_required=False)
-        if frozen
-        else {"required": False, "errors": []}
-    )
-    ui_failures = ui_status.get("errors", [])
     head = gitx.head(root)
-    gate_failures = _gate_failures(package, head) if frozen else []
-    any_blocked = any(record.blocked for record in records)
-    unblocked_left = any(not record.checked and not record.blocked for record in records)
+    ledger = latest_gate(package) if frozen else {}
+    active_gate = latest_gate(package, execution=True) if ledger.get("probe") else ledger
+    ready = ready_tasks(records) if frozen else []
+    if frozen:
+        try:
+            bound = extract_branch(spec)
+        except ValueError:
+            bound = "the recorded branch"
+        if gitx.branch(root) != bound:
+            ledger = {
+                "errors": [f"branch binding: expected {bound}"],
+                "findings": [
+                    dict(code="branch-binding", action="bound-worktree", subject=bound, owner="agent", severity="block")
+                ],
+            }
+    parked = pending_parked(package, spec)
+    finish, requested = effective_finish(package, spec)
+    if (
+        active_gate.get("head") == head
+        and finish == requested
+        and any(item.get("code") == "handoff-blocked" for item in active_gate.get("findings", []))
+    ):
+        problem = next(item for item in active_gate["findings"] if item["code"] == "handoff-blocked")
+        status = "waiting" if park_decisions(package).get(HANDOFF_ID, {}).get("choice") == "wait" else "open"
+        parked.append(dict(id=HANDOFF_ID, text=problem["detail"], status=status))
+    if ledger.get("head") and ledger["head"] != head:
+        ledger = {}
+    actions = gate_actions(ledger)
+    actions = [
+        item
+        for item in actions
+        if not (
+            item["action"] == "run-task"
+            and not any(t.id == item["subject"] and not t.checked for t in records)
+            or item["action"] == "choose-handoff"
+            and finish != requested
+        )
+    ]
+    primary = next((item for item in actions if item.get("code") != "recovery-exhausted"), None)
+    budget = gate_recovery(package, primary)
+    evidence_failures = last_failures(package)
+    ui_status = ui_review.review_status(root, selected, spec=spec, tree_required=False) if frozen else {}
+    latest = criteria_status(spec, package)
     progress = progress_tuple(package, head)
-    state = _state_for(
-        frozen=frozen,
-        ready=ready,
-        all_done=all_done,
-        criteria_passed=criteria_passed,
-        parked=parked,
-        unblocked_left=unblocked_left,
-        evidence_failures=evidence_failures,
-        ui_failures=ui_failures,
-        gate_failures=gate_failures,
-        any_blocked=any_blocked,
+    gate_failures = [item["detail"] for item in actions] if "findings" in ledger else ledger.get("errors", [])
+    decision_only = (
+        parked
+        and (not primary or primary["owner"] == "user")
+        and not (evidence_failures or ui_status.get("errors") or any(task.blocked for task in records))
     )
+    if not frozen:
+        state = "plan"
+    elif primary and primary["action"] in {"bound-worktree", "restore-plan", "isolate-change"}:
+        state, ready = "check-failed", []
+    elif ready:
+        state = "run"
+    elif decision_only:
+        state = "parked-only"
+    elif budget["exhausted"]:
+        state = "stalled"
+    elif primary or gate_failures and "findings" not in ledger:
+        state = "check-failed"
+    elif ui_status.get("errors") or evidence_failures or not records or not all(t.checked for t in records):
+        state = "stalled"
+    else:
+        state = "deliver"
+    decisions = [
+        dict(
+            item,
+            recommended="wait",
+            options=[dict(id=k, consequence=v) for k, v in choices.items()],
+            evidence=f".spec/specs/{selected}/runs.jsonl",
+            attempted=active_gate.get("errors", []),
+        )
+        for item in parked
+        if state == "parked-only" and item["status"] == "open"
+        for choices in [HANDOFF_CHOICES if item["id"] == HANDOFF_ID else PARK_CHOICES]
+    ]
     task = ready[0] if ready else None
-    failures = evidence_failures + [f"gate: {item}" for item in gate_failures]
+    failures = [f"gate: {item}" for item in gate_failures] + evidence_failures
     suggestions: list = []
     if not frozen:
         try:
@@ -328,26 +281,27 @@ def decide(root: Path, slug: str | None = None) -> dict:
         else None,
         "ready": [record.id for record in ready],
         "parked": parked,
+        "decisions": decisions[:4] if not ready else [],
         "criteria": [
             {"id": key, "text": text, "task": task_id, "passed": passed} for key, text, task_id, passed in latest
         ],
         "failures": failures,
         "suggestions": suggestions,
-        "gate": {"passed": not gate_failures, "errors": gate_failures},
+        "gate": {
+            "passed": not gate_failures and not parked,
+            "errors": gate_failures,
+            "findings": ledger.get("findings", []),
+            "action": primary,
+        },
         "ui_review": ui_status,
         # `progress` keeps its original 3-field public shape; the hook uses
         # `progress_token` so a failed gate still counts as fresh evidence.
         "progress": list(progress[:3]),
         "progress_token": list(progress),
     }
-    # Additive recovery block, computed once here so `next_card`, `brief` and
-    # the session hook reuse the same projection: one decide per event, one
-    # snapshot read, no re-derivation while rendering.
-    result["recovery"] = _recovery_projection(
-        package,
-        task=result["task"],
-        blocked=[] if ready else blocked,
-        final_failed=final_failed,
+    result["recovery"] = dict(
+        _recovery_projection(package, task=result["task"], blocked=[] if ready else blocked, final_failed=final_failed),
+        **budget,
     )
     return result
 
@@ -389,22 +343,29 @@ def _next_for_state(brief: dict) -> str:
     state = brief["state"]
     if state == "deliver":
         return "Run spec.py check for the delivery gate; a pass verifies the final tree and archives."
-    if state == "check-failed":
-        return gate_next(brief["gate"]["errors"])
-    if state == "stalled" and brief.get("ui_review", {}).get("errors"):
-        return "Write UI/UX review findings and real-operation screenshots back, then rerun spec.py check."
+    recovery = brief.get("recovery") or {}
     if state == "parked-only":
         return (
-            "Present all parked decisions in one batch; do not reopen answered questions."
-            " Every ask carries its evidence ledger."
+            "Every ask carries its evidence ledger: attempts, recommendation, alternatives and consequences."
+            if brief["decisions"]
+            else "Keep delivery pending as requested; do not ask again."
         )
+    if recovery.get("exhausted"):
+        return "Recovery budget exhausted. Report the attempted strategies and remaining blocker; do not retry blindly."
+    if state == "check-failed":
+        item = brief["gate"].get("action")
+        if not item:
+            first = _single_line(next(iter(brief["gate"]["errors"]), "delivery gate failed"), 100)
+            return f"Recorded diagnostic ({first}); inspect with spec.py check --check-only."
+        text = _gate_action(item)
+        if item.get("action") not in {"reverify", "bound-worktree", "plan"}:
+            text += ' Then run spec.py check --attempt "<strategy and evidence>".'
+        return text
     if state == "stalled":
-        recovery = brief.get("recovery") or {}
         if recovery.get("final_failed"):
-            return (
-                f"Final verification failed for {recovery['task']}; fix the failure, then run spec.py done "
-                "to re-verify the final tree and retry delivery."
-            )
+            return f"Final verification failed for {recovery['task']}; fix it, then run spec.py check."
+        if brief.get("ui_review", {}).get("errors"):
+            return "Run spec.py check to start recovery of the UI/UX review."
         return _blocked_next(brief)
     if state == "plan":
         return "Finish planning: run plan-lint, resolve gaps, then plan-go."
@@ -418,13 +379,7 @@ def next_card(
     *,
     projection: dict | None = None,
 ) -> dict:
-    """Project one next-action card; reuse a caller's projection when given.
-
-    `decision` is the historical third positional parameter (a `decide`
-    result); `projection` accepts either a `decide` result or a card this
-    function already returned. Both reuse the caller's single computation:
-    no second `decide`, no snapshot re-read, no re-appended Spark line.
-    """
+    """Project once; a caller may reuse a decision or a finished card."""
     source = projection if projection is not None else decision
     if source is not None and source.get("next"):
         # Already a finished card: return a copy without recomputing anything.
@@ -468,8 +423,6 @@ def _brief_action(data: dict, limit: int) -> str:
         command = task.get("verify", "")
         lookup = f"; {VERIFY_TRUNCATION_NOTE}"
         suffix = f"; verify: {command}"
-        # A command stays verbatim or is wholly replaced by a lookup. Even a
-        # short command may need the lookup when its surrounding title grows.
         if (
             not isinstance(command, str)
             or not command.isprintable()
@@ -484,27 +437,21 @@ def _brief_action(data: dict, limit: int) -> str:
         return prefix + (": " + title if title else "") + suffix
     recovery = data.get("recovery") or {}
     blocked = recovery.get("blocked") or []
-    if data.get("state") == "stalled" and blocked and not data.get("ready"):
+    if recovery.get("exhausted"):
+        action = "Next: report the exhausted recovery budget and remaining blocker."
+    elif data.get("state") == "stalled" and blocked:
         action = f'Next: spec.py unblock {blocked[0]} --reason "<new evidence>"'
-    elif data.get("state") == "stalled" and recovery.get("final_failed"):
-        action = f"Next: fix {recovery['task']}; then run spec.py done"
+    elif data.get("state") == "stalled" and recovery.get("final_failed") and not recovery.get("exhausted"):
+        action = f"Next: fix {recovery['task']}; then run spec.py check"
     else:
         action = "Next: " + _next_without_spark(data).split(" Last failure rung:", 1)[0]
     if len(action) <= limit and action.isprintable():
         return action
-    # Arbitrary gate errors may themselves contain command fragments. Do not
-    # disguise a prefix of them as an executable Next action.
     return "Next: [action truncated; run spec.py next for full card]"
 
 
 def _render_brief(data: dict, budget: int) -> str:
-    """Reserve the execution core before spending space on goals and parked text.
-
-    Header, atomic Next, first failure, matching pending clue and full Spark
-    all get a floor. Grow recovery prose before task titles; optional rows
-    only spend the remainder. Hooks reserve their own tail via `budget`, so
-    no final prefix slice is needed and neither Spark nor a command is cut.
-    """
+    """Reserve atomic commands, failure context and Spark before optional prose."""
     if budget <= 0:
         return ""
     state = str(data.get("state") or "")
@@ -522,17 +469,12 @@ def _render_brief(data: dict, budget: int) -> str:
     if directive:
         details["recovery"] = "Recovery: " + _single_line(directive, RECOVERY_DIRECTIVE_LIMIT)
 
-    # The practical hook floor is >=470 chars. Start with small, meaningful
-    # portions so a long failure never starves a pending clue (or vice versa).
     caps = {key: min(len(text), 80 if key == "pending" else 64) for key, text in details.items()}
     action_limit = 96
     action = _brief_action(data, action_limit)
     fixed = [header, action, *([tail] if tail else [])]
     remaining = budget - sum(map(len, fixed)) - sum(caps.values()) - (len(fixed) + len(details) - 1)
     if remaining < 0:
-        # A caller may ask for an exceptionally tiny custom budget. Shrink
-        # prose first, never an emitted command, and retain the full Spark
-        # whenever it fits at all. Normal tier/hook budgets avoid this path.
         for key in reversed(caps):
             shrink = min(caps[key], -remaining)
             caps[key] -= shrink
@@ -586,27 +528,10 @@ def brief(
     projection: dict | None = None,
     budget: int | None = None,
 ) -> str:
-    """Render the session brief; reuse a projected card when one is supplied.
-
-    `budget` (a hook may pass its tier budget minus its own extras) overrides
-    the tier default; `projection` reuses a card from `next_card` so one event
-    renders exactly one projection.
-    """
-    source = projection if projection is not None else decision
-    if source is not None and source.get("next"):
-        data = dict(source)
-    else:
-        data = next_card(root, slug, decision=decision, projection=projection)
-    limit = budget if isinstance(budget, int) and budget > 0 else brief_budget()
-    return _render_brief(data, limit)
+    return _render_brief(next_card(root, slug, decision, projection=projection), budget or brief_budget())
 
 
 def archived_card(root: Path) -> dict | None:
-    """Project the archived delivery bound to the current branch, if any.
-
-    This keeps the push link of the lifecycle visible in a fresh session; the
-    hook only injects it on start/subagent events so it never blocks a stop.
-    """
     try:
         slug = resolve_archived_slug(root)
         _directory, spec, _tasks = read_archived_package(root, slug)
@@ -614,57 +539,37 @@ def archived_card(root: Path) -> dict | None:
         return None
     if "spec-format: 3" not in spec:
         return None
-    finish = parse_charter(spec).get("V4", "commit")
-    if finish == "push":
-        state = "push"
-        next_text = "Delivery is archived; run spec.py push to finish the authorized merge and push."
+    finish, requested = effective_finish(_directory, spec)
+    pending = finish == "push" or finish == "merge" and not handoff_completed(_directory, "merge")
+    state = "push" if pending else "delivered"
+    if pending:
+        next_text = f"Delivery is archived; run spec.py push to retry the authorized {finish} handoff."
+    elif finish != requested:
+        next_text = "Committed locally by decision; no merge or push performed."
     else:
-        state = "delivered"
         next_text = f"Delivery complete (V4 {finish}); no active package on this branch."
-    encouragement = spark(state)
-    if encouragement:
-        next_text = f"{next_text} {encouragement}"
-    return {
-        "slug": slug,
-        "state": state,
-        "stage": STAGE_FOR_STATE[state],
-        "archived": True,
-        "next": next_text,
-    }
+    return dict(slug=slug, state=state, stage=STAGE_FOR_STATE[state], archived=True, next=f"{next_text} {spark(state)}")
 
 
 def worktree_card(root: Path) -> dict | None:
-    """Point a primary-worktree session at the only active linked worktree."""
     candidates = worktree_packages(root)
     if len(candidates) != 1:
         return None
     item = candidates[0]
     next_text = f"Active package is in worktree {item['worktree']}; continue there with spec.py next."
-    encouragement = spark("elsewhere")
-    if encouragement:
-        next_text = f"{next_text} {encouragement}"
-    return {
-        "slug": item["slug"],
-        "state": "elsewhere",
-        "stage": STAGE_FOR_STATE["elsewhere"],
-        "worktree": item["worktree"],
-        "next": next_text,
-    }
+    return dict(
+        slug=item["slug"],
+        state="elsewhere",
+        stage=STAGE_FOR_STATE["elsewhere"],
+        worktree=item["worktree"],
+        next=f"{next_text} {spark('elsewhere')}",
+    )
 
 
 def completion_card(slug: str, finish: str = "commit", push_failed: bool = False) -> dict:
-    """Project the lifecycle link after `done`/`check` archived the package."""
-    if finish == "push" and push_failed:
-        next_text = "Delivery archived but push failed; fix the remote and run spec.py push."
+    if push_failed:
+        next_text = f"Delivery archived but {finish} failed; retry the authorized handoff with spec.py push."
     else:
         next_text = f"Delivery complete (V4 {finish}); no active package."
-    encouragement = spark("push" if (finish == "push" and push_failed) else "delivered")
-    if encouragement:
-        next_text = f"{next_text} {encouragement}"
-    return {
-        "slug": slug,
-        "state": "push" if (finish == "push" and push_failed) else "delivered",
-        "stage": "push" if (finish == "push" and push_failed) else "done",
-        "archived": True,
-        "next": next_text,
-    }
+    state = "push" if push_failed else "delivered"
+    return dict(slug=slug, state=state, stage=STAGE_FOR_STATE[state], archived=True, next=f"{next_text} {spark(state)}")

@@ -20,6 +20,15 @@ SPEC = importlib.util.spec_from_file_location("update_release", ROOT / "updater/
 assert SPEC and SPEC.loader
 update_release = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(update_release)
+PROJECT_VERSION = subprocess.check_output(
+    [sys.executable, str(ROOT / "scripts/read_version.py"), str(ROOT / "pyproject.toml")], text=True
+).strip()
+
+
+def newer_version(version: str) -> str:
+    assert update_release.VERSION_PATTERN.fullmatch(version), f"expected a stable version, got {version!r}"
+    major, minor, patch = map(int, version.split("."))
+    return f"{major}.{minor}.{patch + 1}"
 
 
 def install(home: Path, hosts: str, tier: str = "full", profile: str = "core") -> None:
@@ -89,7 +98,7 @@ def make_release(tmp_path: Path, version: str, *, legacy: bool = False) -> bytes
 
 @pytest.fixture
 def release(tmp_path):
-    version = "2.2.0"
+    version = newer_version(PROJECT_VERSION)
     return version, make_release(tmp_path, version)
 
 
@@ -128,12 +137,20 @@ def marker(home: Path, host: str) -> str:
     return (home / f".{host}" / "skills" / "spec" / ".spec-skill-install").read_text(encoding="utf-8")
 
 
+def set_marker_version(home: Path, host: str, version: str) -> None:
+    installed_marker = home / f".{host}" / "skills" / "spec" / ".spec-skill-install"
+    content, replacements = re.subn(r"(?m)^version=.*$", f"version={version}", marker(home, host))
+    assert replacements == 1
+    installed_marker.write_text(content, encoding="utf-8")
+    assert f"version={version}" in marker(home, host).splitlines()
+
+
 def test_installer_exposes_version_command_and_preserves_foreign_executable(home):
     install(home, "codex")
     launcher = home / ".local/bin/spec-harness"
     result = subprocess.run([str(launcher), "--version"], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
-    assert "codex: 2.1.0" in result.stdout
+    assert f"codex: {PROJECT_VERSION} (" in result.stdout
 
     other_home = home.parent / "other"
     foreign = other_home / ".local/bin/spec-harness"
@@ -168,14 +185,15 @@ def test_update_preview_and_upgrade_preserve_hosts_and_preferences(home, release
     assert snapshot(home) == before
     assert update_release.main(["update"]) == 0
 
-    assert "version=2.2.0" in marker(home, "claude")
+    assert f"version={version}" in marker(home, "claude").splitlines()
+    assert f"version={version}" in marker(home, "codex").splitlines()
     assert "profile=full" in marker(home, "claude") and "tier=compact" in marker(home, "claude")
     assert "profile=core" in marker(home, "codex") and "tier=aggressive" in marker(home, "codex")
     assert foreign.read_text(encoding="utf-8") == "user skill\n"
     assert project.read_text(encoding="utf-8") == "user package\n"
     assert json.loads(settings.read_text(encoding="utf-8"))["user-setting"] == "preserved"
     assert (home / ".spec-skill-backups/.claude-skills").is_dir()
-    assert "Updated Spec Harness to 2.2.0" in capsys.readouterr().out
+    assert f"Updated Spec Harness to {version}" in capsys.readouterr().out
 
     requests.clear()
     after = snapshot(home)
@@ -199,7 +217,7 @@ def test_update_preserves_shared_symlinks(home, release, monkeypatch):
 
     assert update_release.main(["update"]) == 0
     assert claude.is_symlink() and codex.is_symlink()
-    assert "version=2.2.0" in (entity / ".spec-skill-install").read_text(encoding="utf-8")
+    assert f"version={version}" in (entity / ".spec-skill-install").read_text(encoding="utf-8").splitlines()
 
 
 def test_update_preserves_agents_chain_with_published_legacy_installer(home, tmp_path, monkeypatch):
@@ -212,7 +230,7 @@ def test_update_preserves_agents_chain_with_published_legacy_installer(home, tmp
     shared = home / ".agents/skills/spec"
     shared.parent.mkdir(parents=True)
     shared.symlink_to(claude, target_is_directory=True)
-    version = "2.2.0"
+    version = newer_version(PROJECT_VERSION)
     make_release(tmp_path, version)
     source = tmp_path / f"spec-harness-{version}"
     installer = source / "install.sh"
@@ -232,10 +250,10 @@ def test_update_preserves_agents_chain_with_published_legacy_installer(home, tmp
     assert snapshot(home) == before
     assert update_release.main(["update"]) == 0
     assert claude.is_symlink() and shared.is_symlink()
-    assert "version=2.2.0" in (entity / ".spec-skill-install").read_text(encoding="utf-8")
+    assert f"version={version}" in (entity / ".spec-skill-install").read_text(encoding="utf-8").splitlines()
 
 
-def test_update_refuses_agents_chain_through_chained_claude(home, release, monkeypatch):
+def test_update_refuses_agents_chain_through_chained_claude(home, release, monkeypatch, capsys):
     install(home, "claude")
     entity = home / "library/skills/spec"
     entity.parent.mkdir(parents=True)
@@ -252,15 +270,17 @@ def test_update_refuses_agents_chain_through_chained_claude(home, release, monke
     before = snapshot(home)
 
     assert update_release.main(["update"]) == 1
+    assert "single-hop Claude skill" in capsys.readouterr().err
     assert snapshot(home) == before
 
 
-def test_bad_checksum_and_network_failure_leave_installation_untouched(home, release, monkeypatch):
+def test_bad_checksum_and_network_failure_leave_installation_untouched(home, release, monkeypatch, capsys):
     install(home, "codex")
     before = snapshot(home)
     version, archive = release
     fake_download(monkeypatch, version, archive, checksum="0" * 64)
     assert update_release.main(["update"]) == 1
+    assert "SHA-256 does not match" in capsys.readouterr().err
     assert snapshot(home) == before
 
     def offline(version, source="github"):
@@ -268,6 +288,7 @@ def test_bad_checksum_and_network_failure_leave_installation_untouched(home, rel
 
     monkeypatch.setattr(update_release, "release_info", offline)
     assert update_release.main(["update"]) == 1
+    assert "network unavailable" in capsys.readouterr().err
     assert snapshot(home) == before
 
 
@@ -345,7 +366,7 @@ def test_auto_source_uses_mirror_for_lookup_and_download(home, release, monkeypa
 
     monkeypatch.setattr(update_release, "fetch", fetch)
     assert update_release.main(["update"]) == 0
-    assert "version=2.2.0" in marker(home, "codex")
+    assert f"version={version}" in marker(home, "codex").splitlines()
     assert "source: china" in capsys.readouterr().out
     assert requests[0].startswith("https://github.com/")
     assert all(url.startswith(update_release.CHINA_MIRROR) for url in requests[1:])
@@ -394,7 +415,7 @@ def test_source_option_and_environment_validate(home, monkeypatch, capsys):
     assert update_release.main(["update", "--check", "--source", "china"]) == 0
 
 
-def test_update_preflights_all_groups_before_changing_any_host(home, release, monkeypatch):
+def test_update_preflights_all_groups_before_changing_any_host(home, release, monkeypatch, capfd):
     install(home, "claude", "compact")
     install(home, "codex", "aggressive")
     custom = home / "custom/skills"
@@ -406,15 +427,18 @@ def test_update_preflights_all_groups_before_changing_any_host(home, release, mo
     fake_download(monkeypatch, version, archive)
 
     assert update_release.main(["update"]) == 1
+    output = capfd.readouterr()
+    assert "Installer preflight passed." in output.out
+    assert "Codex install root is outside the default path" in output.err
     assert snapshot(home) == before
 
     monkeypatch.setenv("FORCE", "1")
     assert update_release.main(["update"]) == 0
-    assert "version=2.2.0" in marker(home, "claude")
-    assert "version=2.2.0" in (custom / "spec/.spec-skill-install").read_text(encoding="utf-8")
+    assert f"version={version}" in marker(home, "claude").splitlines()
+    assert f"version={version}" in (custom / "spec/.spec-skill-install").read_text(encoding="utf-8").splitlines()
 
 
-def test_custom_root_force_never_overwrites_foreign_command(home, release, monkeypatch):
+def test_custom_root_force_never_overwrites_foreign_command(home, release, monkeypatch, capfd):
     install(home, "claude")
     custom = home / "custom/commands"
     command = custom / "spec/plan.md"
@@ -427,25 +451,28 @@ def test_custom_root_force_never_overwrites_foreign_command(home, release, monke
     before = snapshot(home)
 
     assert update_release.main(["update"]) == 1
+    assert "refusing to replace user-owned target without valid marker" in capfd.readouterr().err
     assert snapshot(home) == before
 
 
-def test_rollback_requires_explicit_version(home, release, monkeypatch):
+def test_rollback_requires_explicit_version(home, release, monkeypatch, capsys):
     install(home, "codex")
-    installed_marker = home / ".codex/skills/spec/.spec-skill-install"
-    installed_marker.write_text(marker(home, "codex").replace("version=2.1.0", "version=3.0.0"), encoding="utf-8")
     version, archive = release
+    installed_version = newer_version(version)
+    set_marker_version(home, "codex", installed_version)
     fake_download(monkeypatch, version, archive)
+    before = snapshot(home)
     assert update_release.main(["update"]) == 1
-    assert "version=3.0.0" in marker(home, "codex")
+    assert "select --version explicitly to roll back" in capsys.readouterr().err
+    assert snapshot(home) == before
+    assert f"version={installed_version}" in marker(home, "codex").splitlines()
     assert update_release.main(["update", "--version", version]) == 0
-    assert "version=2.2.0" in marker(home, "codex")
+    assert f"version={version}" in marker(home, "codex").splitlines()
 
 
 def test_rollback_to_pre_updater_release_previews_without_writes(home, tmp_path, monkeypatch):
     install(home, "codex")
-    installed_marker = home / ".codex/skills/spec/.spec-skill-install"
-    installed_marker.write_text(marker(home, "codex").replace("version=2.1.0", "version=2.2.0"), encoding="utf-8")
+    set_marker_version(home, "codex", newer_version("2.0.0"))
     archive = make_release(tmp_path, "2.0.0", legacy=True)
     fake_download(monkeypatch, "2.0.0", archive)
     before = snapshot(home)
@@ -462,8 +489,7 @@ def test_rollback_against_real_legacy_release(home, monkeypatch):
     if not archive_path.is_file():
         pytest.skip("legacy release archive is not included in public source exports")
     install(home, "codex")
-    installed_marker = home / ".codex/skills/spec/.spec-skill-install"
-    installed_marker.write_text(marker(home, "codex").replace("version=2.1.0", "version=2.2.0"), encoding="utf-8")
+    set_marker_version(home, "codex", newer_version("2.0.0"))
     fake_download(monkeypatch, "2.0.0", archive_path.read_bytes())
     before = snapshot(home)
 
