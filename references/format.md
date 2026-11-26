@@ -1,6 +1,6 @@
 # V3 Package Format
 
-`spec.md` starts with `<!-- spec-format: 3 -->`, then `Goal`, `Charter`, `Scope`, `Assumptions`, `Forks`, `Criteria`, `Decisions`, `Parked`, and `Binding`.
+`spec.md` starts with `<!-- spec-format: 3 -->` and requires `Goal` (goal and done means), `Scope` and `Criteria`. Charter overrides, assumptions, forks, decisions and parked items are optional; Go writes Binding. Older full v3 packages remain valid.
 
 ```markdown
 ## Goal
@@ -23,12 +23,11 @@
 - frozen: `<UTC timestamp>`
 ```
 
-- `kind: repair` plus `- repair-of: <archived-slug>` marks a repair; use `spec.py repair --of`.
-- Optional `## UI Review` with `- criteria: C1, C2` declares required UI checks and narrows mixed-task coverage. Go freezes the declaration.
+Authors omit `## Binding`: `plan-go` writes `branch` and `frozen` once. On a non-protected branch a pre-written `- branch:` must equal the current branch.
+
+- `kind: repair` plus `- repair-of: <archived-slug>` marks a repair; it still uses an ordinary package plan and gate.
 Task ids are permanent slugs — never renumbered; every `task-` reference in `spec.md` must resolve in `tasks.md`.
 
-`tasks.md` contains task cards. `boundary` is a comma-separated POSIX path-glob list: `*`, `?`, and `[]` match within one path component, `**` spans directories, and a wildcard-free path names a file or directory subtree. `new:` marks a file that may be created. `verify` is one repeatable backticked shell command. `expect` records the planning baseline (`red` or `green`). Optional fields are `depends-on`, `origin: planned|emergent`, and `pick`.
+`tasks.md` contains task cards. `boundary` is a comma-separated POSIX path-glob list: `*`, `?`, and `[]` match within one path component, `**` spans directories, and a wildcard-free path names a file or directory subtree. `new:` marks a file that may be created. `verify` is one repeatable backticked shell command. Optional `expect: red|green` opts into executing a planning baseline. Other optional fields are `depends-on`, `origin: planned|emergent`, and `pick`.
 
-A UI-surface package also carries `ui-review.json` and `evidence/*.png|jpg|jpeg`. The JSON has `schema_version: 1`, `generated_at`, `tree_fp`, optional additive `patterns`, `flows`, `screenshots`, and `findings`. Each flow has `id`, `action`, `target`, `expected`, `observed`, `result: pass|fail`, `criteria`, and `finding` when it fails. Each screenshot has a path under `evidence/`, `sha256`, `format`, `step`, and optional `description`. Each finding has `id`, `issue`, `impact`, `reproduction`, `solution`, `status: fixed|accepted|advisory`, and optional `step`. Fixed requires `fix_task`; accepted requires `accepted_decision`. Advisory cannot close a failed flow. `spec.py ui-review --file <draft>` computes hashes and the tree fingerprint, validates the record, and writes it into the package.
-
-`plan-go` records the `frozen` timestamp and a package baseline exactly once. A decision created from a fork uses the next `D<n>`/`P<n>` id and cites `F<n>` in its `by:` field. A blocked task keeps `[!]` until `spec.py unblock` records an explicit reason.
+`plan-go` freezes the package baseline once. Task progress comes from checkpoint, block, amend and unblock rows in `runs.jsonl`; `tasks.md` marks are a human view and `state.json` is advisory. A final gate row records one `checks` entry per distinct command and the delivery `product_tree` Git ID. A decision created from a fork uses the next `D<n>`/`P<n>` id and cites `F<n>` in its `by:` field.

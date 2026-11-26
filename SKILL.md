@@ -10,31 +10,27 @@ description: >-
 
 Update Spec Harness: `spec-harness update` (check: `--check`; fallback: `~/.local/bin/spec-harness`). Old installs need a newer release first.
 
-A v3 package holds `spec.md`, `tasks.md`, and evidence under `.spec/specs/YYYY-MM-DD_slug/`; it is the source of truth.
+A v3 package holds `spec.md`, `tasks.md`, and evidence under `.spec/specs/YYYY-MM-DD_slug/`; it is the source of truth. The Python CLI prints concise cards by default; use `--json` for machine-readable output.
 
 ## Two Phases
 
-Planning is thick: `/spec` routes an unbound goal to `plan`, a bound package to `update`. Before freeze: read-only Recon/Intent, plan backward from failure, `spec.py plan-lint` to zero, resolve forks, `plan-go`. After Go, execution is thin: follow the ready task DAG, verify, checkpoint, decide within charter.
+`/spec` routes an unbound goal to `plan`, a bound package to `update`. Plan backward from failure, then `plan-go`. For a small reversible goal on a clean checkout, `/spec:run <goal>` uses the [two-call in-place quick path](references/exec.md); otherwise follow the ready DAG.
 
 No session brief: run `python3 scripts/spec.py next`.
 
 ## Autonomy Contract
 
-The user is the last resort, not the first — and never assigned work: a mid-work problem is the agent's to close, by agent loop or any means, never the user's. Before asking, climb the ladder: (1) resolve from repo, charter, lessons, or runs ledger; (2) in-scope and reversible — decide by V1, record in `## Decisions`; (3) survivors become one batch of at most four cards, once per package; (4) only irreversible or unauthorized work parks in `## Parked`. Re-asking what evidence already answers is a violation. Stop releases only as `delivered`, `parked-only`, or `stalled`.
-
-## Innovation Stance
-
-Every lifecycle prompt ends with a `Spark:` line: explore designs within boundaries and treat failure as evidence. It never overrides rules or charter.
+The user is the last resort, not the first; climb the ladder: resolve from repository evidence and frozen policy, then decide reversible in-scope work yourself. Only irreversible or unauthorized work reaches the user, at most four cards, once per package. Re-asking what evidence already answers is a violation. Do not assign the user a repair; stop at `delivered`, `parked-only`, or `stalled`.
 
 ## Hard Rules
 
-1. Each machine task has `id`, path-glob `boundary`, backticked `verify`, and `expect`; only the harness ticks a ready task after its current-tree verify passes.
+1. Each machine task has `id`, path-glob `boundary` and backticked `verify`; `expect` optionally runs a planning probe. Only recorded checkpoints advance the standard DAG.
 2. Before `plan-go`, edit only `.spec/` package files. `plan-go` records prior dirt; boundary-inside changes deliver, outside changes block.
 3. Commits, archive, merge, and push are harness actions; an active/archived package rejects direct Git commit/push and hook bypasses (`--no-verify`, `-n`, hooks-path).
-4. Exactly one `plan-go` freezes a package and binds one non-protected branch. On a protected branch it creates `spec/<slug>` in `.spec/worktrees/<slug>`, moves the package there, and continues without planning dirt; packages run concurrently. Never overwrite or stash user changes for a gate. For V4 `merge`/`push`, `done` preflights worktrees, remote, and residual dirt; ambiguity fails fast.
+4. Standard `plan-go` binds one non-protected branch, using an isolated worktree on protected branches. Eligible quick work stays in the current checkout, is verified in place, and never stages, commits or pushes. Never overwrite or stash user changes.
 5. Boundary edits require a matching task or planned amendment. Audit Bash changes from the final diff.
 6. Irreversible forks require `by: user <reference>`. New dependencies and compatibility breaks require charter authority.
-7. `check` repairs or routes blocked work, verifies, then delivers on pass. Follow the [recovery loop](references/exec.md) before replying; use `--check-only` to diagnose without execution. Required UI/UX review uses real flows and screenshots; heuristics only warn.
+7. `check` preflights the gate, runs each distinct frozen verify once on the final product tree, then archives and applies V4. `--check-only` never verifies or delivers. Follow the [recovery loop](references/exec.md); acceptance stays in ordinary declared criteria and verification.
 
 ## Commands
 
@@ -42,11 +38,11 @@ Every lifecycle prompt ends with a `Spark:` line: explore designs within boundar
 | --- | --- |
 | `/spec <goal>` | Plan when no package is bound; otherwise continue execution |
 | `/spec:plan <goal>` | Create or refine the package: lint, forks, `plan-go` |
-| `/spec:run [goal]` | Execute the bound package to a terminal state; without a package a goal runs the one-shot |
+| `/spec:run [goal]` | Resume a package or run a small goal in the current checkout |
 | `/spec:repair <slug>` | Repair a delivered archive: thin planning, full gate |
 | `/spec:check` | Repair and recheck before delivery; park only decisions requiring authority |
 | `/spec:push` | Authorized finish: merge and push the archived package on this branch |
-| `/spec:doctor` | Check or repair runtime and session hooks |
+| `/spec:doctor` | Check or repair runtime, session hooks and legacy Git hooks |
 | `/spec /purge` | `spec.py purge`: keep records local; no commit/push |
 
 Planning: [plan](references/plan.md). Execution: [exec](references/exec.md). Format: [format](references/format.md). Philosophy: [philosophy](references/philosophy.md). Git: [git](references/git.md).

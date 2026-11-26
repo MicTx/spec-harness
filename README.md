@@ -6,7 +6,7 @@
 
 [English](README-en.md) · [文档索引](docs/README.md) · [快速开始](#快速开始)
 
-一个包只包含 `.spec/specs/YYYY-MM-DD_slug/` 下的 `spec.md` 与 `tasks.md`；`runs.jsonl` 和 `state.json` 由 harness 写入。规划期用宪章与机器 lint 消除未知，Go 之后执行期按任务 DAG 自动推进、验证和检查点提交。`check` 会自动补跑已授权的验证，并让 agent 按证据修复后重查；只有真正需要授权的取舍才给用户选项。实际 UI 改动或已声明的 UI 验收仍需真实操作与截图，并经 `spec.py ui-review --file <draft>` 回写适用验收项；目录名等弱线索只提醒。生命周期中的每个提示都以鼓励性的 `Spark:` 行收尾，驱动智能体在边界内大胆发散、以证据收敛。
+一个包只包含 `.spec/specs/YYYY-MM-DD_slug/` 下的 `spec.md` 与 `tasks.md`；`runs.jsonl` 和 `state.json` 由 harness 写入。规划期用宪章与机器 lint 消除未知，Go 之后执行期按任务 DAG 自动推进、验证和检查点提交。`check` 会自动补跑已授权的验证，并让 agent 按证据修复后重查；只有真正需要授权的取舍才给用户选项。所有验收都回到包内声明的标准任务与证据，界面改动不会触发另一套门禁。
 
 ## 安装
 
@@ -20,7 +20,7 @@ bash install.sh
 
 未设置 `INSTALL_HOSTS` 时自动探测宿主；`core` 与 `full` 是兼容别名，载荷完全相同。安装器增量合并会话 hook，保留非 Spec 条目并先备份。`DRY_RUN=1` 输出升级预检：每个宿主目标将被全新安装、原地升级、备份替换还是拒绝（符号链接/用户自有技能），零写入先看清用户改动的去留。
 
-环境变量 `SPEC_PROMPT_TIER` 选择生成的命令正文密度：`full`（默认）保留完整阶段指令，`compact` 输出两三句短正文并保留一条紧凑自主性指令；档位同时写入安装标记与 `install-manifest.json`，compact 档还会把运行时会话简报的截断上限降到 900 字符。`aggressive` 档正文更短，但每个阶段仍保留一条自主性硬指令和证据台账要求，并把运行时简报上限进一步降到 700 字符。
+安装器只提供一套固定的阶段指令与会话简报预算；`INSTALL_PROFILE=core|full` 仅作为兼容别名，两个值生成完全相同的载荷。
 
 | 宿主 | `INSTALL_HOSTS` |
 | --- | --- |
@@ -53,17 +53,17 @@ spec-harness --version        # 查看各宿主已安装版本
 /spec 修复导出 API 的权限校验，覆盖管理员与普通用户
 ```
 
-没有活动包时 `/spec` 进入 `plan` 规划流，绑定包未 Go 时进入 `update` 规划流：先做只读侦察与意图澄清，再把假设、分岔和任务逆向验证写成可判定字段，最后运行 `plan-go`。Go 之后不再问可逆问题；不可逆事项统一停泊，其他任务继续。
+没有活动包时 `/spec` 进入 `plan` 规划流，绑定包未 Go 时进入 `update` 规划流：确认目标、完成条件、范围和验收后冻结；假设、分岔与基线探针按需填写。Go 不改仓库宪章。Go 之后不再问可逆问题；不可逆事项停泊，其他任务继续。
 
 | 命令 | 用途 |
 | --- | --- |
 | `/spec <目标>` | 规划新包，或续跑当前分支绑定的包 |
 | `/spec:plan <目标>` | 显式规划入口：创建或修订任务包，lint、定岔、`plan-go` |
-| `/spec:run [目标]` | 执行绑定包至终态；未绑定且带目标时内置一条龙：规划、执行、验收、交付 |
-| `/spec:repair <归档包>` | 从已交付归档包脚手架修复包：薄规划、全门禁，保持与原规格一致 |
+| `/spec:run [目标]` | 继续绑定包；小型可逆修复可在当前检出原地验证，不自动提交 |
+| `/spec:repair <归档包>` | 以 `kind: repair` 和 `repair-of` 元数据创建普通修复包，再走标准规划与门禁 |
 | `/spec:check` | 按[恢复循环](references/exec.md)自行修复和复验，通过后归档并按 V4 交付；`--check-only` 仅诊断 |
 | `/spec:push` | 用户明确授权后完成 Git 交付（按当前分支解析已归档包） |
-| `/spec:doctor` | 检查并修复运行时与宿主 hook |
+| `/spec:doctor` | 检查并修复运行时、宿主 hook 与旧版 Git hook |
 | `/spec /purge` | `spec.py purge`：证据记录退出 Git 索引，原文件留本地；`--check` 仅预览 |
 
 Codex/ZCode 可写 `$spec`。小修、只读调查和一次性实验不必建包。

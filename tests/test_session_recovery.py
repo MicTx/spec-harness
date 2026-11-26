@@ -1,4 +1,4 @@
-"""Loop continuity pins: compact restore, gate-aware dedup, stale routing,
+"""Loop continuity pins: compact restore, gate-aware dedup, delivery routing,
 brief avalanche survival, and single route projections per event."""
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.v3_support import SLUG, cli, git, make_package, repo, started_package
+from tests.v3_support import cli, git, make_package, repo, started_package
 
 HOOKS = Path(__file__).resolve().parents[1] / "hooks"
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
@@ -18,7 +18,6 @@ for entry in (str(HOOKS), str(SCRIPTS)):
     if entry not in sys.path:
         sys.path.insert(0, entry)
 
-import evidence  # noqa: E402
 import gitx  # noqa: E402
 import memory  # noqa: E402
 import package as disk  # noqa: E402
@@ -26,9 +25,6 @@ import route  # noqa: E402
 from spec_hook import Action, handle  # noqa: E402
 
 EVENT_BASE = {"cwd": None, "session_id": "s1"}
-
-TIERS = ("full", "compact", "aggressive")
-TIER_LIMITS = {"full": 1450, "compact": 900, "aggressive": 700}
 
 VERIFY_HEAD = "VHMARK7Q"
 VERIFY_TAIL = "Z4VTMARK"
@@ -43,6 +39,10 @@ def _write_state(package: Path, values: dict) -> None:
     state = memory.snapshot_read(package)
     state.update(values)
     (package / "state.json").write_text(json.dumps(state, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def _block(package: Path, task: str, command: str) -> None:
+    disk.append_run(package, {"kind": "run", "task": task, "cmd": command, "exit": 1, "blocked": True})
 
 
 def _gate(
@@ -134,14 +134,13 @@ def _two_tasks(root: Path, verify: str = "true") -> Path:
     return package
 
 
-def _assert_budgeted_core(text: str, tier: str, state: str, *anchors: str) -> None:
-    assert len(text) <= TIER_LIMITS[tier], (tier, len(text), text)
+def _assert_budgeted_core(text: str, state: str, *anchors: str) -> None:
+    assert len(text) <= route.BRIEF_BUDGET, (len(text), text)
     assert "Next:" in text
     assert text.count("Next:") == 1
-    assert route.spark(state) in text, (tier, text)
-    assert text.count(route.SPARK_MARKER) == 1
+    assert "Spark:" not in text
     for anchor in anchors:
-        assert anchor in text, (tier, anchor, text)
+        assert anchor in text, (anchor, text)
     # Optional fields can be omitted, but never push essentials after them.
     for optional in ("goal:", "Charter:", "Lessons:"):
         if optional in text:
@@ -411,7 +410,7 @@ def test_prompt_dedup_keys_on_gate_aware_token(tmp_path):
     first = handle("prompt", _event(root))
     assert first.context, "the first prompt injects the brief"
     # Same 3-field progress, new gate record: the second prompt must inject.
-    _gate(package, root, [f"task-value: {disk.STALE_EVIDENCE_SUFFIX}"])
+    _gate(package, root, ["task-value: final verify failed"])
     second = handle("prompt", _event(root))
     assert second.context, "a gate-only change must not be deduplicated away"
     # An identical repeat with no new evidence injects nothing.
@@ -459,10 +458,7 @@ def test_prompt_reinjects_when_live_task_or_state_moves(tmp_path):
     changed_command = handle("prompt", _event(root))
     assert changed_command.context, "a changed verify command must re-inject"
 
-    tasks.write_text(
-        tasks.read_text(encoding="utf-8").replace("- [ ] Change value", "- [!] Change value"),
-        encoding="utf-8",
-    )
+    _block(package, "task-value", "test -f app.py")
     blocked = handle("prompt", _event(root))
     assert blocked.context, "a blocked task must re-inject"
 
@@ -479,11 +475,7 @@ def test_prompt_task_identity_change_reinjects_with_unchanged_progress(tmp_path)
     package = _two_tasks(tmp_path)
     before = route.decide(tmp_path)
     assert handle("prompt", _event(tmp_path)).context
-    tasks = package / "tasks.md"
-    tasks.write_text(
-        tasks.read_text(encoding="utf-8").replace("- [ ] Change value", "- [!] Change value", 1),
-        encoding="utf-8",
-    )
+    _block(package, "task-value", "true")
     after = route.decide(tmp_path)
     assert after["progress_token"] == before["progress_token"]
     assert after["state"] == before["state"] == "run"
@@ -545,7 +537,7 @@ def test_legacy_three_field_progress_state_still_works(tmp_path):
     assert handle("prompt", {"cwd": str(root)}).context
 
 
-# --- gate routing: stale self-heal, mixed repairs, unknown honesty ---
+# --- gate routing: preflight, real blockers, unknown honesty ---
 
 
 def test_stop_does_not_start_from_frozen_planning_without_execution(tmp_path):
@@ -563,28 +555,6 @@ def test_probe_and_read_only_session_do_not_arm_check_loop(tmp_path):
     assert not handle("stop", _event(tmp_path)).block
 
 
-def test_weak_edits_cannot_retrigger_the_same_failed_verify_indefinitely(tmp_path):
-    repo(tmp_path)
-    directory = started_package(tmp_path, verify="printf x >> .spec/count; grep -q 'VALUE = 0' app.py")
-    assert cli(tmp_path, "verify", "task-value").returncode == 0
-    baseline = (tmp_path / ".spec/count").read_text()
-    app = tmp_path / "app.py"
-    app.write_text("VALUE = 1\n")
-    assert cli(tmp_path, "check").returncode == 1
-    assert (tmp_path / ".spec/count").read_text() == baseline + "x"
-    app.write_text("VALUE = 1\n# irrelevant\n")
-    assert cli(tmp_path, "check", "--attempt", "Inspected the first failure; unrelated edit").returncode == 1
-    assert (tmp_path / ".spec/count").read_text() == baseline + "xx"
-    assert cli(tmp_path, "check").returncode == 1
-    assert (tmp_path / ".spec/count").read_text() == baseline + "xx"
-    assert cli(tmp_path, "check", "--retry", "Confirmed a new runtime environment").returncode == 1
-    assert (tmp_path / ".spec/count").read_text() == baseline + "xxx"
-    app.write_text("VALUE = 0\n")
-    assert cli(tmp_path, "check").returncode == 0
-    assert (tmp_path / ".spec/count").read_text() == baseline + "xxxx"
-    assert not directory.exists()
-
-
 def test_diagnostic_only_session_without_host_session_id_does_not_resume(tmp_path):
     repo(tmp_path)
     started_package(tmp_path)
@@ -594,35 +564,11 @@ def test_diagnostic_only_session_without_host_session_id_does_not_resume(tmp_pat
     assert handle("stop", event) == Action()
 
 
-def test_check_recovery_budget_is_durable_and_ignores_gate_replays(tmp_path):
-    repo(tmp_path)
-    directory = started_package(tmp_path, verify="grep -q 'VALUE = 0' app.py")
-    assert cli(tmp_path, "verify", "task-value").returncode == 0
-    (tmp_path / "app.py").write_text("VALUE = 7\n")
-    first = json.loads(cli(tmp_path, "check").stdout)
-    assert first["next"]["recovery"]["round"] == 0
-    assert handle("stop", {"cwd": str(tmp_path)}).block
-    assert not handle("stop", {"cwd": str(tmp_path), "continuing": True}).block
-    replay = json.loads(cli(tmp_path, "check").stdout)
-    assert replay["next"]["recovery"]["round"] == 0
-    for expected in range(1, 4):
-        attempted = cli(tmp_path, "check", "--attempt", f"strategy {expected}: reproduce with targeted input")
-        attempt = json.loads(attempted.stdout)
-        assert not attempt["passed"]
-        assert attempt["next"]["recovery"]["round"] == expected
-    assert attempt["next"]["state"] == "stalled"
-    assert not handle("stop", _event(tmp_path, session_id="cold-resume")).block
-    runs = disk.runs(directory)
-    assert [row["strategy"] for row in runs if row.get("kind") == "gate-repair"] == [
-        f"strategy {i}: reproduce with targeted input" for i in range(1, 4)
-    ]
-
-
 def test_legacy_diagnostic_text_does_not_authorize_an_action(tmp_path):
     repo(tmp_path)
     directory = started_package(tmp_path)
     assert cli(tmp_path, "verify", "task-value").returncode == 0
-    for text in (disk.STALE_EVIDENCE_SUFFIX, "UI review: fictional error", "changed path outside scope"):
+    for text in ("outdated verification", "UI review: fictional error", "changed path outside scope"):
         _gate(directory, tmp_path, [text])
         card = _next_json(tmp_path)
         assert card["gate"]["action"] is None
@@ -630,15 +576,15 @@ def test_legacy_diagnostic_text_does_not_authorize_an_action(tmp_path):
         assert text in card["gate"]["errors"]
 
 
-def test_stale_gate_card_uses_check_when_verify_all_has_no_work(tmp_path):
+def test_ready_delivery_uses_check_when_verify_all_has_no_work(tmp_path):
     repo(tmp_path)
     package = started_package(tmp_path)
     assert cli(tmp_path, "verify", "task-value").returncode == 0
     (tmp_path / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
-    assert cli(tmp_path, "check", "--check-only").returncode == 1
+    assert cli(tmp_path, "check", "--check-only").returncode == 0
     card = _next_json(tmp_path)
-    assert card["gate"]["action"]["code"] == "evidence-refresh"
-    assert card["state"] == "check-failed"
+    assert card["gate"]["action"] is None
+    assert card["state"] == "deliver"
     assert card["ready"] == []
     assert "spec.py check" in card["next"]
     assert "verify --all" not in card["next"]
@@ -647,7 +593,6 @@ def test_stale_gate_card_uses_check_when_verify_all_has_no_work(tmp_path):
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["results"] == []
     assert (package / "runs.jsonl").read_bytes() == before
-    # Actual stale cure is already exercised by test_check_done, not here.
 
 
 def test_route_surfaces_recorded_gate_and_its_repair_action(tmp_path):
@@ -662,7 +607,7 @@ def test_route_surfaces_recorded_gate_and_its_repair_action(tmp_path):
     card = route.next_card(root)
 
     assert card["state"] == "check-failed"
-    assert {item["code"] for item in card["gate"]["findings"]} == {"evidence-refresh", "boundary-index"}
+    assert {item["code"] for item in card["gate"]["findings"]} == {"boundary-index"}
     assert "Inspect ownership of other.txt" in card["next"]
 
     _gate(package, root, [], passed=True)
@@ -674,13 +619,11 @@ def test_route_surfaces_recorded_gate_and_its_repair_action(tmp_path):
 # --- brief budgets: actionable context first, no half commands, no avalanche ---
 
 
-@pytest.mark.parametrize("tier", TIERS)
-def test_brief_keeps_next_and_spark_under_goal_avalanche(tmp_path, monkeypatch, tier):
+def test_brief_keeps_next_under_goal_avalanche(tmp_path):
     repo(tmp_path)
     _avalanche(tmp_path)
-    monkeypatch.setenv("SPEC_PROMPT_TIER", tier)
     brief = route.brief(tmp_path)
-    _assert_budgeted_core(brief, tier, "run", "task-value", "FAILLADDER", "spec.py next")
+    _assert_budgeted_core(brief, "run", "task-value", "FAILLADDER", "spec.py next")
     assert "G" * 400 not in brief
     # Never show a syntactically plausible but cut-off shell command.
     assert VERIFY_HEAD not in brief and VERIFY_TAIL not in brief
@@ -691,29 +634,25 @@ def test_brief_keeps_next_and_spark_under_goal_avalanche(tmp_path, monkeypatch, 
         assert isinstance(card.get("recovery"), dict)
 
 
-@pytest.mark.parametrize("tier", TIERS)
-def test_start_injection_respects_tier_budgets_with_full_context(tmp_path, monkeypatch, tier):
+def test_start_injection_respects_the_single_brief_budget(tmp_path):
     repo(tmp_path)
     _avalanche(tmp_path)
-    monkeypatch.setenv("SPEC_PROMPT_TIER", tier)
     handle("pre_compact", _event(tmp_path, pending=["RESUME-CLUE check the failing case"]))
     context = handle("start", _event(tmp_path, source="compact")).context
-    _assert_budgeted_core(context, tier, "run", "task-value", "FAILLADDER", "spec.py next", "RESUME-CLUE")
+    _assert_budgeted_core(context, "run", "task-value", "FAILLADDER", "spec.py next", "RESUME-CLUE")
     assert "do not replan" in context
     assert "advisory" in context.lower()
     assert VERIFY_HEAD not in context and VERIFY_TAIL not in context
     assert not re.search(r"A{80}", context)
 
 
-@pytest.mark.parametrize("tier", TIERS)
-def test_parked_brief_retains_decision_id_before_optional_avalanche(tmp_path, monkeypatch, tier):
+def test_parked_brief_retains_decision_id_before_optional_avalanche(tmp_path):
     repo(tmp_path)
     package = _avalanche(tmp_path)
     assert cli(tmp_path, "verify", "task-value").returncode == 0
     assert _next_json(tmp_path)["state"] == "parked-only"
-    monkeypatch.setenv("SPEC_PROMPT_TIER", tier)
     for context in (route.brief(tmp_path), handle("start", _event(tmp_path, source="compact")).context):
-        _assert_budgeted_core(context, tier, "parked-only", "P1", "PARKANCHOR")
+        _assert_budgeted_core(context, "parked-only", "P1", "PARKANCHOR")
         assert "parked" in context.lower()
     assert memory.snapshot_read(package).get("pending", []) == []
 
@@ -735,11 +674,9 @@ def test_repeated_start_injections_do_not_snowball(tmp_path):
     assert lengths[-1] <= lengths[0] + 1, lengths
 
 
-@pytest.mark.parametrize("tier", TIERS)
-def test_eight_start_injections_stay_byte_identical(tmp_path, monkeypatch, tier):
+def test_eight_start_injections_stay_byte_identical(tmp_path):
     repo(tmp_path)
     package = _avalanche(tmp_path)
-    monkeypatch.setenv("SPEC_PROMPT_TIER", tier)
     handle("pre_compact", _event(tmp_path, pending=["RESUME-CLUE check the failing case"]))
     before = {name: (package / name).read_bytes() for name in ("spec.md", "tasks.md", "runs.jsonl")}
     contexts = []
@@ -749,7 +686,7 @@ def test_eight_start_injections_stay_byte_identical(tmp_path, monkeypatch, tier)
         contexts.append(handle("start", _event(tmp_path, source="compact")).context)
         handle("end", _event(tmp_path))
     assert len(set(contexts)) == len(set(briefs)) == 1
-    _assert_budgeted_core(contexts[0], tier, "run", "task-value", "RESUME-CLUE", "FAILLADDER")
+    _assert_budgeted_core(contexts[0], "run", "task-value", "RESUME-CLUE", "FAILLADDER")
     assert memory.snapshot_read(package)["pending"] == ["RESUME-CLUE check the failing case"]
     assert {name: (package / name).read_bytes() for name in before} == before
 
@@ -776,7 +713,7 @@ def test_start_and_subagent_compute_route_once(tmp_path, monkeypatch):
 
     calls["n"] = 0
     handle("subagent", _event(root))
-    assert calls["n"] == 1, calls
+    assert calls["n"] == 0, calls
 
     calls["n"] = 0
     handle("stop", _event(root, continuing=True))
@@ -847,11 +784,12 @@ def test_success_and_legacy_records_do_not_leak_old_directives(tmp_path):
 
 def test_new_ready_task_does_not_inherit_previous_tasks_failure_directive(tmp_path):
     repo(tmp_path)
-    package = _two_tasks(tmp_path, verify="test ! -e fail-marker")
+    _two_tasks(tmp_path, verify="test ! -e fail-marker")
     (tmp_path / "fail-marker").write_text("fail\n", encoding="utf-8")
     assert cli(tmp_path, "verify", "task-value").returncode == 1
     assert "smallest fix" in _next_json(tmp_path)["next"]
-    disk.tick(tmp_path, package.name, "task-value", blocked=True)
+    for _ in range(3):
+        assert cli(tmp_path, "verify", "task-value").returncode == 1
     next_card = _next_json(tmp_path)
     assert next_card["task"]["id"] == "task-next"
     assert "smallest fix" not in json.dumps(next_card)
@@ -865,26 +803,20 @@ def test_failed_final_verification_recovers_through_check(tmp_path, monkeypatch)
     package = started_package(tmp_path, verify=command)
     assert cli(tmp_path, "verify", "task-value").returncode == 0
     (tmp_path / "app.py").write_text("VALUE = 7\n", encoding="utf-8")
-    # done's final re-verify is the operation that fails after an edit; run it
-    # directly so this fixture never depends on check's curable-delivery path.
-    failed_final = evidence.run_tasks(tmp_path, SLUG, final=True)
-    assert failed_final["ready"] is False
+    assert cli(tmp_path, "check").returncode == 1
     failed = disk.latest_runs(package)["task-value"]
     assert failed["final"] is True and failed["exit"] != 0
     assert disk.parse_tasks((package / "tasks.md").read_text())[0].checked
     before = {name: (package / name).read_bytes() for name in ("tasks.md", "runs.jsonl")}
     card = _next_json(tmp_path)
-    assert card["task"] is None and card["state"] == "stalled"
+    assert card["task"] is None and card["state"] == "check-failed"
     assert card["recovery"]["task"] == "task-value"
     assert card["recovery"]["final_failed"] is True
-    assert card["recovery"]["directive"] == failed["directive"]
     assert "spec.py check" in card["next"]
     assert "verify --all" not in card["next"]
     assert {name: (package / name).read_bytes() for name in before} == before
-    for tier in TIERS:
-        monkeypatch.setenv("SPEC_PROMPT_TIER", tier)
-        context = handle("start", _event(tmp_path, source="compact")).context
-        _assert_budgeted_core(context, tier, "stalled", "task-value", "spec.py check", "smallest fix")
+    context = handle("start", _event(tmp_path, source="compact")).context
+    _assert_budgeted_core(context, "check-failed", "task-value", "spec.py check")
     (tmp_path / "app.py").write_text("VALUE = 0\n", encoding="utf-8")
     delivered = cli(tmp_path, "check")
     assert delivered.returncode == 0, delivered.stderr
@@ -905,11 +837,12 @@ def test_final_failure_recovery_matches_current_command_and_task_priority(tmp_pa
     ready = _next_json(tmp_path)
     assert ready["task"]["id"] == "task-next"
     assert "FINAL_RUNG" not in json.dumps(ready)
-    disk.tick(tmp_path, package.name, "task-next", blocked=True)
+    _block(package, "task-next", "true")
     blocked = _next_json(tmp_path)
     assert "spec.py unblock task-next" in blocked["next"]
     assert not blocked["recovery"].get("final_failed")
-    disk.tick(tmp_path, package.name, "task-next")
+    assert cli(tmp_path, "unblock", "task-next", "--reason", "fixture evidence").returncode == 0
+    assert cli(tmp_path, "verify", "task-next").returncode == 0
     assert "FINAL_RUNG" in _next_json(tmp_path)["next"]
     tasks = package / "tasks.md"
     tasks.write_text(tasks.read_text().replace("- verify: `true`", "- verify: `false`", 1), encoding="utf-8")

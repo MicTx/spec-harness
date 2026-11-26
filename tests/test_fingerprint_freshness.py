@@ -8,14 +8,12 @@ import stat
 import sys
 from pathlib import Path
 
-import evidence
-import gate
 import gitx
 import package
 import plan
 import pytest
 
-from tests.v3_support import SLUG, git, make_package, repo
+from tests.v3_support import SLUG, cli, git, make_package, repo
 
 
 @pytest.fixture(params=["tracked", "untracked"])
@@ -104,41 +102,23 @@ def test_final_verify_reruns_a_changed_tree_and_gate_rejects_the_failure(tmp_pat
     marker = tmp_path.parent / (tmp_path.name + "-verify-count")
     command = _command(marker, path, before)
     directory = make_package(tmp_path, verify=command)
+    if path.name != "app.py":
+        spec, tasks = directory / "spec.md", directory / "tasks.md"
+        spec.write_text(spec.read_text().replace("- in: app.py", f"- in: app.py, {path.name}"))
+        tasks.write_text(tasks.read_text().replace("boundary: app.py", f"boundary: app.py, new:{path.name}"))
     assert plan.go(tmp_path, SLUG)["ready"] is True
-    assert _count(marker) == 1
-    package.tick(tmp_path, SLUG, "task-value")
-    status = _status(tmp_path)
-
-    first = evidence.run_tasks(tmp_path, SLUG, final=True)
-    assert first["ready"] is True
-    assert first["results"][0]["exit"] == 0
-    assert not first["results"][0].get("reused")
-    first_fp = first["results"][0]["tree_fp"]
-    first_count = _count(marker)
-    assert first_count == 2
-    # Identical content still reuses the passing verify even though the tree
-    # itself is freshly hashed; the .spec ledger must not invalidate evidence.
-    same_tree = evidence.run_tasks(tmp_path, SLUG, final=True)
-    assert same_tree["results"][0].get("reused") is True
-    assert _count(marker) == first_count
-    assert gate.compute(tmp_path, SLUG, final=True)["passed"] is True
+    assert cli(tmp_path, "verify", "task-value").returncode == 0
+    first_fp = package.latest_runs(directory)["task-value"]["tree_fp"]
     path.write_text(after, encoding="utf-8")
-    assert _status(tmp_path) == status
 
-    # The pre-final gate must see stale evidence rather than a cached clean tree.
-    stale = gate.compute(tmp_path, SLUG)
-    assert stale["passed"] is False
-    assert any("evidence is stale for the current command or tree" in error for error in stale["errors"])
-    second = evidence.run_tasks(tmp_path, SLUG, final=True)
-    assert _count(marker) == first_count + 1
-    assert second["ready"] is False
-    assert second["results"][0]["exit"] != 0
-    assert second["results"][0]["tree_fp"] != first_fp
-    assert not second["results"][0].get("reused")
-    final = gate.compute(tmp_path, SLUG, final=True)
-    assert final["passed"] is False
-    assert any("latest verify did not pass" in error for error in final["errors"])
-    assert _records(directory)[-1]["exit"] != 0
+    probe = json.loads(cli(tmp_path, "check", "--check-only").stdout)
+    assert probe["passed"] is True and probe["verification"] == "pending"
+    assert _count(marker) == 2
+    failed = cli(tmp_path, "check")
+    assert failed.returncode == 1 and _count(marker) == 3
+    assert "final verify did not pass" in failed.stderr
+    final = package.latest_runs(directory)["task-value"]
+    assert final["final"] and final["exit"] != 0 and final["tree_fp"] != first_fp
 
 
 def test_plan_lint_reruns_a_changed_tree_and_reports_failure(tmp_path, product_change):
@@ -203,21 +183,15 @@ def test_contract_only_edit_forces_final_verify_rerun(tmp_path):
     )
     command = f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
     directory = make_package(tmp_path, verify=command)
+    spec, tasks = directory / "spec.md", directory / "tasks.md"
+    path = contract.relative_to(tmp_path).as_posix()
+    spec.write_text(spec.read_text().replace("- in: app.py", f"- in: app.py, {path}"))
+    tasks.write_text(tasks.read_text().replace("boundary: app.py", f"boundary: app.py, {path}"))
     assert plan.go(tmp_path, SLUG)["ready"] is True
-    package.tick(tmp_path, SLUG, "task-value")
-    first = evidence.run_tasks(tmp_path, SLUG, final=True)
-    assert first["ready"] is True
+    assert cli(tmp_path, "verify", "task-value").returncode == 0
     verified_count = _count(marker)
-    same_tree = evidence.run_tasks(tmp_path, SLUG, final=True)
-    assert same_tree["results"][0].get("reused") is True
-    assert _count(marker) == verified_count
-
     contract.write_text('{"version": 2}\n', encoding="utf-8")
-    stale = gate.compute(tmp_path, SLUG)
-    assert any("evidence is stale for the current command or tree" in error for error in stale["errors"])
-    changed = evidence.run_tasks(tmp_path, SLUG, final=True)
-    assert changed["ready"] is False
-    assert not changed["results"][0].get("reused")
+    changed = cli(tmp_path, "check")
+    assert changed.returncode == 1 and "final verify did not pass" in changed.stderr
     assert _count(marker) == verified_count + 1
     assert package.latest_runs(directory)["task-value"]["exit"] != 0
-    assert gate.compute(tmp_path, SLUG, final=True)["passed"] is False

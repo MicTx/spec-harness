@@ -10,55 +10,85 @@ from pathlib import Path
 import gitx
 import route
 from package import (
-    STALE_EVIDENCE_SUFFIX,
     append_run,
     checkpoint_commit,
     checkpoint_paths,
+    checkpoint_receipt,
     dependency_errors,
     failure_signature,
     frozen_commands,
-    latest_runs,
     now,
     package_baseline,
-    parse_tasks,
+    render_task_marks,
     require_execution_started,
     runs,
     subprocess_output,
-    tick,
+    task_records,
     topological_tasks,
     tree_fingerprint,
+    verify_groups,
 )
-from package import unblock as unblock_package
 from runtime_budget import project_verify_timeout
 
 
 def _matching_failures(package: Path, task_id: str, signature: str) -> list[dict]:
-    return [
-        record
-        for record in runs(package)
-        if record.get("task") == task_id and record.get("sig") == signature and record.get("exit") not in (None, 0)
-    ]
+    failures = []
+    for row in runs(package):
+        if row.get("task") != task_id:
+            continue
+        if row.get("kind") == "unblock":
+            failures.clear()
+        elif row.get("sig") == signature and row.get("exit") not in (None, 0):
+            failures.append(row)
+    return failures
+
+
+def _index_tree(root: Path) -> str:
+    result = gitx.git(root, "write-tree", check=False)
+    if result.returncode != 0:
+        raise ValueError("cannot snapshot the index: " + result.stderr.strip())
+    return result.stdout.strip()
+
+
+def _restore_index(root: Path, tree: str) -> None:
+    result = gitx.git(root, "read-tree", tree, check=False)
+    if result.returncode != 0:
+        raise ValueError("cannot restore the index snapshot: " + result.stderr.strip())
+
+
+def _single_line(text: str, limit: int = 200) -> str:
+    """Bound one ledger line of checkpoint error context."""
+    cleaned = " ".join("".join(" " if ord(char) < 32 or ord(char) == 127 else char for char in text).split())
+    return cleaned if len(cleaned) <= limit else cleaned[: limit - 1].rstrip() + "…"
+
+
+def _checkpoint_error(exc: Exception) -> str:
+    detail = ""
+    if isinstance(exc, subprocess.CalledProcessError):
+        stderr = exc.stderr
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", "replace")
+        detail = _single_line(str(stderr or exc.stdout or ""))
+    return _single_line(str(exc) + (f" ({detail})" if detail else ""))
+
+
+def _mirror_mark(directory: Path, task_id: str, mark: str) -> None:
+    path = directory / "tasks.md"
+    text = path.read_text(encoding="utf-8")
+    updated = render_task_marks(text, {task_id: mark})
+    if updated != text:
+        path.write_text(updated, encoding="utf-8")
 
 
 def ladder_directive(package: Path, task_id: str, signature: str) -> str:
-    """One directive per failure rung; each invites divergence, never scolds."""
     attempt = len(_matching_failures(package, task_id, signature))
-    if attempt == 0:
-        return "Fresh evidence in hand — read the failure output and make the smallest fix that could work."
-    if attempt == 1:
-        return (
-            "Same failure signature — time to diverge: build a minimal reproduction "
-            "or add diagnostics somewhere new instead of editing the same place."
-        )
-    if attempt == 2:
-        return (
-            "Same failure signature three times — be bold: compare the last green checkpoint "
-            "and change implementation path."
-        )
-    return (
-        "No new evidence after changing path: park the task with evidence "
-        "and point the creative energy at another ready task."
+    steps = (
+        "Read the failure output and make the smallest fix that could work.",
+        "Build a minimal reproduction or add diagnostics instead of repeating the same edit.",
+        "Compare the last green checkpoint and change implementation path.",
+        "No new evidence: park the task with evidence and continue any independent work.",
     )
+    return steps[min(attempt, len(steps) - 1)]
 
 
 def should_block(package: Path, task_id: str, signature: str) -> bool:
@@ -115,29 +145,43 @@ def _all_tasks(records: list) -> tuple[list, list[str]]:
     return runnable, skipped
 
 
-def _final_tasks(records: list) -> list:
-    errors = dependency_errors(records)
-    if errors:
-        raise ValueError("; ".join(errors))
-    blocked = [task.id for task in records if task.blocked]
-    unfinished = [task.id for task in records if not task.checked]
-    problems = []
-    if blocked:
-        problems.append("blocked tasks: " + ", ".join(blocked))
-    if unfinished:
-        problems.append("unfinished tasks: " + ", ".join(unfinished))
-    if problems:
-        raise ValueError("done requires a complete task DAG; " + "; ".join(problems))
-    return [task for task in topological_tasks(records) if task.command]
+def _execute(root: Path, command: str) -> tuple[dict, str, str]:
+    started = time.monotonic()
+    timeout = project_verify_timeout()
+    try:
+        completed = subprocess.run(command, shell=True, cwd=root, capture_output=True, timeout=timeout)
+        notice = ""
+    except subprocess.TimeoutExpired as exc:
+        completed = subprocess.CompletedProcess(command, 124, (exc.stdout or b"")[-4096:], (exc.stderr or b"")[-4096:])
+        notice = f"Spec verify timed out after {timeout} seconds\n"
+    stdout, stderr = subprocess_output(completed)
+    result = dict(
+        cmd=command,
+        exit=completed.returncode,
+        sig=failure_signature(completed.stdout, completed.stderr),
+        duration=round(time.monotonic() - started, 3),
+    )
+    return result, stdout, notice + stderr
 
 
-def run_tasks(root: Path, slug: str, selected: list[str] | None = None, final: bool = False) -> dict:
+def final_batch(root: Path, records: list) -> list[dict]:
+    checks = []
+    for command, tasks in verify_groups(records).items():
+        result, stdout, stderr = _execute(root, command)
+        checks.append(dict(result, tasks=tasks))
+        if result["exit"] != 0:
+            detail = f"--- {', '.join(tasks)} stdout ---\n{stdout[-4096:]}\n--- stderr ---\n{stderr[-4096:]}"
+            print(detail, file=sys.stderr)
+    return checks
+
+
+def run_tasks(root: Path, slug: str, selected: list[str] | None = None) -> dict:
     package, _spec, tasks = require_execution_started(root, slug)
-    records = parse_tasks(tasks)
+    if package_baseline(package).get("finish") == "worktree":
+        raise ValueError("quick verifies at delivery; run spec.py check after editing")
+    records = task_records(package, tasks)
     skipped: list[str] = []
-    if final:
-        chosen = _final_tasks(records)
-    elif selected is None:
+    if selected is None:
         chosen, skipped = _all_tasks(records)
     else:
         if not selected:
@@ -148,117 +192,65 @@ def run_tasks(root: Path, slug: str, selected: list[str] | None = None, final: b
     if drift or (chosen and not package_baseline(package).get("task_ids")):
         raise ValueError("; ".join(drift) or "no frozen verify commands; restore the package baseline")
     for task in chosen:
-        if not final:
-            checkpoint_paths(root, slug, task.globs)
-        tree_before = tree_fingerprint(root) if final else None
-        if final:
-            # C1/F1: consult only the latest per-task kind:run record (the same
-            # latest_runs view evaluate_runs reads).  A record that passed with
-            # the identical command on the identical tree skips the subprocess;
-            # a changed tree or a failing latest record forces a re-run.  The
-            # appended record carries the same cmd/tree_fp/final triple a real
-            # re-run would, so gate freshness rules are unchanged.
-            fingerprint = tree_before
-            latest = latest_runs(package).get(task.id, {})
-            if (
-                latest.get("kind", "run") == "run"
-                and latest.get("task") == task.id
-                and latest.get("cmd") == task.command
-                and latest.get("exit") == 0
-                and latest.get("tree_fp") == fingerprint
-            ):
-                previous = [
-                    record
-                    for record in runs(package)
-                    if record.get("task") == task.id and record.get("kind", "run") == "run"
-                ]
-                record = {
-                    "kind": "run",
-                    "task": task.id,
-                    "cmd": task.command,
-                    "exit": 0,
-                    "sig": latest.get("sig", ""),
-                    "attempt": len(previous) + 1,
-                    "head": gitx.head(root),
-                    "duration": 0.0,
-                    "final": True,
-                    "ts": now(),
-                    "tree_fp": fingerprint,
-                    "reused": True,
-                }
-                append_run(package, record)
-                results.append({**record, "directive": ""})
-                continue
-        started = time.monotonic()
-        timeout = False
-        verify_timeout = project_verify_timeout()
-        try:
-            completed = subprocess.run(task.command, shell=True, cwd=root, capture_output=True, timeout=verify_timeout)
-            exit_code = completed.returncode
-            stdout, stderr = subprocess_output(completed)
-            signature = failure_signature(completed.stdout, completed.stderr)
-        except subprocess.TimeoutExpired as exc:
-            timeout = True
-            exit_code = 124
-            stdout_tail = (exc.stdout or b"")[-4096:]
-            stderr_tail = (exc.stderr or b"")[-4096:]
-            stdout, stderr = subprocess_output(
-                subprocess.CompletedProcess(task.command, exit_code, stdout_tail, stderr_tail)
-            )
-            stderr = f"Spec verify timed out after {verify_timeout} seconds\n{stderr}"
-            signature = failure_signature(stdout_tail, stderr_tail)
+        # Snapshot before the verify runs so a checkpoint failure restores the
+        # index that checkpoint_paths just validated (no foreign staged paths),
+        # not the index the verify command itself may have dirtied.
+        checkpoint_paths(root, slug, task.globs)
+        index_before = _index_tree(root)
+        head = gitx.head(root)
+        verified, stdout, stderr = _execute(root, task.command)
+        exit_code, signature = verified["exit"], verified["sig"]
         previous = [
             record for record in runs(package) if record.get("task") == task.id and record.get("kind", "run") == "run"
         ]
         record = {
+            **verified,
             "kind": "run",
             "task": task.id,
-            "cmd": task.command,
-            "exit": exit_code,
-            "sig": signature,
             "attempt": len(previous) + 1,
-            "head": gitx.head(root),
-            "duration": round(time.monotonic() - started, 3),
-            "final": final,
+            "head": head,
+            "final": False,
             "ts": now(),
+            "tree_fp": tree_fingerprint(root),
         }
-        directive = ""
-        block_task = False
+        directive, mark = "", ""
         if exit_code == 0:
-            had_failure = any(item.get("exit") not in (None, 0) for item in previous)
-            tick(root, slug, task.id)
-            if not final:
-                record["checkpoint"] = checkpoint_commit(root, slug, task.title, task.globs)
-            if had_failure:
+            try:
+                if gitx.head(root) != head:
+                    raise ValueError("HEAD changed during verification")
+                receipt = checkpoint_receipt(slug, record)
+                record["checkpoint"] = checkpoint_commit(root, slug, task.title, task.globs, receipt=receipt)
+                mark = "x"
+            except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+                if gitx.head(root) == head:
+                    try:
+                        _restore_index(root, index_before)
+                    except (OSError, ValueError, subprocess.CalledProcessError) as restore_exc:
+                        record["restore_error"] = _checkpoint_error(restore_exc)
+                record.update(checkpoint_error=_checkpoint_error(exc), verify_exit=0, exit=1)
                 directive = (
-                    "Hard-won green — celebrate by recording one reusable lesson with "
-                    'spec.py learn "<when>" "<do>" --enforce <repo path>.'
+                    f"{task.id}: checkpoint commit failed ({record['checkpoint_error']}); "
+                    f"task stays unticked. Fix the commit blocker, then retry spec.py verify {task.id}."
                 )
+                print(directive, file=sys.stderr)
         else:
             directive = ladder_directive(package, task.id, signature)
-            if timeout:
+            if stderr.startswith("Spec verify timed out"):
                 directive = f"Verify timed out. {directive}"
+            if should_block(package, task.id, signature):
+                record["blocked"], mark = True, "!"
+            print(f"--- {task.id} stdout ---\n{stdout[-4096:]}\n--- stderr ---\n{stderr[-4096:]}", file=sys.stderr)
+        if record["exit"] != 0:
             record["directive"] = directive
-            block_task = not final and should_block(package, task.id, signature)
-            if block_task:
-                record["blocked"] = True
-            print(
-                f"--- {task.id} stdout ---\n{stdout[-4096:]}\n--- stderr ---\n{stderr[-4096:]}",
-                file=sys.stderr if final else sys.stdout,
-            )
-        record["tree_fp"] = tree_before or tree_fingerprint(root)
-        if block_task:
-            tick(root, slug, task.id, blocked=True)
-            append_run(package, record)
-            checkpoint_commit(root, slug, f"block {task.id}", ())
-        else:
-            append_run(package, record)
+        append_run(package, record)
+        if mark:
+            _mirror_mark(package, task.id, mark)
         results.append({**record, "directive": directive})
-        if exit_code != 0:
+        if record["exit"] != 0:
             break
     return {
         "results": results,
-        "ready": all(item["exit"] == 0 for item in results),
+        "ready": all(item["exit"] == 0 and not item.get("checkpoint_error") for item in results),
         "skipped": skipped,
         "next": route.next_card(root, slug),
     }
@@ -268,8 +260,9 @@ def unblock_task(root: Path, slug: str, task_id: str, reason: str) -> dict:
     reason = reason.strip()
     if not reason:
         raise ValueError("unblock requires a non-empty reason")
-    package, _spec, _tasks = require_execution_started(root, slug)
-    unblock_package(root, slug, task_id)
+    package, _spec, tasks = require_execution_started(root, slug)
+    if not any(task.id == task_id and task.blocked for task in task_records(package, tasks)):
+        raise ValueError(f"task is not blocked: {task_id}")
     append_run(
         package,
         {
@@ -279,18 +272,5 @@ def unblock_task(root: Path, slug: str, task_id: str, reason: str) -> dict:
             "ts": now(),
         },
     )
-    checkpoint = checkpoint_commit(root, slug, f"unblock {task_id}", ())
-    return {"slug": slug, "task": task_id, "unblocked": True, "reason": reason, "checkpoint": checkpoint}
-
-
-def evidence_status(task, record: dict, fingerprint: str | None, final: bool) -> tuple[str, str]:
-    """Return an evidence code and display text; only the gate assigns actions."""
-    if record.get("exit") not in (None, 0):
-        return "verify-failed", f"{task.id}: latest verify did not pass"
-    if record.get("exit") != 0:
-        return "evidence-refresh", f"{task.id}: latest verify did not pass"
-    if record.get("cmd") != task.command or (fingerprint is not None and record.get("tree_fp") != fingerprint):
-        return "evidence-refresh", f"{task.id}: {STALE_EVIDENCE_SUFFIX}"
-    if final and not record.get("final"):
-        return "evidence-refresh", f"{task.id}: final-tree verify has not run"
-    return "", ""
+    _mirror_mark(package, task_id, " ")
+    return {"slug": slug, "task": task_id, "unblocked": True, "reason": reason}

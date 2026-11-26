@@ -1,6 +1,6 @@
 # 从零完成第一个 v3 任务
 
-本教程演示一次完整闭环：厚规划、Go 后执行、真实验证、归档和收尾。实际一行修复通常不需要建包；这里仅为展示完整路径。
+本教程演示标准包的规划、Go、验证和交付。小型可逆修复也可使用[原地快路径](../references/exec.md)，不自动提交。
 
 [文档索引](README.md) · [Documentation index](README-en.md) · [根 README](../README.md) · [Root README](../README-en.md)
 
@@ -46,7 +46,6 @@ $spec 修复 add 函数，保持行为由现有测试定义
   - id: task-add
   - boundary: calc.py
   - verify: `python3 -m pytest -q tests/test_calc.py`
-  - expect: green
 ```
 
 反复运行规划门禁，直到所有阻塞项为零，再由用户确认 Go：
@@ -67,7 +66,7 @@ python3 "$SPEC" next
 python3 "$SPEC" verify task-add
 ```
 
-`runs.jsonl` 记录命令、退出码、输出摘要和树指纹。`verify` 只接受依赖已完成的 ready 任务；验证后修改代码必须重跑对应任务，手工勾选不能替代证据。同一失败签名连续出现四次时，任务会自动进入 `[!]`，修复根因后用 `unblock` 显式恢复：
+`runs.jsonl` 记录命令、退出码、输出摘要和树指纹。`verify` 只接受依赖已完成的 ready 任务；最终 `check` 必须在交付树上重新执行声明的验证，手工勾选不能替代证据。同一失败签名连续出现四次时，任务会自动进入 `[!]`，修复根因后用 `unblock` 显式恢复：
 
 ```bash
 python3 "$SPEC" unblock task-add --reason "已定位并修复根因"
@@ -79,15 +78,10 @@ python3 "$SPEC" unblock task-add --reason "已定位并修复根因"
 python3 "$SPEC" check
 ```
 
-通过后自动复验最终树、归档、提交，并按 V4 交付。不通过时按 `next` 修复并回到同一个 `check`；`--check-only` 仅诊断。若正式验收已通过但 Git 移交不可达，agent 会给出等待或仅本地提交的选项，不把修复工作交给用户。详见[恢复循环](../references/exec.md)。记录已选分岔或复用教训时使用：
+通过后自动复验最终树、归档、提交，并按 V4 交付。不通过时按 `next` 修复并回到同一个 `check`；`--check-only` 仅诊断。若正式验收已通过但 Git 移交不可达，agent 会给出等待或仅本地提交的选项，不把修复工作交给用户。详见[恢复循环](../references/exec.md)。记录已选分岔时使用：
 
 ```bash
 python3 "$SPEC" decide --fork F1
-python3 "$SPEC" learn "当 add 输出为 5" "不要重新实现运算符；优先检查测试输入" --enforce tests/test_calc.py
 ```
 
-`--enforce <repo path>` 必须指向包外已跟踪的规则目标；归档会自动收录本包已记录的教训，并重新验证该路径。
-
 完成后，归档保留 `spec.md`、`tasks.md`、`runs.jsonl`、状态和完成报告，是下一轮恢复与审计的真源。
-
-实际前端变化或计划承诺的 UI 验收需要真实操作与截图。用 `spec.py ui-review --file <draft>` 回写适用 Criteria 和 findings；目录名只是线索，源码改动后仍按当前树重跑实际流程。

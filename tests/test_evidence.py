@@ -72,8 +72,8 @@ def test_package_only_checkpoint_preserves_other_task_evidence_freshness(tmp_pat
         for line in (tmp_path / ".spec/specs/archive" / SLUG / "runs.jsonl").read_text().splitlines()
         if line
     ]
-    final = [record for record in runs if record.get("final") is True and "task" in record]
-    assert {record["task"] for record in final} == {"task-one", "task-two"}
+    final = next(record for record in runs if record.get("final") is True)
+    assert {task for check in final["checks"] for task in check["tasks"]} == {"task-one", "task-two"}
 
 
 def test_verify_ticks_and_creates_checkpoint(tmp_path):
@@ -260,6 +260,8 @@ def test_repeated_signature_auto_blocks_and_can_be_explicitly_unblocked(tmp_path
     assert "- [!] Change value" in (package / "tasks.md").read_text()
     brief = json.loads(cli(tmp_path, "next").stdout)
     assert brief["state"] == "stalled"
+    blocked = cli(tmp_path, "done")
+    assert blocked.returncode == 1 and "blocked tasks: task-value" in blocked.stderr
 
     unblocked = cli(tmp_path, "unblock", "task-value", "--reason", "new root-cause evidence")
 
@@ -306,7 +308,7 @@ def test_auto_block_continues_to_independent_ready_work(tmp_path):
     assert cli(tmp_path, "verify", "independent").returncode == 0
 
 
-def test_done_refuses_blocked_and_unchecked_tasks_before_archive(tmp_path):
+def test_done_refuses_unverified_tasks_regardless_of_the_mark(tmp_path):
     repo(tmp_path)
     package = started_package(tmp_path)
     tasks = package / "tasks.md"
@@ -318,7 +320,7 @@ def test_done_refuses_blocked_and_unchecked_tasks_before_archive(tmp_path):
     tasks.write_text(tasks.read_text().replace("- [ ]", "- [!]"), encoding="utf-8")
     blocked = cli(tmp_path, "done")
     assert blocked.returncode == 1
-    assert "blocked tasks: task-value" in blocked.stderr
+    assert "unfinished tasks: task-value" in blocked.stderr
     assert "- [!] Change value" in tasks.read_text()
     assert not (tmp_path / ".spec/specs/archive" / SLUG).exists()
 

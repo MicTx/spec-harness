@@ -24,17 +24,17 @@ def test_user_command_surface():
         assert retired not in skill
 
 
-def test_user_commands_and_references_require_real_ui_review():
+def test_user_commands_and_references_do_not_require_a_ui_review():
     from pathlib import Path
 
     root = Path(__file__).parents[1]
     skill = (root / "SKILL.md").read_text()
     execution = (root / "references/exec.md").read_text()
     installer = (root / "install.sh").read_text()
-    assert "UI/UX review" in skill
-    assert "## UI/UX Review" in execution
-    assert "spec.py ui-review --file" in execution
-    assert "ui-review.json" in installer
+    assert "UI/UX review" not in skill
+    assert "## UI/UX Review" not in execution
+    assert "spec.py ui-review --file" not in execution
+    assert "ui-review.json" not in installer
 
 
 def test_done_preserves_active_package_when_remote_is_unavailable(tmp_path):
@@ -169,7 +169,7 @@ def test_unavailable_handoff_offers_wait_or_authorized_local_commit(tmp_path):
     delivered = json.loads(cli(tmp_path, "check").stdout)
     assert delivered["passed"] and delivered["finish"] == "commit" and delivered["requested_finish"] == "push"
     assert _git_out(tmp_path, "rev-parse", "main") == main
-    assert "V4 finish: push" in (tmp_path / ".spec/charter.md").read_text()
+    assert not (tmp_path / ".spec/charter.md").exists()
     assert json.loads(cli(tmp_path, "next").stdout)["state"] == "delivered"
     assert "local commit only" in cli(tmp_path, "push").stderr
 

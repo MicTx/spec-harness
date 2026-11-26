@@ -18,7 +18,7 @@ from path_safety import validate_source_tree
 
 MARKER_NAME = "spec-local-evidence.json"
 EVIDENCE_DIRS = ("specs", "docs", "plans", "archive", "autoplan", "autorun", "artifacts", "cache")
-EVIDENCE_FILES = ("charter.md", "lessons.md")
+EVIDENCE_FILES = ("charter.md",)
 SCOPES = tuple(f".spec/{name}" for name in (*EVIDENCE_DIRS, *EVIDENCE_FILES))
 IGNORE_RULES = tuple(f"/.spec/{name}/" for name in EVIDENCE_DIRS) + tuple(f"/.spec/{name}" for name in EVIDENCE_FILES)
 EXCLUDE_HEADER = "# Spec Harness local evidence (files stay on disk; architecture stays tracked)"
@@ -57,6 +57,28 @@ def is_local(root: Path) -> bool:
     if result.returncode not in (0, 1):
         raise ValueError(result.stderr.strip() or "Git ignore lookup failed")
     return result.returncode == 0
+
+
+def ignore_package(root: Path, slug: str) -> None:
+    """Exclude only this worktree delivery, without changing repository evidence policy."""
+    common = _common_dir(root)
+    if common is None:
+        raise ValueError("quick delivery requires Git metadata")
+    exclude = common / "info" / "exclude"
+    if exclude.is_symlink() or exclude.parent.is_symlink():
+        raise ValueError("Git exclude file or directory must not be symlinked")
+    paths = (f".spec/specs/{slug}", f".spec/specs/archive/{slug}")
+    safe_slug = "".join(f"[{char}]" if char in "!#[]*?\\" else char for char in slug)
+    rules = (f"/.spec/specs/{safe_slug}/", f"/.spec/specs/archive/{safe_slug}/")
+    original = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
+    missing = [rule for rule in rules if rule not in original.splitlines()]
+    if missing:
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        with exclude.open("a", encoding="utf-8") as stream:
+            stream.write(("\n" if original and not original.endswith("\n") else "") + "\n".join(missing) + "\n")
+    for path in paths:
+        if gitx.git(root, "check-ignore", "--no-index", "-q", f"{path}/spec.md", check=False).returncode != 0:
+            raise ValueError("project ignore rules would expose quick evidence; use a standard package")
 
 
 def ensure(root: Path) -> None:

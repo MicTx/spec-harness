@@ -63,7 +63,7 @@ def test_strict_verify_change_requires_user_authorization(tmp_path):
     repo(tmp_path)
     pkg = _strict_package(tmp_path)
     assert cli(tmp_path, "plan-go").returncode == 0
-    assert "V2 scope: strict" in (tmp_path / ".spec" / "charter.md").read_text(encoding="utf-8")
+    assert package.package_baseline(pkg)["charter"]["V2"] == "strict"
 
     _edit(pkg / "tasks.md", "verify: `true`", "verify: `echo revised`")
     errors = _errors(tmp_path)
@@ -126,7 +126,7 @@ def test_adjacent_fixes_revise_records_authorization(tmp_path):
     assert package.parse_tasks(tasks_path.read_text(encoding="utf-8"))[0].checked is True
 
     # The shared charter drifts to strict after Go; the package's own V2 still governs.
-    _edit(tmp_path / ".spec" / "charter.md", "V2 scope: adjacent-fixes", "V2 scope: strict")
+    (tmp_path / ".spec" / "charter.md").write_text("- V2 scope: strict\n", encoding="utf-8")
 
     _edit(tasks_path, "verify: `true`", "verify: `echo revised`")
     errors = _errors(tmp_path)

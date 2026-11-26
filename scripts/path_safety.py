@@ -56,16 +56,3 @@ def validate_source_tree(path: Path) -> None:
             validate_source_tree(entry)
         elif not entry.is_file():
             raise UnsafePathError(f"source path contains non-regular entry: {entry}")
-
-
-def safe_child(root: Path, name: str) -> Path:
-    """Resolve a generated child and reject links/escapes from *root*."""
-
-    base = _resolved(root)
-    child = Path(os.path.abspath(os.fspath(root) + os.sep + name))
-    if child.is_symlink():
-        raise UnsafePathError(f"generated path is a symlink: {child}")
-    child_real = _resolved(child)
-    if not child_real.is_relative_to(base):
-        raise UnsafePathError(f"generated path escapes output root: {name}")
-    return child_real

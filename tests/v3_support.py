@@ -77,7 +77,7 @@ def make_package(root: Path, verify: str = "true", expect: str = "green") -> Pat
 
 def cli(root: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, str(SCRIPTS / "spec.py"), "--root", str(root), *args],
+        [sys.executable, str(SCRIPTS / "spec.py"), "--json", "--root", str(root), *args],
         cwd=root,
         capture_output=True,
         text=True,

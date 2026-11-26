@@ -4,16 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import shutil
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 HOOKS = Path(__file__).resolve().parent.parent / "hooks"
 sys.path.insert(0, str(HOOKS))
-from adapters import HOSTS, capabilities, config_path, render_config  # noqa: E402
+from adapters import HOSTS, capabilities, config_path, hook_command, render_config  # noqa: E402
 
 SHIM_SOURCES = {
     "opencode": HOOKS / "shims" / "opencode.ts",
@@ -105,6 +103,10 @@ def _merge_hook_config(host: str, existing: dict, rendered: dict, config_target:
     hooks = data.get("hooks", {})
     if not isinstance(hooks, dict):
         raise ValueError("host hooks config must be a JSON object")
+    previous = existing.get("hooks", {})
+    for event in list(hooks):
+        if not hooks[event] and isinstance(previous, dict) and previous.get(event):
+            del hooks[event]
     for event, entries in rendered["hooks"].items():
         hooks.setdefault(event, []).extend(entries)
     data["hooks"] = hooks
@@ -118,15 +120,14 @@ def _install_shim(host: str, target: Path, installed_root: Path) -> None:
     if target.exists() and "spec-harness" not in target.read_text(encoding="utf-8"):
         raise ValueError(f"refusing to overwrite non-Spec shim: {target}")
     target.parent.mkdir(parents=True, exist_ok=True)
-    if host == "pi":
-        dispatcher = installed_root / "hooks" / "spec_hook.py"
-        target.write_text(
-            source.read_text(encoding="utf-8").replace("__SPEC_DISPATCHER__", json.dumps(str(dispatcher))),
-            encoding="utf-8",
-        )
-    else:
-        shutil.copy2(source, target)
-        shutil.copy2(HOOKS / "spec_hook.py", target.parent / "spec_hook.py")
+    executable, dispatcher = hook_command(installed_root / "hooks" / "spec_hook.py")
+    rendered = source.read_text(encoding="utf-8")
+    if host == "hermes":
+        rendered = rendered.replace('"__SPEC_DISPATCHER__"', json.dumps(str(dispatcher), ensure_ascii=True))
+        rendered = rendered.replace('"__SPEC_EXECUTABLE__"', json.dumps(executable))
+    rendered = rendered.replace("__SPEC_DISPATCHER__", json.dumps(str(dispatcher), ensure_ascii=True))
+    rendered = rendered.replace("__SPEC_EXECUTABLE__", json.dumps(executable))
+    target.write_text(rendered, encoding="utf-8")
 
 
 def install_session_hooks(host: str, home: Path | None = None, installed_root: Path | None = None) -> Path | None:
@@ -169,63 +170,16 @@ def install_session_hooks(host: str, home: Path | None = None, installed_root: P
     return target
 
 
-def install_git_hooks(root: Path, source_dir: Path) -> list[Path]:
-    """Install the two Git hooks without replacing project-owned hooks."""
-    environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
-    result = subprocess.run(
-        ["git", "-C", str(root), "rev-parse", "--show-toplevel", "--git-common-dir", "--git-path", "hooks"],
-        capture_output=True,
-        text=True,
-        env=environment,
-    )
-    if result.returncode != 0:
-        raise ValueError("not a Git repository")
-    repo, common_value, hooks_value = result.stdout.splitlines()
-    common = Path(common_value)
-    if not common.is_absolute():
-        common = (Path(repo) / common).resolve()
-    hooks = Path(hooks_value)
-    if not hooks.is_absolute():
-        hooks = (Path(repo) / hooks).resolve()
-    if not any(hooks == allowed or allowed in hooks.parents for allowed in (Path(repo).resolve(), common)):
-        raise ValueError(f"refusing hooks path outside repository or Git common dir: {hooks}")
-    hooks.mkdir(parents=True, exist_ok=True)
-    checker = (source_dir.parent / "scripts" / "check_all.py").resolve()
-    python = Path(sys.executable).resolve()
-    installed = []
-    for name in ("pre-commit", "pre-push"):
-        content = (
-            (source_dir / name)
-            .read_text(encoding="utf-8")
-            .replace("__SPEC_CHECK_ALL_SCRIPT_PLACEHOLDER__", str(checker))
-            .replace("__SPEC_PYTHON_PLACEHOLDER__", str(python))
-        )
-        target = hooks / name
-        if target.exists() and target.read_text(encoding="utf-8") != content:
-            raise ValueError(f"refusing to overwrite project-owned hook: {target}; chain it manually")
-        target.write_text(content, encoding="utf-8")
-        target.chmod(target.stat().st_mode | 0o111)
-        installed.append(target)
-    return installed
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--host", action="append")
+    parser.add_argument("--host", action="append", required=True)
     parser.add_argument("--installed-root", type=Path)
-    parser.add_argument("--root", help="install Git hooks into this repository instead")
     args = parser.parse_args(argv)
     try:
-        if args.root:
-            for target in install_git_hooks(Path(args.root).resolve(), HOOKS):
+        for host in args.host:
+            target = install_session_hooks(host, installed_root=args.installed_root)
+            if target:
                 print(f"installed: {target}")
-        else:
-            if not args.host:
-                parser.error("--host is required without --root")
-            for host in args.host:
-                target = install_session_hooks(host, installed_root=args.installed_root)
-                if target:
-                    print(f"installed: {target}")
     except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

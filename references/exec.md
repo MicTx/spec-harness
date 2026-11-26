@@ -1,20 +1,24 @@
 # Execution Phase
 
-After `plan-go`, `/spec:run` works the ready DAG inside each boundary, runs the declared verify, checkpoints, then enters `/spec:check`. With a goal and no package, run plans, freezes and delivers in one chain. `verify --all` stops at the first failure and never re-runs checked cards. Repair packages use the same loop. Use `plan-amend` for authorized additions or revisions; `spec.py list` and `spec.py diff` are read-only inventory and change projections. Project verify timeout: 1800s (`SPEC_PROJECT_VERIFY_TIMEOUT` overrides it).
+## Quick path
+
+For an explicit small reversible goal with no active package, inspect the affected code and choose one or two exact non-UI product files and a real test. Run `python3 <installed-skill>/scripts/spec.py quick '<observable goal>' --path <file> [--path <file>] --verify '<test command>'`; then edit those files here and run `python3 <installed-skill>/scripts/spec.py check`. Use `--done '<outcome>'` if the goal itself is not observable. This is two lifecycle CLI calls. A successful check runs the test once, records a local receipt and leaves changes unstaged on the original branch; it does not commit, merge or push. On failure fix within scope and run check again. `spec.py next` resumes after interruption.
+
+Quick requires a named clean Git checkout, an unstaged index and no competing draft or active package. It refuses UI, secrets, migrations, configuration, wildcard paths and unrelated changes. If the work is larger, the test needs unavailable services, the checkout is already dirty, or delivery needs a commit or handoff, use the standard plan instead; never stash or absorb user work.
+
+## Standard path
+
+After `plan-go`, `/spec:run` follows the ready DAG inside each boundary, runs the declared verify, checkpoints, then enters `/spec:check`. `verify --all` stops at the first failure and never re-runs checked cards. Repair packages use the same loop. Use `plan-amend` for authorized additions or revisions; `spec.py list` and `spec.py diff` are read-only. Project verify timeout: 1800s (`SPEC_PROJECT_VERIFY_TIMEOUT` overrides it). CLI output is concise; add `--json` for the full result.
 
 ## Delivery Recovery
 
-Start with `spec.py check`, not a probe. `check` and `done` share one verdict. `findings` classify each issue by `code`, `severity`, `owner`, `subject` and `action`. Warnings do not block. Binding, frozen commands, actual failed acceptance, bad evidence and unsafe staged/committed changes still block. Never stash, reset or absorb unknown changes. Unstaged outside changes can remain for a local commit; merge/push must still pass preflight. Recorded lessons are included automatically; enforce targets are still checked.
+Start with `spec.py check`, not a probe. `check` and `done` share one verdict. `findings` classify each issue by `code`, `severity`, `owner`, `subject` and `action`. Warnings do not block. Binding, frozen commands, actual failed acceptance, bad proof and unsafe staged/committed changes still block. Never stash, reset or absorb unknown changes. Unstaged outside changes remain untouched; when present, final verifies use a private checkout of the delivery candidate.
 
-1. Follow `next` in the JSON: finish independent ready cards first, then address the selected blocker. A changed tree or missing/stale evidence triggers the declared final verify when safe. Fix a failed verify, then use **the same check** to finish. No implicit verify expansion.
-2. Repair within the charter: inspect the ledger, run the real flow or isolate a change. Use `spec.py check --attempt '<strategy and evidence>'` after a distinct recovery attempt. Use `--retry '<diagnosed environment change>'` for a same-tree verification retry. Do not blindly repeat. Ledger counts survive sessions: three attempts per blocker, six overall. At exhaustion report findings, tried strategies and what remains; `--restart 'user <reference>'` opens a new budget only with explicit authority.
-3. Continue in this turn until delivered, parked, or stalled. Claude-style Stop and current Pi can request a bounded continuation; when the host has no continuation, loop here yourself. `spec.py next` is read-only. `check --check-only` records a probe, never verifies or delivers and never starts a loop. Respect pause/cancel and host stop reentry.
+1. Follow `next`: finish independent ready cards first, then address the selected blocker. Checkpoints prove progress, not delivery. A real check always runs the distinct frozen commands on the candidate tree and refuses tree or plan changes during verification.
+2. Fix the failing verify or its environment, then run **the same `spec.py check`**. No separate retry quota or flags. A repeated blocker without a new checkpoint releases Stop; report the remaining failure rather than retrying blindly.
+3. Continue until delivered, parked, or stalled. Claude-style Stop and current Pi can request continuation; other hosts use the current turn. Respect pause/cancel and Stop reentry. `spec.py next` is read-only. `check --check-only` records preflight with `verification: pending`, never verifies, delivers or starts a loop.
 
 A pass completes final-tree verification, archives and commits, then applies V4. A handoff interrupted after archive remains pending; `spec.py push` retries it. Do not mistake a local archive for a completed merge or push.
-
-## UI/UX Review
-
-Actual owned frontend changes, matching additive `patterns`, or `## UI Review` / `- criteria: C1, C2` trigger real UI evidence. Directory/scope hints alone are warnings. Cover the applicable Criteria, not unrelated backend criteria. Operate the interface through real clicks, inputs and navigation (project browser E2E can provide evidence). Capture screenshots in `evidence/`, then submit the flows and findings via `spec.py ui-review --file <draft>`. A failed flow requires a verified fix or explicitly accepted non-criterion finding; a required criterion still needs a passing flow. A purely advisory finding cannot close a failed flow. Rerun and recapture when the product tree changes; do not reuse screenshots as new results.
 
 ## Decisions
 

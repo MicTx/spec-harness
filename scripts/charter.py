@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from package import primary_root
+from package import parse_charter, primary_root
 
 DEFAULTS = {
     "V1": "quality > maintainability > speed > cost",
@@ -33,26 +33,15 @@ def load(root: Path) -> dict[str, str]:
     if path.exists():
         for line in path.read_text(encoding="utf-8").splitlines():
             match = re.match(r"- (V\d+)\s+[^:]+:\s*([^|]+)", line)
-            if match:
+            if match and match[1] in DEFAULTS:
                 result[match.group(1)] = match.group(2).strip()
     return result
 
 
-def merge(root: Path, values: dict[str, str]) -> None:
-    root = primary_root(root)
-    merged = {**load(root), **values}
-    lines = ["# Spec Value Charter", ""]
-    labels = ["priority", "scope", "verification", "finish", "dependencies", "compatibility", "blocked"]
-    lines.extend(f"- V{index} {label}: {merged[f'V{index}']} | charter.md" for index, label in enumerate(labels, 1))
-    path = root / ".spec" / "charter.md"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+def resolve(root: Path, spec: str) -> dict[str, str]:
+    return {**load(root), **parse_charter(spec)}
 
 
-def summary_line(root: Path) -> str:
-    values = load(root)
+def summary_line(root: Path, values: dict[str, str] | None = None) -> str:
+    values = values or load(root)
     return "; ".join(f"{key}={values[key]}" for key in sorted(values))
-
-
-def pick(root: Path, key: str) -> str:
-    return load(root).get(key, "")

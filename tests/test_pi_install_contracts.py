@@ -312,7 +312,7 @@ def test_pi_consumes_the_installed_stop_protocol(tmp_path):
     installation = run_installer(home)
     assert installation.returncode == 0, installation.stdout + installation.stderr
     extension = home / ".pi/agent/extensions/spec.ts"
-    dispatcher = home / ".pi/agent/skills/spec/hooks/spec_hook.py"
+    dispatcher = home / ".pi/agent/skills/spec/hooks/spec-hook.sh"
     script = """
 const extension = (await import(process.argv[1])).default;
 const handlers = new Map();
@@ -320,7 +320,7 @@ let armed = true, calls = 0;
 await extension({
   on(name, callback) { handlers.set(name, callback); },
   exec(exe, args) {
-    if (exe !== 'python3' || args[0] !== process.argv[2]) throw Error('not the installed dispatcher');
+    if (exe !== 'sh' || args[0] !== process.argv[2]) throw Error('not the installed dispatcher');
     if (args[3] === 'stop') calls++;
     return { stdout: JSON.stringify(armed ? { decision: 'block', reason: 'run spec.py check' } : {}) };
   },

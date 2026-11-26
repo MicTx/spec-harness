@@ -115,8 +115,8 @@ def assert_kernel_tree(root: Path) -> None:
         "SKILL.md",
         "install.sh",
         "agents/openai.yaml",
-        "hooks/pre-commit",
-        "hooks/pre-push",
+        "hooks/spec-hook.sh",
+        "hooks/spec_hook.py",
         "references/exec.md",
         "scripts/spec.py",
         "scripts/package.py",
@@ -211,7 +211,7 @@ def test_sandbox_profiles_install_identical_kernel(tmp_path, profile):
     assert f"profile={profile}" in (skill / ".spec-skill-install").read_text(encoding="utf-8")
     assert not (home / ".claude" / "agents").exists()
     settings = json.loads((home / ".claude" / "settings.json").read_text(encoding="utf-8"))
-    assert "spec_hook.py" in settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+    assert "spec-hook.sh" in settings["hooks"]["Stop"][0]["hooks"][0]["command"]
     reference = tmp_path / f"reference-{profile}"
     assert run_export(reference, "--profile", profile).returncode == 0
     assert tree_manifest(skill) == tree_manifest(reference)
@@ -305,7 +305,7 @@ def test_installer_preserves_user_settings_both_ways(tmp_path):
             result = run_installer(home, {"INSTALL_PROFILE": profile, "PYTHONDONTWRITEBYTECODE": "1"})
             assert result.returncode == 0, result.stderr[-300:]
             current = _json.loads(settings.read_text(encoding="utf-8"))
-            assert "spec_hook.py" in current["hooks"]["Stop"][0]["hooks"][0]["command"]
+            assert "spec-hook.sh" in current["hooks"]["Stop"][0]["hooks"][0]["command"]
             if preexisting:
                 assert current["permissions"] == {"allow": ["Bash(ls)"]}
                 assert current["sentinel"] == "keep-me"
@@ -321,7 +321,7 @@ def test_repeated_installer_run_keeps_one_owned_hook_per_event(tmp_path):
     installed = json.loads(settings.read_text(encoding="utf-8"))
     assert all(len(entries) == 1 for entries in installed["hooks"].values())
     installed_hook = home / ".claude" / "skills" / "spec" / "hooks" / "spec_hook.py"
-    assert str(installed_hook) in installed["hooks"]["Stop"][0]["hooks"][0]["command"]
+    assert str(installed_hook.with_name("spec-hook.sh")) in installed["hooks"]["Stop"][0]["hooks"][0]["command"]
 
     second = run_installer(home, {"PYTHONDONTWRITEBYTECODE": "1"})
     assert second.returncode == 0, second.stderr[-300:]

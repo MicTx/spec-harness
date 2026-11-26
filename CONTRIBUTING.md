@@ -51,7 +51,7 @@ Run the checks that match the change. The full suite is:
     python3 -m pytest -q
     ruff check scripts/ hooks/ tests/
     ruff format --check scripts/ hooks/ tests/
-    python3 scripts/check_all.py --root .
+    python3 scripts/spec.py next --json
     git diff --check
 
 For documentation-only changes, run the Markdown link and structure checks plus the affected tests. If a check cannot run, state the reason in the pull request.

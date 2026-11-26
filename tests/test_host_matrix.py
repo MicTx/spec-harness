@@ -1,5 +1,6 @@
 import json
 import re
+import shlex
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,11 +12,16 @@ HOOKS = ROOT / "hooks"
 sys.path.insert(0, str(HOOKS))
 
 import install_hooks  # noqa: E402
-from adapters import HOSTS, capabilities, render_config  # noqa: E402
+from adapters import HOSTS, capabilities, hook_command, render_config  # noqa: E402
 from install_hooks import install_session_hooks  # noqa: E402
 
 sys.path.insert(0, str(ROOT / "scripts"))
 from doctor import main as doctor_main  # noqa: E402
+
+
+def _command(host, path, event):
+    executable, dispatcher = hook_command(path)
+    return f"{executable} {shlex.quote(str(dispatcher))} --host {host} {event}"
 
 
 def test_every_installer_host_is_in_adapter_matrix():
@@ -67,12 +73,26 @@ def test_config_install_is_idempotent_and_preserves_custom_hooks(tmp_path):
     assert before == target.read_text(encoding="utf-8")
 
 
+def test_upgrade_removes_only_owned_retired_events(tmp_path):
+    target = tmp_path / ".claude" / "settings.json"
+    target.parent.mkdir()
+    legacy = "python3 /old/spec/hooks/spec_hook.py --host claude post_edit"
+    foreign = "echo project-hook"
+    hooks = {"PostToolUse": [{"hooks": [{"command": legacy}, {"command": foreign}]}]}
+    target.write_text(json.dumps({"hooks": hooks, "x-spec-owned": {"commands": [legacy]}}), encoding="utf-8")
+    install_session_hooks("claude", home=tmp_path)
+    data = json.loads(target.read_text())
+    assert data["hooks"]["PostToolUse"] == [{"hooks": [{"command": foreign}]}]
+    assert legacy not in target.read_text()
+    assert set(data["hooks"]) == {"PostToolUse", "SessionStart", "UserPromptSubmit", "PreToolUse", "Stop"}
+
+
 def test_fresh_config_install_records_ownership_and_stays_idempotent(tmp_path):
     target = install_session_hooks("claude", home=tmp_path)
     first = target.read_text(encoding="utf-8")
     first_settings = json.loads(first)
     assert first_settings["x-spec-owned"]["commands"] == [
-        f"python3 {ROOT / 'hooks' / 'spec_hook.py'} --host claude {event}" for event in capabilities("claude")
+        _command("claude", ROOT / "hooks" / "spec_hook.py", event) for event in capabilities("claude")
     ]
     assert all(len(entries) == 1 for entries in first_settings["hooks"].values())
 
@@ -92,7 +112,7 @@ def test_codex_fresh_install_keeps_schema_clean_and_uses_sidecar(tmp_path):
     sidecar = target.with_name("hooks.json.spec-owned.json")
     record = json.loads(sidecar.read_text(encoding="utf-8"))
     assert record["x-spec-owned"]["commands"] == [
-        f"python3 {ROOT / 'hooks' / 'spec_hook.py'} --host codex {event}" for event in capabilities("codex")
+        _command("codex", ROOT / "hooks" / "spec_hook.py", event) for event in capabilities("codex")
     ]
 
     install_session_hooks("codex", home=tmp_path)
@@ -121,7 +141,7 @@ def test_codex_upgrade_migrates_inline_ownership_to_sidecar(tmp_path):
     assert "x-spec-owned" not in config
     assert legacy_command not in target.read_text(encoding="utf-8")
     stop_commands = [entry["command"] for group in config["hooks"]["Stop"] for entry in group["hooks"]]
-    assert stop_commands == [f"python3 {ROOT / 'hooks' / 'spec_hook.py'} --host codex stop"]
+    assert stop_commands == [_command("codex", ROOT / "hooks" / "spec_hook.py", "stop")]
     sidecar = json.loads(target.with_name("hooks.json.spec-owned.json").read_text(encoding="utf-8"))
     assert legacy_command not in sidecar["x-spec-owned"]["commands"]
 
@@ -149,7 +169,7 @@ def test_config_install_migrates_legacy_ownership_without_external_hook_event_ke
     assert all("PreToolUse" not in key for key in settings if key != "hooks")
     hook_path = installed_root / "hooks" / "spec_hook.py"
     assert settings["x-spec-owned"] == {
-        "commands": [f"python3 {hook_path} --host claude {event}" for event in capabilities("claude")]
+        "commands": [_command("claude", hook_path, event) for event in capabilities("claude")]
     }
     assert all(str(installed_root) in command for command in settings["x-spec-owned"]["commands"])
 
@@ -181,7 +201,7 @@ def test_shim_install_copies_dispatcher_and_rejects_foreign_file(tmp_path):
     install_session_hooks("opencode", home=tmp_path)
     target = tmp_path / ".config" / "opencode" / "plugins" / "spec.ts"
     assert "spec-harness" in target.read_text(encoding="utf-8")
-    assert target.with_name("spec_hook.py").is_file()
+    assert str(hook_command(ROOT / "hooks" / "spec_hook.py")[1]) in target.read_text()
     target.write_text("// custom\n", encoding="utf-8")
     with pytest.raises(ValueError, match="non-Spec shim"):
         install_session_hooks("opencode", home=tmp_path)

@@ -1,6 +1,8 @@
 import json
 import subprocess
 
+import pytest
+
 from tests.v3_support import SLUG, cli, git, make_package, repo, started_package
 
 
@@ -35,6 +37,66 @@ def test_check_passes_and_runs_done_automatically(tmp_path):
     assert f"Spec: {SLUG}" in log
 
 
+def test_check_restores_an_archive_interrupted_before_commit(tmp_path, monkeypatch):
+    import done
+    import gitx
+
+    directory = _finished_package(tmp_path)
+    before = gitx.head(tmp_path)
+    real = gitx.git
+
+    def interrupted(root, *args, **kwargs):
+        if args[0] == "commit":
+            raise KeyboardInterrupt
+        return real(root, *args, **kwargs)
+
+    monkeypatch.setattr(gitx, "git", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        done.finish(tmp_path, SLUG)
+    assert not directory.exists() and gitx.head(tmp_path) == before
+    card = json.loads(cli(tmp_path, "next").stdout)
+    assert card["state"] == "check-failed" and not card["archived"]
+    resumed = cli(tmp_path, "check")
+    assert resumed.returncode == 0, resumed.stderr
+    assert json.loads(cli(tmp_path, "next").stdout)["state"] == "delivered"
+
+
+def test_check_records_an_interrupted_local_commit_without_committing_again(tmp_path, monkeypatch):
+    import done
+    import gitx
+
+    _finished_package(tmp_path)
+    assert cli(tmp_path, "purge").returncode == 0
+
+    def interrupted(*_args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(done, "append_run", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        done.finish(tmp_path, SLUG)
+    committed = gitx.head(tmp_path)
+    assert json.loads(cli(tmp_path, "next").stdout)["state"] == "check-failed"
+    resumed = cli(tmp_path, "check")
+    assert resumed.returncode == 0, resumed.stderr
+    assert gitx.head(tmp_path) == committed
+
+
+def test_rejected_delivery_commit_restores_the_preexisting_index(tmp_path):
+    import gitx
+
+    directory = _finished_package(tmp_path)
+    (tmp_path / "app.py").write_text("VALUE = 3\n")
+    git(tmp_path, "add", "app.py")
+    before = gitx.stdout(tmp_path, "write-tree")
+    hook = tmp_path / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+    assert cli(tmp_path, "check").returncode == 1
+    assert directory.exists() and gitx.stdout(tmp_path, "write-tree") == before
+    hook.unlink()
+    assert cli(tmp_path, "check").returncode == 0
+
+
 def test_check_only_reports_gate_without_archiving(tmp_path):
     _finished_package(tmp_path)
 
@@ -48,11 +110,12 @@ def test_check_only_reports_gate_without_archiving(tmp_path):
     assert not (tmp_path / ".spec/specs/archive" / SLUG).exists()
 
 
-def test_check_cures_stale_evidence_and_delivers(tmp_path):
+def test_changed_tree_can_enter_final_verification_without_repair(tmp_path):
     _finished_package(tmp_path)
     (tmp_path / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
     probe = cli(tmp_path, "check", "--check-only")
-    assert any("stale" in error for error in json.loads(probe.stdout)["errors"])
+    assert probe.returncode == 0
+    assert json.loads(probe.stdout)["verification"] == "pending"
 
     result = cli(tmp_path, "check")
 
@@ -80,14 +143,14 @@ def test_check_recovers_final_failure_without_switching_commands(tmp_path):
     count = (tmp_path / ".spec/verify-count").read_bytes()
     assert cli(tmp_path, "check").returncode == 1
     assert cli(tmp_path, "done").returncode == 1
-    assert (tmp_path / ".spec/verify-count").read_bytes() == count
+    assert (tmp_path / ".spec/verify-count").read_bytes() == count + b"xx"
     assert directory.is_dir()
 
     source.write_text("VALUE = 0\n", encoding="utf-8")
     retry = cli(tmp_path, "check")
     assert retry.returncode == 0, retry.stdout + retry.stderr
     assert json.loads(retry.stdout)["next"]["state"] == "delivered"
-    assert (tmp_path / ".spec/verify-count").read_bytes() == count + b"x"
+    assert (tmp_path / ".spec/verify-count").read_bytes() == count + b"xxx"
 
 
 def test_check_only_cannot_execute_changed_evidence(tmp_path):
@@ -98,7 +161,7 @@ def test_check_only_cannot_execute_changed_evidence(tmp_path):
     counter = tmp_path / ".spec/verify-count"
     before = counter.read_bytes()
     probed = cli(tmp_path, "check", "--check-only")
-    assert probed.returncode == 1 and not json.loads(probed.stdout)["passed"]
+    assert probed.returncode == 0 and json.loads(probed.stdout)["verification"] == "pending"
     assert counter.read_bytes() == before
     assert not (tmp_path / ".spec/specs/archive" / SLUG).exists()
 
@@ -182,38 +245,17 @@ def test_gate_rejects_duplicate_criterion_ids(tmp_path):
     assert any(item["code"] == "plan-integrity" for item in json.loads(result.stdout)["findings"])
 
 
-def test_changed_result_after_a_recorded_strategy_remains_retriable(tmp_path):
+def test_environment_repair_retries_the_same_tree_without_a_flag(tmp_path):
     repo(tmp_path)
-    started_package(tmp_path, verify="grep -q 'VALUE = 0' app.py")
+    started_package(tmp_path, verify="test ! -f .spec/check-disabled")
     assert cli(tmp_path, "verify", "task-value").returncode == 0
-    app = tmp_path / "app.py"
-    app.write_text("VALUE = 1\n")
+    disabled = tmp_path / ".spec" / "check-disabled"
+    disabled.touch()
     assert cli(tmp_path, "check").returncode == 1
-    assert cli(tmp_path, "check", "--attempt", "Investigated the value parser").returncode == 1
-    app.write_text("VALUE = 0\n")
-    result = cli(tmp_path, "check", "--attempt", "Fixed the value after investigating")
+    disabled.unlink()
+    result = cli(tmp_path, "check")
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["passed"]
-
-
-def test_repair_budget_also_limits_direct_check_and_done_retries(tmp_path):
-    repo(tmp_path)
-    started_package(tmp_path, verify="printf x >> .spec/count; grep -q 'VALUE = 0' app.py")
-    assert cli(tmp_path, "verify", "task-value").returncode == 0
-    (tmp_path / "app.py").write_text("VALUE = 1\n")
-    assert cli(tmp_path, "check").returncode == 1
-    for number in range(3):
-        assert cli(tmp_path, "check", "--attempt", f"strategy {number}").returncode == 1
-    counter = tmp_path / ".spec/count"
-    before = counter.read_text()
-    (tmp_path / "app.py").write_text("VALUE = 0\n")
-    for command in ("check", "done"):
-        result = cli(tmp_path, command)
-        assert result.returncode == 1
-        assert counter.read_text() == before
-        assert (tmp_path / ".spec/specs" / SLUG).is_dir()
-    assert cli(tmp_path, "check", "--restart", "user approved fresh recovery").returncode == 0
-    assert counter.read_text() == before + "x"
 
 
 def test_plan_amend_records_a_new_task_as_an_authorized_command(tmp_path):
@@ -260,7 +302,7 @@ def test_final_verify_that_changes_the_tree_never_creates_fresh_proof(tmp_path):
     (tmp_path / "app.py").write_text("VALUE = 1\n")
     result = cli(tmp_path, "check")
     assert result.returncode == 1
-    assert any(item["code"] == "evidence-refresh" for item in json.loads(result.stdout)["findings"])
+    assert any(item["code"] == "tree-changed" for item in json.loads(result.stdout)["findings"])
     assert (tmp_path / "app.py").read_text() == "VALUE = 9\n"
     assert (tmp_path / ".spec/specs" / SLUG).exists()
 

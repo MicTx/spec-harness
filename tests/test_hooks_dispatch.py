@@ -36,10 +36,8 @@ def test_stop_with_progress_blocks_once_then_stalls_after_two_attempts(tmp_path)
 
 def test_parked_only_is_a_release_state(tmp_path):
     repo(tmp_path)
-    package = make_package(tmp_path)
-    tasks = package / "tasks.md"
-    tasks.write_text(tasks.read_text().replace("- [ ]", "- [x]"), encoding="utf-8")
-    assert cli(tmp_path, "plan-go").returncode == 0
+    started_package(tmp_path)
+    assert cli(tmp_path, "verify", "task-value").returncode == 0
     assert cli(tmp_path, "decide", "Publish?", "--park", "--by", "user pending").returncode == 0
     action = handle("stop", event(tmp_path))
     assert not action.block
@@ -95,7 +93,7 @@ def test_pre_tool_still_blocks_git_after_the_package_is_archived(tmp_path):
     assert result.deny and "Spec owns Git" in result.reason
 
 
-def test_post_edit_and_start_injections(tmp_path):
+def test_start_injection_and_removed_post_edit(tmp_path):
     repo(tmp_path)
     make_package(tmp_path)
     planning = handle("start", event(tmp_path))
@@ -103,16 +101,17 @@ def test_post_edit_and_start_injections(tmp_path):
     assert cli(tmp_path, "plan-go").returncode == 0
     warning = handle("post_edit", event(tmp_path, file_path=str(tmp_path / "other.py")))
     context = handle("start", event(tmp_path))
-    assert "Boundary warning" in warning.context
+    assert warning == Action()
     assert SLUG in context.context and "Charter:" in context.context
 
 
-def test_end_writes_snapshot(tmp_path):
+def test_stop_preserves_explicit_pending_clues(tmp_path):
     repo(tmp_path)
     package = started_package(tmp_path)
-    handle("end", event(tmp_path))
+    handle("stop", event(tmp_path, pending=["continue the fixture"]))
     state = json.loads((package / "state.json").read_text())
     assert state["task"]["id"] == "task-value"
+    assert state["pending"] == ["continue the fixture"]
 
 
 def test_claude_continuing_stop_releases_and_skips_state_machine(tmp_path, monkeypatch, capsys):

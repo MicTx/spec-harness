@@ -46,12 +46,13 @@ def test_latest_failure_blocks_deliver_even_when_tasks_are_checked(tmp_path):
     )
     brief = cli(tmp_path, "next")
     assert brief.returncode == 0
-    assert '"state": "stalled"' in brief.stdout
-    assert "task-value:" in brief.stdout
+    card = json.loads(brief.stdout)
+    assert card["state"] == "run" and card["task"]["id"] == "task-value"
+    assert not card["criteria"][0]["passed"]
     action = handle("stop", {"cwd": str(tmp_path)})
     assert action.block
-    assert "blocked without new evidence" in action.reason
+    assert "task-value:" in action.reason
     assert cli(tmp_path, "decide", "Publish?", "--park", "--by", "user pending").returncode == 0
     parked = cli(tmp_path, "next")
     assert parked.returncode == 0
-    assert '"state": "stalled"' in parked.stdout
+    assert json.loads(parked.stdout)["state"] == "run"

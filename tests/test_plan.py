@@ -22,12 +22,12 @@ def test_lint_rejects_a_verify_that_does_not_discriminate(tmp_path):
     assert any(gap["rule"] == "PLAN-001" for gap in json.loads(result.stdout)["gaps"])
 
 
-def test_go_records_baseline_and_merges_charter(tmp_path):
+def test_go_records_baseline_without_writing_a_repository_charter(tmp_path):
     repo(tmp_path)
     make_package(tmp_path)
     result = cli(tmp_path, "plan-go")
     assert result.returncode == 0, result.stderr
-    assert (tmp_path / ".spec/charter.md").is_file()
+    assert not (tmp_path / ".spec/charter.md").exists()
     assert '"kind": "baseline"' in (tmp_path / ".spec/specs" / SLUG / "runs.jsonl").read_text()
 
 
@@ -104,4 +104,4 @@ def test_lint_rejects_a_boundary_wider_than_an_exact_scope(tmp_path):
     result = cli(tmp_path, "plan-lint", "--static")
 
     assert result.returncode == 1
-    assert any(gap["rule"] == "PLAN-003" for gap in json.loads(result.stdout)["gaps"])
+    assert any(gap["rule"] == "PLAN-002" for gap in json.loads(result.stdout)["gaps"])

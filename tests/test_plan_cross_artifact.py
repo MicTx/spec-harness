@@ -1,4 +1,4 @@
-"""Pin tests for cross-artifact plan lint (PLAN-011/012/013)."""
+"""Pin cross-artifact validation under the compact plan rules."""
 
 import json
 from pathlib import Path
@@ -32,7 +32,7 @@ def test_charter_rejects_unknown_v4_finish(tmp_path):
     result = cli(tmp_path, "plan-lint", "--static")
 
     assert result.returncode == 1
-    gap = next(gap for gap in _gaps(result) if gap["rule"] == "PLAN-011")
+    gap = next(gap for gap in _gaps(result) if gap["rule"] == "PLAN-003")
     assert "V4" in gap["detail"]
     assert "commit" in gap["detail"] and "push" in gap["detail"]
 
@@ -45,7 +45,7 @@ def test_charter_rejects_unknown_v2_scope(tmp_path):
     result = cli(tmp_path, "plan-lint", "--static")
 
     assert result.returncode == 1
-    gap = next(gap for gap in _gaps(result) if gap["rule"] == "PLAN-011")
+    gap = next(gap for gap in _gaps(result) if gap["rule"] == "PLAN-003")
     assert "adjacent-fixes" in gap["detail"]
 
 
@@ -57,7 +57,7 @@ def test_charter_rejects_unknown_v5_dependencies(tmp_path):
     result = cli(tmp_path, "plan-lint", "--static")
 
     assert result.returncode == 1
-    assert any(gap["rule"] == "PLAN-011" and "V5" in gap["detail"] for gap in _gaps(result))
+    assert any(gap["rule"] == "PLAN-003" and "V5" in gap["detail"] for gap in _gaps(result))
 
 
 def test_charter_accepts_complete_fixture(tmp_path):
@@ -67,7 +67,7 @@ def test_charter_accepts_complete_fixture(tmp_path):
     result = cli(tmp_path, "plan-lint", "--static")
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert not [gap for gap in _gaps(result) if gap["rule"] == "PLAN-011"]
+    assert not [gap for gap in _gaps(result) if gap["rule"] == "PLAN-003"]
 
 
 def test_reference_in_goal_must_resolve(tmp_path):
@@ -85,7 +85,7 @@ def test_reference_in_goal_must_resolve(tmp_path):
     result = cli(tmp_path, "plan-lint", "--static")
 
     assert result.returncode == 1
-    gap = next(gap for gap in _gaps(result) if gap["rule"] == "PLAN-012")
+    gap = next(gap for gap in _gaps(result) if gap["rule"] == "PLAN-004")
     assert "task-missing" in gap["detail"]
 
 
@@ -123,13 +123,13 @@ def test_stable_id_rejects_positional_fallback(tmp_path):
     result = cli(tmp_path, "plan-lint", "--static")
 
     assert result.returncode == 1
-    gap = next(gap for gap in _gaps(result) if gap["rule"] == "PLAN-013")
+    gap = next(gap for gap in _gaps(result) if gap["rule"] == "PLAN-004")
     assert "task_0001" in gap["detail"]
 
 
 def test_docs_describe_new_rules():
     plan = (ROOT / "references" / "plan.md").read_text(encoding="utf-8")
     fmt = (ROOT / "references" / "format.md").read_text(encoding="utf-8")
-    for code in ("PLAN-011", "PLAN-012", "PLAN-013"):
+    for code in ("PLAN-001", "PLAN-002", "PLAN-003", "PLAN-004", "PLAN-005"):
         assert code in plan, code
     assert "never renumbered" in fmt

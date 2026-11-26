@@ -145,12 +145,9 @@ def installed_hosts() -> list[dict[str, str]]:
         if fields.get("installed_by") != "spec/install.sh":
             continue
         profile = fields.get("profile") or "core"
-        tier = fields.get("tier") or "full"
-        if profile not in ("core", "full") or tier not in ("full", "compact", "aggressive"):
-            raise UpdateError(f"invalid profile or prompt tier in installation marker: {marker}")
-        installations.append(
-            {"host": host, "version": fields.get("version") or "unknown", "profile": profile, "tier": tier}
-        )
+        if profile not in ("core", "full"):
+            raise UpdateError(f"invalid profile in installation marker: {marker}")
+        installations.append({"host": host, "version": fields.get("version") or "unknown", "profile": profile})
     return installations
 
 
@@ -325,10 +322,10 @@ def extract_archive(data: bytes, version: str, destination: Path) -> Path:
 
 
 def run_installer(root: Path, installations: list[dict[str, str]], dry_run: bool) -> None:
-    groups: dict[tuple[str, str], list[str]] = {}
+    groups: dict[str, list[str]] = {}
     for item in installations:
-        groups.setdefault((item["profile"], item["tier"]), []).append(item["host"])
-    owners: dict[Path, tuple[str, str]] = {}
+        groups.setdefault(item["profile"], []).append(item["host"])
+    owners: dict[Path, str] = {}
     roots = host_roots()
     shared_target = roots["agents"] / "spec"
     claude_target = roots["claude"] / "spec"
@@ -356,9 +353,9 @@ def run_installer(root: Path, installations: list[dict[str, str]], dry_run: bool
             raise UpdateError("shared Agents link requires an installer-owned, single-hop Claude skill")
     for item in installations:
         target = (roots[item["host"]] / "spec").resolve()
-        group = (item["profile"], item["tier"])
+        group = item["profile"]
         if target in owners and owners[target] != group:
-            raise UpdateError("hosts sharing a skill must use the same profile and prompt tier")
+            raise UpdateError("hosts sharing a skill must use the same profile")
         owners[target] = group
     if shared_through_claude and has_claude:
         for hosts in groups.values():
@@ -379,14 +376,13 @@ def run_installer(root: Path, installations: list[dict[str, str]], dry_run: bool
     if not supports_preflight and os.environ.get("FORCE") == "1":
         raise UpdateError("this older release cannot safely update custom roots; install it manually instead")
 
-    def invoke(profile: str, tier: str, hosts: list[str], *, preview: bool, preflight: bool) -> None:
+    def invoke(profile: str, hosts: list[str], *, preview: bool, preflight: bool) -> None:
         environment = os.environ.copy()
         for name in ("SOURCE_DIR", "REPO_URL", "REPO_REF"):
             environment.pop(name, None)
         environment.update(
             INSTALL_HOSTS=",".join(hosts),
             INSTALL_PROFILE=profile,
-            SPEC_PROMPT_TIER=tier,
             SKILL_NAME="spec",
             FORCE="1" if os.environ.get("FORCE") == "1" else "0",
             KEEP_TEMP="0",
@@ -406,13 +402,13 @@ def run_installer(root: Path, installations: list[dict[str, str]], dry_run: bool
             raise UpdateError(f"installer failed for {', '.join(hosts)}; review its output and retry")
 
     if dry_run:
-        for (profile, tier), hosts in groups.items():
-            invoke(profile, tier, hosts, preview=True, preflight=False)
-    for (profile, tier), hosts in groups.items():
-        invoke(profile, tier, hosts, preview=False, preflight=True)
+        for profile, hosts in groups.items():
+            invoke(profile, hosts, preview=True, preflight=False)
+    for profile, hosts in groups.items():
+        invoke(profile, hosts, preview=False, preflight=True)
     if not dry_run:
-        for (profile, tier), hosts in groups.items():
-            invoke(profile, tier, hosts, preview=False, preflight=False)
+        for profile, hosts in groups.items():
+            invoke(profile, hosts, preview=False, preflight=False)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -440,7 +436,7 @@ def main(argv: list[str] | None = None) -> int:
         if not installations:
             raise UpdateError("no installer-owned Spec Harness installation found; run install.sh first")
         for item in installations:
-            print(f"{item['host']}: {item['version']} (profile {item['profile']}, tier {item['tier']})", flush=True)
+            print(f"{item['host']}: {item['version']} (profile {item['profile']})", flush=True)
         if args.version:
             return 0
         if args.source not in SOURCE_CHOICES:

@@ -27,13 +27,13 @@ def test_pkg_cache_read_package_snapshot(tmp_path):
 def test_pkg_cache_fingerprint_content_freshness(tmp_path, monkeypatch):
     repo(tmp_path)
     calls = {"n": 0}
-    real = package._hash_tree
+    real = package.refresh_product_tree
 
-    def counted(root):
+    def counted(root, *args):
         calls["n"] += 1
-        return real(root)
+        return real(root, *args)
 
-    monkeypatch.setattr(package, "_hash_tree", counted)
+    monkeypatch.setattr(package, "refresh_product_tree", counted)
     first = package.tree_fingerprint(tmp_path)
     assert package.tree_fingerprint(tmp_path) == first
     # Each call reflects its own tree snapshot; a cross-call status memo must
@@ -54,13 +54,13 @@ def test_gate_shares_one_hash(tmp_path, monkeypatch):
     repo(tmp_path)
     started_package(tmp_path)
     calls = {"n": 0}
-    real = package._hash_tree
+    real = package.refresh_product_tree
 
-    def counted(root):
+    def counted(root, *args):
         calls["n"] += 1
-        return real(root)
+        return real(root, *args)
 
-    monkeypatch.setattr(package, "_hash_tree", counted)
+    monkeypatch.setattr(package, "refresh_product_tree", counted)
     gate.compute(tmp_path, SLUG)
     assert calls["n"] == 1
 

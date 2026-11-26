@@ -25,30 +25,27 @@ assume that a module's presence proved its activation.
   that changes only the gate timestamp stays quiet.
 - **Fresh-section projection.** The archive's identity assembly folds prior
   sections instead of re-pinning their full text. Spec's session briefs apply
-  the same principle: the state line, the actionable next step, the first
-  failure and the complete `Spark:` line are protected first; goal, parked and
-  lesson text are capped per tier. Repeated injections are deterministic and
-  do not grow recursively.
+  the same principle: the state line, the actionable next step and the first
+  failure are protected first; goal and parked text are bounded. Repeated
+  injections are deterministic and do not grow recursively.
 - **Executable recovery routing.** The current [recovery loop](../references/exec.md)
-  uses typed findings rather than matching diagnostic text. The same `check`
-  refreshes authorized evidence after a fix. Mixed failures prioritize the
-  unsafe boundary or actual acceptance failure over routine re-verification.
+  uses typed findings rather than matching diagnostic text. After a fix, run
+  the same `check`; Stop will not repeat the same blocker without a new checkpoint.
+  There is no separate counter to reset.
 - **Single projection per event.** `route.next_card(..., projection=...)`
   and `route.brief(..., projection=...)` reuse a computed projection; the
-  earlier `decision=` argument remains compatible. Start/subagent cost one
-  route computation, and a continuing stop costs none.
+  earlier `decision=` argument remains compatible. Start and prompt each use
+  one route computation, and a continuing stop costs none.
 - **Fresh evidence and cold recovery.** The latest failed run stores its
   failure-ladder guidance as an additive ledger field; a cold next-action
   projection uses it without a host callback. When no independent task is
   ready, a blocked card names the task and the existing `spec.py unblock`
   action. A checked task that fails final re-verification retains its failure
-  guidance and returns to `spec.py check` after the underlying fix. The tree
-  fingerprint reads current file content instead of reusing
-  a Git-status-only cache, so repeated in-process edits invalidate old passing
-  evidence. Tracked `.spec/architecture` contracts are source inputs and stay
-  in the hash; local evidence paths are excluded. A gate still shares one hash
-  across its checks, and matching passing evidence remains reusable when the
-  actual tree is unchanged.
+  evidence and returns to `spec.py check` after the underlying fix. The run
+  ledger, not the displayed checkbox or the host snapshot, drives readiness.
+  A private Git index retains the stat cache and snapshots changed content,
+  including `.spec/architecture` source but excluding local evidence. Final
+  checks run once per distinct command, even when the tree did not change.
 
 ## Source selection
 
@@ -97,9 +94,8 @@ component or profile configuration is installed or changed by these fixes.
 ## Verification
 
 The behavior is pinned by `tests/test_session_recovery.py`,
-`tests/test_prompt_tier.py`, `tests/test_route.py`, `tests/test_hooks_dispatch.py`,
-`tests/test_encourage.py`, `tests/test_evidence.py` and
-`tests/test_fingerprint_freshness.py`. Run the focused suites after recovery
+`tests/test_route.py`, `tests/test_hooks_dispatch.py`, `tests/test_evidence.py`
+and `tests/test_fingerprint_freshness.py`. Run the focused suites after recovery
 changes, then the non-release project suite plus Ruff lint and formatting.
 These are local fixture/regression checks, not a live DSH bridge end-to-end
 test. Release payload rebuilding remains a separate release step.

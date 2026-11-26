@@ -41,8 +41,8 @@ def test_collect_includes_core_scripts():
     assert "evidence.py" in files
     assert "route.py" in files
     assert "gate.py" in files
-    assert "check_all.py" in files
-    assert "ui_review.py" in files
+    assert "check_all.py" not in files
+    assert "ui_review.py" not in files
     assert "done.py" in files
     assert "push.py" in files
     assert "spec.py" in files
@@ -118,8 +118,9 @@ def test_export_end_to_end():
         assert (output / "SKILL.md").exists()
         assert (output / "agents" / "openai.yaml").exists()
         assert (output / "references" / "format.md").exists()
-        assert (output / "hooks" / "pre-commit").exists()
-        assert (output / "hooks" / "pre-push").exists()
+        assert (output / "hooks" / "spec-hook.sh").exists()
+        assert not (output / "hooks" / "pre-commit").exists()
+        assert not (output / "hooks" / "pre-push").exists()
         assert (output / "scripts" / "package.py").exists()
         assert (output / "scripts" / "charter.py").is_file()
         assert (output / "scripts" / "spec.py").exists()

@@ -1,11 +1,10 @@
-"""Pin final-evidence reuse and plan-verify dedupe against fresh records."""
+"""Planning may reuse a matching baseline; delivery always executes a batch."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-import evidence
 import package
 import plan
 
@@ -13,7 +12,7 @@ from tests.v3_support import SLUG, cli, repo, started_package
 
 # Appends one 'x' per execution, so the file length counts every real run of
 # the verify command (plan-go's record lint once, the execution verify once...).
-COUNTER_CMD = "python3 -c \"open('counter.txt','a').write('x')\""
+COUNTER_CMD = "python3 -c \"open('.spec/counter.txt','a').write('x')\""
 
 
 def _records(pkg: Path) -> list[dict]:
@@ -25,37 +24,34 @@ def _runs(counter: Path) -> int:
     return len(counter.read_text(encoding="utf-8"))
 
 
-def test_final_reuse_skips_rerun(tmp_path):
+def test_final_check_runs_on_an_unchanged_tree(tmp_path):
     repo(tmp_path)
     pkg = started_package(tmp_path, verify=COUNTER_CMD)
-    counter = tmp_path / "counter.txt"
+    counter = tmp_path / ".spec" / "counter.txt"
     assert _runs(counter) == 1  # plan-go's record lint executed the verify once
     assert cli(tmp_path, "verify", "task-value").returncode == 0
     assert _runs(counter) == 2
-    result = evidence.run_tasks(tmp_path, SLUG, final=True)
-    assert result["ready"] is True
-    assert _runs(counter) == 2  # fresh evidence reused, no re-execution
-    reused = [r for r in _records(pkg) if r.get("reused") and r.get("task") == "task-value"]
-    assert reused and reused[-1].get("final") is True
+    result = cli(tmp_path, "check")
+    assert result.returncode == 0 and _runs(counter) == 3
+    final = package.latest_gate(pkg.parent / "archive" / SLUG)
+    assert final["final"] and [check["cmd"] for check in final["checks"]] == [COUNTER_CMD]
 
 
-def test_rerun_stale_tree(tmp_path):
+def test_final_check_runs_on_a_changed_tree(tmp_path):
     repo(tmp_path)
-    pkg = started_package(tmp_path, verify=COUNTER_CMD)
-    counter = tmp_path / "counter.txt"
+    started_package(tmp_path, verify=COUNTER_CMD)
+    counter = tmp_path / ".spec" / "counter.txt"
     assert cli(tmp_path, "verify", "task-value").returncode == 0
     assert _runs(counter) == 2
     (tmp_path / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
-    result = evidence.run_tasks(tmp_path, SLUG, final=True)
-    assert result["ready"] is True
-    assert _runs(counter) == 3  # product tree changed, so the verify re-runs
-    assert not [r for r in _records(pkg) if r.get("reused")]
+    result = cli(tmp_path, "check")
+    assert result.returncode == 0 and _runs(counter) == 3
 
 
 def test_plan_fresh_skip(tmp_path):
     repo(tmp_path)
     pkg = started_package(tmp_path, verify=COUNTER_CMD)
-    counter = tmp_path / "counter.txt"
+    counter = tmp_path / ".spec" / "counter.txt"
     assert _runs(counter) == 1  # plan-go's own lint already executed it once
     package.append_run(
         pkg,

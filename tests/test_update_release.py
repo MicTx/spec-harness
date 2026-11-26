@@ -31,12 +31,11 @@ def newer_version(version: str) -> str:
     return f"{major}.{minor}.{patch + 1}"
 
 
-def install(home: Path, hosts: str, tier: str = "full", profile: str = "core") -> None:
+def install(home: Path, hosts: str, profile: str = "core") -> None:
     environment = {
         "HOME": str(home),
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "INSTALL_HOSTS": hosts,
-        "SPEC_PROMPT_TIER": tier,
         "INSTALL_PROFILE": profile,
     }
     result = subprocess.run(["bash", str(INSTALLER)], cwd=ROOT, env=environment, capture_output=True, text=True)
@@ -51,7 +50,6 @@ def home(tmp_path, monkeypatch):
     for variable in (
         "INSTALL_HOSTS",
         "SOURCE_DIR",
-        "SPEC_PROMPT_TIER",
         "INSTALL_PROFILE",
         "FORCE",
         "DRY_RUN",
@@ -162,8 +160,8 @@ def test_installer_exposes_version_command_and_preserves_foreign_executable(home
 
 
 def test_update_preview_and_upgrade_preserve_hosts_and_preferences(home, release, monkeypatch, capsys):
-    install(home, "claude", "compact", "full")
-    install(home, "codex", "aggressive", "core")
+    install(home, "claude", "full")
+    install(home, "codex", "core")
     foreign = home / ".gemini/skills/spec/SKILL.md"
     foreign.parent.mkdir(parents=True)
     foreign.write_text("user skill\n", encoding="utf-8")
@@ -187,8 +185,8 @@ def test_update_preview_and_upgrade_preserve_hosts_and_preferences(home, release
 
     assert f"version={version}" in marker(home, "claude").splitlines()
     assert f"version={version}" in marker(home, "codex").splitlines()
-    assert "profile=full" in marker(home, "claude") and "tier=compact" in marker(home, "claude")
-    assert "profile=core" in marker(home, "codex") and "tier=aggressive" in marker(home, "codex")
+    assert "profile=full" in marker(home, "claude")
+    assert "profile=core" in marker(home, "codex")
     assert foreign.read_text(encoding="utf-8") == "user skill\n"
     assert project.read_text(encoding="utf-8") == "user package\n"
     assert json.loads(settings.read_text(encoding="utf-8"))["user-setting"] == "preserved"
@@ -416,8 +414,8 @@ def test_source_option_and_environment_validate(home, monkeypatch, capsys):
 
 
 def test_update_preflights_all_groups_before_changing_any_host(home, release, monkeypatch, capfd):
-    install(home, "claude", "compact")
-    install(home, "codex", "aggressive")
+    install(home, "claude")
+    install(home, "codex")
     custom = home / "custom/skills"
     custom.mkdir(parents=True)
     shutil.move(str(home / ".codex/skills/spec"), str(custom / "spec"))
@@ -428,7 +426,6 @@ def test_update_preflights_all_groups_before_changing_any_host(home, release, mo
 
     assert update_release.main(["update"]) == 1
     output = capfd.readouterr()
-    assert "Installer preflight passed." in output.out
     assert "Codex install root is outside the default path" in output.err
     assert snapshot(home) == before
 

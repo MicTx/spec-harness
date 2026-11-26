@@ -1,21 +1,19 @@
-"""Hook-owned session snapshots and compact cross-package lessons."""
+"""Hook-owned session snapshots and compact recovery clues."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-import re
 import time
 from pathlib import Path
 
-import gitx
-from package import latest_runs, now, primary_root, runs
+from package import latest_runs, now, runs
 
 PENDING_LIMIT = 5
 PENDING_CLUE_MAX = 160
 PROMPT_SESSIONS = 8
 # Reject clues that could impersonate hook protocol lines.
-PROTOCOL_PREFIXES = ("Next:", "Pending:", "Parked:", "Failure:", "Spec ", "Scope:", "Charter:", "Lessons:")
+PROTOCOL_PREFIXES = ("Next:", "Pending:", "Parked:", "Failure:", "Spec ", "Scope:", "Charter:")
 
 
 def _clean_pending(value: object) -> list[str]:
@@ -101,13 +99,12 @@ def snapshot_read(package: Path) -> dict:
     return value if isinstance(value, dict) else {}
 
 
-def progress_tuple(package: Path, head: str) -> tuple[int, int, str, str]:
+def progress_tuple(package: Path, head: str, done: int) -> tuple[int, int, str, str]:
     """Include gate outcome without treating timestamps as progress."""
     records = runs(package)
-    latest = latest_runs(package)
-    done = len([record for record in latest.values() if record.get("exit") == 0])
     signatures = len({record["sig"] for record in records if record.get("exit") not in (None, 0) and record.get("sig")})
-    gate = next((record for record in reversed(records) if record.get("kind") == "gate"), {})
+    execution_gates = (row for row in reversed(records) if row.get("kind") == "gate" and not row.get("probe"))
+    gate = next(execution_gates, {})
     gate_sig = ""
     if gate:
         payload = json.dumps(
@@ -125,75 +122,6 @@ def last_failures(package: Path) -> list[str]:
         for task, record in latest.items()
         if record.get("exit") not in (None, 0)
     ][-3:]
-
-
-def _lessons_path(root: Path) -> Path:
-    return primary_root(root) / ".spec" / "lessons.md"
-
-
-def validate_enforce(root: Path, enforce: str, package: Path | None = None) -> None:
-    """Refuse an enforcement target that cannot outlive the package archive.
-
-    F1: the target must already exist in the repository, be tracked by Git, and
-    live outside the package directory that `done` moves into the archive.
-    """
-    candidate = Path(enforce)
-    if not candidate.is_absolute():
-        candidate = root / candidate
-    candidate = candidate.resolve()
-    try:
-        relative = candidate.relative_to(root.resolve())
-    except ValueError:
-        raise ValueError(f"enforce target must be inside the repository: {enforce}") from None
-    if not candidate.exists():
-        raise ValueError(f"enforce target does not exist: {enforce}")
-    if package is not None:
-        package = package.resolve()
-        if candidate == package or package in candidate.parents:
-            raise ValueError(f"enforce target must be outside the package directory: {enforce}")
-    tracked = gitx.git(root, "ls-files", "--error-unmatch", "--", relative.as_posix(), check=False)
-    if tracked.returncode != 0:
-        raise ValueError(f"enforce target is not tracked by git: {enforce}")
-
-
-def lessons_add(root: Path, when: str, do: str, enforce: str = "", package: Path | None = None) -> str:
-    enforce = enforce.strip()
-    if enforce:
-        validate_enforce(root, enforce, package)
-    path = _lessons_path(root)
-    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else ["# Spec Lessons"]
-    used = [int(match.group(1)) for line in lines if (match := re.match(r"- L(\d+)", line))]
-    lesson_id = f"L{max(used, default=0) + 1}"
-    suffix = f" | enforce: {enforce}" if enforce else ""
-    lines.append(f"- {lesson_id} | when: {when.strip()} | do: {do.strip()}{suffix}")
-    entries = lines[:1] + lines[1:][-49:]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(entries) + "\n", encoding="utf-8")
-    return lesson_id
-
-
-def lessons_top(root: Path, paths: list[str] | None = None) -> list[str]:
-    path = _lessons_path(root)
-    if not path.exists():
-        return []
-    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.startswith("- L")]
-    if paths:
-        relevant = [line for line in lines if any(item and item in line for item in paths)]
-        lines = relevant or lines
-    return lines[-5:]
-
-
-def lessons_by_id(root: Path) -> dict[str, str]:
-    """Return ledger rows keyed by lesson id, without the leading list marker."""
-    path = _lessons_path(root)
-    if not path.exists():
-        return {}
-    result: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        match = re.match(r"- (L\d+)", line)
-        if match:
-            result[match.group(1)] = line.removeprefix("- ")
-    return result
 
 
 def seen(package: Path, event: dict) -> bool:

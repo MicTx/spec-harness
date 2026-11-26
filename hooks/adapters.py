@@ -6,37 +6,25 @@ import os
 import shlex
 from pathlib import Path
 
-EVENTS = ("start", "prompt", "pre_tool", "post_edit", "pre_compact", "subagent", "stop", "end")
+EVENTS = ("start", "prompt", "pre_tool", "stop")
 
 CLAUDE_EVENTS = {
     "start": "SessionStart",
     "prompt": "UserPromptSubmit",
     "pre_tool": "PreToolUse",
-    "post_edit": "PostToolUse",
-    "pre_compact": "PreCompact",
-    "subagent": "SubagentStart",
     "stop": "Stop",
-    "end": "SessionEnd",
 }
 CURSOR_EVENTS = {
     "start": "sessionStart",
     "prompt": "beforeSubmitPrompt",
     "pre_tool": "beforeShellExecution",
-    "post_edit": "afterFileEdit",
-    "pre_compact": "preCompact",
-    "subagent": "subagentStart",
     "stop": "stop",
-    "end": "sessionEnd",
 }
 GEMINI_EVENTS = {
     "start": "SessionStart",
     "prompt": "BeforeAgent",
     "pre_tool": "BeforeTool",
-    "post_edit": "AfterTool",
-    "pre_compact": "PreCompress",
-    "subagent": "BeforeAgent",
     "stop": "AfterAgent",
-    "end": "SessionEnd",
 }
 
 HOSTS = {
@@ -61,19 +49,19 @@ HOSTS = {
         "config": "~/.config/devin/config.json",
         "style": "claude",
         "events": CLAUDE_EVENTS,
-        "capabilities": ("start", "prompt", "pre_tool", "stop", "end"),
+        "capabilities": EVENTS,
     },
     "grok": {
         "config": "~/.grok/hooks/spec.json",
         "style": "claude",
         "events": CLAUDE_EVENTS,
-        "capabilities": ("start", "pre_tool", "pre_compact", "end"),
+        "capabilities": ("start", "pre_tool"),
     },
     "zcode": {
         "config": "~/.zcode/cli/config.json",
         "style": "claude",
         "events": CLAUDE_EVENTS,
-        "capabilities": ("start", "stop", "end"),
+        "capabilities": ("start", "stop"),
     },
     "dsh": {
         "config": "~/.dsh/hooks.json",
@@ -97,7 +85,7 @@ HOSTS = {
         "config": "~/.config/opencode/plugins/spec.ts",
         "style": "shim",
         "events": CLAUDE_EVENTS,
-        "capabilities": EVENTS[:-2],
+        "capabilities": ("start", "prompt", "pre_tool"),
     },
     "pi": {
         "config": "~/.pi/agent/extensions/spec.ts",
@@ -109,22 +97,19 @@ HOSTS = {
         "config": "~/.openclaw/plugins/spec.ts",
         "style": "shim",
         "events": CLAUDE_EVENTS,
-        "capabilities": ("start", "prompt", "pre_tool", "pre_compact", "stop", "end"),
+        "capabilities": EVENTS,
     },
     "hermes": {
         "config": "~/.hermes/plugins/spec/__init__.py",
         "style": "shim",
         "events": CLAUDE_EVENTS,
-        "capabilities": ("prompt", "pre_tool", "post_edit"),
+        "capabilities": ("prompt", "pre_tool"),
     },
     "claude-desktop": {"config": "", "style": "none", "events": {}, "capabilities": ()},
     "agents": {"config": "", "style": "none", "events": {}, "capabilities": ()},
 }
 
-MATCHERS = {
-    "pre_tool": "Bash",
-    "post_edit": "Edit|Write",
-}
+MATCHERS = {"pre_tool": "Bash"}
 
 
 def _home(home: Path | None) -> Path:
@@ -208,8 +193,13 @@ def capabilities(host: str) -> tuple[str, ...]:
     return tuple(HOSTS[host]["capabilities"])
 
 
+def hook_command(hook_path: Path) -> tuple[str, Path]:
+    return ("python3", hook_path) if os.name == "nt" else ("sh", hook_path.with_name("spec-hook.sh"))
+
+
 def render_config(host: str, hook_path: Path) -> dict:
-    command = f"python3 {shlex.quote(str(hook_path))} --host {host}"
+    executable, dispatcher = hook_command(hook_path)
+    command = f"{executable} {shlex.quote(str(dispatcher))} --host {host}"
     events = HOSTS[host]["events"]
     hooks = {}
     for event in capabilities(host):

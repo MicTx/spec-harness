@@ -18,11 +18,11 @@ def test_installer_exposes_the_stage_commands():
         assert retired not in skill
 
 
-def test_check_stage_requires_ui_review_in_documented_command_surface():
+def test_check_stage_uses_the_ordinary_delivery_gate():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     readme_en = (ROOT / "README-en.md").read_text(encoding="utf-8")
-    assert "真实操作" in readme and "回写" in readme
-    assert "UI/UX real-operation review" in readme_en
+    assert "真实操作" not in readme
+    assert "UI/UX real-operation review" not in readme_en
 
 
 def test_architecture_index_documents_the_six_stage_surface():

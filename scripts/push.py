@@ -5,14 +5,37 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import gate
 import gitx
-from package import effective_finish, extract_branch, handoff_completed, parse_charter, path_matches, specs_root
+from package import (
+    delivery_receipt,
+    effective_finish,
+    extract_branch,
+    handoff_completed,
+    latest_gate,
+    package_dir,
+    package_kind,
+    path_matches,
+    specs_root,
+    staged_product_tree,
+)
 
 
 class HandoffBlocked(ValueError):
     def __init__(self, subject: str, detail: str):
         super().__init__(detail)
         self.subject = subject
+
+
+# `.spec` state Spec itself writes into a worktree: untracked copies of it must
+# not count as target dirt, but a delivery branch that changes the same path
+# keeps the block because the merge could overwrite the user's copy.
+SPEC_STATE_PATHS = (".spec/charter.md", ".spec/cache", ".spec/worktrees")
+
+
+def _range_touches(root: Path, target: str, branch: str, path: str) -> bool:
+    result = gitx.git(root, "diff", "--name-only", f"{target}...{branch}", "--", path, check=False)
+    return bool(result.stdout.strip())
 
 
 def _branch_entries(worktrees: list[dict], branch: str) -> list[dict]:
@@ -52,7 +75,12 @@ def _delivery_topology(
         raise ValueError(f"multiple worktrees are bound to target branch {target}: {paths}")
     target_worktree = target_entries[0]["path"] if target_entries else None
     if target_worktree is not None:
-        dirty = gitx.dirty_paths(target_worktree, exclude=())
+        dirty = [
+            path
+            for path in gitx.dirty_paths(target_worktree, exclude=())
+            if not any(path_matches(path, spec_path) for spec_path in SPEC_STATE_PATHS)
+            or _range_touches(target_worktree, target, branch, path)
+        ]
         if dirty:
             lines = "\n".join(f"  - {path}" for path in dirty)
             raise HandoffBlocked("target-dirty", f"target worktree is not clean: {target_worktree}\n{lines}")
@@ -83,7 +111,7 @@ def _remove_linked_worktrees(root: Path, branch: str) -> list[dict]:
 
 def main_branch(root: Path, remote: str, *, require_remote: bool = False) -> str:
     try:
-        result = gitx.git(root, "ls-remote", "--symref", remote, "HEAD", check=False, timeout=20)
+        result = gitx.git(root, "ls-remote", "--symref", remote, "HEAD", check=False, timeout=20, remote=True)
     except subprocess.TimeoutExpired as exc:
         raise HandoffBlocked("remote-unavailable", "Git remote HEAD lookup timed out") from exc
     if result.returncode == 0:
@@ -128,7 +156,8 @@ def preflight(root: Path, slug: str, spec_text: str, globs: list[str]) -> None:
     """Reject topology or residual dirt before archiving."""
     branch = gitx.branch(root)
     bound = extract_branch(spec_text)
-    _delivery_preconditions(root, slug, branch, bound, require_remote=parse_charter(spec_text).get("V4") == "push")
+    finish, _ = effective_finish(package_dir(root, slug), spec_text)
+    _delivery_preconditions(root, slug, branch, bound, require_remote=finish == "push")
     dirty = gitx.dirty_paths(root, exclude=())
     residual = [
         path
@@ -151,6 +180,16 @@ def deliver(root: Path, slug: str, push_enabled: bool) -> dict:
     if gitx.dirty_paths(root, exclude=()):
         raise ValueError("working tree is not clean")
     spec = (archive / "spec.md").read_text(encoding="utf-8")
+    if package_kind(spec) == "quick":
+        raise ValueError("quick delivery has no commit to merge or push")
+    commit, receipt = delivery_receipt(root, slug)
+    if receipt or latest_gate(archive, execution=True).get("product_tree"):
+        if not receipt or commit != gitx.head(root):
+            raise ValueError("the branch tip has no verified delivery receipt for this package")
+        tasks = (archive / "tasks.md").read_text(encoding="utf-8")
+        tree = staged_product_tree(root, revision=commit)
+        if errors := gate.archive_proof_errors(archive, spec, tasks, tree, receipt):
+            raise ValueError("; ".join(errors))
     finish, requested = effective_finish(archive, spec)
     if finish == "commit" and requested != finish:
         raise ValueError("this package was authorized for local commit only; no handoff is pending")
@@ -175,8 +214,8 @@ def deliver(root: Path, slug: str, push_enabled: bool) -> dict:
                 "pushed": False,
                 "head": gitx.head(merge_wt),
             }
-        gitx.git(anchor, "push", remote, target)
-        remote_head = gitx.git(anchor, "ls-remote", remote, f"refs/heads/{target}").stdout.split()[0]
+        gitx.git(anchor, "push", remote, target, remote=True)
+        remote_head = gitx.git(anchor, "ls-remote", remote, f"refs/heads/{target}", remote=True).stdout.split()[0]
         if remote_head != gitx.head(merge_wt):
             raise ValueError(f"remote {target} does not contain the delivered head")
     except Exception:
@@ -186,7 +225,7 @@ def deliver(root: Path, slug: str, push_enabled: bool) -> dict:
             gitx.git(root, "checkout", branch, check=False)
         raise
     removed = _remove_linked_worktrees(anchor, branch)
-    gitx.git(anchor, "push", remote, "--delete", branch, check=False)
+    gitx.git(anchor, "push", remote, "--delete", branch, check=False, remote=True)
     if any(item["removed"] is False for item in removed):
         result = {
             "branch": branch,

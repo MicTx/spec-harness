@@ -18,10 +18,8 @@ import local_evidence
 
 SLUG_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_[a-z0-9][a-z0-9_-]*$")
 TASK_RE = re.compile(r"^-\s*\[([ x!>])\]\s+(.+)$")
+TASK_BLOCK_RE = re.compile(r"(?ms)^-\s*\[([ x!>])\]\s+(.+?)\n(.*?)(?=^-\s*\[[ x!>]\]\s+|\Z)")
 PROTECTED = {"main", "master", "develop"}
-CHUNK = 64 * 1024
-
-STALE_EVIDENCE_SUFFIX = "evidence is stale for the current command or tree"
 
 
 def now() -> str:
@@ -39,8 +37,8 @@ def resolve_root(start: str | Path = ".") -> Path:
 def primary_root(root: Path) -> Path:
     """Return the primary worktree root for shared `.spec` state.
 
-    Linked spec worktrees own their package trees, but repo-level memory
-    (`.spec/charter.md`, `.spec/lessons.md`) belongs to the primary checkout,
+    Linked spec worktrees own their package trees, but the repo-level charter
+    (`.spec/charter.md`) belongs to the primary checkout,
     which `git worktree list` always reports first.
     """
     result = gitx.git(root, "worktree", "list", "--porcelain", check=False)
@@ -66,7 +64,11 @@ def package_dir(root: Path, slug: str) -> Path:
 # Hot-path read cache for the (spec.md, tasks.md) pair.  Entries are keyed by
 # the package directory and validated against each file's (st_mtime_ns,
 # st_size) stamp, so an in-place rewrite is always visible to the next read.
-_READ_PACKAGE_CACHE: dict[Path, tuple[tuple[tuple[int, int], tuple[int, int]], str, str]] = {}
+_READ_PACKAGE_CACHE: dict[Path, tuple[tuple, str, str]] = {}
+
+
+def _file_stamp(info: os.stat_result) -> tuple[int, ...]:
+    return info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
 
 
 def read_package(root: Path, slug: str) -> tuple[Path, str, str]:
@@ -74,7 +76,7 @@ def read_package(root: Path, slug: str) -> tuple[Path, str, str]:
     spec_path = directory / "spec.md"
     tasks_path = directory / "tasks.md"
     spec_info, tasks_info = spec_path.stat(), tasks_path.stat()
-    stamps = ((spec_info.st_mtime_ns, spec_info.st_size), (tasks_info.st_mtime_ns, tasks_info.st_size))
+    stamps = (_file_stamp(spec_info), _file_stamp(tasks_info))
     cached = _READ_PACKAGE_CACHE.get(directory)
     if cached is not None and cached[0] == stamps:
         return directory, cached[1], cached[2]
@@ -115,8 +117,10 @@ def inventory(root: Path) -> list[dict]:
                 # Frozen pre-v3 packages stay untouched on disk but are not
                 # inventory entries; same membership test as check_all.
                 continue
-            records = parse_tasks((child / "tasks.md").read_text(encoding="utf-8"))
+            text = (child / "tasks.md").read_text(encoding="utf-8")
+            records = parse_tasks(text) if archived else task_records(child, text)
             latest = latest_runs(child)
+            proven = {task.id for task in records if task.checked and latest.get(task.id, {}).get("exit") == 0}
             criterion = criteria(spec)
             try:
                 branch = extract_branch(spec)
@@ -134,7 +138,7 @@ def inventory(root: Path) -> list[dict]:
                     },
                     "criteria": {
                         "total": len(criterion),
-                        "passed": sum(1 for _key, _text, task in criterion if latest.get(task, {}).get("exit") == 0),
+                        "passed": sum(task in proven for _key, _text, task in criterion),
                     },
                 }
             )
@@ -146,7 +150,7 @@ def extract_branch(spec: str) -> str:
     if not match:
         raise ValueError("v3 spec requires branch: <non-protected-branch>")
     branch = match.group(1)
-    if branch in PROTECTED or branch.startswith("release/"):
+    if (branch in PROTECTED or branch.startswith("release/")) and package_kind(spec) != "quick":
         raise ValueError("a task package cannot bind a protected branch")
     return branch
 
@@ -258,7 +262,7 @@ def archived_branch_index(root: Path) -> dict[str, str]:
     return branches
 
 
-def resolve_archived_slug(root: Path, explicit: str | None = None) -> str:
+def resolve_archived_slug(root: Path, explicit: str | None = None, *, latest_quick: bool = False) -> str:
     if explicit:
         if not SLUG_RE.fullmatch(explicit):
             raise ValueError("invalid Development Record slug")
@@ -271,6 +275,8 @@ def resolve_archived_slug(root: Path, explicit: str | None = None) -> str:
     matches = sorted(slug for slug, bound in archived_branch_index(root).items() if bound == branch)
     if len(matches) == 1:
         return matches[0]
+    if latest_quick and matches and all("_quick-" in slug for slug in matches):
+        return matches[-1]
     if not matches:
         raise ValueError("no archived package binds the current branch")
     raise ValueError("multiple archived packages bind the current branch: " + ", ".join(matches))
@@ -308,78 +314,6 @@ def repair_origin(spec: str) -> str:
     return match.group(1) if match else ""
 
 
-DEFAULT_CHARTER = (
-    "V1 priority: quality > maintainability > speed > cost | charter.md",
-    "V2 scope: adjacent-fixes | charter.md",
-    "V3 verification: project | charter.md",
-    "V4 finish: commit | charter.md",
-    "V5 dependencies: none-new | charter.md",
-    "V6 compatibility: keep-public-api | charter.md",
-    "V7 blocked: park-and-continue | charter.md",
-)
-
-
-def scaffold_repair(root: Path, origin: str) -> dict:
-    """Scaffold a thin-planning repair package from an archived origin.
-
-    The repair keeps the origin's charter and scope so the delivery gate,
-    branch binding, and evidence rules stay identical to a standard package;
-    only the planning conversation is thinner.
-    """
-    origin = resolve_archived_slug(root, origin)
-    _directory, origin_spec, _tasks = read_archived_package(root, origin)
-    slug = f"{now()[:10]}_repair-{origin.split('_', 1)[-1]}"
-    directory = package_dir(root, slug)
-    if directory.exists():
-        raise ValueError(f"repair package already exists: {slug}")
-    directory.mkdir(parents=True)
-    charter = "\n".join(f"- {line}" for line in section(origin_spec, "Charter"))
-    scope = "\n".join(f"- {line}" for line in section(origin_spec, "Scope"))
-    # A minimal archived origin may lack Charter/Scope; fall back to the
-    # project defaults so the scaffold always passes plan-lint --static and
-    # the planner then refines the copied values.
-    if not charter:
-        charter = "\n".join(f"- {line}" for line in DEFAULT_CHARTER)
-    if not scope:
-        scope = "- in: app.py"
-    patterns = scope_patterns(origin_spec)
-    boundary = patterns[0] if patterns else "app.py"
-    spec = f"""# Repair {origin}
-
-<!-- spec-format: 3 -->
-
-## Goal
-- goal: Repair the delivered package {origin} with a minimal verified change.
-- literal ask: "repair {origin}"
-- done means: The repair verify passes and the full delivery gate stays green.
-- kind: repair
-- repair-of: {origin}
-## Charter
-{charter}
-## Scope
-{scope}
-## Assumptions
-- A1 | The archived origin package defines the intended behavior | probe: `ls .spec/specs/archive/{origin}` | CONFIRMED
-## Forks
-- F1 | when: repair outgrows a fix | a) park for a full package b) widen | pick: a | by: V2 | reversal: reversible
-## Criteria
-- C1 | The repair verify passes on the final tree | task-repair
-## Decisions
-## Parked
-"""
-    (directory / "spec.md").write_text(spec, encoding="utf-8")
-    (directory / "tasks.md").write_text(
-        f"""- [ ] Implement the minimal repair
-  - id: task-repair
-  - boundary: {boundary}
-  - verify: `true`
-  - expect: green
-""",
-        encoding="utf-8",
-    )
-    return {"slug": slug, "package": str(directory), "repair_of": origin}
-
-
 def parse_charter(spec: str) -> dict[str, str]:
     result = {}
     for line in section(spec, "Charter"):
@@ -387,6 +321,10 @@ def parse_charter(spec: str) -> dict[str, str]:
         if match:
             result[f"V{match.group(1)}"] = match.group(3).strip()
     return result
+
+
+def frozen_charter(directory: Path, spec: str) -> dict[str, str]:
+    return package_baseline(directory).get("charter", parse_charter(spec))
 
 
 def amend_authorized(by: str, v2: str) -> bool:
@@ -477,7 +415,9 @@ def pending_parked(directory: Path, spec: str) -> list[dict]:
 
 
 def effective_finish(directory: Path, spec: str) -> tuple[str, str]:
-    requested = parse_charter(spec).get("V4", "commit")
+    if package_baseline(directory).get("finish") == "worktree":
+        return "worktree", "worktree"
+    requested = frozen_charter(directory, spec).get("V4", "commit")
     decision = park_decisions(directory).get(HANDOFF_ID, {})
     if decision.get("choice") == "local-commit" and decision.get("requested") == requested:
         return "commit", requested
@@ -493,7 +433,7 @@ def resolve_parked(root: Path, slug: str, identifier: str, choice: str, by: str,
     if not re.fullmatch(r"user\s+\S.*", by) or not reason or any(c in by + reason for c in "\r\n"):
         raise ValueError("resolving a parked item requires --by 'user <reference>' and a one-line reason")
     previous = park_decisions(directory).get(identifier, {})
-    requested = parse_charter(spec).get("V4", "commit")
+    requested = frozen_charter(directory, spec).get("V4", "commit")
     if identifier == HANDOFF_ID:
         if not package_baseline(directory).get("finish"):
             raise ValueError("handoff choice requires a frozen V4; re-plan this legacy package")
@@ -516,16 +456,6 @@ def resolve_parked(root: Path, slug: str, identifier: str, choice: str, by: str,
     row = dict(kind="park-decision", id=identifier, choice=choice, by=by, reason=reason, requested=requested, ts=now())
     append_run(directory, row)
     return row
-
-
-def ui_criteria(spec: str) -> list[str]:
-    return [
-        key.strip()
-        for line in section(spec, "UI Review")
-        if line.startswith("criteria:")
-        for key in line.split(":", 1)[1].split(",")
-        if key.strip()
-    ]
 
 
 def criteria(spec: str) -> list[tuple[str, str, str]]:
@@ -562,7 +492,7 @@ class Task:
 
 def parse_tasks(content: str) -> list[Task]:
     records = []
-    for match in re.finditer(r"(?ms)^-\s*\[([ x!>])\]\s+(.+?)\n(.*?)(?=^-\s*\[[ x!>]\]\s+|\Z)", content):
+    for match in TASK_BLOCK_RE.finditer(content):
         marker, title, block = match.groups()
         values = {}
         for detail in re.finditer(r"(?m)^\s*-\s*([a-z-]+):\s*(.*)$", block):
@@ -655,49 +585,20 @@ def topological_tasks(records: list[Task]) -> list[Task]:
     return ordered
 
 
-def tick(root: Path, slug: str, task_id: str, blocked: bool = False) -> None:
-    directory, _spec, tasks = read_package(root, slug)
-    lines = tasks.splitlines()
-    found = False
-    task_indexes = [index for index, line in enumerate(lines) if TASK_RE.match(line)]
-    for position, index in enumerate(task_indexes):
-        match = TASK_RE.match(lines[index])
-        if not match:
-            continue
-        end = task_indexes[position + 1] if position + 1 < len(task_indexes) else len(lines)
-        block = "\n".join(lines[index:end])
-        if re.search(rf"(?m)^\s*- id:\s*{re.escape(task_id)}\s*$", block):
-            lines[index] = re.sub(r"^-\s*\[[ x!>]\]", "- [!]" if blocked else "- [x]", lines[index])
-            found = True
-            break
-    if not found:
-        raise ValueError(f"task not found: {task_id}")
-    (directory / "tasks.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+def render_task_marks(tasks: str, marks: dict[str, str]) -> str:
+    def render(match: re.Match) -> str:
+        identifier = re.search(r"(?m)^\s*- id:\s*(\S+)\s*$", match[3])
+        if not identifier or identifier[1] not in marks:
+            return match[0]
+        return tasks[match.start() : match.start(1)] + marks[identifier[1]] + tasks[match.end(1) : match.end()]
 
-
-def unblock(root: Path, slug: str, task_id: str) -> None:
-    directory, _spec, tasks = read_package(root, slug)
-    lines = tasks.splitlines()
-    task_indexes = [index for index, line in enumerate(lines) if TASK_RE.match(line)]
-    for position, index in enumerate(task_indexes):
-        match = TASK_RE.match(lines[index])
-        if not match:
-            continue
-        end = task_indexes[position + 1] if position + 1 < len(task_indexes) else len(lines)
-        block = "\n".join(lines[index:end])
-        if re.search(rf"(?m)^\s*- id:\s*{re.escape(task_id)}\s*$", block):
-            if match.group(1) != "!":
-                raise ValueError(f"task is not blocked: {task_id}")
-            lines[index] = re.sub(r"^-\s*\[!\]", "- [ ]", lines[index])
-            (directory / "tasks.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-            return
-    raise ValueError(f"task not found: {task_id}")
+    return TASK_BLOCK_RE.sub(render, tasks)
 
 
 # Hot-path parse cache for runs.jsonl.  Keyed by the jsonl path and validated
 # against its (st_mtime_ns, st_size) stamp; append_run rewrites the file, so a
 # stale entry invalidates itself and no write-through is needed.
-_RUNS_CACHE: dict[Path, tuple[tuple[int, int], list[dict]]] = {}
+_RUNS_CACHE: dict[Path, tuple[tuple[int, ...], list[dict]]] = {}
 
 
 def runs(package: Path) -> list[dict]:
@@ -707,7 +608,7 @@ def runs(package: Path) -> list[dict]:
     except FileNotFoundError:
         _RUNS_CACHE.pop(path, None)
         return []
-    stamp = (info.st_mtime_ns, info.st_size)
+    stamp = _file_stamp(info)
     cached = _RUNS_CACHE.get(path)
     if cached is not None and cached[0] == stamp:
         return list(cached[1])
@@ -717,11 +618,110 @@ def runs(package: Path) -> list[dict]:
 
 
 def latest_runs(package: Path) -> dict[str, dict]:
+    latest = {}
+    for record in runs(package):
+        if record.get("kind", "run") == "run" and isinstance(record.get("task"), str):
+            latest[record["task"]] = record
+        if record.get("kind") != "gate" or record.get("final") is not True:
+            continue
+        for check in record.get("checks", ()):
+            if not isinstance(check, dict) or not isinstance(check.get("tasks"), list):
+                continue
+            for task in check["tasks"]:
+                if isinstance(task, str):
+                    latest[task] = dict(check, kind="run", task=task, final=True, tree_fp=record.get("tree_fp"))
+    return latest
+
+
+def record_digest(value: object) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=True).encode()).hexdigest()
+
+
+def checkpoint_receipt(slug: str, row: dict) -> str:
+    return record_digest([slug, {key: value for key, value in row.items() if key != "checkpoint"}])
+
+
+def _freeze_path(directory: Path) -> Path:
+    root = directory.parents[2]
+    relative = gitx.stdout(root, "rev-parse", "--git-path", f"spec-freezes/{directory.name}")
+    return root / relative
+
+
+def seal_freeze(directory: Path) -> None:
+    target = _freeze_path(directory)
+    digest = record_digest([row for row in runs(directory) if row.get("kind") == "baseline"])
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("x", encoding="ascii") as stream:
+        stream.write(digest + "\n")
+
+
+def _freeze_valid(directory: Path, baseline: dict) -> bool:
+    if directory.parent.name == "archive" or not baseline:
+        return True
+    root = directory.parents[2]
+    if not (root / ".git").exists():
+        return baseline.get("evidence_kernel") != 1
+    path = _freeze_path(directory)
+    if not path.exists():
+        return baseline.get("evidence_kernel") != 1
+    digest = record_digest([row for row in runs(directory) if row.get("kind") == "baseline"])
+    return path.read_text(encoding="ascii").splitlines()[:1] == [digest]
+
+
+def worktree_receipt(root: Path, slug: str, digest: str = "") -> str:
+    path = _freeze_path(package_dir(root, slug))
+    if digest:
+        with path.open("a", encoding="ascii") as stream:
+            stream.write(digest + "\n")
+    lines = path.read_text(encoding="ascii").splitlines() if path.is_file() else []
+    return lines[-1] if len(lines) > 1 else ""
+
+
+def _checkpoint_receipts(directory: Path, baseline: dict) -> dict[str, str]:
+    base = str(baseline.get("head", ""))
+    if not re.fullmatch(r"[0-9a-f]{40,64}", base):
+        return {}
+    options = ("-z", "--format=%H%x00%B", "--fixed-strings", f"--grep=Spec: {directory.name}", f"{base}..HEAD")
+    log = gitx.git(directory.parents[2], "log", *options, check=False)
+    fields = log.stdout.split("\0")
     return {
-        record["task"]: record
-        for record in runs(package)
-        if record.get("kind", "run") == "run" and isinstance(record.get("task"), str)
+        commit: match[1]
+        for commit, message in zip(fields[::2], fields[1::2])
+        if f"Spec: {directory.name}" in message.splitlines()
+        if (match := re.search(r"(?m)^Spec-Verify: ([0-9a-f]{64})$", message))
     }
+
+
+def task_records(directory: Path, tasks: str) -> list[Task]:
+    """Project active progress from the ordered ledger; markdown marks are a view."""
+    baseline = package_baseline(directory)
+    state: dict[str, dict] = {}
+    for row in runs(directory):
+        key, kind = row.get("task"), row.get("kind", "run")
+        if kind == "baseline" and key == "package":
+            state.clear()
+        if not isinstance(key, str):
+            continue
+        if kind == "run" and not row.get("final"):
+            state[key] = row
+        elif kind in {"amend", "unblock"}:
+            state.pop(key, None)
+    if not _freeze_valid(directory, baseline):
+        state.clear()
+    sealed = baseline.get("evidence_kernel") == 1
+    ok = {key: row for key, row in state.items() if type(row.get("exit")) is int and row["exit"] == 0}
+    receipts = _checkpoint_receipts(directory, baseline) if sealed and ok else {}
+    records = parse_tasks(tasks)
+    for task in records:
+        row = state.get(task.id, {}) if baseline else {}
+        task.checked = (
+            task.id in ok
+            and row.get("cmd") == task.command
+            and not row.get("checkpoint_error")
+            and (not sealed or receipts.get(str(row.get("checkpoint"))) == checkpoint_receipt(directory.name, row))
+        )
+        task.blocked = row.get("cmd") == task.command and row.get("blocked") is True and not task.checked
+    return records
 
 
 def latest_gate(package: Path, *, execution: bool = False) -> dict:
@@ -729,6 +729,15 @@ def latest_gate(package: Path, *, execution: bool = False) -> dict:
         (row for row in reversed(runs(package)) if row.get("kind") == "gate" and not (execution and row.get("probe"))),
         {},
     )
+
+
+def delivery_receipt(root: Path, slug: str, revision: str = "HEAD") -> tuple[str, str]:
+    options = ("-1", "--format=%H%x00%B", "--fixed-strings", f"--grep=feat(spec): deliver {slug}", revision)
+    commit, _, message = gitx.git(root, "log", *options).stdout.partition("\0")
+    match = re.search(r"(?m)^Spec-Proof: ([0-9a-f]{64})$", message)
+    if match and f"Spec: {slug}" in message.splitlines():
+        return commit, match[1]
+    return "", ""
 
 
 def gate_actions(row: dict) -> list[dict]:
@@ -740,26 +749,11 @@ def gate_actions(row: dict) -> list[dict]:
         "run-task": 1,
         "fix-verify": 2,
         "unblock": 3,
-        "review-ui": 4,
         "inspect-delivery": 4,
-        "reverify": 5,
         "choose-handoff": 6,
     }
     blockers = [item for item in row.get("findings", []) if item.get("severity") == "block"]
     return sorted(blockers, key=lambda item: priority.get(item.get("action"), 4))
-
-
-def gate_recovery(directory: Path, primary: dict | None) -> dict:
-    rows = runs(directory)
-    start = next((i for i in range(len(rows) - 1, -1, -1) if rows[i].get("kind") == "gate-restart"), -1)
-    attempts = [row for row in rows[start + 1 :] if row.get("kind") == "gate-repair"]
-    key = [primary.get("code"), primary.get("subject")] if primary else []
-    matched = [row for row in attempts if row.get("finding") == key]
-    return dict(
-        round=len(attempts),
-        exhausted=len(attempts) >= 6 or len(matched) >= 3,
-        strategies=[row["strategy"] for row in matched[-3:]],
-    )
 
 
 def append_run(package: Path, record: dict) -> None:
@@ -767,39 +761,139 @@ def append_run(package: Path, record: dict) -> None:
         stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
 
 
-def _hash_tree(root: Path) -> str:
-    """Hash product files and source architecture contracts, excluding local evidence."""
-    if gitx.toplevel(root) is None:
-        raise ValueError("v3 evidence requires a Git worktree")
-    digest = hashlib.sha256()
-    files = gitx.git(root, "ls-files", "--cached", "--others", "--exclude-standard", "-z", text=False).stdout
-    for raw in sorted(item for item in files.split(b"\0") if item):
-        name = os.fsdecode(raw)
-        if name == ".spec" or (name.startswith(".spec/") and not name.startswith(".spec/architecture/")):
-            continue
-        path = root / name
-        digest.update(raw + b"\0")
-        if not path.exists() and not path.is_symlink():
-            digest.update(b"deleted\0")
-            continue
-        mode = path.lstat().st_mode
-        if stat.S_ISLNK(mode):
-            digest.update(b"link\0")
-            digest.update(os.fsencode(os.readlink(path)))
-        elif stat.S_ISREG(mode):
-            digest.update(b"executable\0" if mode & stat.S_IXUSR else b"file\0")
-            with path.open("rb") as stream:
-                while chunk := stream.read(CHUNK):
-                    digest.update(chunk)
+_SNAPSHOT_CONFIG = tuple(
+    part
+    for option in (
+        "core.fileMode=true",
+        "core.ignoreStat=false",
+        "core.fsmonitor=false",
+        "core.trustctime=true",
+        "core.checkStat=default",
+        "core.splitIndex=false",
+    )
+    for part in ("-c", option)
+)
+
+
+def product_path(name: bytes) -> bool:
+    return name.startswith(b".spec/architecture/") or not (name == b".spec" or name.startswith(b".spec/"))
+
+
+def _index_paths(root: Path, env: dict, *args: str) -> list[bytes]:
+    data = gitx.git(root, *_SNAPSHOT_CONFIG, *args, "-z", env=env, text=False).stdout
+    return [name for name in data.split(b"\0") if name]
+
+
+def _with_index_paths(root: Path, env: dict, paths: list[bytes], *args: str) -> None:
+    if paths:
+        gitx.git(root, *_SNAPSHOT_CONFIG, *args, env=env, text=False, input=b"\0".join(paths) + b"\0")
+
+
+def _update_index(root: Path, env: dict, flag: str, paths: list[bytes]) -> None:
+    _with_index_paths(root, env, paths, "update-index", flag, "-z", "--stdin")
+
+
+def _product_entries(root: Path, env: dict) -> list[tuple[bytes, bytes, bytes]]:
+    entries, excluded = [], []
+    for entry in _index_paths(root, env, "ls-files", "-v", "--stage"):
+        metadata, name = entry.split(b"\t", 1)
+        tag, mode, _object, stage = metadata.split()
+        if not product_path(name):
+            excluded.append(name)
+        elif stage != b"0":
+            raise ValueError(f"unmerged product path: {os.fsdecode(name)}")
         else:
-            raise ValueError(f"unsupported file type in evidence fingerprint: {name}")
-        digest.update(b"\0")
-    return digest.hexdigest()
+            entries.append((tag, mode, name))
+    _update_index(root, env, "--force-remove", excluded)
+    return entries
 
 
-def tree_fingerprint(root: Path) -> str:
-    """Recompute every time; Git status cannot detect content changes within one status."""
-    return _hash_tree(root)
+def _write_tree(root: Path, env: dict) -> str:
+    return gitx.git(root, *_SNAPSHOT_CONFIG, "write-tree", env=env).stdout.strip()
+
+
+def staged_product_tree(root: Path, *, index_file: Path | None = None, revision: str | None = None) -> str:
+    """The Git product tree at the actual commit boundary, not its working copy."""
+    with gitx.temporary_index(root, index_file=index_file, revision=revision) as env:
+        _product_entries(root, env)
+        return _write_tree(root, env)
+
+
+def refresh_product_tree(root: Path, env: dict, depth: int = 0) -> tuple[str, str]:
+    """Update only changed index entries; the second ID includes unpackaged nested dirt."""
+    entries = _product_entries(root, env)
+    _update_index(root, env, "--no-assume-unchanged", [name for tag, _, name in entries if tag.islower()])
+    present = [name for tag, _, name in entries if tag.upper() == b"S" and os.path.lexists(root / os.fsdecode(name))]
+    _update_index(root, env, "--no-skip-worktree", present)
+    paths = set(_index_paths(root, env, "diff-files", "--name-only", "--ignore-submodules=none"))
+    untracked = _index_paths(root, env, "ls-files", "--others", "--exclude-standard")
+    paths.update(name.rstrip(b"/") for name in untracked)
+    nested = {name for _, mode, name in entries if mode == b"160000"}
+    nested.update(name.rstrip(b"/") for name in untracked if name.endswith(b"/"))
+    supplements = []
+    for name in sorted(filter(product_path, nested)):
+        folder = root / os.fsdecode(name)
+        if not (folder / ".git").exists():
+            continue
+        head = gitx.git(folder, "rev-parse", "--verify", "HEAD^{tree}", check=False)
+        if head.returncode:
+            paths.discard(name)
+        if depth < 8:
+            current = tree_fingerprint(folder, depth + 1)
+            baseline = staged_product_tree(folder, revision="HEAD") if not head.returncode else ""
+            if current != baseline:
+                supplements.append((name, current))
+    selected, removed = [], []
+    for name in sorted(filter(product_path, paths)):
+        try:
+            kind = stat.S_IFMT((root / os.fsdecode(name)).lstat().st_mode)
+        except (FileNotFoundError, NotADirectoryError):
+            kind = 0
+        if kind in (0, stat.S_IFREG, stat.S_IFLNK, stat.S_IFDIR):
+            selected.append(name)
+        else:
+            removed.append(name)
+            supplements.append((name, str(kind)))
+    _update_index(root, env, "--force-remove", removed)
+    add = ("--literal-pathspecs", "add", "-A", "--sparse", "--pathspec-from-file=-", "--pathspec-file-nul")
+    _with_index_paths(root, env, selected, *add)
+    tree = _write_tree(root, env)
+    if not supplements:
+        return tree, tree
+    extra = hashlib.sha256(b"\0".join(name + b"\0" + value.encode() for name, value in supplements)).hexdigest()
+    return tree, f"{tree}:{extra}"
+
+
+def tree_fingerprint(root: Path, depth: int = 0) -> str:
+    with gitx.temporary_index(root) as env:
+        return refresh_product_tree(root, env, depth)[1]
+
+
+def product_delta(root: Path, env: dict, head: str) -> list[bytes]:
+    paths = _index_paths(root, env, "diff", "--cached", "--name-only", "--no-renames", head)
+    return [name for name in paths if product_path(name)]
+
+
+def owned_product_tree(root: Path, env: dict, patterns: tuple[str, ...], head: str) -> str:
+    paths = product_delta(root, env, head)
+    outside = [name for name in paths if not any(path_matches(os.fsdecode(name), pattern) for pattern in patterns)]
+    restore = (
+        "--literal-pathspecs",
+        "restore",
+        f"--source={head}",
+        "--staged",
+        "--pathspec-from-file=-",
+        "--pathspec-file-nul",
+    )
+    _with_index_paths(root, env, outside, *restore)
+    return _write_tree(root, env)
+
+
+def verify_groups(records: list[Task]) -> dict[str, list[str]]:
+    groups: dict[str, list[str]] = {}
+    for task in topological_tasks(records):
+        groups.setdefault(task.command, []).append(task.id)
+    return groups
 
 
 def goal_fingerprint(spec: str) -> str:
@@ -807,9 +901,10 @@ def goal_fingerprint(spec: str) -> str:
     return hashlib.sha256("\n".join(section(spec, "Goal")).encode()).hexdigest()
 
 
-def criteria_status(spec: str, package: Path) -> list[tuple[str, str, str, bool]]:
+def criteria_status(spec: str, package: Path, records: list[Task]) -> list[tuple[str, str, str, bool]]:
     latest = latest_runs(package)
-    return [(key, text, task, latest.get(task, {}).get("exit") == 0) for key, text, task in criteria(spec)]
+    proven = {task.id for task in records if task.checked and latest.get(task.id, {}).get("exit") == 0}
+    return [(key, text, task, task in proven) for key, text, task in criteria(spec)]
 
 
 def path_matches(path: str, pattern: str) -> bool:
@@ -920,6 +1015,8 @@ def package_baseline(package: Path) -> dict:
 
 def frozen_commands(directory: Path, spec: str, records: list[Task], *, legacy: bool = False) -> list[str]:
     baseline = package_baseline(directory)
+    if not _freeze_valid(directory, baseline):
+        return ["plan-go baseline does not match its Git freeze receipt"]
     frozen = set(baseline.get("task_ids") or [])
     if not baseline.get("goal_fp") or not frozen:
         return []
@@ -929,12 +1026,13 @@ def frozen_commands(directory: Path, spec: str, records: list[Task], *, legacy: 
     frozen_criteria = {tuple(row) for row in baseline.get("criteria", [])}
     if not frozen_criteria <= set(criteria(spec)):
         errors.append("acceptance criteria changed after plan-go")
-    if "ui_criteria" in baseline and ui_criteria(spec) != baseline["ui_criteria"]:
-        errors.append("UI review criteria changed after plan-go")
-    if "charter" in baseline and parse_charter(spec) != baseline["charter"]:
+    declared = baseline.get("charter_overrides", baseline.get("charter"))
+    if declared is not None and parse_charter(spec) != declared:
         errors.append("charter changed after plan-go; use an authorized package decision")
-    elif "finish" in baseline and parse_charter(spec).get("V4", "commit") != baseline["finish"]:
+    elif declared is None and "finish" in baseline and parse_charter(spec).get("V4", "commit") != baseline["finish"]:
         errors.append("V4 finish changed after plan-go; use a package decision")
+    if baseline.get("branch") and extract_branch(spec) != baseline["branch"]:
+        errors.append("branch changed after plan-go")
     if "task_boundaries" in baseline and any(
         task.id in frozen and list(task.globs) != baseline["task_boundaries"].get(task.id) for task in records
     ):
@@ -946,7 +1044,7 @@ def frozen_commands(directory: Path, spec: str, records: list[Task], *, legacy: 
     for name in sorted(frozen - {task.id for task in records}):
         errors.append(f"{name}: removed after plan-go; open a new package")
     accepted, amended, old_amends = {}, {}, {}
-    v2 = parse_charter(spec).get("V2", "strict")
+    v2 = frozen_charter(directory, spec).get("V2", "strict")
     for row in runs(directory):
         task = row.get("task")
         if row.get("kind") == "baseline" and task in frozen:
@@ -1014,7 +1112,7 @@ def _tracked_paths(root: Path, candidates: list[str]) -> set[str]:
     tracked: set[str] = set()
     for start in range(0, len(candidates), _GIT_PATH_CHUNK):
         chunk = candidates[start : start + _GIT_PATH_CHUNK]
-        out = gitx.git(root, "ls-files", "-z", "--", *chunk, text=False).stdout
+        out = gitx.git(root, "--literal-pathspecs", "ls-files", "-z", "--", *chunk, text=False).stdout
         tracked.update(os.fsdecode(name) for name in out.split(b"\0") if name)
     return tracked
 
@@ -1046,16 +1144,16 @@ def git_add_paths(root: Path, paths: list[str]) -> None:
         candidates = [path for path in candidates if not local_evidence.is_evidence_path(path)]
     if not candidates:
         return
-    tracked = _tracked_paths(root, candidates)
-    untracked = [path for path in candidates if path not in tracked]
+    tracked = _tracked_paths(root, candidates).intersection(candidates)
+    untracked = [path for path in candidates if path not in tracked and os.path.lexists(root / path)]
     ignored = _ignored_paths(root, untracked)
-    selected = [path for path in candidates if path in tracked or path not in ignored]
+    selected = sorted(tracked.union(path for path in untracked if path not in ignored))
     if selected:
-        gitx.git(root, "add", "-A", "--", *selected)
+        gitx.git(root, "--literal-pathspecs", "add", "-A", "--", *selected)
 
 
 def checkpoint_paths(root: Path, slug: str, patterns: tuple[str, ...]) -> tuple[tuple[str, ...], bool]:
-    paths = (*patterns, f".spec/specs/{slug}", ".spec/charter.md")
+    paths = (*patterns, f".spec/specs/{slug}")
     local = local_evidence.is_local(root)
     foreign = foreign_index_paths(root, paths, local=local)
     if foreign:
@@ -1063,17 +1161,19 @@ def checkpoint_paths(root: Path, slug: str, patterns: tuple[str, ...]) -> tuple[
     return paths, local
 
 
-def checkpoint_commit(root: Path, slug: str, title: str, patterns: tuple[str, ...] = ()) -> str:
+def checkpoint_commit(root: Path, slug: str, title: str, patterns: tuple[str, ...] = (), *, receipt: str = "") -> str:
     paths, local = checkpoint_paths(root, slug, patterns)
     if local:
         local_evidence.ensure(root)
         local_evidence.untrack(root)
     git_add_paths(root, list(paths))
     status = gitx.git(root, "diff", "--cached", "--quiet", check=False)
-    if status.returncode == 0:
+    if status.returncode == 0 and not receipt:
         return ""
     message = f"wip({slug}): {title}\n\nSpec: {slug}\n"
-    gitx.git(root, "commit", "-m", message)
+    if receipt:
+        message += f"Spec-Verify: {receipt}\n"
+    gitx.git(root, "commit", *(["--allow-empty"] if receipt else []), "-m", message)
     return gitx.head(root)
 
 

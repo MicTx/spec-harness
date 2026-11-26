@@ -9,10 +9,6 @@ INSTALL_HOSTS="${INSTALL_HOSTS:-}"
 # Install profile is a compatibility alias pair. Both values ship the same
 # six-stage command payload; validation still rejects unknown values.
 INSTALL_PROFILE="${INSTALL_PROFILE:-}"
-# Prompt tier picks the baked-in command body density: `full` keeps the
-# complete per-stage instructions, `compact` ships a short body that still
-# carries one autonomy line. Validation rejects unknown values.
-SPEC_PROMPT_TIER="${SPEC_PROMPT_TIER:-}"
 # Empty INSTALL_HOSTS means auto-detect (only hosts with a real presence on
 # this machine); an explicit value, including `all`, always bypasses probing.
 CLAUDE_SKILLS_DIR="${CLAUDE_SKILLS_DIR:-${INSTALL_DIR:-$HOME/.claude/skills}}"
@@ -407,18 +403,9 @@ validate_profile() {
   esac
 }
 
-validate_prompt_tier() {
-  case "$SPEC_PROMPT_TIER" in
-    "") SPEC_PROMPT_TIER="full" ;;
-    full|compact|aggressive) ;;
-    *) fail "unknown SPEC_PROMPT_TIER: $SPEC_PROMPT_TIER (expected full, compact, or aggressive)" ;;
-  esac
-}
-
 validate_inputs() {
   [ "$SKILL_NAME" = "spec" ] || fail "SKILL_NAME must be spec; custom skill names would break /spec:xx aliases"
   validate_profile
-  validate_prompt_tier
   validate_stage_profiles
   validate_hosts
   validate_backup_root
@@ -646,7 +633,6 @@ installed_by=spec/install.sh
 source=${PREPARED_SOURCE_DIR:-$source_dir}
 version=${runtime_version}
 profile=${INSTALL_PROFILE}
-tier=${SPEC_PROMPT_TIER}
 EOF_MARKER
   backup_existing "$target_dir"
   if ! mv "$staging" "$target_dir"; then
@@ -661,11 +647,11 @@ EOF_MARKER
 write_install_manifest() {
   local host="$1"
   local target_dir="$2"
-  "$PYTHON_BIN" - "$target_dir" "$host" "$INSTALL_PROFILE" "${runtime_version:-unknown}" "$SPEC_PROMPT_TIER" <<'PY_MANIFEST'
+  "$PYTHON_BIN" - "$target_dir" "$host" "$INSTALL_PROFILE" "${runtime_version:-unknown}" <<'PY_MANIFEST'
 import json, sys
 from pathlib import Path
-root, host, profile, version, prompt_tier = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
-manifest = {"host": host, "path": root, "profile": profile, "version": version, "prompt_tier": prompt_tier}
+root, host, profile, version = sys.argv[1:]
+manifest = {"host": host, "path": root, "profile": profile, "version": version}
 Path(root, "install-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 PY_MANIFEST
 }
@@ -675,7 +661,7 @@ stage_description() {
     base) printf '%s\n' "Spec: resolve the next action" ;;
     plan) printf '%s\n' "Spec: plan and freeze a task package" ;;
     run) printf '%s\n' "Spec: execute the package to a terminal state" ;;
-    repair) printf '%s\n' "Spec: scaffold a repair package for a delivered spec" ;;
+    repair) printf '%s\n' "Spec: repair a delivered package" ;;
     check) printf '%s\n' "Spec: recover, verify and deliver" ;;
     push) printf '%s\n' "Spec: finish delivery and push" ;;
     doctor) printf '%s\n' "Spec: environment self-check and repair" ;;
@@ -686,14 +672,6 @@ stage_description() {
 command_body() {
   local command_name="$1"
   local stage="$2"
-  if [ "$SPEC_PROMPT_TIER" = "aggressive" ]; then
-    command_body_aggressive "$command_name" "$stage"
-    return 0
-  fi
-  if [ "$SPEC_PROMPT_TIER" = "compact" ]; then
-    command_body_compact "$command_name" "$stage"
-    return 0
-  fi
   case "$stage" in
     plan)
       cat <<EOF_BODY
@@ -706,21 +684,21 @@ EOF_BODY
       cat <<EOF_BODY
 # /$command_name
 
-Execute the bound package: follow spec.py next, complete ready tasks in scope, then use the delivery recovery loop in references/exec.md. With a goal and no bound package this is the built-in one-shot: plan, go, execute, check, deliver. Reversible blockers are decided by V1 and logged, not asked; park the irreversible and continue.
+Run the goal using the installed spec skill. For a small reversible fix on a clean checkout, use the two-call quick path in references/exec.md: quick, edit in place, check. Otherwise follow the standard package DAG. Reversible blockers are decided by V1 and logged, not asked; park the irreversible and continue.
 EOF_BODY
       ;;
     repair)
       cat <<EOF_BODY
 # /$command_name
 
-Repair a delivered spec: pick the archived package under .spec/specs/archive, scaffold with spec.py repair --of <archived-slug>, then refine the repair task's boundary and verify against the observed failure, run spec.py plan-lint to zero, and freeze with spec.py plan-go. Planning is thin; the delivery gate, evidence, and UI/UX review rules are identical to a standard package.
+Repair a delivered spec: read its archived goal and evidence, create a standard task package with kind: repair and repair-of: <archived-slug>, then plan, verify and check the fix.
 EOF_BODY
       ;;
     check)
       cat <<EOF_BODY
 # /$command_name
 
-Run spec.py check and follow its typed next action, not just the error list. Repair eligible blockers yourself, then recheck with --attempt and fresh evidence under references/exec.md. Continue until delivered, waiting for an authorized choice, or stalled with evidence. For required UI, operate real flows and write screenshots and findings to ui-review.json via spec.py ui-review --file. Use --check-only only for diagnosis; report options only when authority is missing.
+Run spec.py check and follow its next action. Repair eligible blockers yourself, then run the same check again; see references/exec.md. Continue until delivered, waiting for an authorized choice, or stalled with evidence. Use --check-only only for diagnosis.
 EOF_BODY
       ;;
     push)
@@ -734,125 +712,7 @@ EOF_BODY
       cat <<EOF_BODY
 # /$command_name
 
-Run the spec environment doctor for Python, Git, the install manifest, rendered Git hooks, and session hook wiring. Report findings and repair advisories.
-EOF_BODY
-      ;;
-    *)
-      cat <<EOF_BODY
-# /$command_name
-
-Use the installed spec skill for this workflow request.
-EOF_BODY
-      ;;
-  esac
-}
-
-# Compact tier: token-tight hosts get a two-to-three sentence body per stage.
-# Every body keeps exactly one autonomy instruction so the decide-first
-# contract survives the trim; the full tier above remains the default.
-command_body_compact() {
-  local command_name="$1"
-  local stage="$2"
-  case "$stage" in
-    plan)
-      cat <<EOF_BODY
-# /$command_name
-
-Plan the task package: read-only recon, charter values, .spec package files, spec.py plan-lint to zero, then freeze with spec.py plan-go. Resolve forks from repo evidence yourself before asking.
-EOF_BODY
-      ;;
-    run)
-      cat <<EOF_BODY
-# /$command_name
-
-Follow spec.py next through ready tasks and the delivery recovery loop in references/exec.md. Reversible blockers are decided by you and logged, not asked; park the irreversible and continue.
-EOF_BODY
-      ;;
-    repair)
-      cat <<EOF_BODY
-# /$command_name
-
-Repair a delivered spec: scaffold with spec.py repair --of <archived-slug>, sharpen the boundary and verify against the observed failure, then freeze with spec.py plan-go. Planning stays thin; the delivery gate and evidence rules keep full strength.
-EOF_BODY
-      ;;
-    check)
-      cat <<EOF_BODY
-# /$command_name
-
-Run spec.py check, repair its next action and recheck with evidence per references/exec.md. Stop at delivery, an authority choice, or an exhausted budget; --check-only never delivers.
-EOF_BODY
-      ;;
-    push)
-      cat <<EOF_BODY
-# /$command_name
-
-User authorization for Git handoff: follow the installed skill to safety-precheck, archive the delivery, merge the bound branch into main, and push. This command is the authorization; run the steps without re-asking.
-EOF_BODY
-      ;;
-    doctor)
-      cat <<EOF_BODY
-# /$command_name
-
-Run the spec environment doctor for Python, Git, the install manifest, rendered Git hooks, and session hook wiring. Apply the safe repairs yourself from the advisories; report only what needs a user decision.
-EOF_BODY
-      ;;
-    *)
-      cat <<EOF_BODY
-# /$command_name
-
-Use the installed spec skill for this workflow request.
-EOF_BODY
-      ;;
-  esac
-}
-
-# Aggressive tier: the shortest body that still carries the full autonomy
-# contract. Each stage gets two-to-three sentences and exactly one hard
-# autonomy instruction, so the decide-first rule cannot be trimmed away.
-command_body_aggressive() {
-  local command_name="$1"
-  local stage="$2"
-  case "$stage" in
-    plan)
-      cat <<EOF_BODY
-# /$command_name
-
-Plan the task package from repo evidence: read-only recon, charter values, .spec package files, spec.py plan-lint to zero, then freeze with spec.py plan-go. Every card is cleared from repo evidence before it reaches the user; one batch of four, no more.
-EOF_BODY
-      ;;
-    run)
-      cat <<EOF_BODY
-# /$command_name
-
-Follow spec.py next through ready tasks and delivery recovery (references/exec.md). Decide reversible blockers yourself; asks carry their evidence ledger or do not leave the session.
-EOF_BODY
-      ;;
-    repair)
-      cat <<EOF_BODY
-# /$command_name
-
-Repair a delivered spec: scaffold with spec.py repair --of <archived-slug>, sharpen the boundary and verify against the observed failure, then freeze with spec.py plan-go. Planning stays thin, but the delivery gate and evidence rules keep full strength; decide reversible forks yourself and log them.
-EOF_BODY
-      ;;
-    check)
-      cat <<EOF_BODY
-# /$command_name
-
-Run spec.py check; repair, record evidence, and recheck per references/exec.md. Stop only at delivery, required authority, or exhausted recovery; --check-only is diagnostic.
-EOF_BODY
-      ;;
-    push)
-      cat <<EOF_BODY
-# /$command_name
-
-User authorization for Git handoff: follow the installed skill to safety-precheck, archive, merge the bound branch into main, and push. This command is the authorization — run the steps without re-asking.
-EOF_BODY
-      ;;
-    doctor)
-      cat <<EOF_BODY
-# /$command_name
-
-Run the spec environment doctor for Python, Git, the install manifest, rendered Git hooks, and session hook wiring. Apply every safe repair yourself from the advisories; surface only the decision that truly needs the user.
+Run the spec environment doctor for Python, Git, the install manifest and session hook wiring. Report findings and repair advisories.
 EOF_BODY
       ;;
     *)
@@ -1372,7 +1232,7 @@ main() {
   INSTALL_TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/spec-skill-install.XXXXXX")"
   runtime_dir="$INSTALL_TEMP_DIR/runtime"
 
-  log "Install profile: $INSTALL_PROFILE — six-stage command kernel ($(printf '%s ' "${USER_STAGES[@]}" | sed 's/ $//')); prompt tier: $SPEC_PROMPT_TIER"
+  log "Install profile: $INSTALL_PROFILE — six-stage command kernel ($(printf '%s ' "${USER_STAGES[@]}" | sed 's/ $//'))"
 
   export_runtime "$PREPARED_SOURCE_DIR" "$runtime_dir"
   CLAUDE_ALIASES=("${USER_STAGES[@]}")

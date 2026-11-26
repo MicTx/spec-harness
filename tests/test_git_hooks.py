@@ -9,9 +9,13 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-CHECKER = ROOT / "scripts" / "check_all.py"
-PRE_COMMIT = ROOT / "hooks" / "pre-commit"
-PRE_PUSH = ROOT / "hooks" / "pre-push"
+LEGACY = ROOT / ".maintainer" / "legacy"
+CHECKER = LEGACY / "check_all.py"
+PRE_COMMIT = LEGACY / "hooks" / "pre-commit"
+PRE_PUSH = LEGACY / "hooks" / "pre-push"
+legacy_only = pytest.mark.skipif(
+    not CHECKER.is_file(), reason="the legacy checker is maintenance-only and absent from the public export"
+)
 NETWORK_TIMEOUT = 300
 LOCAL_TIMEOUT = 60
 
@@ -100,6 +104,23 @@ def make_archived_package(repo: Path, slug: str = "2026-07-13_fix-hook-attributi
     (package / "runs.jsonl").write_text('{"task":"task-fixture","exit":0,"cmd":"true"}\n', encoding="utf-8")
     (package / "completion-summary.md").write_text("# Completion Summary\n- Verified fixture.\n", encoding="utf-8")
     return package
+
+
+def deliver_fixture(repo: Path, slug: str, filename: str) -> None:
+    from tests.v3_support import SLUG, cli, make_package
+
+    directory = make_package(repo, verify=f"test -f {filename}")
+    if slug != SLUG:
+        new = directory.with_name(slug)
+        directory.rename(new)
+        directory = new
+    branch = git(repo, "branch", "--show-current").stdout.strip()
+    spec, tasks = directory / "spec.md", directory / "tasks.md"
+    spec.write_text(spec.read_text().replace("app.py", filename).replace(f"spec/{SLUG}", branch))
+    tasks.write_text(tasks.read_text().replace("app.py", filename))
+    for arguments in (("plan-go",), ("verify", "--all"), ("check",)):
+        result = cli(repo, "--slug", slug, *arguments)
+        assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_push_removes_linked_worktree_for_delivery_branch_worktree_topology(tmp_path):
@@ -316,7 +337,7 @@ def test_spec_push_resolves_archived_package_by_branch(tmp_path):
     repo = _spec_push_repo(tmp_path, slug)
 
     result = subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / "spec.py"), "--root", str(repo), "push"],
+        [sys.executable, str(ROOT / "scripts" / "spec.py"), "--json", "--root", str(repo), "push"],
         cwd=repo,
         capture_output=True,
         text=True,
@@ -643,16 +664,23 @@ def archive_commit_fixture(tmp_path: Path) -> tuple[Path, str]:
     return repo, slug
 
 
+@legacy_only
 def test_archive_commit_checks_its_archive_not_unrelated_in_progress_work(tmp_path):
-    repo, slug = archive_commit_fixture(tmp_path)
-    git(repo, "add", ".spec")
+    repo = _spec_branch_repo(tmp_path, hook=False)
+    slug = "2026-07-13_fix-hook-attribution"
+    make_incomplete_package(repo)
+    independent = repo / ".spec/specs/2026-07-13_fix-git-hook"
+    spec = independent / "spec.md"
+    spec.write_text(spec.read_text().replace("spec/2026-07-13_fix-hook-attribution", "spec/independent"))
+    git(repo, "add", str(independent.relative_to(repo)))
+    git(repo, "commit", "-m", "record independent fixture")
+    install_hook(repo, PRE_COMMIT)
+    deliver_fixture(repo, slug, "README.md")
 
-    result = git(repo, "commit", "-m", "archive", "-m", f"Spec: {slug}", check=False)
-
-    assert result.returncode == 0, result.stdout + result.stderr
     assert git(repo, "show", "--format=", "--name-only", "HEAD").stdout.count(slug) >= 1
 
 
+@legacy_only
 @pytest.mark.parametrize("invalid", ["archive", "active"])
 def test_archive_commit_still_rejects_invalid_archive_or_active_structure(tmp_path, invalid):
     repo, slug = archive_commit_fixture(tmp_path)
@@ -669,6 +697,7 @@ def test_archive_commit_still_rejects_invalid_archive_or_active_structure(tmp_pa
     assert git(repo, "rev-parse", "--verify", "HEAD").stdout.strip() == original_head
 
 
+@legacy_only
 def test_installed_hook_ignores_runtime_python_override(tmp_path):
     repo = tmp_path / "repo"
     init_repo(repo)
@@ -694,6 +723,7 @@ def test_installed_hook_ignores_runtime_python_override(tmp_path):
     assert result.returncode != 0
 
 
+@legacy_only
 def test_pre_commit_blocks_git_alias_and_git_dir_redirection(tmp_path):
     repo = tmp_path / "repo"
     init_repo(repo)
@@ -732,6 +762,7 @@ def test_pre_commit_blocks_git_alias_and_git_dir_redirection(tmp_path):
     assert git(repo, "rev-parse", "--verify", "HEAD", check=False).returncode != 0
 
 
+@legacy_only
 def test_pre_commit_checks_git_commit_only_transaction_index(tmp_path):
     repo = tmp_path / "repo"
     init_repo(repo)
@@ -751,6 +782,7 @@ def test_pre_commit_checks_git_commit_only_transaction_index(tmp_path):
     assert " M .spec/specs/archive/2026-07-13_fix-git-hook/tasks.md" in status
 
 
+@legacy_only
 def test_pre_push_blocks_incomplete_active_package(tmp_path):
     remote = tmp_path / "remote.git"
     subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
@@ -774,6 +806,7 @@ def test_pre_push_blocks_incomplete_active_package(tmp_path):
     assert git(remote, "show-ref", "--verify", "refs/heads/main", check=False).returncode != 0
 
 
+@legacy_only
 def test_pre_push_blocks_push_without_spec_attribution(tmp_path):
     remote = tmp_path / "remote.git"
     subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
@@ -791,6 +824,7 @@ def test_pre_push_blocks_push_without_spec_attribution(tmp_path):
     assert "has no Spec: <slug> attribution" in result.stdout + result.stderr
 
 
+@legacy_only
 def test_pre_push_accepts_archived_spec_attribution(tmp_path):
     remote = tmp_path / "remote.git"
     subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
@@ -798,9 +832,10 @@ def test_pre_push_accepts_archived_spec_attribution(tmp_path):
     init_repo(repo)
     slug = "2026-07-13_fix-hook-attribution"
     (repo / "README.md").write_text("initial\n", encoding="utf-8")
-    make_archived_package(repo, slug)
     git(repo, "add", ".")
-    git(repo, "commit", "-m", "initial", "-m", f"Spec: {slug}")
+    git(repo, "commit", "-m", "initial", "-m", "Spec: none (test setup)")
+    git(repo, "checkout", "-b", "spec/fixture")
+    deliver_fixture(repo, slug, "README.md")
     git(repo, "remote", "add", "origin", str(remote))
     install_hook(repo, PRE_PUSH)
 
@@ -809,6 +844,7 @@ def test_pre_push_accepts_archived_spec_attribution(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+@legacy_only
 def test_pre_push_validates_multiple_refs_independently(tmp_path):
     repo = tmp_path / "repo"
     init_repo(repo)
@@ -824,10 +860,10 @@ def test_pre_push_validates_multiple_refs_independently(tmp_path):
         ("two", "2026-07-13_fix-multi-two"),
     ):
         git(repo, "checkout", "-b", f"feature/{name}", "main")
-        make_archived_package(repo, slug)
         (repo / f"{name}.txt").write_text(name, encoding="utf-8")
         git(repo, "add", ".")
         git(repo, "commit", "-m", name, "-m", f"Spec: {slug}")
+        deliver_fixture(repo, slug, f"{name}.txt")
         refs.append((f"refs/heads/feature/{name}", git(repo, "rev-parse", "HEAD").stdout.strip()))
         git(repo, "checkout", "main")
 
@@ -848,6 +884,7 @@ def test_pre_push_validates_multiple_refs_independently(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+@legacy_only
 def test_pre_push_fails_closed_when_ref_enumeration_fails(tmp_path):
     repo = tmp_path / "repo"
     init_repo(repo)
@@ -875,6 +912,7 @@ def test_pre_push_fails_closed_when_ref_enumeration_fails(tmp_path):
     assert "cannot diff pushed ref" in result.stderr
 
 
+@legacy_only
 def test_pre_push_git_calls_are_bounded():
     source = PRE_PUSH.read_text(encoding="utf-8")
     assert source.count("run_git 300") >= 3
@@ -888,6 +926,7 @@ def test_pre_push_git_calls_are_bounded():
     assert direct_git_calls == []
 
 
+@legacy_only
 def test_pre_push_git_timeout_fails_closed(tmp_path):
     repo = tmp_path / "repo"
     init_repo(repo)
@@ -936,6 +975,7 @@ def _run_pre_push_hook(repo: Path, input_text: str, **extra_env):
     )
 
 
+@legacy_only
 def test_pre_push_mixed_refs_still_requires_code_only_footer(tmp_path):
     repo = tmp_path / "repo"
     init_repo(repo)
@@ -947,9 +987,7 @@ def test_pre_push_mixed_refs_still_requires_code_only_footer(tmp_path):
 
     slug = "2026-07-13_fix-mixed-ref"
     git(repo, "checkout", "-b", "feature/spec", "main")
-    make_archived_package(repo, slug)
-    git(repo, "add", ".spec")
-    git(repo, "commit", "-m", "spec", "-m", f"Spec: {slug}")
+    deliver_fixture(repo, slug, "README.md")
     spec_sha = git(repo, "rev-parse", "HEAD").stdout.strip()
     git(repo, "checkout", "-b", "feature/code", "main")
     (repo / "code.txt").write_text("code\n", encoding="utf-8")
@@ -967,6 +1005,7 @@ def test_pre_push_mixed_refs_still_requires_code_only_footer(tmp_path):
     assert "has no Spec: <slug> attribution" in result.stderr
 
 
+@legacy_only
 def test_pre_push_ignores_untrusted_specs_path(tmp_path):
     repo = tmp_path / "repo"
     init_repo(repo)
@@ -976,7 +1015,8 @@ def test_pre_push_ignores_untrusted_specs_path(tmp_path):
     git(repo, "branch", "-M", "main")
     base = git(repo, "rev-parse", "HEAD").stdout.strip()
     slug = "2026-07-13_fix-trusted-ref"
-    make_archived_package(repo, slug)
+    git(repo, "checkout", "-b", "spec/fixture")
+    deliver_fixture(repo, slug, "README.md")
     unrelated = repo / "hardware" / "specs" / "draft-a" / "spec.md"
     unrelated.parent.mkdir(parents=True)
     unrelated.write_text("not a Development Record\n", encoding="utf-8")
@@ -986,12 +1026,13 @@ def test_pre_push_ignores_untrusted_specs_path(tmp_path):
 
     result = _run_pre_push_hook(
         repo,
-        f"refs/heads/main {local_sha} refs/heads/main {base}\n",
+        f"refs/heads/spec/fixture {local_sha} refs/heads/main {base}\n",
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+@legacy_only
 def test_pre_push_accepts_configured_custom_specs_root(tmp_path):
     repo = tmp_path / "repo"
     init_repo(repo)
@@ -1007,6 +1048,10 @@ def test_pre_push_accepts_configured_custom_specs_root(tmp_path):
     (repo / ".spec").rename(custom_parent / "spec-state")
     git(repo, "add", ".")
     git(repo, "commit", "-m", "custom root", "-m", f"Spec: {slug}")
+    base = git(repo, "rev-parse", "HEAD").stdout.strip()
+    (repo / "README.md").write_text("follow-up\n")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "legacy follow-up", "-m", f"Spec: {slug}")
     local_sha = git(repo, "rev-parse", "HEAD").stdout.strip()
 
     result = _run_pre_push_hook(
@@ -1018,6 +1063,7 @@ def test_pre_push_accepts_configured_custom_specs_root(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+@legacy_only
 def test_pre_push_does_not_regrade_archives_outside_remote_diff(tmp_path):
     remote = tmp_path / "remote.git"
     subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
@@ -1048,6 +1094,7 @@ def test_pre_push_does_not_regrade_archives_outside_remote_diff(tmp_path):
     assert git(remote, "rev-parse", "refs/heads/feature/legacy").stdout == git(repo, "rev-parse", "HEAD").stdout
 
 
+@legacy_only
 def test_pre_push_checks_archives_changed_earlier_in_remote_window(tmp_path):
     repo = tmp_path / "repo"
     init_repo(repo)
@@ -1072,6 +1119,7 @@ def test_pre_push_checks_archives_changed_earlier_in_remote_window(tmp_path):
     assert "result: blocked" in result.stdout + result.stderr
 
 
+@legacy_only
 def test_pre_push_all_mode_blocks_incomplete_active_package(tmp_path):
     """The all-packages channel checks every active package in the pushed snapshot."""
     remote = tmp_path / "remote.git"
@@ -1105,6 +1153,7 @@ def test_pre_push_all_mode_blocks_incomplete_active_package(tmp_path):
     assert "result: blocked" in result.stdout + result.stderr
 
 
+@legacy_only
 def test_pre_push_lite_channel_releases_none_only_push(tmp_path):
     """F11: `Spec: none (<reason>)` attributes a trivial unpackaged commit;
     a none-only push skips the package gate and lands on the remote."""
@@ -1137,6 +1186,7 @@ def test_pre_push_lite_channel_releases_none_only_push(tmp_path):
         ("Spec: none (reason with ) inside)", "attribution"),
     ],
 )
+@legacy_only
 def test_pre_push_rejects_malformed_none_footer(tmp_path, footer, expected_message):
     remote = tmp_path / "remote.git"
     subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
@@ -1158,17 +1208,19 @@ def test_pre_push_rejects_malformed_none_footer(tmp_path, footer, expected_messa
     assert git(remote, "show-ref", "--verify", "refs/heads/main", check=False).returncode != 0
 
 
-def _spec_branch_repo(tmp_path: Path) -> Path:
+def _spec_branch_repo(tmp_path: Path, *, hook: bool = True) -> Path:
     repo = tmp_path / "repo"
     init_repo(repo)
     git(repo, "checkout", "-b", "spec/2026-07-13_fix-hook-attribution")
     (repo / "README.md").write_text("base\n", encoding="utf-8")
     git(repo, "add", "README.md")
     git(repo, "commit", "-m", "base")
-    install_hook(repo, PRE_COMMIT)
+    if hook:
+        install_hook(repo, PRE_COMMIT)
     return repo
 
 
+@legacy_only
 @pytest.mark.parametrize("rel", [".spec/specs/archive/retired/2026-07-13/old-note.md", ".spec/specs/archive/README.md"])
 def test_archive_commit_accepts_retired_and_plain_archive_files(tmp_path, rel):
     """organize's retired container and plain files under archive/ are not package slugs."""
@@ -1181,6 +1233,7 @@ def test_archive_commit_accepts_retired_and_plain_archive_files(tmp_path, rel):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+@legacy_only
 def test_invalid_archive_slug_error_names_the_path(tmp_path):
     repo = _spec_branch_repo(tmp_path)
     target = repo / ".spec/specs/archive/Bad_Name/spec.md"
@@ -1192,6 +1245,7 @@ def test_invalid_archive_slug_error_names_the_path(tmp_path):
     assert "Bad_Name" in result.stderr, result.stderr
 
 
+@legacy_only
 @pytest.mark.parametrize("kind", ["file", "symlink"])
 def test_a_slug_named_entry_directly_under_archive_still_gets_the_full_gate(tmp_path, kind):
     """A direct archive child named like a package claims to be one: it is gated, not waved through as content."""
