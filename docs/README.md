@@ -16,7 +16,7 @@
 
 ## 我想操作它
 
-- 修复已交付规格：`/spec:repair <归档包>` 从 `.spec/specs/archive` 脚手架修复包，薄规划、全门禁。
+- 修复已交付规格：`/spec:repair <归档包>` 创建带 `kind: repair` 与 `repair-of` 元数据的普通 v3 包，再走标准规划和门禁。
 - [Git 工作流（中文）](git-workflow.md)
 - [Git workflow (English)](git-workflow.en.md)
 - 根目录 [README（中文）](../README.md)：安装、宿主选择与导出运行时包。
@@ -33,7 +33,7 @@
 ## 入口归类
 
 - **public / user entry**：根 [README（中文）](../README.md) 与 [README (English)](../README-en.md)、本索引与[英文索引](README-en.md)，以及本目录的引导/教程/Git 工作流。
-- **runtime reference**：[`SKILL.md`](../SKILL.md) 与 [`references/`](../SKILL.md)：规划、执行、格式、哲学与 Git 运行时契约。
+- **runtime reference**：[`SKILL.md`](../SKILL.md) 与 [`references/`](../references/)：规划、执行、格式、哲学与 Git 运行时契约。
 - **maintainer-only**：[`agent-plugin/README.md`](../agent-plugin/README.md)——源码库独有的插件清单打包模板说明，不进运行时导出树。
 
 两相运行时契约在 [`references/plan.md`](../references/plan.md)、[`references/exec.md`](../references/exec.md)、[`references/format.md`](../references/format.md) 与 [`references/git.md`](../references/git.md)。它们回答“必须满足什么”；本目录的教程回答“为什么这样安排、下一步怎么走”。

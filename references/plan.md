@@ -8,7 +8,7 @@
 4. **Plan**: write v3 spec.md/tasks.md and reason backward from failure; use minimal boundaries and ordinary executable criteria.
 5. **Go**: resolve reversible choices and obtain required authority, then run `spec.py plan-go`.
 
-Ask at most four cards per batch; each names its consequence; resolve from disk evidence first — a card disk evidence can answer is a planning defect. Later packages usually need only Intent, Forks and Go.
+Before asking, resolve from disk evidence first; a card disk evidence can answer is a planning defect. Ask only about irreversible or unauthorized decisions and present at most four projected decision cards, once per package. Later packages usually need only Intent, Forks and Go.
 
 ## Plan vs Update
 
@@ -33,7 +33,7 @@ Repair entries use an ordinary package with `kind: repair` and `repair-of: <arch
 
 ## Red-first pattern
 
-Candidates pass static lint before writing; `lint_mode: static` runs no verify and still needs Go. Invalid input/lint keeps originals; frozen plans use `plan-amend`.
+Candidates pass static lint before writing; `plan-lint --static` skips execution of planning probes and still needs Go. Invalid input/lint keeps originals; frozen plans use `plan-amend`.
 
 ## Lint
 

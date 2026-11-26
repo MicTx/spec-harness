@@ -6,6 +6,15 @@
 
 [English](README-en.md) · [文档索引](docs/README.md) · [快速开始](#快速开始)
 
+## 目录
+
+- [安装](#安装)
+- [更新](#更新)
+- [快速开始](#快速开始)
+- [运行时载荷](#运行时载荷)
+- [验证与维护](#验证与维护)
+- [许可协议](#许可协议)
+
 一个包只包含 `.spec/specs/YYYY-MM-DD_slug/` 下的 `spec.md` 与 `tasks.md`；`runs.jsonl` 和 `state.json` 由 harness 写入。规划期用宪章与机器 lint 消除未知，Go 之后执行期按任务 DAG 自动推进、验证和检查点提交。`check` 会自动补跑已授权的验证，并让 agent 按证据修复后重查；只有真正需要授权的取舍才给用户选项。所有验收都回到包内声明的标准任务与证据，界面改动不会触发另一套门禁。
 
 ## 安装
@@ -96,6 +105,10 @@ python3 scripts/export_skill_package.py --output /tmp/spec
 ```
 
 私有 Gitea 是开发真源；GitHub 只接收 allowlist 过滤后的公开快照。稳定版本与 SHA-256 见 [GitHub Releases](https://github.com/MicTx/spec-harness/releases)。
+
+### 深入文档
+
+贡献开发流程见[贡献指南](CONTRIBUTING.md)；操作指南按读者任务整理在[文档索引](docs/README.md)。
 
 ## 许可协议
 

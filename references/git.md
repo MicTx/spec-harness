@@ -4,7 +4,7 @@ Standard packages bind a non-protected branch in `Binding`; Go creates `spec/<sl
 
 On a protected branch standard Go creates `.spec/worktrees/<slug>`, moves the package, and freezes a clean baseline there; it never copies pre-existing uncommitted changes. Concurrent packages use separate worktrees. If lint fails after the move, resume Go in that worktree. The charter resolves at the primary checkout; Go never writes it.
 
-Quick fixes instead stay on the original branch and checkout; they leave verified product changes unstaged, without a commit. Standard verifies create `wip(<slug>): <task>` commits; delivery archives and commits. V4 `commit` stops locally, `merge` merges to main, and `push` also pushes and cleans the delivery branch. Dirty linked worktrees are preserved.
+Quick fixes instead stay on the original branch and checkout; they leave verified product changes unstaged, without a commit. Standard verifies create `wip(<slug>): <task>` commits; delivery archives and commits. V4 `commit` stops locally, `merge` merges to the remote default branch, and `push` also pushes and cleans the delivery branch. Dirty linked worktrees are preserved.
 
 For V4 `merge`/`push`, `done` preflights unique worktree bindings, the target checkout, remote, and residual dirt before archiving; ambiguity fails without destroying user changes.
 

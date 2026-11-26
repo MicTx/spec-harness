@@ -55,7 +55,7 @@ python3 "$SPEC" plan-lint --static
 python3 "$SPEC" plan-go
 ```
 
-`plan-go` 会一次性记录基线、冻结时间和 Git 绑定。此后不要重开规划对话，也不能再次 Go，只按磁盘任务推进。在 `main`/`master`/`develop`/`release/*` 等受保护分支上 Go 时，harness 不会原地切换分支，而是在 `.spec/worktrees/<slug>` 建出 `spec/<slug>` 的 linked worktree、把包移进去并在那棵干净树里记基线——当前工作区及其未提交改动保持原样，不夹带进 spec；多个包因此可以各自在自己的 worktree 里并发执行。规划 lint 若在迁移后仍未过，进入该 worktree 里重跑 `plan-go` 即可就地冻结。
+`plan-go` 会一次性记录基线、冻结时间和 Git 绑定。此后不要重开规划对话，也不能再次 Go，只按磁盘任务推进。在 `main`/`master`/`develop`/`release/*` 等受保护分支上 Go 时，harness 不会原地切换分支，而是在 `.spec/worktrees/<slug>` 建出 `spec/<slug>` 的 linked worktree、把包移进去并在那棵干净树里记基线——当前工作区及其未提交改动保持原样，不夹带进 spec；多个包因此可以各自在自己的 worktree 里并发执行。规划 lint 若在迁移后仍未过，进入该 worktree 里重跑 `plan-go` 即可就地冻结。**若 Go 输出了 `worktree` 路径，先切换到该目录，再执行后续的 `verify` 和 `check`；这些命令默认针对当前目录绑定的包。若没有创建 worktree，则继续留在项目目录。**
 
 ## 2. 执行与验证
 
@@ -66,7 +66,7 @@ python3 "$SPEC" next
 python3 "$SPEC" verify task-add
 ```
 
-`runs.jsonl` 记录命令、退出码、输出摘要和树指纹。`verify` 只接受依赖已完成的 ready 任务；最终 `check` 必须在交付树上重新执行声明的验证，手工勾选不能替代证据。同一失败签名连续出现四次时，任务会自动进入 `[!]`，修复根因后用 `unblock` 显式恢复：
+`runs.jsonl` 记录命令、退出码、输出摘要和树指纹。`verify` 只接受依赖已完成的 ready 任务；最终 `check` 必须在交付树上重新执行声明的验证，手工勾选不能替代证据。同一失败签名累计出现四次时，任务会自动进入 `[!]`；中间出现其他签名不会清零计数。修复根因后用 `unblock` 显式恢复：
 
 ```bash
 python3 "$SPEC" unblock task-add --reason "已定位并修复根因"

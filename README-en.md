@@ -6,6 +6,15 @@ Two-phase task packages for AI coding agents: thick planning, silent execution, 
 
 [中文](README.md) · [Documentation](docs/README-en.md) · [Quick start](#quick-start)
 
+## Contents
+
+- [Install](#install)
+- [Update](#update)
+- [Quick start](#quick-start)
+- [Runtime payload](#runtime-payload)
+- [Verify and maintain](#verify-and-maintain)
+- [License](#license)
+
 A package contains `spec.md` and `tasks.md` under `.spec/specs/YYYY-MM-DD_slug/`; the harness writes `runs.jsonl` and `state.json`. Planning removes unknowns with a value charter and deterministic lint. After Go, execution follows the task DAG, verifies, checkpoints, and continues without asking about reversible decisions. `check` refreshes authorized evidence and routes fixes back to the agent before asking for decisions. Every acceptance path stays in the package's ordinary task and evidence contract; frontend changes do not create a second gate.
 
 ## Install
@@ -96,6 +105,10 @@ python3 scripts/export_skill_package.py --output /tmp/spec
 ```
 
 Private Gitea is the development source of truth; GitHub receives only an allowlisted public snapshot. Stable releases and SHA-256 files are on [GitHub Releases](https://github.com/MicTx/spec-harness/releases).
+
+### Detailed documentation
+
+Contributor setup and the full development workflow are in [CONTRIBUTING.md](CONTRIBUTING.md); operational guides are indexed in [docs/README-en.md](docs/README-en.md).
 
 ## License
 

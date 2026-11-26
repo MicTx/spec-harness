@@ -54,7 +54,7 @@ Run the checks that match the change. The full suite is:
     python3 scripts/spec.py next --json
     git diff --check
 
-For documentation-only changes, run the Markdown link and structure checks plus the affected tests. If a check cannot run, state the reason in the pull request.
+For documentation-only changes, run the Markdown link/reachability checks plus affected contracts. In particular, README changes must pass `tests/test_export_skill_package.py` (export-tree declaration) and `tests/test_stage_inventory.py` (command tables match `install.sh` `USER_STAGES`). Plugin packaging docs must agree with `.maintainer/tools/release/tests/test_package_agent_plugin.py`. If a check cannot run, state the reason in the pull request.
 
 ## Pull Requests
 

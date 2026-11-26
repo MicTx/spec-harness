@@ -2,7 +2,7 @@
 name: spec
 description: >-
   Spec Harness turns substantial work into a recoverable, verifiable task package. Use for spec
-  commands, Spec Harness updates, and work spanning acceptance surfaces, implementers, or sessions.
+  commands, Spec Harness updates, and work spanning acceptance criteria, implementation, or delivery.
   Skip small reversible fixes, read-only investigation, and experiments.
 ---
 
@@ -39,7 +39,7 @@ The user is the last resort, not the first; climb the ladder: resolve from repos
 | `/spec <goal>` | Plan when no package is bound; otherwise continue execution |
 | `/spec:plan <goal>` | Create or refine the package: lint, forks, `plan-go` |
 | `/spec:run [goal]` | Resume a package or run a small goal in the current checkout |
-| `/spec:repair <slug>` | Repair a delivered archive: thin planning, full gate |
+| `/spec:repair <slug>` | Create a regular v3 package with `kind: repair` and `repair-of` metadata, then follow the standard plan and gate |
 | `/spec:check` | Repair and recheck before delivery; park only decisions requiring authority |
 | `/spec:push` | Authorized finish: merge and push the archived package on this branch |
 | `/spec:doctor` | Check or repair runtime, session hooks and legacy Git hooks |

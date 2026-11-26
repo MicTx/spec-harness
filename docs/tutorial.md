@@ -32,7 +32,7 @@ python3 scripts/spec.py plan-go
 1. `next` 选择依赖已满足且未停机的任务。
 2. 只修改该任务 `boundary` 内的文件。
 3. `verify` 执行精确命令并留下证据。
-4. 失败按 [`references/exec.md`](../references/exec.md) 的阶梯推进；第四个同签名失败会自动标为 `[!]`，有新的根因证据后先 `unblock`。
+4. 失败按 [`references/exec.md`](../references/exec.md) 的阶梯推进；同一签名累计失败四次（不要求连续）会自动标为 `[!]`，有新的根因证据后先 `unblock`。
 
 ```bash
 python3 scripts/spec.py next
