@@ -9,7 +9,7 @@ Fix the source revision before you edit: use a tag for a stable installation and
     git clone https://github.com/MicTx/spec-harness.git
     cd spec-harness
     git fetch --tags origin
-    git checkout v1.0.0
+    git checkout --detach v2.2.0
 
 Contributors normally clone a fork and keep the official repository as `upstream`:
 
@@ -18,9 +18,9 @@ Contributors normally clone a fork and keep the official repository as `upstream
     git remote add upstream https://github.com/MicTx/spec-harness.git
     git fetch upstream --prune
     git switch main
-    git reset --hard upstream/main
+    git merge --ff-only upstream/main
 
-Do not run reset --hard with uncommitted work. Commit, stash, or save the work elsewhere first.
+If branches diverge or the checkout contains unrelated work, leave it intact. Inspect `git status` and start from a clean branch or worktree instead of forcing the update.
 
 ## Branches
 
@@ -64,10 +64,10 @@ Include:
 
 Run checks that can answer whether the current tree is ready to publish. The full suite below is a publish/main-branch gate; individual packages follow the `package`, `integration`, or `project` level declared by the v3 charter:
 
-    python3 -m compileall -q scripts hooks tests
-    python3 -m pytest -q
-    ruff check scripts/ hooks/ tests/
-    ruff format --check scripts/ hooks/ tests/
+    python3 -m compileall -q scripts hooks updater tests
+    python3 -m pytest -q tests/
+    ruff check scripts/ hooks/ updater/ tests/
+    ruff format --check scripts/ hooks/ updater/ tests/
     git diff --check
 
 For documentation changes, also check relative links; correct prose is not useful when it points to a missing file:

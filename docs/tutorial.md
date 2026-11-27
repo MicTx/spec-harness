@@ -9,7 +9,7 @@ v3 把长期工作分为两个阶段：规划阶段允许提问、写假设和�
 - `spec.md`：目标、完成条件、范围与验收；Charter 覆盖、假设和分叉按需填写。
 - `tasks.md`：依赖图、边界、验证和状态；`expect` 仅在需要提前跑基线时填写。
 - `runs.jsonl`：真实验证记录。
-- `.spec/specs/<slug>/state.json`：包内恢复与尝试计数；它是提示性快照，不取代 `runs.jsonl`。
+- `.spec/specs/<slug>/state.json`：恢复线索与回调记录；不能替代 `runs.jsonl` 或改变验收结果。
 
 ## 规划轮
 
@@ -20,10 +20,14 @@ v3 把长期工作分为两个阶段：规划阶段允许提问、写假设和�
 3. 每条验收标准映射到可执行任务。
 4. 不可逆选择必须成为分叉并获得用户授权。
 
+在源码仓库中运行下列命令；已安装的宿主用其 Skill 下的 `scripts/spec.py`。`SLUG` 是刚创建的包目录名：
+
 ```bash
-python3 scripts/spec.py plan-lint
-python3 scripts/spec.py plan-go
+python3 scripts/spec.py --slug "$SLUG" plan-lint --static
+python3 scripts/spec.py --slug "$SLUG" plan-go
 ```
+
+如果 Go 返回 `worktree`，先进入该目录再执行任务。
 
 ## 执行轮
 
@@ -32,7 +36,7 @@ python3 scripts/spec.py plan-go
 1. `next` 选择依赖已满足且未停机的任务。
 2. 只修改该任务 `boundary` 内的文件。
 3. `verify` 执行精确命令并留下证据。
-4. 失败按 [`references/exec.md`](../references/exec.md) 的阶梯推进；同一签名累计失败四次（不要求连续）会自动标为 `[!]`，有新的根因证据后先 `unblock`。
+4. 失败后按[恢复阶梯](../references/exec.md#failure-ladder)换可验证的做法，保留冻结目标与验收。Stop 不算轮数；重复候选、重复失败或没有新证据时不继续空转。同一失败签名累计四次，或同一任务累计八次失败，会按单任务门禁标为 `[!]`。有新的证据后用 `unblock` 恢复。
 
 ```bash
 python3 scripts/spec.py next
@@ -40,7 +44,7 @@ python3 scripts/spec.py verify task-api
 python3 scripts/spec.py check
 ```
 
-分叉触发时立即记录 `D`；无法授权的选项放入 `P` 并继续独立任务。只有 `delivered`、`parked-only` 和 `stalled` 是合法 Stop 状态。
+项目内不可逆或未获授权的决定应停泊为 `P`；可逆、范围内的决定可记录为 `D`。独立就绪任务不必等待。没有回调时，用 `next` 恢复，不需要回放聊天。详见[按证据续跑](loop-continuity.zh.md)。
 
 ## 交接与收尾
 

@@ -1,8 +1,8 @@
 # Spec Harness
 
-面向 AI 编程智能体的两相任务包工作流：规划期做厚，执行期不问用户，直到可核对地交付。
+面向 AI 编程智能体的两相任务包工作流：先冻结目标和验收，再按证据执行、恢复和交付。
 
-[![Release](https://img.shields.io/github/v/release/MicTx/spec-harness)](https://github.com/MicTx/spec-harness/releases) [![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](LICENSE) [![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
+[![Public CI](https://github.com/MicTx/spec-harness/actions/workflows/ci-public.yml/badge.svg)](https://github.com/MicTx/spec-harness/actions/workflows/ci-public.yml) [![Release](https://img.shields.io/github/v/release/MicTx/spec-harness)](https://github.com/MicTx/spec-harness/releases) [![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](LICENSE) [![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
 
 [English](README-en.md) · [文档索引](docs/README.md) · [快速开始](#快速开始)
 
@@ -15,21 +15,23 @@
 - [验证与维护](#验证与维护)
 - [许可协议](#许可协议)
 
-一个包只包含 `.spec/specs/YYYY-MM-DD_slug/` 下的 `spec.md` 与 `tasks.md`；`runs.jsonl` 和 `state.json` 由 harness 写入。规划期用宪章与机器 lint 消除未知，Go 之后执行期按任务 DAG 自动推进、验证和检查点提交。`check` 会自动补跑已授权的验证，并让 agent 按证据修复后重查；只有真正需要授权的取舍才给用户选项。所有验收都回到包内声明的标准任务与证据，界面改动不会触发另一套门禁。
+任务包写清目标、范围、验收和可执行任务。Go 之后，智能体按依赖推进：真正跑过的验证才能推进任务，手工勾选或口头声称通过都不算。`/spec:check` 在实际要交付的代码树上复验，再归档。
+
+**续跑看证据，不数轮数。** 受 Loop Transformer 启发，换策略时重新带上冻结的目标和受影响的验收条件。重复回调、候选没变或失败再次出现时，不会仅凭这些信号开启下一轮。这是智能体执行层的机制，不是替换或训练模型。[了解按证据续跑](docs/loop-continuity.zh.md)。
 
 ## 安装
 
 需要 Python 3.9+、Git、Bash，以及能读写项目并执行命令的宿主。
 
+下面的命令安装 `main` 源码，本页描述的快路径和动态续跑在这一渠道。想用稳定版，请按[发布包安装说明](RELEASE.md#install-from-a-release-archive)操作；`v2.2.0` 发布包不包含这些更新。
+
 ```bash
-git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
-cd /tmp/spec-harness
+git clone https://github.com/MicTx/spec-harness.git
+cd spec-harness
 bash install.sh
 ```
 
-未设置 `INSTALL_HOSTS` 时自动探测宿主；`core` 与 `full` 是兼容别名，载荷完全相同。安装器增量合并会话 hook，保留非 Spec 条目并先备份。`DRY_RUN=1` 输出升级预检：每个宿主目标将被全新安装、原地升级、备份替换还是拒绝（符号链接/用户自有技能），零写入先看清用户改动的去留。
-
-安装器只提供一套固定的阶段指令与会话简报预算；`INSTALL_PROFILE=core|full` 仅作为兼容别名，两个值生成完全相同的载荷。
+未设置 `INSTALL_HOSTS` 时，安装器自动探测宿主。`INSTALL_PROFILE=core|full` 是兼容别名，安装同一载荷。安装器备份旧文件并只替换 Spec 自己的 hook；`DRY_RUN=1 bash install.sh` 可先查看目标。配置写入不代表宿主已加载；[宿主事件说明](docs/loop-continuity.zh.md#宿主与手动恢复)列出区别。
 
 | 宿主 | `INSTALL_HOSTS` |
 | --- | --- |
@@ -62,7 +64,7 @@ spec-harness --version        # 查看各宿主已安装版本
 /spec 修复导出 API 的权限校验，覆盖管理员与普通用户
 ```
 
-没有活动包时 `/spec` 进入 `plan` 规划流，绑定包未 Go 时进入 `update` 规划流：确认目标、完成条件、范围和验收后冻结；假设、分岔与基线探针按需填写。Go 不改仓库宪章。Go 之后不再问可逆问题；不可逆事项停泊，其他任务继续。
+没有活动包时 `/spec` 进入 `plan` 规划流；已绑定但未 Go 的包进入 `update` 规划流（内部路由，不是命令）。Go 后保留冻结目标与验收。范围内的可逆事项由智能体处理，需要授权的事项停泊，独立任务继续。界面验收也使用普通任务和验证命令。
 
 | 命令 | 用途 |
 | --- | --- |
@@ -104,7 +106,7 @@ python3 -m ruff check scripts hooks updater tests
 python3 scripts/export_skill_package.py --output /tmp/spec
 ```
 
-私有 Gitea 是开发真源；GitHub 只接收 allowlist 过滤后的公开快照。稳定版本与 SHA-256 见 [GitHub Releases](https://github.com/MicTx/spec-harness/releases)。
+GitHub `main` 是公开源码快照，不代表新版本已发布。稳定发布包和校验文件见 [GitHub Releases](https://github.com/MicTx/spec-harness/releases)；源码最新变化见 [CHANGELOG](CHANGELOG.md#unreleased)。
 
 ### 深入文档
 

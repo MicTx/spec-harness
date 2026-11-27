@@ -1,8 +1,27 @@
-# Loop continuity notes
+# Evidence-driven continuation
 
-This page records the engineering ideas selected from `dsh-purge` 1.1.17
-(MIT) and reimplemented natively in Spec Harness. No archive code, runtime
-dependency, host patch or installation hook was copied into this project.
+[中文](loop-continuity.zh.md) · [Documentation](README-en.md) · [Execution contract](../references/exec.md)
+
+On `main`, Stop follows actual verification evidence, not a fixed round counter. This behavior is not in the `v2.2.0` release archive.
+
+## Continue, change approach, or stop
+
+| What changed? | Next action |
+| --- | --- |
+| A verify passes and creates a checkpoint | Advance ready work. Run `spec.py check` when the package is ready for delivery. |
+| The same task and verify command fail on a previously unseen tree **and** with a previously unseen failure signature | Request a replan: test a different hypothesis or implementation, or work on an independent ready task. |
+| Only the log changes, the candidate or signature recurs, or the host replays a callback | Do not start another turn on that evidence. For example, A → B → A stops when A returns. |
+| Only blocked work remains, or a decision needs authorization | End automatic continuation and preserve the evidence and pending decision. Independent ready work can still proceed. |
+
+A replan includes the frozen goal, affected open criteria, and the path to `runs.jsonl`. It changes the approach, not acceptance. For a final verify, a repeated blocker only earns another turn if the tested product tree and diagnostics are both new. Signatures discount runner noise but distinguish exit statuses, including an explicit exit `124` versus a timeout. Stop has no round quota; the [task failure gate](../references/exec.md#failure-ladder) and manual `check` still apply.
+
+## What came from Loop Transformer research?
+
+[Huginn’s recurrent-depth paper](https://arxiv.org/abs/2502.05171) reuses a block of model layers across internal iterations while conditioning on the original input. The paper evaluates early exit by comparing successive prediction distributions. Spec Harness applies the ideas of input anchoring and evidence-based exit **outside** the model: it anchors replanning to the frozen goal and checks Git tree identity and executed verification. It does not run or train Huginn, inspect hidden states, or claim measured model-token savings.
+
+## Earlier session-recovery research
+
+The notes below record a separate source: `dsh-purge` 1.1.17 (MIT). Spec Harness reimplemented selected session-recovery ideas. It did not copy archive code, runtime dependencies, host patches, approval/sandbox rewrites, or installation hooks.
 
 Reviewed archive SHA-256:
 `293f8f0c093f53558b6cd3de1033ebba76d99152a29574fb1e56e37a37ef742e`.
@@ -72,7 +91,7 @@ or quality gains from running the external plugin.
   ID or comparing entire host payloads. Pi may send the same payload before
   and after real progress; only the latter earns a continuation.
 
-## Host availability
+## Host behavior
 
 Current Pi consumes `agent_before_settle` to request continuation without a
 fake user turn. Claude-style Stop adapters honor reentry protection. Hosts
@@ -93,9 +112,8 @@ component or profile configuration is installed or changed by these fixes.
 
 ## Verification
 
-The behavior is pinned by `tests/test_session_recovery.py`,
-`tests/test_route.py`, `tests/test_hooks_dispatch.py`, `tests/test_evidence.py`
-and `tests/test_fingerprint_freshness.py`. Run the focused suites after recovery
-changes, then the non-release project suite plus Ruff lint and formatting.
-These are local fixture/regression checks, not a live DSH bridge end-to-end
-test. Release payload rebuilding remains a separate release step.
+The behavior is pinned by [continuation regressions](../tests/test_convergence_hooks.py),
+including a seventh evidence-backed replan, a repeated tree with changing output,
+cycle detection, and installed Pi dispatcher reentry. [Session recovery](../tests/test_session_recovery.py),
+[routing](../tests/test_route.py), and [verification evidence](../tests/test_evidence.py) have separate regression suites.
+These are offline behavior checks, not model benchmarks or a live DSH bridge check.

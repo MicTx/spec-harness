@@ -2,7 +2,7 @@
 
 This directory addresses a release question: how to package agent plugin manifest metadata without including the source repository's maintenance files in the user package. The packaging script consumes these templates; field names and placeholders must remain parseable.
 
-> Entry classification: **maintainer-only**. This directory exists only in the source repository and is excluded from the runtime export tree. See the public entry indexes at [`../docs/README.md`](../docs/README.md) and [`../docs/README-en.md`](../docs/README-en.md).
+> Entry classification: **maintainer-only**. These templates are visible in the public source snapshot but excluded from the installed runtime. The build commands below require the maintainer checkout; the public snapshot does not ship the packaging script. See the public entry indexes at [`../docs/README.md`](../docs/README.md) and [`../docs/README-en.md`](../docs/README-en.md).
 
 These are packaging templates for `.maintainer/tools/release/package_agent_plugin.py`. The script reads the manifest templates, renders placeholders, validates fields, and assembles this repository's runtime skill payload into a distributable plugin zip.
 
@@ -57,7 +57,7 @@ python3 .maintainer/tools/release/package_agent_plugin.py --name spec-harness --
         ├── agents/ references/ scripts/ ...
 ```
 
-All plugin formats package the same runtime skill payload. The Claude Code format places its manifest at `.claude-plugin/plugin.json`; it does not add generated slash-command files or a hook manifest.
+All plugin formats package the runtime from the source being built. The Claude Code format places its manifest at `.claude-plugin/plugin.json`; it does not add generated slash-command files or a hook manifest. Loading the plugin therefore does not by itself enable Stop continuation. See the [host behavior notes](../docs/loop-continuity.md#host-behavior).
 
 ## Notes
 

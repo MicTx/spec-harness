@@ -9,7 +9,7 @@
     git clone https://github.com/MicTx/spec-harness.git
     cd spec-harness
     git fetch --tags origin
-    git checkout v1.0.0
+    git checkout --detach v2.2.0
 
 贡献者通常从 fork 克隆，并把官方仓库保留为 `upstream`：
 
@@ -18,9 +18,9 @@
     git remote add upstream https://github.com/MicTx/spec-harness.git
     git fetch upstream --prune
     git switch main
-    git reset --hard upstream/main
+    git merge --ff-only upstream/main
 
-不要在包含未提交改动的工作树上执行 reset --hard；先提交、暂存或另行保存改动。
+如果分支已分叉或工作树里有无关改动，保留原工作树。先用 `git status` 查清情况，再另开干净的分支或 worktree，不要强行覆盖。
 
 ## 分支
 
@@ -66,10 +66,10 @@ Pull Request 应包含：
 
 提交前至少运行这些能回答“当前树是否可交付”的命令。下面的完整套件属于发布/主分支门禁，不是每个任务包 `check`/`done` 的默认验证；任务包按 `spec.md` 声明的 `package`、`integration` 或 `project` 范围执行：
 
-    python3 -m compileall -q scripts hooks tests
-    python3 -m pytest -q
-    ruff check scripts/ hooks/ tests/
-    ruff format --check scripts/ hooks/ tests/
+    python3 -m compileall -q scripts hooks updater tests
+    python3 -m pytest -q tests/
+    ruff check scripts/ hooks/ updater/ tests/
+    ruff format --check scripts/ hooks/ updater/ tests/
     git diff --check
 
 文档改动还要检查相对链接；否则文字正确也可能指向不存在的文件：

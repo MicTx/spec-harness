@@ -2,7 +2,7 @@
 
 Two-phase task packages for AI coding agents: thick planning, silent execution, verifiable delivery.
 
-[![Release](https://img.shields.io/github/v/release/MicTx/spec-harness)](https://github.com/MicTx/spec-harness/releases) [![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](LICENSE) [![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
+[![Public CI](https://github.com/MicTx/spec-harness/actions/workflows/ci-public.yml/badge.svg)](https://github.com/MicTx/spec-harness/actions/workflows/ci-public.yml) [![Release](https://img.shields.io/github/v/release/MicTx/spec-harness)](https://github.com/MicTx/spec-harness/releases) [![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](LICENSE) [![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
 
 [中文](README.md) · [Documentation](docs/README-en.md) · [Quick start](#quick-start)
 
@@ -15,21 +15,23 @@ Two-phase task packages for AI coding agents: thick planning, silent execution, 
 - [Verify and maintain](#verify-and-maintain)
 - [License](#license)
 
-A package contains `spec.md` and `tasks.md` under `.spec/specs/YYYY-MM-DD_slug/`; the harness writes `runs.jsonl` and `state.json`. Planning removes unknowns with a value charter and deterministic lint. After Go, execution follows the task DAG, verifies, checkpoints, and continues without asking about reversible decisions. `check` refreshes authorized evidence and routes fixes back to the agent before asking for decisions. Every acceptance path stays in the package's ordinary task and evidence contract; frontend changes do not create a second gate.
+A package records the goal, scope, acceptance criteria, and executable tasks. After Go, the agent follows task dependencies; recorded verification, not a checkbox or a chat claim, advances the work. `/spec:check` re-verifies the exact delivery tree before archiving.
+
+**Continue on evidence, not a round counter.** Inspired by Loop Transformer research, the agent receives the frozen goal and affected criteria when asked to replan. Replayed callbacks, unchanged candidates, and recurring failures do not by themselves start another turn. This works at the agent execution layer, not inside the model. [How evidence-driven recovery works](docs/loop-continuity.md).
 
 ## Install
 
 Requires Python 3.9+, Git, Bash, and a host that can edit files and execute commands.
 
+These commands install from `main`. The quick path and adaptive continuation described here are not in the `v2.2.0` archive. For a stable install, use a [release archive](RELEASE.md#install-from-a-release-archive).
+
 ```bash
-git clone https://github.com/MicTx/spec-harness.git /tmp/spec-harness
-cd /tmp/spec-harness
+git clone https://github.com/MicTx/spec-harness.git
+cd spec-harness
 bash install.sh
 ```
 
-Without `INSTALL_HOSTS`, the installer detects hosts. `core` and `full` are compatibility aliases with identical payloads. Session hooks are merged incrementally, preserving non-Spec entries and backing up files first. `DRY_RUN=1` prints an upgrade preview: per host target, whether it would install fresh, upgrade in place, back up and replace, or refuse (symlink/user-owned skill) — zero writes, user additions visible first.
-
-The installer ships one fixed stage-instruction set and one session-brief budget. `INSTALL_PROFILE=core|full` remains a compatibility alias; both values export the identical payload.
+Without `INSTALL_HOSTS`, the installer detects hosts. `INSTALL_PROFILE=core|full` is a compatibility alias for the same payload. The installer backs up replaced files and merges Spec-owned hooks without removing other entries. Preview with `DRY_RUN=1 bash install.sh`. A config entry does not prove the host loaded it; see [host behavior](docs/loop-continuity.md#host-behavior).
 
 | Host | `INSTALL_HOSTS` |
 | --- | --- |
@@ -62,7 +64,7 @@ Enable the skill in a project and state the goal:
 /spec Fix the export API permission check for admins and regular users
 ```
 
-Without a bound package `/spec` enters the `plan` planning flow; a bound package before Go enters `update`. Freeze the goal, completion conditions, scope and criteria; assumptions, forks and baseline probes are optional. Go does not rewrite the repository charter. After Go, decide reversible work and park unauthorized actions.
+Without a bound package, `/spec` enters the `plan` planning flow. A bound package before Go enters `update`, an internal route, not a command. After Go, keep the frozen goal and acceptance, resolve reversible in-scope work, and park decisions that need authorization. UI acceptance uses ordinary tasks and verification commands.
 
 | Command | Purpose |
 | --- | --- |
@@ -104,7 +106,7 @@ python3 -m ruff check scripts hooks updater tests
 python3 scripts/export_skill_package.py --output /tmp/spec
 ```
 
-Private Gitea is the development source of truth; GitHub receives only an allowlisted public snapshot. Stable releases and SHA-256 files are on [GitHub Releases](https://github.com/MicTx/spec-harness/releases).
+GitHub `main` is the public source snapshot, not a new release. Find stable archives and checksums on [GitHub Releases](https://github.com/MicTx/spec-harness/releases) and current source changes in the [changelog](CHANGELOG.md#unreleased).
 
 ### Detailed documentation
 

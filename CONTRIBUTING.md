@@ -47,14 +47,15 @@ Do not commit generated release archives, local credentials, private task record
 
 Run the checks that match the change. The full suite is:
 
-    python3 -m compileall -q scripts hooks tests
-    python3 -m pytest -q
-    ruff check scripts/ hooks/ tests/
-    ruff format --check scripts/ hooks/ tests/
-    python3 scripts/spec.py next --json
+    python3 -m compileall -q scripts hooks updater tests
+    python3 -m pytest -q tests/
+    ruff check scripts/ hooks/ updater/ tests/
+    ruff format --check scripts/ hooks/ updater/ tests/
     git diff --check
 
-For documentation-only changes, run the Markdown link/reachability checks plus affected contracts. In particular, README changes must pass `tests/test_export_skill_package.py` (export-tree declaration) and `tests/test_stage_inventory.py` (command tables match `install.sh` `USER_STAGES`). Plugin packaging docs must agree with `.maintainer/tools/release/tests/test_package_agent_plugin.py`. If a check cannot run, state the reason in the pull request.
+Use `python3 scripts/spec.py next --json` from the bound worktree when working on an active task package; it is not a check for a fresh clone.
+
+For documentation-only changes, run the Markdown link/reachability checks plus affected contracts. In particular, README changes must pass `tests/test_export_skill_package.py` (export-tree declaration) and `tests/test_stage_inventory.py` (command tables match `install.sh` `USER_STAGES`). Plugin packaging changes must match the [template contract](agent-plugin/README.md); maintainers run packaging tests in the development checkout. If a check cannot run, state the reason in the pull request.
 
 ## Pull Requests
 

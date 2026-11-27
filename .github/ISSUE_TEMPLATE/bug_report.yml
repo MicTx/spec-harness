@@ -68,7 +68,11 @@ body:
       label: Host CLI
       options:
         - Claude Code
+        - Claude Desktop
         - Codex
+        - Cursor
+        - DeepSeek Harness
+        - Devin
         - Gemini CLI
         - Grok Build
         - OpenCode
@@ -76,6 +80,7 @@ body:
         - Hermes
         - Pi agent
         - ZCode
+        - generic agent (shared skills directory)
         - direct script call
         - other
     validations:
@@ -94,8 +99,9 @@ body:
       label: Install method
       options:
         - source checkout
-        - installer (install.sh)
+        - stable release / spec-harness update
         - exported runtime package
+        - plugin bundle
         - other
     validations:
       required: true
@@ -131,11 +137,13 @@ body:
     id: skill-version
     attributes:
       label: Skill source version or commit
-      description: In a runtime copy, read it with `grep -m1 '^version' pyproject.toml` inside the copy.
-      placeholder: "0.13.13 or a commit SHA"
+      description: Use `spec-harness --version` and give the release tag or source commit if known. A release and a source checkout can report the same version.
+      placeholder: "v2.2.0 release archive, or main at a commit SHA"
+    validations:
+      required: true
   - type: textarea
     id: evidence
     attributes:
       label: Evidence
-      description: The shortest useful command output, traceback, or file diff.
+      description: Provide the shortest useful redacted output. For a continuation problem, say whether a new verification ran, whether Stop re-entered, and whether the host actually loaded the Spec hooks. Do not attach raw logs, settings, or private task records.
       render: shell

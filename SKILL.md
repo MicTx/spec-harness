@@ -8,7 +8,7 @@ description: >-
 
 # Spec Workflow
 
-Update Spec Harness: `spec-harness update` (check: `--check`; fallback: `~/.local/bin/spec-harness`). Old installs need a newer release first.
+Update a stable install: `spec-harness update` (`--check` to inspect; fallback: `~/.local/bin/spec-harness`). It installs releases, not `main`.
 
 A v3 package holds `spec.md`, `tasks.md`, and evidence under `.spec/specs/YYYY-MM-DD_slug/`; it is the source of truth. The Python CLI prints concise cards by default; use `--json` for machine-readable output.
 
@@ -16,7 +16,7 @@ A v3 package holds `spec.md`, `tasks.md`, and evidence under `.spec/specs/YYYY-M
 
 `/spec` routes an unbound goal to `plan`, a bound package to `update`. Plan backward from failure, then `plan-go`. For a small reversible goal on a clean checkout, `/spec:run <goal>` uses the [two-call in-place quick path](references/exec.md); otherwise follow the ready DAG.
 
-No session brief: run `python3 scripts/spec.py next`.
+No session brief: run `python3 scripts/spec.py next`. On fresh failure evidence, replan the next step within the frozen goal and acceptance. Stop does not count rounds or resume from repeats; see [recovery](references/exec.md#delivery-recovery).
 
 ## Autonomy Contract
 

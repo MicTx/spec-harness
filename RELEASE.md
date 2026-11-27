@@ -4,9 +4,9 @@ Spec Harness releases answer two different needs: a tagged source revision for r
 
 ## Choose a Version
 
-- Use the latest tagged release for a stable installation.
-- Use a full commit SHA when you need a reproducible source checkout.
-- Read `CHANGELOG.md` before upgrading across a behavior or layout change; aliases, task-package files, export layout, and behavior contracts are compatibility surfaces.
+- **Stable:** install from [GitHub Releases](https://github.com/MicTx/spec-harness/releases) or run `spec-harness update`. The `v2.2.0` archive has the updater and the China mirror, but not the quick path, evidence-driven Stop, or legacy Git-hook retirement described on `main`.
+- **Current source:** install from `main` or pin a full public commit SHA. The source can still report `2.2.0` in `pyproject.toml`; that does not make it identical to the released archive. `spec-harness update` does not fetch `main`; `--reinstall` installs the selected release again.
+- Check [Unreleased in the changelog](CHANGELOG.md#unreleased) before switching from a release to source.
 
 ## Versioning Policy
 
@@ -18,15 +18,13 @@ Spec Harness follows [Semantic Versioning](https://semver.org/). The deciding qu
 
 Pacing: a minor is not minted for a single round. User-visible changes accumulate to the next natural release window (the close of a stage that changed user-visible behavior); pure fixes may ship as a patch at any time.
 
-Compatibility window: a format change ships with a one-shot migration script, and the old read path plus the script are removed in the next minor. Archived packages are frozen and never regraded. Compatibility code without a removal version is a defect.
-
-The v3 runtime removes the v2 command surface; archived v2 packages remain frozen and must be handled by the explicitly pinned historical toolkit. Historical releases are evidence, not precedents — they are not rewritten.
+Tasks and records from a previous format keep their original semantics. For a frozen pre-v3 archive, use a matching historical toolkit; do not edit the archive to make it pass a current gate.
 
 ## Install from a Release Archive
 
 Download the archive and checksum file from the release page:
 
-    VERSION=1.0.0
+    VERSION=2.2.0
     curl -LO "https://github.com/MicTx/spec-harness/releases/download/v$VERSION/spec-harness-$VERSION.tar.gz"
     curl -LO "https://github.com/MicTx/spec-harness/releases/download/v$VERSION/SHA256SUMS"
     sha256sum -c SHA256SUMS --ignore-missing
@@ -42,10 +40,12 @@ The archive root contains the local skill installer.
 
     git clone https://github.com/MicTx/spec-harness.git
     cd spec-harness
-    git checkout v1.0.0
+    DRY_RUN=1 bash install.sh
     bash install.sh
 
-A tagged checkout is preferable to an unpinned main checkout when reproducibility matters. Replace the tag with a full commit SHA for an exact source revision.
+This installs the checked-out source, not a release archive. To pin it, run `git checkout --detach <full-public-commit-sha>` before the preview. Preview lists installation targets; `PREFLIGHT_ONLY=1 bash install.sh` also evaluates actual installer preconditions before writing. Restart or reload the host after installation. Some hosts require hook review or trust approval; verify the host actually loaded the skill and hooks.
+
+When moving to current source from an older release, `spec.py doctor` reports old Spec-owned Git hooks and `spec.py doctor --fix` retires them by renaming them. It does not remove or change other Git hooks.
 
 ## Upgrade and Roll Back
 
@@ -71,7 +71,7 @@ To install a specific stable version or roll back explicitly:
 The updater never automatically downgrades a newer installation. As an alternative, rerun the installer from a selected tag or release archive:
 
     git fetch --tags origin
-    git checkout v0.13.15
+    git checkout --detach v2.2.0
     bash install.sh
 
 ## Checksums and Provenance

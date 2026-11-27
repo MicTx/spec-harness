@@ -26,11 +26,10 @@ List changed commands, task-package formats, exported layouts, or migration step
 
 ## Checklist
 
-- [ ] `python3 -m compileall -q scripts hooks tests` passes
-- [ ] `python3 scripts/export_skill_package.py --output <temporary-path> --force` passes
-- [ ] `python3 -m pytest -q` passes
-- [ ] `ruff check scripts/ hooks/ tests/` passes
-- [ ] `ruff format --check scripts/ hooks/ tests/` passes
+- [ ] `python3 -m compileall -q scripts hooks updater tests` passes
+- [ ] `python3 scripts/export_skill_package.py --output <new-temporary-path>` passes
+- [ ] `python3 -m pytest -q tests/` passes
+- [ ] `ruff check scripts/ hooks/ updater/ tests/` and the corresponding `ruff format --check` pass
 - [ ] User-facing behavior changes are reflected in `CHANGELOG.md`
 - [ ] Runtime layout or installer changes were verified against an exported package
 - [ ] README, `SKILL.md`, `references/*`, metadata, installer text, and templates stay aligned where applicable

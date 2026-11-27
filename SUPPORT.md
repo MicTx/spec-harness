@@ -6,12 +6,12 @@ Before opening an issue, narrow the question:
 
 - Read the [README](README.md) and [Git workflow guide](docs/git-workflow.en.md).
 - Search existing issues and the [release notes](https://github.com/MicTx/spec-harness/releases).
-- Confirm the version, operating system, host CLI, and installation method.
-- Run the smallest relevant verification command and include its result, exact version, and host CLI.
+- Report the release tag or source commit when known, plus the OS, host CLI version, and installation method. A `main` checkout and a release archive can report the same package version.
+- Run the smallest relevant verification command and include redacted output. For early stops, loops, or missing callbacks, see [evidence-driven continuation](docs/loop-continuity.md). Mention whether a verification ran and whether the host actually loaded the hooks.
 
 Choose the right channel:
 
-- Bug: use the bug report template with reproduction steps and the exact error.
+- Bug: use the [bug report form](https://github.com/MicTx/spec-harness/issues/new?template=bug_report.yml) with reproduction steps and the exact error.
 - Feature: describe the user problem, the smallest useful behavior, and the compatibility impact.
 - Security: follow [SECURITY.md](SECURITY.md); do not publish exploit details.
 

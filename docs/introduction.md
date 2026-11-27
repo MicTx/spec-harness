@@ -6,15 +6,15 @@ Spec Harness v3 用两相运行时回答这些问题。规划阶段把目标、�
 
 ## 四条硬边界
 
-- **规划厚，执行薄**：未知、选择和授权在 Go 前收口；Go 后只允许按计划或显式 amend。
+- **规划厚，执行薄**：在 Go 前厘清会影响方案的未知和授权；Go 后可以根据证据换做法，不重开目标讨论。改变任务卡必须走有授权的 `plan-amend`。
 - **证据优于叙述**：任务勾选来自 `runs.jsonl`，不是模型自称通过。
 - **恢复可核对**：失败签名、边界和最终验收都留在包内证据中；快照只提供恢复线索，不取代任务与门禁事实。
-- **失败会收敛**：同一失败签名达到上限后任务停机，新的根因证据才能通过 `unblock` 恢复。
+- **有证据才续跑**：验证取得检查点，或失败同时带来未见过的候选和失败诊断，才推动下一步；失败任务还有独立的验证门禁。换的是做法，验收不变。见[按证据续跑](loop-continuity.zh.md)。
 
 ## 两个文件和一条证据链
 
 `spec.md` 固定目标、范围、Charter 和决策账本；`tasks.md` 固定依赖、边界和红绿验证。`runs.jsonl` 把命令、退出码、输出摘要和树指纹连成证据链。Git 提交、合并和推送由 `done` / `push` 按预授权收口。
 
-用户仍保留真实权力：不可逆选择、外部依赖、偏好和推送授权必须显式确认。模型可以自主处理 reversible technical facts，并把理由与回滚方式记录下来。
+用户仍保留授权权：不可逆选择、未经章程授权的依赖和兼容性变化，以及未获授权的远端交付，都不能靠续跑绕过。可逆且在范围内的做法由智能体选择，必要时记录理由和回滚办法。
 
 运行时契约见 [`references/plan.md`](../references/plan.md)、[`references/exec.md`](../references/exec.md)、[`references/format.md`](../references/format.md) 和 [`references/git.md`](../references/git.md)。软件代码采用 PolyForm Noncommercial 1.0.0，商业使用需另行书面授权，见 [LICENSE](../LICENSE)。
