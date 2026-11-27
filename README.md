@@ -23,7 +23,7 @@
 
 需要 Python 3.9+、Git、Bash，以及能读写项目并执行命令的宿主。
 
-下面的命令安装 `main` 源码，本页描述的快路径和动态续跑在这一渠道。想用稳定版，请按[发布包安装说明](RELEASE.md#install-from-a-release-archive)操作；`v2.2.0` 发布包不包含这些更新。
+下面的命令安装 `main` 源码。想用稳定版，请按[发布包安装说明](RELEASE.md#install-from-a-release-archive)操作；`v3.0.0` 发布包已包含本页描述的快路径与动态续跑。
 
 ```bash
 git clone https://github.com/MicTx/spec-harness.git
@@ -106,7 +106,7 @@ python3 -m ruff check scripts hooks updater tests
 python3 scripts/export_skill_package.py --output /tmp/spec
 ```
 
-GitHub `main` 是公开源码快照，不代表新版本已发布。稳定发布包和校验文件见 [GitHub Releases](https://github.com/MicTx/spec-harness/releases)；源码最新变化见 [CHANGELOG](CHANGELOG.md#unreleased)。
+GitHub `main` 是公开源码快照，不代表新版本已发布。稳定发布包和校验文件见 [GitHub Releases](https://github.com/MicTx/spec-harness/releases)；源码最新变化见 [CHANGELOG](CHANGELOG.md#300---2026-11-27)。
 
 ### 深入文档
 

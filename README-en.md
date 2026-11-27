@@ -23,7 +23,7 @@ A package records the goal, scope, acceptance criteria, and executable tasks. Af
 
 Requires Python 3.9+, Git, Bash, and a host that can edit files and execute commands.
 
-These commands install from `main`. The quick path and adaptive continuation described here are not in the `v2.2.0` archive. For a stable install, use a [release archive](RELEASE.md#install-from-a-release-archive).
+These commands install from `main`. The quick path and adaptive continuation described here are also in the `v3.0.0` archive. For a stable install, use a [release archive](RELEASE.md#install-from-a-release-archive).
 
 ```bash
 git clone https://github.com/MicTx/spec-harness.git
@@ -106,7 +106,7 @@ python3 -m ruff check scripts hooks updater tests
 python3 scripts/export_skill_package.py --output /tmp/spec
 ```
 
-GitHub `main` is the public source snapshot, not a new release. Find stable archives and checksums on [GitHub Releases](https://github.com/MicTx/spec-harness/releases) and current source changes in the [changelog](CHANGELOG.md#unreleased).
+GitHub `main` is the public source snapshot, not a new release. Find stable archives and checksums on [GitHub Releases](https://github.com/MicTx/spec-harness/releases) and current source changes in the [changelog](CHANGELOG.md#300---2026-11-27).
 
 ### Detailed documentation
 

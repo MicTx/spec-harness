@@ -4,22 +4,31 @@ This file records user-visible behavior changes. For a detailed design or recove
 
 All notable user-facing changes to Spec Harness are recorded here. Internal development records are kept separately from the public documentation. Version numbers follow the [versioning policy](RELEASE.md#versioning-policy).
 
-## [Unreleased]
+## [3.0.0] - 2026-11-27
 
-- A task blocks on its fourth matching verify failure or its eighth failure overall. Signatures ignore common runner noise but distinguish exit codes and timeouts; planning probes do not count. `spec.py unblock` resets both counts. After upgrading an active package, a failure may acquire a new signature once.
+### Breaking
+
+- **Removed acceptance surfaces**: the runtime no longer ships `ui-review`, `learn`/lesson enforcement, `task-card` scaffolding, `plan-lint --suggest`, prompt tiers, Spark lines or the separate recovery quota. Use ordinary task criteria and declared verification for UI work, edit plan cards directly, and fix a real failure before running `check` again. Scripts that called the removed commands must drop them.
+- **Legacy Git hooks are retired**: `pre-commit`/`pre-push` hooks installed by Spec Harness 2.2.0 and earlier gate Git with a checker this version no longer ships, so after an upgrade they block every commit and push. Session start in a Spec repository, the committing lifecycle commands (`plan-go`, `verify`, `check`, `done`, `push`) and `spec.py doctor --fix` rename them to `<hook>.spec-retired-<UTC time>`; renaming one back restores it. Plain `doctor` reports them and fails until they are retired. Hooks without the Spec marker are never touched; an unreadable hook is never moved and is reported when Git would still try to run it, and one that cannot be moved stays in place and is reported by the CLI, session start and `doctor`.
+
+### Added
+
 - **Evidence-driven continuation:** Inspired by Loop Transformer research, Stop follows verified checkpoints or new tested candidates with new diagnostics, without a fixed round quota. A replan carries the frozen goal and affected criteria. Replays, unchanged candidates, and cycles do not keep the loop alive. This is an agent execution rule, not a model change. See [how continuation works](docs/loop-continuity.md).
-- Standard v3 plans require only the goal, done means, scope, criteria and task id/boundary/verify; the five lint rules preserve authority and proof checks. `expect: red|green` opts into a planning probe. Go seals inherited project policy without rewriting the repository charter.
-- `/spec:run` uses a two-call in-place quick path for eligible small fixes: `spec.py quick …`, edit the scoped files, then `spec.py check`. It runs the frozen test once, leaves changes unstaged in the current checkout and makes no commit or remote handoff. Dirty, unsafe, UI or larger changes use a standard package.
-- The lifecycle CLI now prints concise cards by default; machine consumers use `--json`. The offline overhead meter measures quick-path calls and prompt/output bytes; this is not a real-model token measurement.
-- `/spec:check` runs each distinct frozen verify once on the exact product tree intended for delivery. `--check-only` reports preflight without executing verifies. Fix an actual failure and use plain `check` again; the separate recovery quota and its three switches are gone, while Stop prevents repeated autonomous attempts on the same blocker.
-- UI work uses ordinary task criteria and their declared verification; there is no separate UI gate. Unrelated staged changes are never swept into a checkpoint.
-- Session hooks exit immediately and silently outside Spec repositories, without loading the runtime. Inside one, a command the hook cannot parse is allowed unless it names `git commit`, `git push` or a hook bypass; bypass flags are denied only in repositories that contain `.spec`.
-- Product identity uses a private Git index and object store. Unchanged blobs are reused; architecture contracts count as source, Spec records do not, and unowned worktree changes are preserved but cannot make the delivered tree pass.
-- Remote Git calls (push, ls-remote) keep `GIT_SSH_COMMAND`, `GIT_SSH`, `SSH_ASKPASS` and `GIT_ASKPASS`; local calls still strip them. Uncommitted Spec state files in the target worktree no longer block merge handoff unless the delivery range touches them.
-- `plan-go` writes the package binding. `--root` and `--slug` can appear after a subcommand. The separate task-card scaffolding, UI review, lesson enforcement, and prompt tiers are not part of the current runtime.
-- The run ledger drives task readiness and containment after interruption; manually editing a checkbox cannot advance it. Checkpoints and new archives carry Git receipts, and interrupted delivery is resumable without claiming completion before Git confirms it.
-- Offline regression fixtures check lifecycle cost and continuation behavior. These checks do not establish a reduction in model tokens or an improvement in model quality.
-- Built-in repair for Git hooks left by earlier versions: `pre-commit`/`pre-push` hooks installed by Spec Harness 2.2.0 and earlier gate Git with a checker this version no longer ships, so after an upgrade they block every commit and push. Session start in a Spec repository, the committing lifecycle commands (`plan-go`, `verify`, `check`, `done`, `push`) and `spec.py doctor --fix` rename them to `<hook>.spec-retired-<UTC time>`; renaming one back restores it. Plain `doctor` reports them and fails until they are retired. Hooks without the Spec marker are never touched; an unreadable hook is never moved and is reported when Git would still try to run it, and one that cannot be moved stays in place and is reported by the CLI, session start and `doctor`.
+- **In-place quick path**: `/spec:run` uses a two-call path for eligible small fixes: `spec.py quick …`, edit the scoped files, then `spec.py check`. It runs the frozen test once, leaves changes unstaged in the current checkout and makes no commit or remote handoff. Dirty, unsafe, UI or larger changes use a standard package.
+- **Failure gate and `spec.py unblock`**: a task blocks on its fourth matching verify failure or its eighth failure overall. Signatures ignore common runner noise but distinguish exit codes and timeouts; planning probes do not count. `spec.py unblock` resets both counts. After upgrading an active package, a failure may acquire a new signature once.
+- **Concise cards and `--json`**: the lifecycle CLI prints concise cards by default; machine consumers use `--json`. The offline overhead meter measures quick-path calls and prompt/output bytes; this is not a real-model token measurement.
+- **Offline regression fixtures** check lifecycle cost and continuation behavior. These checks do not establish a reduction in model tokens or an improvement in model quality.
+
+### Changed
+
+- **Minimal standard plans**: v3 plans require only the goal, done means, scope, criteria and task id/boundary/verify; the five lint rules preserve authority and proof checks. `expect: red|green` opts into a planning probe. Go seals inherited project policy without rewriting the repository charter.
+- **Single verification pass**: `/spec:check` runs each distinct frozen verify once on the exact product tree intended for delivery. `--check-only` reports preflight without executing verifies. Fix an actual failure and use plain `check` again, while Stop prevents repeated autonomous attempts on the same blocker.
+- **Quiet hooks**: session hooks exit immediately and silently outside Spec repositories, without loading the runtime. Inside one, a command the hook cannot parse is allowed unless it names `git commit`, `git push` or a hook bypass; bypass flags are denied only in repositories that contain `.spec`.
+- **Product-tree identity**: delivery identity uses a private Git index and object store. Unchanged blobs are reused; architecture contracts count as source, Spec records do not, and unowned worktree changes are preserved but cannot make the delivered tree pass.
+- **Git environment and merge handoff**: remote Git calls (push, ls-remote) keep `GIT_SSH_COMMAND`, `GIT_SSH`, `SSH_ASKPASS` and `GIT_ASKPASS`; local calls still strip them. Uncommitted Spec state files in the target worktree no longer block merge handoff unless the delivery range touches them.
+- **Binding and flags**: `plan-go` writes the package binding; `--root` and `--slug` can appear after a subcommand.
+- **Ledger-driven progress**: the run ledger drives task readiness and containment after interruption, so manually editing a checkbox cannot advance it. Checkpoints and new archives carry Git receipts, and interrupted delivery is resumable without claiming completion before Git confirms it.
+- **Checkpoint hygiene**: unrelated staged changes are never swept into a checkpoint.
 
 ## [2.2.0] - 2026-11-23
 

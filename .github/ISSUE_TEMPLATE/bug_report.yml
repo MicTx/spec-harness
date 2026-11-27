@@ -138,7 +138,7 @@ body:
     attributes:
       label: Skill source version or commit
       description: Use `spec-harness --version` and give the release tag or source commit if known. A release and a source checkout can report the same version.
-      placeholder: "v2.2.0 release archive, or main at a commit SHA"
+      placeholder: "v3.0.0 release archive, or main at a commit SHA"
     validations:
       required: true
   - type: textarea

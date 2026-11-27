@@ -2,7 +2,7 @@
 
 [中文](loop-continuity.zh.md) · [Documentation](README-en.md) · [Execution contract](../references/exec.md)
 
-On `main`, Stop follows actual verification evidence, not a fixed round counter. This behavior is not in the `v2.2.0` release archive.
+On `main`, Stop follows actual verification evidence, not a fixed round counter. This behavior ships in the `v3.0.0` release.
 
 ## Continue, change approach, or stop
 

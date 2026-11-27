@@ -4,9 +4,9 @@ Spec Harness releases answer two different needs: a tagged source revision for r
 
 ## Choose a Version
 
-- **Stable:** install from [GitHub Releases](https://github.com/MicTx/spec-harness/releases) or run `spec-harness update`. The `v2.2.0` archive has the updater and the China mirror, but not the quick path, evidence-driven Stop, or legacy Git-hook retirement described on `main`.
-- **Current source:** install from `main` or pin a full public commit SHA. The source can still report `2.2.0` in `pyproject.toml`; that does not make it identical to the released archive. `spec-harness update` does not fetch `main`; `--reinstall` installs the selected release again.
-- Check [Unreleased in the changelog](CHANGELOG.md#unreleased) before switching from a release to source.
+- **Stable:** install from [GitHub Releases](https://github.com/MicTx/spec-harness/releases) or run `spec-harness update`. The `v3.0.0` archive includes the quick path, evidence-driven Stop, and legacy Git-hook retirement.
+- **Current source:** install from `main` or pin a full public commit SHA. The source reports the version in `pyproject.toml`, but a source revision is not necessarily identical to the released archive. `spec-harness update` does not fetch `main`; `--reinstall` installs the selected release again.
+- Check the [changelog](CHANGELOG.md) before switching from a release to source.
 
 ## Versioning Policy
 
@@ -24,7 +24,7 @@ Tasks and records from a previous format keep their original semantics. For a fr
 
 Download the archive and checksum file from the release page:
 
-    VERSION=2.2.0
+    VERSION=3.0.0
     curl -LO "https://github.com/MicTx/spec-harness/releases/download/v$VERSION/spec-harness-$VERSION.tar.gz"
     curl -LO "https://github.com/MicTx/spec-harness/releases/download/v$VERSION/SHA256SUMS"
     sha256sum -c SHA256SUMS --ignore-missing
@@ -71,7 +71,7 @@ To install a specific stable version or roll back explicitly:
 The updater never automatically downgrades a newer installation. As an alternative, rerun the installer from a selected tag or release archive:
 
     git fetch --tags origin
-    git checkout --detach v2.2.0
+    git checkout --detach v3.0.0
     bash install.sh
 
 ## Checksums and Provenance
