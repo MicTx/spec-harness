@@ -1177,8 +1177,38 @@ def checkpoint_commit(root: Path, slug: str, title: str, patterns: tuple[str, ..
     return gitx.head(root)
 
 
-def failure_signature(stdout: bytes, stderr: bytes) -> str:
-    return hashlib.sha256(stdout[-4096:] + b"\0" + stderr[-4096:]).hexdigest()[:16]
+# Leave all semantic components below the runner's temporary root intact.
+TEMP_ROOT = re.compile(
+    rb"(?<![\w/.-])(?:/private)?(?:/var/folders/[^/\s]+/[^/\s]+/T|/tmp)"
+    rb"(?:/(?:pytest-of-[^/\s]+/pytest-\d+|tmp[\w-]+|spec-tree-[\w-]+))?(?=$|[/\s'\":),])"
+)
+OBJECT_ADDRESS = re.compile(rb"(?<= at )0x[\da-fA-F]{6,}\b")
+ASSERTION = re.compile(rb"\b(?:assert|AssertionError)\b")
+RUN_DURATION = re.compile(
+    rb"\b((?:failed|passed|skipped|errors?|warnings?) in |took )\d+(?:\.\d+)? ?(?:[mun]?s|seconds?|sec)\b"
+)
+VOLATILE_OUTPUT = (
+    (re.compile(rb"\d{4}-\d\d-\d\d[T ]\d\d:\d\d:\d\d(?:[.,]\d+)?(?:Z|[+-]\d\d:?\d\d)?"), b"<ts>"),
+    (re.compile(rb"\b\d\d:\d\d:\d\d(?:\.\d+)?\b"), b"<clock>"),
+    (RUN_DURATION, rb"\1<dur>"),
+    (re.compile(rb"(?i)\b(pid[=: ]?)\d+"), rb"\1<pid>"),
+)
+
+
+def failure_signature(stdout: bytes, stderr: bytes, outcome: str = "") -> str:
+    """Hash bounded tails; preserve exit reason, assertion operands and binary stream boundaries."""
+    digest = hashlib.sha256(outcome.encode() + b"\0")
+    for stream in (stdout, stderr):
+        lines = []
+        data = OBJECT_ADDRESS.sub(b"0x<addr>", TEMP_ROOT.sub(b"<tmp>", stream[-8192:]))
+        for line in data.splitlines(keepends=True):
+            if not ASSERTION.search(line):
+                for pattern, replacement in VOLATILE_OUTPUT:
+                    line = pattern.sub(replacement, line)
+            lines.append(line)
+        tail = b"".join(lines)[-4096:]
+        digest.update(len(tail).to_bytes(2, "big") + tail)
+    return digest.hexdigest()[:16]
 
 
 def subprocess_output(result: subprocess.CompletedProcess) -> tuple[str, str]:

@@ -177,7 +177,8 @@ def encode(host: str, event: str, action) -> dict:
         return {"decision": "block", "reason": action.reason}
     if action.context:
         if host == "cursor":
-            return {"followup_message": action.context} if event in {"stop", "end"} else {}
+            # Cursor's only Stop output is a follow-up, which starts another turn; a release sends none.
+            return {}
         if host in {"opencode", "pi", "openclaw", "hermes"}:
             return {"context": action.context}
         return {

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import time
 from pathlib import Path
 
 from package import latest_runs, now, runs
@@ -122,19 +121,6 @@ def last_failures(package: Path) -> list[str]:
         for task, record in latest.items()
         if record.get("exit") not in (None, 0)
     ][-3:]
-
-
-def seen(package: Path, event: dict) -> bool:
-    path = package / "state.json"
-    state = snapshot_read(package)
-    key = json.dumps(event, sort_keys=True, default=str)
-    current = time.time()
-    duplicate = state.get("seen_key") == key and current - float(state.get("seen_at", 0)) < 2
-    if duplicate:
-        return True
-    state.update({"seen_key": key, "seen_at": current})
-    path.write_text(json.dumps(state) + "\n", encoding="utf-8")
-    return False
 
 
 def prompt_token(package: Path, brief: dict) -> str:

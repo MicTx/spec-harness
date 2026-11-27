@@ -24,6 +24,9 @@ GIT_DENY = "Spec owns Git actions while a package is active; use spec.py verify/
 GIT_PROTECT = "Spec protects checkpointed work while a package is active; use spec.py verify/check or /spec:push."
 # Hard host ceiling for any injected context; the tier budget is usually lower.
 CONTEXT_LIMIT = 1500
+DELIVER_NEXT = "All work is verified — run spec.py check to deliver."
+REPLAN_NEXT = "Replan from the evidence: choose a distinct testable approach and preserve the frozen acceptance."
+STOP_EVIDENCE = {"gate", "run", "park", "unblock", "amend", "park-decision"}
 
 
 @dataclass
@@ -318,15 +321,172 @@ def _short_line(value: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def _did_execute(memory, package, directory: Path, event: dict) -> bool:
-    state = memory.snapshot_read(directory)
+def _begin_prompt(memory, package, directory: Path, event: dict, brief: dict) -> bool:
+    """A replay is not user authority, and a new turn need not change the routing brief."""
     session = _session_id(event)
-    counts = state.get("turn_started", {})
-    start = counts.get(session, 0) if isinstance(counts, dict) else 0
-    return any(
-        row.get("kind") in {"gate", "run", "park", "unblock"} and not row.get("probe")
-        for row in package.runs(directory)[start:]
+    state = memory.snapshot_read(directory)
+    prompt_id = event.get("prompt_id") or event.get("generation_id") or event.get("message_id")
+    key = [session, prompt_id] if isinstance(prompt_id, str) and 0 < len(prompt_id) <= 256 else None
+    recent = state.get("recent_prompts", [])
+    recent = recent if isinstance(recent, list) else []
+    if key and key in recent:
+        return False
+    fresh = memory.prompt_fresh(directory, session, memory.prompt_token(directory, brief))
+    starts = state.get("turn_started")
+    previous = {k: v for k, v in starts.items() if k != session} if isinstance(starts, dict) else {}
+    starts = dict(list({**previous, session: len(package.runs(directory))}.items())[-8:])
+    updates: dict[str, object] = {"turn_started": starts}
+    if key:
+        updates["recent_prompts"] = [*recent[-15:], key]
+    _write_state(memory, directory, updates)
+    return fresh
+
+
+def _turn_start(state: dict, event: dict, row_count: int) -> int:
+    starts = state.get("turn_started")
+    start = starts.get(_session_id(event), 0) if isinstance(starts, dict) else 0
+    return start if type(start) is int and 0 <= start <= row_count else row_count
+
+
+def _gate_blockers(row: dict) -> frozenset[tuple[str, str]]:
+    return frozenset(
+        (str(item.get("code", "")), str(item.get("subject", "")))
+        for item in row.get("findings", [])
+        if isinstance(item, dict) and item.get("severity") == "block"
     )
+
+
+def _gate_diagnostics(row: dict) -> frozenset[str]:
+    return frozenset(
+        str(item["signature"])
+        for item in row.get("findings", [])
+        if isinstance(item, dict) and item.get("code") == "verify-failed" and item.get("signature")
+    )
+
+
+def _new_gate_evidence(current: dict, past: list[dict]) -> bool:
+    blockers = _gate_blockers(current)
+    if not blockers:
+        return False
+    similar = [
+        row for row in past if row.get("kind") == "gate" and not row.get("probe") and _gate_blockers(row) == blockers
+    ]
+    if not similar:
+        return True
+    tree = current.get("product_tree")
+    diagnostics = _gate_diagnostics(current)
+    return bool(tree and diagnostics) and not any(
+        row.get("product_tree") == tree or _gate_diagnostics(row) == diagnostics for row in similar
+    )
+
+
+def _new_execution_evidence(current: dict, prior: list[dict]) -> bool:
+    """Reject repeats across the ledger, independent of callbacks, prompt reentry and timestamps."""
+    kind = current.get("kind", "run")
+    if kind == "gate":
+        return _new_gate_evidence(current, prior)
+    if kind != "run":
+        return False
+    if current.get("exit") == 0:
+        return bool(current.get("checkpoint"))
+    fields = ("tree_fp", "sig")
+    if not all(current.get(field) for field in fields):
+        return False
+    return not any(
+        row.get("kind", "run") == "run"
+        and row.get("exit") not in (None, 0)
+        and (row.get("task"), row.get("cmd")) == (current.get("task"), current.get("cmd"))
+        and any(row.get(field) == current[field] for field in fields)
+        for row in prior
+    )
+
+
+def _replan_reason(route, root: Path, slug: str, brief: dict, task: str) -> str:
+    """Ask the agent to plan from evidence without changing goal, proof or authority."""
+    goal = str(brief.get("goal") or "").removeprefix("goal:").strip()
+    scoped = [item for item in brief.get("criteria", []) if item.get("task") == task and not item.get("passed")]
+    acceptance = "; ".join(_short_line(f"{item['id']} {item['text']}", 112) for item in scoped[:2])
+    lines = [REPLAN_NEXT, f"Evidence: .spec/specs/{slug}/runs.jsonl"]
+    if goal:
+        lines.append("Goal: " + _short_line(goal, 140))
+    if acceptance:
+        lines.append("Criteria: " + acceptance)
+    if task:
+        lines.append(f"Task: {_short_line(task, 80)}. Test a new hypothesis or finish an independent ready card.")
+    prefix = "\n".join(lines)
+    next_step = route.brief(root, slug, projection=brief, budget=route.BRIEF_BUDGET - len(prefix) - 1)
+    return (prefix + "\n" + next_step)[: route.BRIEF_BUDGET]
+
+
+def _stop_action(memory, package, route, root: Path, slug: str, directory: Path, event: dict) -> Action:
+    state = memory.snapshot_read(directory)
+    rows = package.runs(directory)
+    start = _turn_start(state, event, len(rows))
+    consumed = state.get("stop_evidence", 0)
+    if event.get("continuing") and state.get("stop_session") != _session_id(event):
+        return Action()
+    if type(consumed) is int and 0 < consumed <= len(rows):
+        start = max(start, consumed)
+    elif event.get("continuing"):
+        return Action()
+    pending = "pending" in event
+    index = next(
+        (
+            i
+            for i in range(len(rows) - 1, start - 1, -1)
+            if rows[i].get("kind", "run") in STOP_EVIDENCE and not rows[i].get("probe")
+        ),
+        None,
+    )
+    # A pending snapshot can be updated independently of whether Stop resumes.
+    if index is None and not pending:
+        if consumed and not _session_id(event) and not event.get("continuing"):
+            return Action(context="stalled: no new execution evidence.")
+        return Action()
+    brief = route.decide(root, slug)
+    if pending:
+        memory.snapshot_write(directory, event, brief)
+    if index is None or brief["state"] == "plan":
+        return Action()
+    action = _settle(route, root, slug, brief, rows[index], rows[:index])
+    _write_state(
+        memory, directory, {"stop_evidence": len(rows), "stop_session": _session_id(event) if action.block else None}
+    )
+    return action
+
+
+def _settle(route, root: Path, slug: str, brief: dict, current: dict, prior: list[dict]) -> Action:
+    state = brief["state"]
+    if state == "parked-only":
+        context = (
+            "List what you already tried and present up to four decisions with evidence and options."
+            if brief.get("decisions")
+            else "waiting by decision; do not ask again."
+        )
+        return Action(context="parked-only: " + context)
+    blocked = brief["recovery"].get("blocked")
+    if state == "stalled" and blocked:
+        return Action(context=("stalled: " + route.brief(root, slug, projection=brief))[: route.BRIEF_BUDGET])
+    if (
+        current.get("blocked")
+        and brief.get("ready")
+        and not any(
+            row.get("task") == current.get("task") and row.get("cmd") == current.get("cmd") and row.get("blocked")
+            for row in prior
+        )
+    ):
+        return Action(block=True, reason=route.brief(root, slug, projection=brief))
+    if not _new_execution_evidence(current, prior):
+        return Action(
+            context="stalled: no new execution evidence; report the blocker and do not ask the user to choose a fix."
+        )
+    if state == "deliver":
+        return Action(block=True, reason=DELIVER_NEXT)
+    if current.get("exit") == 0 and current.get("checkpoint"):
+        return Action(block=True, reason=route.brief(root, slug, projection=brief))
+    gate_subject = (brief["gate"].get("action") or {}).get("subject", "")
+    task = current.get("task") or gate_subject
+    return Action(block=True, reason=_replan_reason(route, root, slug, brief, task))
 
 
 def _retire_legacy_git_hooks(root: Path) -> list[str]:
@@ -360,7 +520,7 @@ def _context_extras(memory, root: Path, name: str, event: dict, spec: str, card:
     extras: list[str] = []
     if name == "start":
         if event.get("source") == "compact":
-            extras.append("Continue the frozen plan; do not replan.")
+            extras.append("Keep the frozen goal and acceptance; adapt the next step to the evidence.")
         extras.extend(_retire_legacy_git_hooks(root))
         extras.append("Charter: " + _short_line(policy, 90))
     return extras
@@ -418,9 +578,7 @@ def _pre_tool_fallback(event: dict, spec_root: Path | None = None) -> Action:
 def handle(name: str, event: dict) -> Action:
     if name not in {"start", "prompt", "pre_tool", "stop", "pre_compact", "end"}:
         return Action()
-    # A continuation is the hook's own follow-up, not a new progress attempt.
-    # Release it before package reads, replay bookkeeping, or any projection.
-    if name == "stop" and (event.get("continuing") or event.get("aborted") or event.get("paused")):
+    if name == "stop" and (event.get("aborted") or event.get("paused")):
         return Action()
     if name == "pre_tool":
         return _pre_tool(event)
@@ -441,66 +599,14 @@ def handle(name: str, event: dict) -> Action:
             return Action(context="\n".join(notes)[:1500])
         return Action()
     root, slug = active
-    directory, spec, tasks = package.read_package(root, slug)
-    brief = route.decide(root, slug)
+    directory = package.package_dir(root, slug)
     if name == "stop":
-        if "pending" in event:
-            memory.snapshot_write(directory, event, brief)
-        progress = brief.get("progress_token", brief["progress"])
-        state = memory.snapshot_read(directory)
-        if brief["state"] == "plan":
-            return Action()
-        if not _did_execute(memory, package, directory, event):
-            return Action(reason=route.next_card(root, slug, projection=brief)["next"] if brief.get("task") else "")
-        if brief["state"] == "parked-only":
-            return Action(
-                context="parked-only: "
-                + (
-                    "List what you already tried and present up to four decisions with evidence and options."
-                    if brief.get("decisions")
-                    else "waiting by decision; do not ask again."
-                )
-            )
-        if brief["state"] == "deliver" and state.get("last_progress") != progress:
-            _write_state(memory, directory, {"last_progress": progress, "stalls": 0, "terminal": ""})
-            message = "All work is verified — you've earned the gate; run spec.py check to deliver."
-            return Action(block=True, reason=message)
-        if brief["state"] == "check-failed":
-            item = brief["gate"].get("action") or {}
-            token = [*progress[:1], progress[2], item.get("code"), item.get("subject")]
-            if state.get("gate_resume") == token:
-                return Action(context="stalled: the same delivery blocker remains without a new checkpoint.")
-            _write_state(memory, directory, {"gate_resume": token})
-            return Action(block=True, reason=route.brief(root, slug, projection=brief))
-        if progress != state.get("last_progress"):
-            _write_state(memory, directory, {"last_progress": progress, "stalls": 0, "terminal": ""})
-            return Action(block=True, reason=route.next_card(root, slug, projection=brief)["next"])
-        stalls = int(state.get("stalls", 0)) + 1
-        if stalls < 2:
-            _write_state(memory, directory, {"stalls": stalls})
-            return Action(
-                block=True,
-                reason=(
-                    "No progress yet — a great moment to diverge: change strategy using the latest failure signature."
-                ),
-            )
-        _write_state(memory, directory, {"stalls": stalls, "terminal": "stalled"})
-        return Action(
-            context=(
-                "stalled: no new evidence after two attempts; report failure signatures "
-                "— a fresh angle often cracks what force cannot."
-                " Choose the recovery yourself; do not ask the user to choose."
-            )
-        )
+        return _stop_action(memory, package, route, root, slug, directory, event)
+    brief = route.decide(root, slug)
     if name in {"start", "prompt"}:
-        if name == "prompt":
-            session = _session_id(event)
-            previous = memory.snapshot_read(directory).get("turn_started") or {}
-            previous.pop(session, None)
-            previous[session] = len(package.runs(directory))
-            _write_state(memory, directory, {"turn_started": dict(list(previous.items())[-8:])})
-            if not memory.prompt_fresh(directory, session, memory.prompt_token(directory, brief)):
-                return Action()
+        _, spec, _ = package.read_package(root, slug)
+        if name == "prompt" and not _begin_prompt(memory, package, directory, event, brief):
+            return Action()
         # One decision, one card: the route renderer owns the brief budget
         # and its priority order, so each event computes one route projection.
         card = route.next_card(root, slug, projection=brief)
@@ -531,13 +637,6 @@ def main(argv: list[str] | None = None) -> int:
         event = decode(args.host, payload)
         if _spec_root(event) is None:
             return 0
-        if args.event == "stop":
-            if event.get("continuing"):
-                return 0
-            charter, memory, package, route = _runtime()
-            active = _active(package, event)
-            if active and memory.seen(package.package_dir(*active), event):
-                return 0
         action = handle(args.event, event)
         output = encode(args.host, args.event, action)
         if output:

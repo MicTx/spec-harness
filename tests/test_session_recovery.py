@@ -192,7 +192,7 @@ def test_compact_start_context_carries_pending_block(tmp_path):
     assert "Pending:" in action.context
     assert "resume task-value from the failing signature" in action.context
     assert "advisory" in action.context.lower()
-    assert "do not replan" in action.context
+    assert "Keep the frozen goal and acceptance" in action.context
 
 
 def test_next_card_projects_pending_readonly_for_matching_task(tmp_path):
@@ -640,7 +640,7 @@ def test_start_injection_respects_the_single_brief_budget(tmp_path):
     handle("pre_compact", _event(tmp_path, pending=["RESUME-CLUE check the failing case"]))
     context = handle("start", _event(tmp_path, source="compact")).context
     _assert_budgeted_core(context, "run", "task-value", "FAILLADDER", "spec.py next", "RESUME-CLUE")
-    assert "do not replan" in context
+    assert "Keep the frozen goal and acceptance" in context
     assert "advisory" in context.lower()
     assert VERIFY_HEAD not in context and VERIFY_TAIL not in context
     assert not re.search(r"A{80}", context)
@@ -716,10 +716,14 @@ def test_start_and_subagent_compute_route_once(tmp_path, monkeypatch):
     assert calls["n"] == 0, calls
 
     calls["n"] = 0
-    handle("stop", _event(root, continuing=True))
-    assert calls["n"] == 0, calls
+    assert not handle("stop", _event(root, continuing=True)).block
+    assert calls["n"] <= 1, calls
 
     calls["n"] = 0
+    handle("stop", _event(root))
+    assert calls["n"] == 0, calls
+
+    assert cli(root, "verify", "task-value").returncode == 0
     handle("stop", _event(root))
     assert calls["n"] == 1, calls
 

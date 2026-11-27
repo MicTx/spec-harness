@@ -30,12 +30,12 @@ assume that a module's presence proved its activation.
   injections are deterministic and do not grow recursively.
 - **Executable recovery routing.** The current [recovery loop](../references/exec.md)
   uses typed findings rather than matching diagnostic text. After a fix, run
-  the same `check`; Stop will not repeat the same blocker without a new checkpoint.
-  There is no separate counter to reset.
+  the same `check`. Stop follows checkpoints and new diagnostics from tested
+  candidates, not a round counter. Repeated inputs and blockers release Stop.
 - **Single projection per event.** `route.next_card(..., projection=...)`
   and `route.brief(..., projection=...)` reuse a computed projection; the
   earlier `decision=` argument remains compatible. Start and prompt each use
-  one route computation, and a continuing stop costs none.
+  one route computation. Stop with no new execution evidence skips routing.
 - **Fresh evidence and cold recovery.** The latest failed run stores its
   failure-ladder guidance as an additive ledger field; a cold next-action
   projection uses it without a host callback. When no independent task is
@@ -68,9 +68,9 @@ or quality gains from running the external plugin.
   retry behavior would be false.
 - `rewind` forks session history only; it does not roll back files, Git or
   external side effects, so it is not a task-level transaction mechanism.
-- Stable `session+seq` dedup keys need a real host event contract. Current
-  adapters do not supply such a sequence, so the existing whole-payload replay
-  guard is kept rather than guessed.
+- Stop consumes executed ledger records rather than guessing a stable event
+  ID or comparing entire host payloads. Pi may send the same payload before
+  and after real progress; only the latter earns a continuation.
 
 ## Host availability
 

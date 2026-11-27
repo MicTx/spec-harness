@@ -6,6 +6,8 @@ All notable user-facing changes to Spec Harness are recorded here. Internal deve
 
 ## [Unreleased]
 
+- A task blocks on its fourth matching verify failure or its eighth failure overall. Signatures ignore common runner noise but distinguish exit codes and timeouts; planning probes do not count. `spec.py unblock` resets both counts. After upgrading an active package, a failure may acquire a new signature once.
+- Stop no longer has a fixed continuation limit. It follows verified progress and requests a new testable approach when the evidence changes. The recovery prompt includes the frozen goal and affected acceptance; idle callbacks, repeated blockers and cycles release without starting another turn. Task verification limits and manual `spec.py check` are unchanged.
 - Standard v3 plans require only the goal, done means, scope, criteria and task id/boundary/verify; the five lint rules preserve authority and proof checks. `expect: red|green` opts into a planning probe. Go seals inherited project policy without rewriting the repository charter.
 - `/spec:run` uses a two-call in-place quick path for eligible small fixes: `spec.py quick …`, edit the scoped files, then `spec.py check`. It runs the frozen test once, leaves changes unstaged in the current checkout and makes no commit or remote handoff. Dirty, unsafe, UI or larger changes use a standard package.
 - The lifecycle CLI now prints concise cards by default; machine consumers use `--json`. The offline overhead meter measures quick-path calls and prompt/output bytes; this is not a real-model token measurement.
