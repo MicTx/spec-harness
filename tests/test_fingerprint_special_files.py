@@ -39,6 +39,9 @@ def _special_tree(root: Path) -> None:
     source = root.parent / f"{root.name}-subsrc"
     _source_repo(source)
     git(root, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(source), "sub")
+    # The submodule checkout inherits no identity from the superproject or source.
+    git(root / "sub", "config", "user.email", "fixture@example.invalid")
+    git(root / "sub", "config", "user.name", "Fixture")
     nested = root / "nested"
     nested.mkdir()
     git(nested, "init", "-q", "-b", "main")

@@ -26,7 +26,7 @@ function advance(    char, start, hex, code) {
   }
   if (token == "" || index("{}[],: ", token)) return
   start = position - 1
-  while (position <= size && substr(input, position, 1) !~ /[ \t\r\n\[\]{},:]/) position++
+  while (position <= size && index(" \t\r\n[]{},:", substr(input, position, 1)) == 0) position++
   value = substr(input, start, position - start)
   if (value !~ /^(true|false|null|-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?)$/) bad = 1
   token = "scalar"

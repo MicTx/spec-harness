@@ -30,6 +30,10 @@ All notable user-facing changes to Spec Harness are recorded here. Internal deve
 - **Ledger-driven progress**: the run ledger drives task readiness and containment after interruption, so manually editing a checkbox cannot advance it. Checkpoints and new archives carry Git receipts, and interrupted delivery is resumable without claiming completion before Git confirms it.
 - **Checkpoint hygiene**: unrelated staged changes are never swept into a checkpoint.
 
+### Fixed
+
+- **Hook launcher on BusyBox**: the launcher's payload probe scanned scalar delimiters with a bracket expression that BusyBox `awk` rejects, so it started Python on every call outside a Spec repository. The probe now scans delimiters with `index()` and stays silent where it should.
+
 ## [2.2.0] - 2026-11-23
 
 ### Added
